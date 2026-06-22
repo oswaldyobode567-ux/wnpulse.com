@@ -10,17 +10,19 @@ import CombosPage from "@/pages/CombosPage";
 import HistoryPage from "@/pages/HistoryPage";
 import SubscriptionPage from "@/pages/SubscriptionPage";
 import TopPicksPage from "@/pages/TopPicksPage";
+import AdminPage from "@/pages/AdminPage";
 
-function RequireAuth({ children }) {
+function RequireAuth({ children, admin = false }) {
   const { user, loading } = useAuth();
   if (loading) {
     return (
-      <div className="min-h-screen grid place-items-center bg-slate-50">
+      <div className="min-h-screen grid place-items-center bg-neutral-50">
         <div className="text-slate-500 text-sm">Chargement…</div>
       </div>
     );
   }
   if (!user) return <Navigate to="/login" replace />;
+  if (admin && !user.is_admin) return <Navigate to="/app" replace />;
   return children;
 }
 
@@ -38,6 +40,7 @@ export default function App() {
           <Route path="/app/combines" element={<RequireAuth><CombosPage /></RequireAuth>} />
           <Route path="/app/historique" element={<RequireAuth><HistoryPage /></RequireAuth>} />
           <Route path="/app/abonnement" element={<RequireAuth><SubscriptionPage /></RequireAuth>} />
+          <Route path="/app/admin" element={<RequireAuth admin><AdminPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
         <Toaster position="top-right" richColors />

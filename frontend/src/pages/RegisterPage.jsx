@@ -32,24 +32,27 @@ export default function RegisterPage() {
 
   return (
     <div className="min-h-screen grid lg:grid-cols-2">
-      <div className="hidden lg:flex flex-col justify-between bg-slate-900 text-white p-12">
-        <Link to="/" className="flex items-center gap-2">
-          <div className="h-9 w-9 rounded-lg bg-blue-600 grid place-items-center"><Activity className="h-5 w-5" /></div>
-          <span className="font-heading font-extrabold text-lg">Pronostix AI</span>
+      <div className="hidden lg:flex flex-col justify-between bg-slate-950 text-white p-12 relative overflow-hidden">
+        <div className="absolute inset-0 wp-gradient-hero opacity-30" />
+        <Link to="/" className="flex items-center gap-2.5 relative z-10">
+          <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center shadow-lg shadow-orange-600/30">
+            <Activity className="h-5 w-5" strokeWidth={2.5} fill="white" />
+          </div>
+          <span className="font-heading font-extrabold text-lg">WinPulse</span>
         </Link>
-        <div>
+        <div className="relative z-10">
           <h2 className="font-heading text-3xl font-extrabold leading-tight mb-3">
-            Rejoignez les parieurs gagnants.
+            Rejoins les parieurs gagnants.
           </h2>
           <p className="text-slate-300 text-sm leading-relaxed max-w-md">
-            7 sports, analyse IA Claude 4.5, combinés du jour. Inscription gratuite, sans CB.
+            7 sports, IA experte, 3 combinés du jour. Inscription gratuite, sans CB.
           </p>
         </div>
-        <div className="text-xs text-slate-500">© 2026 Pronostix AI · 18+ · Jouez responsable</div>
+        <div className="text-xs text-slate-500 relative z-10">© 2026 WinPulse · 18+ · Joue responsable</div>
       </div>
 
-      <div className="flex items-center justify-center p-6 sm:p-12 bg-slate-50">
-        <Card className="w-full max-w-md p-8 border-slate-200">
+      <div className="flex items-center justify-center p-6 sm:p-12 bg-neutral-50">
+        <Card className="w-full max-w-md p-8 border-neutral-200 shadow-lg">
           <h1 className="font-heading text-2xl font-extrabold text-slate-900 mb-1">Créer un compte</h1>
           <p className="text-sm text-slate-500 mb-6">Gratuit · sans carte bancaire</p>
           <form onSubmit={submit} className="space-y-4">
@@ -69,14 +72,14 @@ export default function RegisterPage() {
                 data-testid="register-password-input" placeholder="••••••••" className="mt-1" />
             </div>
             <Button type="submit" disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-700 h-11"
+              className="w-full wp-gradient-warm text-white border-0 hover:opacity-90 h-11"
               data-testid="register-submit-button">
               {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Créer mon compte"}
             </Button>
           </form>
           <div className="mt-6 text-sm text-center text-slate-500">
             Déjà inscrit ?{" "}
-            <Link to="/login" className="text-blue-600 font-semibold" data-testid="goto-login-link">
+            <Link to="/login" className="text-orange-600 font-semibold" data-testid="goto-login-link">
               Se connecter
             </Link>
           </div>

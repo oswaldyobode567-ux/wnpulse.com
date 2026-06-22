@@ -1,7 +1,8 @@
-"""Pronostix AI - Main FastAPI server."""
+"""WinPulse - Main FastAPI server."""
 import os
 import uuid
 import logging
+import asyncio
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -22,16 +23,16 @@ from auth import (
     get_current_user_payload,
 )
 from odds_service import fetch_all_matches, get_match_by_id, SUPPORTED_SPORTS
-from prediction_engine import analyze_all, analyze_match, top_predictions, build_combo
+from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
 from ai_service import generate_analysis
+from email_service import send_picks_email, send_payment_confirmation
 
-# ------------------ Mongo ------------------
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
 db = client[os.environ["DB_NAME"]]
 
-# ------------------ App ------------------
-app = FastAPI(title="Pronostix AI API")
+APP_NAME = os.environ.get("APP_NAME", "WinPulse")
+app = FastAPI(title=f"{APP_NAME} API")
 api = APIRouter(prefix="/api")
 
 app.add_middleware(
@@ -43,9 +44,8 @@ app.add_middleware(
 )
 
 logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("pronostix")
+log = logging.getLogger("winpulse")
 
-# ------------------ Pricing ------------------
 PLANS = {
     "free": {
         "name": "Free",
@@ -65,9 +65,9 @@ PLANS = {
         "features": [
             "Pronostics illimités",
             "Tous les sports (Foot, NBA, Tennis, NFL, NHL, MMA)",
-            "Analyse IA Claude Sonnet 4.5",
-            "Combinés gagnants quotidiens",
-            "Notifications en temps réel",
+            "Analyse IA experte sur chaque match",
+            "3 combinés du jour (Sécurité / Équilibre / Jackpot)",
+            "Notifications email VIP",
         ],
     },
     "elite": {
@@ -86,7 +86,6 @@ PLANS = {
 }
 
 
-# ------------------ Models ------------------
 class RegisterBody(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
@@ -105,17 +104,22 @@ class TokenResponse(BaseModel):
 
 
 class PaymentRequestBody(BaseModel):
-    tier: str  # pro / elite
+    tier: str
     phone: str
     payer_name: Optional[str] = None
 
 
-# ------------------ Helpers ------------------
+class BroadcastBody(BaseModel):
+    tier: Optional[str] = "pro"  # send to users with this tier or above
+    combo_tier: Optional[str] = "balanced"  # safe/balanced/jackpot
+
+
 def _public_user(user_doc: dict) -> dict:
     return {
         "id": user_doc["id"],
         "email": user_doc["email"],
         "full_name": user_doc["full_name"],
+        "is_admin": bool(user_doc.get("is_admin", False)),
         "subscription_tier": user_doc.get("subscription_tier", "free"),
         "subscription_status": user_doc.get("subscription_status", "active"),
         "subscription_expires_at": user_doc.get("subscription_expires_at"),
@@ -127,10 +131,17 @@ async def _get_user(user_id: str) -> Optional[dict]:
     return await db.users.find_one({"id": user_id}, {"_id": 0})
 
 
-# ------------------ Public routes ------------------
+async def _require_admin(payload: dict = Depends(get_current_user_payload)) -> dict:
+    user = await _get_user(payload["sub"])
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Admin uniquement")
+    return user
+
+
+# ----- Public -----
 @api.get("/")
 async def root():
-    return {"app": "Pronostix AI", "status": "ok"}
+    return {"app": APP_NAME, "status": "ok"}
 
 
 @api.get("/sports")
@@ -143,7 +154,7 @@ async def get_plans():
     return [{"id": k, **v} for k, v in PLANS.items()]
 
 
-# ------------------ Auth ------------------
+# ----- Auth -----
 @api.post("/auth/register", response_model=TokenResponse)
 async def register(body: RegisterBody):
     existing = await db.users.find_one({"email": body.email.lower()})
@@ -156,6 +167,7 @@ async def register(body: RegisterBody):
         "email": body.email.lower(),
         "full_name": body.full_name,
         "hashed_password": hash_password(body.password),
+        "is_admin": False,
         "subscription_tier": "free",
         "subscription_status": "active",
         "subscription_expires_at": None,
@@ -183,18 +195,16 @@ async def me(payload: dict = Depends(get_current_user_payload)):
     return _public_user(user)
 
 
-# ------------------ Matches & Predictions ------------------
+# ----- Matches & Predictions -----
 @api.get("/matches")
 async def get_matches(sport: Optional[str] = None):
     matches = await fetch_all_matches(db)
     if sport:
         matches = [m for m in matches if sport in (m.get("sport_key") or "")]
-    # Attach prediction summary
     out = []
     for m in matches:
         pred = analyze_match(m)
         out.append({**m, "prediction": pred})
-    # Sort by commence time
     out.sort(key=lambda x: x.get("commence_time", ""))
     return out
 
@@ -212,6 +222,13 @@ async def get_combo(legs: int = 3, min_confidence: float = 65):
     return build_combo(matches, legs=legs, min_confidence=min_confidence)
 
 
+@api.get("/predictions/combos")
+async def get_multi_combos():
+    """Returns 3 combos: safe / balanced / jackpot."""
+    matches = await fetch_all_matches(db)
+    return build_multi_combos(matches)
+
+
 @api.get("/matches/{match_id}")
 async def get_match_detail(match_id: str):
     match = await get_match_by_id(db, match_id)
@@ -226,7 +243,6 @@ async def get_match_analysis(
     match_id: str,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """AI deep analysis. Cached per day to save credit."""
     match = await get_match_by_id(db, match_id)
     if not match:
         raise HTTPException(404, "Match introuvable")
@@ -238,7 +254,6 @@ async def get_match_analysis(
     if cached:
         return {"prediction": prediction, "analysis": cached["analysis"]}
 
-    # Tier gate: free users get fallback (no Claude call)
     user = await _get_user(payload["sub"])
     tier = user.get("subscription_tier", "free") if user else "free"
 
@@ -256,13 +271,10 @@ async def get_match_analysis(
     return {"prediction": prediction, "analysis": analysis}
 
 
-# ------------------ Track record (predictions history) ------------------
 @api.get("/predictions/history")
 async def history(payload: dict = Depends(get_current_user_payload)):
-    """Show past predictions outcomes (mocked but deterministic for trust)."""
     docs = await db.predictions_log.find({}, {"_id": 0}).sort("date", -1).limit(50).to_list(50)
     if not docs:
-        # Seed a few historical entries on first call
         import random
         seed_random = random.Random(42)
         sample_picks = [
@@ -280,17 +292,12 @@ async def history(payload: dict = Depends(get_current_user_payload)):
             ("Edmonton vs Colorado", "Colorado", "NHL", 61, 2.15, True),
         ]
         docs = []
-        for i, (match, pick, league, conf, odds, won) in enumerate(sample_picks):
+        for i, (m, pick, lg, conf, odds, won) in enumerate(sample_picks):
             d = (datetime.now(timezone.utc) - timedelta(days=i+1)).date().isoformat()
             docs.append({
                 "id": str(uuid.uuid4()),
-                "date": d,
-                "match": match,
-                "pick": pick,
-                "league": league,
-                "confidence": conf,
-                "odds": odds,
-                "won": won,
+                "date": d, "match": m, "pick": pick, "league": lg,
+                "confidence": conf, "odds": odds, "won": won,
             })
         if docs:
             await db.predictions_log.insert_many([{**d} for d in docs])
@@ -299,33 +306,29 @@ async def history(payload: dict = Depends(get_current_user_payload)):
     wins = sum(1 for d in docs if d.get("won"))
     win_rate = round((wins / total * 100) if total else 0, 1)
     avg_odds = round(sum(d["odds"] for d in docs) / total, 2) if total else 0
-    # ROI assuming 1 unit per bet
     roi_units = sum((d["odds"] - 1) if d["won"] else -1 for d in docs)
     roi_percent = round((roi_units / total) * 100, 1) if total else 0
 
     return {
         "predictions": docs,
         "stats": {
-            "total": total,
-            "wins": wins,
-            "losses": total - wins,
-            "win_rate": win_rate,
-            "avg_odds": avg_odds,
-            "roi_percent": roi_percent,
+            "total": total, "wins": wins, "losses": total - wins,
+            "win_rate": win_rate, "avg_odds": avg_odds, "roi_percent": roi_percent,
         },
     }
 
 
-# ------------------ Subscription / MoMo ------------------
+# ----- Subscription / MoMo -----
 @api.post("/subscription/checkout")
 async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current_user_payload)):
     if body.tier not in ("pro", "elite"):
         raise HTTPException(400, "Plan invalide")
     plan = PLANS[body.tier]
-    ref = f"PRX-{uuid.uuid4().hex[:8].upper()}"
+    ref = f"WP-{uuid.uuid4().hex[:8].upper()}"
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": payload["sub"],
+        "user_email": payload.get("email"),
         "tier": body.tier,
         "amount_xof": plan["price_xof"],
         "phone": body.phone,
@@ -343,13 +346,13 @@ async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current
             "operator": "MTN Mobile Money Bénin",
             "merchant_number": os.environ.get("MOMO_MERCHANT_PHONE", "+229 01 52 64 51 51"),
             "steps": [
-                f"Composez *880# sur votre téléphone MTN Bénin",
-                f"Choisissez 'Transfert d'argent'",
+                "Composez *880# sur votre téléphone MTN Bénin",
+                "Choisissez 'Transfert d'argent'",
                 f"Saisissez le numéro marchand : {os.environ.get('MOMO_MERCHANT_PHONE', '+229 01 52 64 51 51')}",
                 f"Montant : {plan['price_xof']} FCFA",
                 f"Référence (motif) : {ref}",
-                f"Confirmez avec votre code PIN MTN",
-                f"Envoyez-nous une capture du SMS de confirmation via WhatsApp pour activation immédiate.",
+                "Confirmez avec votre code PIN MTN",
+                "Envoyez-nous une capture du SMS de confirmation via WhatsApp pour activation rapide.",
             ],
         },
     }
@@ -362,20 +365,22 @@ async def list_payments(payload: dict = Depends(get_current_user_payload)):
 
 
 @api.post("/subscription/confirm/{reference}")
-async def confirm_payment(reference: str, payload: dict = Depends(get_current_user_payload)):
-    """Demo endpoint to simulate manual admin confirmation.
-    In production, only an admin should be able to mark a payment as confirmed.
-    """
+async def confirm_payment_self(reference: str, payload: dict = Depends(get_current_user_payload)):
+    """Self-confirm (demo flow). In production this should be admin-only."""
     pay = await db.payments.find_one({"reference": reference, "user_id": payload["sub"]})
     if not pay:
         raise HTTPException(404, "Paiement introuvable")
     if pay["status"] == "confirmed":
         return {"ok": True, "already": True}
 
+    return await _activate_payment(pay, send_email=True)
+
+
+async def _activate_payment(pay: dict, send_email: bool = True) -> dict:
     plan = PLANS[pay["tier"]]
     expires = datetime.now(timezone.utc) + timedelta(days=plan["duration_days"])
     await db.users.update_one(
-        {"id": payload["sub"]},
+        {"id": pay["user_id"]},
         {"$set": {
             "subscription_tier": pay["tier"],
             "subscription_status": "active",
@@ -383,14 +388,139 @@ async def confirm_payment(reference: str, payload: dict = Depends(get_current_us
         }},
     )
     await db.payments.update_one(
-        {"reference": reference},
+        {"reference": pay["reference"]},
         {"$set": {"status": "confirmed", "confirmed_at": datetime.now(timezone.utc).isoformat()}},
     )
+    if send_email:
+        user = await _get_user(pay["user_id"])
+        if user:
+            try:
+                await send_payment_confirmation(user["email"], user["full_name"], pay["tier"], pay["reference"])
+            except Exception as e:
+                log.warning(f"Email confirmation failed: {e}")
     return {"ok": True, "tier": pay["tier"], "expires_at": expires.isoformat()}
 
 
-# ------------------ Router include ------------------
+# ----- Admin -----
+@api.get("/admin/payments")
+async def admin_list_payments(status_filter: Optional[str] = None, _admin = Depends(_require_admin)):
+    q = {}
+    if status_filter:
+        q["status"] = status_filter
+    docs = await db.payments.find(q, {"_id": 0}).sort("created_at", -1).limit(200).to_list(200)
+    return docs
+
+
+@api.post("/admin/payments/{reference}/confirm")
+async def admin_confirm_payment(reference: str, _admin = Depends(_require_admin)):
+    pay = await db.payments.find_one({"reference": reference})
+    if not pay:
+        raise HTTPException(404, "Paiement introuvable")
+    if pay["status"] == "confirmed":
+        return {"ok": True, "already": True}
+    return await _activate_payment(pay, send_email=True)
+
+
+@api.post("/admin/payments/{reference}/reject")
+async def admin_reject_payment(reference: str, _admin = Depends(_require_admin)):
+    pay = await db.payments.find_one({"reference": reference})
+    if not pay:
+        raise HTTPException(404, "Paiement introuvable")
+    await db.payments.update_one(
+        {"reference": reference},
+        {"$set": {"status": "rejected", "rejected_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True}
+
+
+@api.get("/admin/users")
+async def admin_list_users(_admin = Depends(_require_admin)):
+    docs = await db.users.find({}, {"_id": 0, "hashed_password": 0}).sort("created_at", -1).limit(500).to_list(500)
+    return docs
+
+
+@api.get("/admin/stats")
+async def admin_stats(_admin = Depends(_require_admin)):
+    total_users = await db.users.count_documents({})
+    pro_users = await db.users.count_documents({"subscription_tier": "pro"})
+    elite_users = await db.users.count_documents({"subscription_tier": "elite"})
+    pending = await db.payments.count_documents({"status": "pending"})
+    confirmed = await db.payments.count_documents({"status": "confirmed"})
+    # Revenue
+    confirmed_pays = await db.payments.find({"status": "confirmed"}, {"amount_xof": 1}).to_list(1000)
+    revenue = sum(p.get("amount_xof", 0) for p in confirmed_pays)
+    return {
+        "users": {"total": total_users, "pro": pro_users, "elite": elite_users, "free": total_users - pro_users - elite_users},
+        "payments": {"pending": pending, "confirmed": confirmed},
+        "revenue_xof": revenue,
+    }
+
+
+@api.post("/admin/broadcast/picks")
+async def admin_broadcast_picks(body: BroadcastBody, _admin = Depends(_require_admin)):
+    """Send today's picks email to all paying subscribers."""
+    combos = await get_multi_combos()
+    combo = combos.get(body.combo_tier, combos["balanced"])
+    if not combo["legs"]:
+        raise HTTPException(400, "Pas de picks disponibles aujourd'hui")
+
+    # Find paying users
+    tier_filter = {"subscription_tier": {"$in": ["pro", "elite"]}} if body.tier == "pro" else {"subscription_tier": "elite"}
+    users = await db.users.find(tier_filter, {"_id": 0, "email": 1, "full_name": 1}).to_list(2000)
+
+    if not users:
+        return {"sent": 0, "users": 0, "message": "Aucun abonné payant pour l'instant"}
+
+    results = await asyncio.gather(
+        *[send_picks_email(u["email"], u["full_name"], combo["legs"], combo["total_odds"]) for u in users],
+        return_exceptions=True,
+    )
+    sent = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "sent")
+    drafted = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "draft")
+    errors = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error") + sum(1 for r in results if isinstance(r, Exception))
+    return {"users": len(users), "sent": sent, "drafted": drafted, "errors": errors, "combo_tier": body.combo_tier}
+
+
+@api.post("/admin/test-email")
+async def admin_test_email(payload: dict = Depends(get_current_user_payload), _admin = Depends(_require_admin)):
+    """Send a sample email to the current admin user."""
+    user = await _get_user(payload["sub"])
+    combos = await get_multi_combos()
+    combo = combos["balanced"]
+    res = await send_picks_email(user["email"], user["full_name"], combo["legs"], combo["total_odds"])
+    return res
+
+
 app.include_router(api)
+
+
+@app.on_event("startup")
+async def seed_admin():
+    """Seed the admin user from env vars if it doesn't exist."""
+    admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()
+    admin_password = os.environ.get("ADMIN_PASSWORD", "")
+    admin_name = os.environ.get("ADMIN_NAME", "Admin")
+    if not admin_email or not admin_password:
+        return
+    existing = await db.users.find_one({"email": admin_email})
+    if existing:
+        # Ensure admin flag is set
+        if not existing.get("is_admin"):
+            await db.users.update_one({"email": admin_email}, {"$set": {"is_admin": True}})
+            log.info(f"Promoted {admin_email} to admin")
+        return
+    await db.users.insert_one({
+        "id": str(uuid.uuid4()),
+        "email": admin_email,
+        "full_name": admin_name,
+        "hashed_password": hash_password(admin_password),
+        "is_admin": True,
+        "subscription_tier": "elite",
+        "subscription_status": "active",
+        "subscription_expires_at": None,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    log.info(f"Seeded admin user {admin_email}")
 
 
 @app.on_event("shutdown")

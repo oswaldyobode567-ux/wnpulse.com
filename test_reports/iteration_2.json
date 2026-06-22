@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 2 — WinPulse rebrand + admin panel + multi-combos + real Odds API + Resend emails. Backend pytest now covers 35 tests (20 legacy Pronostix + 15 new WinPulse admin/email/lifecycle), ALL 35 PASS. Frontend Playwright verified WinPulse branding on landing, dashboard with 60 real matches from The Odds API (ATP Wimbledon, WTA, MLB, WNBA — no PSG/Real mock), Combinés page with safe/balanced/jackpot tiers + orange bet-slip, full admin panel (KPIs, payments, users, broadcast tabs), test-email button (Resend test-mode error surfaced cleanly), non-admin redirect from /app/admin, end-to-end register→checkout→admin-confirm→tier-upgrade cycle (pytest TestPaymentLifecycle). No critical bugs.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/test-email & /api/admin/broadcast/picks", "issue": "Resend in test mode returns 'You can only send testing emails to your own email' for non-verified recipients. Endpoint correctly returns 200 with status='error' per email. EXPECTED behavior per acceptance note — flagged only for visibility. Production requires a verified domain on resend.com."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "LandingPage hero card (right side)", "issues": ["The orange 'CONFIANCE IA 82%' floating badge sits on top of the bottom-row 'Combiné Sécurité (3 picks) · Cote 6.99' footer — visual collision/overlap. Move the badge or push the footer down."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_pronostix_api.py",
+    "/app/backend/tests/test_winpulse_admin.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "OPTIONAL polish: fix hero-card badge/footer overlap on LandingPage (move .absolute orange '82%' chip up by ~16px or add bottom-padding to the inner card).",
+    "PRODUCTION READINESS: verify a sender domain on resend.com so /api/admin/broadcast/picks can actually deliver to all paying users (currently Resend rejects every recipient that isn't the admin's own verified email)."
+  ],
+  "critical_code_review_comments": [
+    "server.py:_activate_payment correctly upgrades tier + sets expires_at + writes confirmed status + emails buyer asynchronously. Email failures are caught and logged, so a bad Resend response will NOT break the confirm flow. Good.",
+    "/api/subscription/confirm/{reference} still allows the buyer themselves to flip a payment to confirmed without admin/MoMo callback verification. Acceptable for the demo cycle, but in production this MUST be admin-only (the admin route /api/admin/payments/{ref}/confirm already exists — just remove the self-confirm endpoint or gate it behind a webhook).",
+    "Legacy payments with PRX- prefix from iteration 1 still live in db.payments. Not a bug — just shows multi-version refs in admin list. Consider a one-time data migration if branding consistency in the admin UI matters.",
+    "Multi-combo endpoint /api/predictions/combos is unauthenticated — fine for current product (combos are a teaser) but if you ever want to gate jackpot picks behind Elite, add a tier check.",
+    "Frontend AppLayout has nav-admin + nav-admin-mobile testids, but admin nav is rendered conditionally on user.is_admin. Verified working: demo user does NOT see Admin link and direct /app/admin navigation redirects to /app. Good guard."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_pronostix_api.py (updated PRX- → WP- reference prefix assertion)",
+    "/app/backend/tests/test_winpulse_admin.py (NEW: 15 tests covering branding, multi-combos, admin auth, admin endpoints, payment lifecycle, email)"
+  ],
+  "success_rate": {"backend": "100% (35/35)", "frontend": "100% of critical flows"},
+  "test_credentials": "Admin: admin@winpulse.app / BetMojo2026! (seeded on startup, is_admin=true, tier=elite). Demo user: demo@pronostix.ai / demo1234 (free). Lifecycle test creates TEST_*@winpulse.app users.",
+  "seed_data_creation": "TestPaymentLifecycle.test_full_cycle creates a fresh TEST_*@winpulse.app user, runs Pro checkout, admin confirms it → user upgraded. test_admin_reject_payment creates another TEST_ user with pending payment then rejects. db.payments now contains both pending+confirmed+rejected entries with WP- reference prefix (plus 1 legacy PRX- from iter 1).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run all backend tests: `cd /app && python -m pytest backend/tests/ -v`. 35 tests, all green. KEY testids used by frontend tests: brand-link, login-email/password-input, login-submit-button, nav-admin, nav-admin-mobile, tab-payments, tab-users, tab-broadcast, payment-row-{ref}, confirm-btn-{ref}, reject-btn-{ref}, broadcast-btn, test-email-btn, tier-tab-{safe|balanced|jackpot}, bet-slip-{tier}, combo-legs-{tier}, refresh-combos-btn, logout-button, payment-status-filter, admin-stats. Real Odds API key is live — dashboard shows ~60 matches across ATP Wimbledon, WTA Bad Homburg, MLB, WNBA, MMA. Resend is in test mode (only delivers to admin's own email); broadcast endpoint returns 200 but per-user status='error' is normal.",
+  "rca_of_the_issue": "N/A — all 35 backend tests green and all 14 frontend acceptance scenarios verified. Only 1 minor design issue (badge overlap on landing hero card) and 1 production-readiness item (verify Resend sender domain)."
+}

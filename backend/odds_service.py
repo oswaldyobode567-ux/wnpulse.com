@@ -29,16 +29,34 @@ SUPPORTED_SPORTS = [
 # When using real Odds API, soccer/tennis are split into sub-leagues – this list
 # of safe sport keys avoids hitting too many endpoints in one go
 REAL_SPORT_KEYS = [
+    # Football
     "soccer_epl",
-    "soccer_uefa_champs_league",
-    "soccer_france_ligue_one",
-    "soccer_spain_la_liga",
     "soccer_italy_serie_a",
+    "soccer_conmebol_copa_libertadores",
+    "soccer_conmebol_copa_sudamericana",
+    "soccer_brazil_serie_b",
+    "soccer_norway_eliteserien",
+    "soccer_sweden_allsvenskan",
+    "soccer_china_superleague",
+    "soccer_league_of_ireland",
+    # Basketball
+    "basketball_wnba",
     "basketball_nba",
+    # US sports
     "americanfootball_nfl",
+    "americanfootball_cfl",
+    "americanfootball_ncaaf",
+    "baseball_mlb",
     "icehockey_nhl",
-    "tennis_atp_aus_open_singles",
+    # Tennis
+    "tennis_atp_wimbledon",
+    "tennis_wta_bad_homburg_open",
+    # Combat
     "mma_mixed_martial_arts",
+    "boxing_boxing",
+    # Other
+    "aussierules_afl",
+    "rugbyleague_nrl",
 ]
 
 
@@ -216,16 +234,21 @@ async def fetch_all_matches(db) -> List[Dict]:
     else:
         matches = get_all_mock_matches()
 
-    # Cap to today's events
-    today = datetime.now(timezone.utc).date()
+    # Keep only upcoming matches (next 14 days) so the dashboard always has content
+    now = datetime.now(timezone.utc)
+    horizon = now + timedelta(days=14)
     filtered = []
     for m in matches:
         try:
             ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
-            if ct.date() == today or ct.date() == today + timedelta(days=1):
+            if now <= ct <= horizon:
                 filtered.append(m)
         except Exception:
             filtered.append(m)
+    # Sort by date ascending
+    filtered.sort(key=lambda x: x.get("commence_time", ""))
+    # Cap to avoid huge payloads
+    filtered = filtered[:60]
 
     await db.odds_cache.update_one(
         {"_id": cache_key},

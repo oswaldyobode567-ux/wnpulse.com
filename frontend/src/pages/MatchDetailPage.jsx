@@ -144,7 +144,7 @@ export default function MatchDetailPage() {
               {!isPaid && (
                 <div className="mt-3 flex items-center gap-2 text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <Lock className="h-4 w-4" />
-                  <span className="text-xs">Compte Free : analyse statistique uniquement. <Link to="/app/abonnement" className="font-semibold underline">Passez Pro</Link> pour l'analyse Claude 4.5 complète.</span>
+                  <span className="text-xs">Compte Free : analyse statistique uniquement. <Link to="/app/abonnement" className="font-semibold underline">Passe Pro</Link> pour l'analyse IA complète.</span>
                 </div>
               )}
             </div>
@@ -152,8 +152,8 @@ export default function MatchDetailPage() {
 
           {analysis && (
             <div className="space-y-4" data-testid="analysis-content">
-              <div className="rounded-lg bg-blue-50 border border-blue-200 p-4">
-                <div className="text-xs uppercase tracking-wider text-blue-700 font-bold mb-1">Verdict</div>
+              <div className="rounded-lg bg-orange-50 border border-orange-200 p-4">
+                <div className="text-xs uppercase tracking-wider text-orange-700 font-bold mb-1">Verdict</div>
                 <div className="text-sm text-slate-900 font-medium">{analysis.verdict}</div>
               </div>
 
@@ -163,7 +163,7 @@ export default function MatchDetailPage() {
                   <ul className="space-y-1.5">
                     {analysis.key_factors.map((f, i) => (
                       <li key={i} className="text-sm text-slate-700 flex gap-2">
-                        <span className="text-blue-600 font-bold">·</span>
+                        <span className="text-orange-600 font-bold">·</span>
                         <span>{f}</span>
                       </li>
                     ))}
@@ -188,7 +188,7 @@ export default function MatchDetailPage() {
               )}
 
               <div className="text-[10px] text-slate-400 pt-2">
-                Source : {analysis.source === "ai" ? "Claude Sonnet 4.5" : "Engine statistique"}
+                Source : {analysis.source === "ai" ? "Analyse IA experte" : "Moteur statistique"}
               </div>
             </div>
           )}

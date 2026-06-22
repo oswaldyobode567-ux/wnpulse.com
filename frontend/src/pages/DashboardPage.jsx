@@ -73,7 +73,7 @@ export default function DashboardPage() {
               <h2 className="font-heading text-xl font-bold text-slate-900">À la une</h2>
               <span className="text-xs text-slate-500">Top confiance</span>
             </div>
-            <Link to="/app/top" className="text-sm text-blue-600 font-semibold flex items-center gap-1 hover:underline" data-testid="see-all-top-link">
+            <Link to="/app/top" className="text-sm text-orange-600 font-semibold flex items-center gap-1 hover:underline" data-testid="see-all-top-link">
               Tout voir <ChevronRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -102,7 +102,7 @@ export default function DashboardPage() {
                     <div className="pt-3 border-t border-slate-100 flex items-end justify-between">
                       <div>
                         <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Pronostic</div>
-                        <div className="text-base font-bold text-blue-600">{p.pick}</div>
+                        <div className="text-base font-bold text-orange-600">{p.pick}</div>
                       </div>
                       <div className="text-right">
                         <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Cote</div>
@@ -120,7 +120,7 @@ export default function DashboardPage() {
         <section data-testid="matches-section">
           <div className="flex items-center justify-between mb-4">
             <h2 className="font-heading text-xl font-bold text-slate-900 flex items-center gap-2">
-              <Activity className="h-5 w-5 text-blue-600" />
+              <Activity className="h-5 w-5 text-orange-600" />
               Matchs du jour
               <span className="text-xs font-normal text-slate-500">({filtered.length})</span>
             </h2>

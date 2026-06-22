@@ -107,10 +107,10 @@ export default function SubscriptionPage() {
                 <Card
                   key={p.id}
                   data-testid={`plan-${p.id}`}
-                  className={`bg-white p-6 relative ${highlight ? "border-blue-600 ring-2 ring-blue-600 shadow-lg" : "border-slate-200"}`}
+                  className={`bg-white p-6 relative ${highlight ? "border-orange-500 ring-2 ring-orange-500 shadow-lg" : "border-neutral-200"}`}
                 >
                   {highlight && (
-                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 bg-blue-600 text-white text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full">
+                    <div className="absolute -top-3 left-1/2 -translate-x-1/2 wp-gradient-warm text-white text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full">
                       Populaire
                     </div>
                   )}
@@ -131,7 +131,7 @@ export default function SubscriptionPage() {
                   </ul>
                   <Button
                     data-testid={`choose-${p.id}-btn`}
-                    className={`w-full ${highlight ? "bg-blue-600 hover:bg-blue-700" : ""}`}
+                    className={`w-full ${highlight ? "wp-gradient-warm text-white border-0 hover:opacity-90" : ""}`}
                     variant={highlight ? "default" : "outline"}
                     onClick={() => onChoose(p.id)}
                     disabled={isCurrent}

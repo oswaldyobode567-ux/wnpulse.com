@@ -193,7 +193,7 @@ class TestSubscription:
         assert body["tier"] == "pro"
         assert body["amount_xof"] == 4900
         ref = body["reference"]
-        assert ref.startswith("PRX-")
+        assert ref.startswith("WP-")
         assert "instructions" in body and "merchant_number" in body["instructions"]
 
         # Confirm
