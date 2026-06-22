@@ -22,6 +22,13 @@ import dayjs from "dayjs";
 export default function LandingPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [livePicks, setLivePicks] = useState([]);
+
+  useEffect(() => {
+    api.get("/predictions/top")
+      .then((r) => setLivePicks((r.data || []).slice(0, 3)))
+      .catch(() => setLivePicks([]));
+  }, []);
 
   return (
     <div className="min-h-screen bg-neutral-50">
@@ -114,39 +121,55 @@ export default function LandingPage() {
                   <div className="flex items-center justify-between mb-4 relative z-10">
                     <div className="flex items-center gap-2">
                       <Trophy className="h-4 w-4 text-orange-500" />
-                      <span className="text-xs font-bold uppercase tracking-wider text-slate-700">À la une — Aujourd'hui</span>
+                      <span className="text-xs font-bold uppercase tracking-wider text-slate-700">À la une — Live</span>
                     </div>
                     <span className="text-xs text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded-full">+22% ROI 30j</span>
                   </div>
                   <div className="space-y-3 relative z-10">
-                    {[
-                      { match: "Real Madrid vs Barcelona", pick: "Real Madrid", conf: 82, label: "safe", odds: 1.78 },
-                      { match: "Lakers vs Celtics", pick: "Celtics", conf: 71, label: "value", odds: 1.92 },
-                      { match: "Djokovic vs Sinner", pick: "Djokovic", conf: 68, label: "value", odds: 2.05 },
-                    ].map((row, i) => (
-                      <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-neutral-50 border border-neutral-100 wp-rise" style={{ animationDelay: `${i * 80}ms` }}>
-                        <div className="min-w-0">
-                          <div className="text-xs text-slate-500 mb-0.5">{row.match}</div>
-                          <div className="text-sm font-semibold text-slate-900">
-                            {row.pick} <span className="text-slate-400 font-normal">@ {row.odds}</span>
+                    {(livePicks.length > 0 ? livePicks : [
+                      { home_team: "Argentina", away_team: "Austria", pick: "Argentina", confidence: 78, pick_odds: 1.72, label: "safe", locked: false, sport_title: "FIFA World Cup" },
+                      { home_team: "France", away_team: "Iraq", pick: null, confidence: null, pick_odds: 1.20, label: "locked", locked: true, sport_title: "FIFA World Cup" },
+                      { home_team: "Portugal", away_team: "Uzbekistan", pick: null, confidence: null, pick_odds: 2.05, label: "locked", locked: true, sport_title: "FIFA World Cup" },
+                    ]).map((row, i) => {
+                      const locked = row.locked || !row.pick;
+                      return (
+                        <div key={i} className="flex items-center justify-between p-3 rounded-lg bg-neutral-50 border border-neutral-100 wp-rise" style={{ animationDelay: `${i * 80}ms` }}>
+                          <div className="min-w-0">
+                            <div className="text-xs text-slate-500 mb-0.5 truncate">
+                              {row.home_team} vs {row.away_team}
+                              {row.sport_title && <span className="ml-1 text-slate-400">· {row.sport_title}</span>}
+                            </div>
+                            <div className="text-sm font-semibold text-slate-900">
+                              {locked ? (
+                                <span className="inline-flex items-center gap-1 text-slate-400">
+                                  <Lock className="h-3 w-3" /> Pick réservé Pro
+                                </span>
+                              ) : (
+                                <>
+                                  {row.pick} <span className="text-slate-400 font-normal">@ {row.pick_odds}</span>
+                                </>
+                              )}
+                            </div>
                           </div>
+                          {!locked && row.confidence != null && (
+                            <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold border ${
+                              row.label === "safe" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
+                            }`}>
+                              {Math.round(row.confidence)}%
+                            </span>
+                          )}
                         </div>
-                        <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-bold border ${
-                          row.label === "safe" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"
-                        }`}>
-                          {row.conf}%
-                        </span>
-                      </div>
-                    ))}
+                      );
+                    })}
                   </div>
                   <div className="mt-4 pt-4 pb-2 border-t border-neutral-100 flex items-center justify-between text-xs relative z-10">
-                    <span className="text-slate-500">Combiné Sécurité (3 picks)</span>
-                    <span className="font-bold text-slate-900 font-mono">Cote 6.99</span>
+                    <span className="text-slate-500">1 pick gratuit · le reste en Pro</span>
+                    <Link to={user ? "/app/abonnement" : "/register"} className="font-bold text-orange-600 hover:underline">Débloquer →</Link>
                   </div>
                 </Card>
-                <div className="absolute -top-5 -right-4 wp-gradient-warm text-white rounded-2xl px-5 py-3 shadow-2xl shadow-rose-500/40 rotate-3">
+                <div className="absolute -top-8 -right-4 wp-gradient-warm text-white rounded-2xl px-5 py-3 shadow-2xl shadow-rose-500/40 rotate-3">
                   <div className="text-[10px] uppercase tracking-wider font-bold opacity-90">Confiance IA</div>
-                  <div className="text-3xl font-black tracking-tighter">82%</div>
+                  <div className="text-3xl font-black tracking-tighter">{livePicks[0]?.confidence ? Math.round(livePicks[0].confidence) : 82}%</div>
                 </div>
               </div>
             </div>
