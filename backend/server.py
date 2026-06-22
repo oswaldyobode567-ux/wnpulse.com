@@ -377,14 +377,21 @@ async def get_combo(legs: int = 3, min_confidence: float = 65):
 
 @api.get("/predictions/combos")
 async def get_multi_combos(payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """Returns 3 combos: safe / balanced / jackpot. Free users see structure but legs are locked."""
+    """Returns 3 combos: safe / balanced / jackpot.
+    For free users, the SAFE combo is UNLOCKED on free days (free_today=true) so they can
+    see and play it. The other two remain locked → strong incentive to upgrade.
+    """
     tier = await _get_tier_from_payload(payload)
     matches = await fetch_all_matches(db)
     combos = build_multi_combos(matches)
     if tier in ("free", "anonymous"):
-        for key in combos:
-            combos[key]["legs"] = [_mask_prediction(l) for l in combos[key]["legs"]]
-            combos[key]["locked"] = True
+        for key, c in combos.items():
+            if c.get("free_today") and c.get("legs"):
+                # Keep legs unlocked + mark explicitly
+                c["unlocked_for_free"] = True
+            else:
+                c["legs"] = [_mask_prediction(l) for l in c["legs"]]
+                c["locked"] = True
     return combos
 
 
@@ -533,14 +540,12 @@ async def list_payments(payload: dict = Depends(get_current_user_payload)):
 
 @api.post("/subscription/confirm/{reference}")
 async def confirm_payment_self(reference: str, payload: dict = Depends(get_current_user_payload)):
-    """Self-confirm (demo flow). In production this should be admin-only."""
-    pay = await db.payments.find_one({"reference": reference, "user_id": payload["sub"]})
-    if not pay:
-        raise HTTPException(404, "Paiement introuvable")
-    if pay["status"] == "confirmed":
-        return {"ok": True, "already": True}
-
-    return await _activate_payment(pay, send_email=True)
+    """DISABLED in production — use admin route POST /api/admin/payments/{ref}/confirm.
+    Kept only to return a clear error so existing buttons fail gracefully."""
+    raise HTTPException(
+        status_code=403,
+        detail="L'auto-confirmation est désactivée. Un administrateur va valider votre paiement après réception du SMS MTN MoMo (généralement sous 1h). Envoyez la capture WhatsApp pour activation rapide.",
+    )
 
 
 async def _activate_payment(pay: dict, send_email: bool = True) -> dict:

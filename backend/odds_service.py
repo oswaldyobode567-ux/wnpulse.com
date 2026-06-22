@@ -197,12 +197,12 @@ def get_all_mock_matches() -> List[Dict]:
 
 # ---------- REAL API (with cache) ----------
 
-async def _fetch_real_sport(sport_key: str) -> List[Dict]:
+async def _fetch_real_sport(sport_key: str, markets: str = "h2h") -> List[Dict]:
     url = f"{ODDS_API_BASE}/sports/{sport_key}/odds"
     params = {
         "apiKey": ODDS_API_KEY,
         "regions": "eu",
-        "markets": "h2h",
+        "markets": markets,
         "oddsFormat": "decimal",
         "dateFormat": "iso",
     }
@@ -211,6 +211,43 @@ async def _fetch_real_sport(sport_key: str) -> List[Dict]:
         if r.status_code != 200:
             return []
         return r.json()
+
+
+def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
+    """Merge bookmakers/markets across two event lists keyed by event id."""
+    if not events_b:
+        return events_a
+    by_id = {e["id"]: e for e in events_a}
+    for evt in events_b:
+        existing = by_id.get(evt["id"])
+        if not existing:
+            by_id[evt["id"]] = evt
+            continue
+        existing_books = {bm["key"]: bm for bm in existing.get("bookmakers", [])}
+        for bm in evt.get("bookmakers", []):
+            if bm["key"] in existing_books:
+                # merge markets
+                existing_mks = {m["key"]: m for m in existing_books[bm["key"]].get("markets", [])}
+                for m in bm.get("markets", []):
+                    if m["key"] not in existing_mks:
+                        existing_books[bm["key"]].setdefault("markets", []).append(m)
+            else:
+                existing.setdefault("bookmakers", []).append(bm)
+    return list(by_id.values())
+
+
+# Sports for which we fetch additional markets (totals + spreads) — top engagement
+DEEP_MARKET_SPORTS = {
+    "soccer_fifa_world_cup",
+    "soccer_epl",
+    "soccer_italy_serie_a",
+    "basketball_nba",
+    "basketball_wnba",
+    "americanfootball_nfl",
+    "baseball_mlb",
+    "icehockey_nhl",
+    "tennis_atp_wimbledon",
+}
 
 
 async def fetch_all_matches(db) -> List[Dict]:
@@ -230,7 +267,11 @@ async def fetch_all_matches(db) -> List[Dict]:
         matches: List[Dict] = []
         for sk in REAL_SPORT_KEYS:
             try:
-                matches.extend(await _fetch_real_sport(sk))
+                base = await _fetch_real_sport(sk, markets="h2h")
+                if sk in DEEP_MARKET_SPORTS:
+                    deep = await _fetch_real_sport(sk, markets="totals,spreads")
+                    base = _merge_events(base, deep)
+                matches.extend(base)
             except Exception:
                 pass
         if not matches:

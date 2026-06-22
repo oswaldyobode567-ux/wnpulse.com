@@ -121,9 +121,14 @@ export default function MatchDetailPage() {
         ) : (
         <Card className={`border ${labelColor} p-6 mb-6`} data-testid="prediction-summary">
           <div className="flex items-start justify-between gap-4 mb-4">
-            <div>
-              <div className="text-xs uppercase tracking-wider text-slate-600 font-semibold mb-1">
-                Pronostic algorithmique
+            <div className="min-w-0">
+              <div className="text-xs uppercase tracking-wider text-slate-600 font-semibold mb-1 flex items-center gap-2">
+                <span>Pronostic principal</span>
+                {p.market_label && (
+                  <span className="inline-flex items-center rounded-full bg-white border border-orange-200 text-orange-700 px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide">
+                    {p.market_label}
+                  </span>
+                )}
               </div>
               <div className="font-heading text-3xl font-extrabold text-slate-900">
                 {p.pick}
@@ -139,6 +144,41 @@ export default function MatchDetailPage() {
             <Stat label="Cote optimale" value={p.pick_odds} mono />
           </div>
         </Card>
+        )}
+
+        {/* All markets analyzed (Pro feature) */}
+        {!locked && p.markets && p.markets.length > 1 && (
+          <Card className="bg-white border-neutral-200 p-6 mb-6" data-testid="all-markets-card">
+            <div className="flex items-center gap-2 mb-4">
+              <Brain className="h-5 w-5 text-rose-600" />
+              <h2 className="font-heading text-lg font-bold text-slate-900">Tous les marchés analysés</h2>
+              <span className="text-xs text-slate-500">({p.markets.length})</span>
+            </div>
+            <div className="space-y-2">
+              {p.markets.map((m, i) => {
+                const labelCls = m.label === "safe" ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                  : m.label === "value" ? "bg-amber-50 text-amber-700 border-amber-200"
+                  : "bg-rose-50 text-rose-700 border-rose-200";
+                return (
+                  <div key={i} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-neutral-200 hover:border-neutral-300 transition-colors">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">
+                        <span className="bg-slate-900 text-white px-1.5 rounded">{m.market_label}</span>
+                        <span>· {m.num_books} books</span>
+                        {m.edge > 0 && <span className="text-emerald-600">· edge +{m.edge}%</span>}
+                      </div>
+                      <div className="font-semibold text-slate-900 truncate">
+                        {m.pick} <span className="text-slate-400 font-normal font-mono text-sm ml-1">@ {m.pick_odds}</span>
+                      </div>
+                    </div>
+                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold border ${labelCls}`}>
+                      {m.confidence}%
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          </Card>
         )}
 
         {/* AI Analysis */}

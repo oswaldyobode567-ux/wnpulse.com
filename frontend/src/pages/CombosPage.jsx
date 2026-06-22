@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { Link } from "react-router-dom";
-import { Shield, Scale, Rocket, RefreshCw, TrendingUp, Lock } from "lucide-react";
+import { Shield, Scale, Rocket, RefreshCw, TrendingUp, Lock, Gift, Sparkles } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
@@ -80,6 +80,9 @@ export default function CombosPage() {
 
   const isPaid = user?.subscription_tier && user.subscription_tier !== "free";
   const activeCombo = combos?.[activeTier];
+  const isComboUnlocked = isPaid || activeCombo?.unlocked_for_free;
+  // If a combo is free today, auto-switch to it for Free users for max conversion
+  const freeComboKey = combos ? Object.keys(combos).find(k => combos[k]?.unlocked_for_free) : null;
 
   return (
     <AppLayout>
@@ -116,6 +119,7 @@ export default function CombosPage() {
             const Icon = t.icon;
             const c = combos?.[t.key];
             const isActive = activeTier === t.key;
+            const isFreeToday = c?.unlocked_for_free;
             const acc = ACCENT_CLS[t.accent];
             return (
               <button
@@ -123,11 +127,16 @@ export default function CombosPage() {
                 data-testid={`tier-tab-${t.key}`}
                 onClick={() => setActiveTier(t.key)}
                 className={cn(
-                  "text-left p-4 rounded-2xl border-2 transition-all bg-white",
-                  isActive ? `border-${t.accent}-500 shadow-lg` : "border-neutral-200 hover:border-neutral-300"
+                  "text-left p-4 rounded-2xl border-2 transition-all bg-white relative",
+                  isActive ? "shadow-lg" : "border-neutral-200 hover:border-neutral-300"
                 )}
                 style={isActive ? { borderColor: t.accent === "orange" ? "#ea580c" : t.accent === "rose" ? "#f43f5e" : "#10b981" } : {}}
               >
+                {isFreeToday && (
+                  <span className="absolute -top-2 -right-2 bg-emerald-500 text-white text-[9px] font-extrabold uppercase tracking-wider px-2 py-0.5 rounded-full shadow-md">
+                    GRATUIT
+                  </span>
+                )}
                 <div className={cn("h-9 w-9 rounded-xl grid place-items-center mb-3", acc.icon)}>
                   <Icon className="h-5 w-5" strokeWidth={2.2} />
                 </div>
@@ -144,11 +153,31 @@ export default function CombosPage() {
           })}
         </div>
 
-        {!isPaid && (
+        {!isPaid && freeComboKey && (
+          <Card className="mb-6 p-4 border-2 border-emerald-200 bg-gradient-to-r from-emerald-50 to-lime-50 flex items-center gap-3" data-testid="free-combo-banner">
+            <div className="h-11 w-11 rounded-xl bg-emerald-500 grid place-items-center text-white flex-shrink-0 shadow-lg shadow-emerald-500/30">
+              <Gift className="h-5 w-5" />
+            </div>
+            <div className="flex-1">
+              <div className="font-heading font-bold text-emerald-900 text-base">🎁 Combiné gratuit du jour débloqué</div>
+              <div className="text-sm text-emerald-800">Le combiné <strong>{combos[freeComboKey].label}</strong> est entièrement visible aujourd'hui. À toi de jouer !</div>
+            </div>
+            <Button
+              size="sm"
+              onClick={() => setActiveTier(freeComboKey)}
+              className="bg-emerald-600 hover:bg-emerald-700 text-white"
+              data-testid="see-free-combo-btn"
+            >
+              Voir <Sparkles className="h-4 w-4 ml-1" />
+            </Button>
+          </Card>
+        )}
+
+        {!isPaid && !freeComboKey && (
           <Card className="mb-6 p-4 bg-orange-50 border-orange-200 flex items-center gap-3">
             <Lock className="h-5 w-5 text-orange-600 flex-shrink-0" />
             <div className="flex-1 text-sm text-orange-900">
-              <strong>Compte Free :</strong> tu vois la structure mais les picks complets sont réservés aux abonnés Pro & Elite.
+              <strong>Pas de combiné gratuit aujourd'hui.</strong> Reviens demain ou passe Pro pour débloquer les 3 combinés tout de suite.
             </div>
             <Link to="/app/abonnement">
               <Button size="sm" className="wp-gradient-warm text-white border-0" data-testid="upgrade-from-combos-btn">
@@ -180,12 +209,21 @@ export default function CombosPage() {
                         {i + 1}
                       </div>
                       <div className="min-w-0">
-                        <div className="text-xs text-slate-500 mb-1">{p.sport_title} · {dayjs(p.commence_time).format("HH:mm")}</div>
-                        <div className={cn("font-semibold text-slate-900 truncate", !isPaid && "blur-sm select-none")}>
+                        <div className="text-xs text-slate-500 mb-1 flex items-center gap-1.5 flex-wrap">
+                          <span>{p.sport_title}</span>
+                          <span>·</span>
+                          <span>{dayjs(p.commence_time).format("HH:mm")}</span>
+                          {p.market_label && (
+                            <span className="inline-flex items-center rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide">
+                              {p.market_label}
+                            </span>
+                          )}
+                        </div>
+                        <div className={cn("font-semibold text-slate-900 truncate", !isComboUnlocked && "blur-sm select-none")}>
                           {p.home_team} <span className="text-slate-400">vs</span> {p.away_team}
                         </div>
                         <div className="text-sm mt-1">
-                          <span className={cn("font-bold text-orange-600", !isPaid && "blur-sm select-none")}>{p.pick}</span>
+                          <span className={cn("font-bold text-orange-600", !isComboUnlocked && "blur-sm select-none")}>{p.pick}</span>
                           <span className="text-slate-500 font-mono ml-2">@ {p.pick_odds}</span>
                         </div>
                       </div>

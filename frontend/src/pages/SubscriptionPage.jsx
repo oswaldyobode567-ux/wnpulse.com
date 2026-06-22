@@ -67,7 +67,10 @@ export default function SubscriptionPage() {
       setOpen(false);
       setCheckout(null);
     } catch (err) {
-      toast.error("Erreur d'activation");
+      // In production this is expected — admin must validate manually
+      toast.info(err?.response?.data?.detail || "Notre équipe va valider sous 1h. Vous recevrez un email dès l'activation.");
+      setOpen(false);
+      setCheckout(null);
     } finally {
       setConfirming(false);
     }
@@ -220,7 +223,7 @@ export default function SubscriptionPage() {
                   data-testid="confirm-payment-btn"
                 >
                   {confirming ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <CheckCircle2 className="h-4 w-4 mr-2" />}
-                  J'ai payé · Activer
+                  J'ai payé · Notifier l'admin
                 </Button>
               </DialogFooter>
             </>
