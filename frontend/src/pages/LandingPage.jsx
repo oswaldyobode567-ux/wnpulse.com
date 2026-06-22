@@ -135,12 +135,12 @@ export default function LandingPage() {
                       </div>
                     ))}
                   </div>
-                  <div className="mt-4 pt-4 border-t border-neutral-100 flex items-center justify-between text-xs relative z-10">
+                  <div className="mt-4 pt-4 pb-2 border-t border-neutral-100 flex items-center justify-between text-xs relative z-10">
                     <span className="text-slate-500">Combiné Sécurité (3 picks)</span>
                     <span className="font-bold text-slate-900 font-mono">Cote 6.99</span>
                   </div>
                 </Card>
-                <div className="absolute -bottom-4 -right-4 wp-gradient-warm text-white rounded-2xl px-5 py-3 shadow-2xl shadow-rose-500/40 rotate-3">
+                <div className="absolute -top-5 -right-4 wp-gradient-warm text-white rounded-2xl px-5 py-3 shadow-2xl shadow-rose-500/40 rotate-3">
                   <div className="text-[10px] uppercase tracking-wider font-bold opacity-90">Confiance IA</div>
                   <div className="text-3xl font-black tracking-tighter">82%</div>
                 </div>
