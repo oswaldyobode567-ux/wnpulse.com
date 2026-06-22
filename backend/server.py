@@ -21,11 +21,12 @@ from auth import (
     verify_password,
     create_access_token,
     get_current_user_payload,
+    get_optional_user_payload,
 )
 from odds_service import fetch_all_matches, get_match_by_id, SUPPORTED_SPORTS
 from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
 from ai_service import generate_analysis
-from email_service import send_picks_email, send_payment_confirmation
+from email_service import send_picks_email, send_payment_confirmation, send_welcome_email
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -138,6 +139,46 @@ async def _require_admin(payload: dict = Depends(get_current_user_payload)) -> d
     return user
 
 
+async def _get_tier_from_payload(payload: Optional[dict]) -> str:
+    if not payload:
+        return "anonymous"
+    user = await _get_user(payload["sub"])
+    if not user:
+        return "anonymous"
+    return user.get("subscription_tier", "free")
+
+
+def _mask_prediction(pred: dict) -> dict:
+    """Strip pick/odds/confidence so free users see the structure but not the answer."""
+    return {
+        "match_id": pred.get("match_id"),
+        "sport_key": pred.get("sport_key"),
+        "sport_title": pred.get("sport_title"),
+        "home_team": pred.get("home_team"),
+        "away_team": pred.get("away_team"),
+        "commence_time": pred.get("commence_time"),
+        "pick": None,
+        "pick_odds": None,
+        "confidence": None,
+        "label": "locked",
+        "implied_probs": {},
+        "edge": None,
+        "num_books": pred.get("num_books", 0),
+        "locked": True,
+    }
+
+
+def _gate_match_for_free(match_with_pred: dict, is_first_free: bool) -> dict:
+    """For free users, only the first match has its prediction visible."""
+    pred = match_with_pred.get("prediction") or {}
+    if is_first_free:
+        return match_with_pred
+    new_match = {**match_with_pred, "prediction": _mask_prediction(pred)}
+    # Also strip bookmaker odds detail for non-featured matches to reduce data leak
+    new_match["bookmakers"] = []
+    return new_match
+
+
 # ----- Public -----
 @api.get("/")
 async def root():
@@ -175,6 +216,11 @@ async def register(body: RegisterBody):
     }
     await db.users.insert_one(user_doc)
     token = create_access_token(user_id, body.email.lower())
+    # Welcome email (best-effort, doesn't block registration)
+    try:
+        asyncio.create_task(send_welcome_email(user_doc["email"], user_doc["full_name"]))
+    except Exception as e:
+        log.warning(f"welcome email queue failed: {e}")
     return TokenResponse(access_token=token, user=_public_user(user_doc))
 
 
@@ -197,7 +243,11 @@ async def me(payload: dict = Depends(get_current_user_payload)):
 
 # ----- Matches & Predictions -----
 @api.get("/matches")
-async def get_matches(sport: Optional[str] = None):
+async def get_matches(
+    sport: Optional[str] = None,
+    payload: Optional[dict] = Depends(get_optional_user_payload),
+):
+    tier = await _get_tier_from_payload(payload)
     matches = await fetch_all_matches(db)
     if sport:
         matches = [m for m in matches if sport in (m.get("sport_key") or "")]
@@ -206,13 +256,24 @@ async def get_matches(sport: Optional[str] = None):
         pred = analyze_match(m)
         out.append({**m, "prediction": pred})
     out.sort(key=lambda x: x.get("commence_time", ""))
+
+    # Free / anonymous gating: only the highest-confidence match keeps its prediction visible
+    if tier in ("free", "anonymous"):
+        sorted_by_conf = sorted(out, key=lambda x: (x.get("prediction") or {}).get("confidence", 0), reverse=True)
+        featured_id = sorted_by_conf[0].get("id") if sorted_by_conf else None
+        out = [_gate_match_for_free(m, m.get("id") == featured_id) for m in out]
     return out
 
 
 @api.get("/predictions/top")
-async def get_top():
+async def get_top(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    tier = await _get_tier_from_payload(payload)
     matches = await fetch_all_matches(db)
-    return top_predictions(matches, limit=6)
+    preds = top_predictions(matches, limit=6)
+    if tier in ("free", "anonymous"):
+        # Free users: only the #1 pick is fully visible, others are locked
+        return [preds[0]] + [_mask_prediction(p) for p in preds[1:]] if preds else []
+    return preds
 
 
 @api.get("/predictions/combo")
@@ -223,18 +284,32 @@ async def get_combo(legs: int = 3, min_confidence: float = 65):
 
 
 @api.get("/predictions/combos")
-async def get_multi_combos():
-    """Returns 3 combos: safe / balanced / jackpot."""
+async def get_multi_combos(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    """Returns 3 combos: safe / balanced / jackpot. Free users see structure but legs are locked."""
+    tier = await _get_tier_from_payload(payload)
     matches = await fetch_all_matches(db)
-    return build_multi_combos(matches)
+    combos = build_multi_combos(matches)
+    if tier in ("free", "anonymous"):
+        for key in combos:
+            combos[key]["legs"] = [_mask_prediction(l) for l in combos[key]["legs"]]
+            combos[key]["locked"] = True
+    return combos
 
 
 @api.get("/matches/{match_id}")
-async def get_match_detail(match_id: str):
+async def get_match_detail(
+    match_id: str,
+    payload: Optional[dict] = Depends(get_optional_user_payload),
+):
     match = await get_match_by_id(db, match_id)
     if not match:
         raise HTTPException(404, "Match introuvable")
     prediction = analyze_match(match)
+
+    tier = await _get_tier_from_payload(payload)
+    if tier in ("free", "anonymous"):
+        # Free users see the match info + bookmakers, but prediction is locked
+        prediction = _mask_prediction(prediction)
     return {**match, "prediction": prediction}
 
 

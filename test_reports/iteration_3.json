@@ -1,0 +1,45 @@
+{
+  "summary": "Iteration 3 — tier gating, welcome email, World Cup, diversification. Created /app/backend/tests/test_tier_gating.py with 13 tests covering anonymous/free/admin gating across /api/matches, /api/predictions/top, /api/predictions/combos, /api/matches/{id}, plus welcome email non-blocking behavior, FIFA World Cup presence, and per-competition cap. ALL 13 PASS. Frontend gating UI verified end-to-end: dashboard upgrade-banner + locked top picks + PRO badges, match detail prediction-locked card with upgrade-cta-match, /app/top upgrade-banner-top, admin/elite sees zero locks. ONE CRITICAL REGRESSION: LandingPage.jsx still hardcodes 'Real Madrid vs Barcelona / Lakers vs Celtics / Djokovic vs Sinner' — does NOT fetch /api/predictions/top despite useState/useEffect/api/dayjs imports.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/auth/register welcome email", "issue": "Resend test-mode rejects every recipient that isn't oswaldyobode567@gmail.com — backend logs 'You can only send testing emails to your own email'. Non-blocking via asyncio.create_task (register returns 200 in <3s confirmed by test). EXPECTED per agent context — flagged for visibility. Production needs a verified sender domain."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "LandingPage.jsx (hero 'À la une — Aujourd'hui' card)", "issue": "CRITICAL REGRESSION — hero card STILL renders hardcoded mock matches ('Real Madrid vs Barcelona @ 1.78 / 82%', 'Lakers vs Celtics @ 1.92 / 71%', 'Djokovic vs Sinner @ 2.05 / 68%'). Lines 122-126 of LandingPage.jsx contain a static array. No useEffect/api.get('/predictions/top')/setLivePicks call exists despite useState, useEffect, api, dayjs being imported. This is exactly the bug the user originally reported and that iteration 3 claimed to fix. visible at https://prognosis-bet-1.preview.emergentagent.com/", "selector": "section.wp-gradient-hero .relative.bg-white .space-y-3", "priority": "CRITICAL"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "LandingPage hero card", "issues": ["Orange 'CONFIANCE IA 82%' badge overlaps the bottom-row 'Combiné Sécurité (3 picks) · Cote 6.99' footer — same issue carried over from iteration 2."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_tier_gating.py",
+    "/app/test_reports/pytest/iter3_gating.xml"
+  ],
+  "action_items": [
+    "CRITICAL: Replace hardcoded array in /app/frontend/src/pages/LandingPage.jsx lines 122-140 with a useEffect that calls api.get('/api/predictions/top'), stores response in livePicks useState, and renders #1 fully + #2/#3 with Lock icon + 'Pick réservé Pro' UI as agreed. Today the user lands and sees Real/Barca which is exactly what they complained about.",
+    "After the LandingPage fix, also wire the 'Combiné Sécurité (3 picks) · Cote 6.99' footer to the real /api/predictions/combos safe combo total_odds.",
+    "Move/restyle the '82%' floating badge so it stops colliding with the combo footer."
+  ],
+  "critical_code_review_comments": [
+    "Backend gating logic in server.py _mask_prediction is correct — it nulls pick/pick_odds/confidence and zeroes bookmakers list. Confirmed via API tests that no leak occurs (pick=None, confidence=None, pick_odds=None, bookmakers=[]).",
+    "/api/matches gating picks the highest-confidence match as the free 'featured' pick — but the sort/featured logic is recomputed on every request. For free users browsing the dashboard then a detail page, the 'featured' selection is independent between endpoints. Acceptable but worth noting: the match unlocked on /api/matches may not be the same one returned unlocked in /api/predictions/top[0]. Frontend doesn't seem affected because they're separate UI surfaces.",
+    "send_welcome_email is fire-and-forget via asyncio.create_task — good. But the task is orphaned (no await, no done_callback). If asyncio cancels on shutdown, in-flight email could be lost. Low risk for product.",
+    "REAL_SPORT_KEYS contains 26 sport keys — each fetch_all_matches cache miss hits the Odds API 26 times sequentially. Currently OK (~10s), but consider asyncio.gather to parallelize.",
+    "Per-competition cap is correctly enforced at 12. ATP Wimbledon, FIFA World Cup, MLB, Veikkausliiga, MMA all show exactly 12 — proves diversification works.",
+    "LandingPage.jsx imports useState/useEffect/api/dayjs but USES NONE OF THEM — dead imports indicate the refactor was abandoned mid-way. Lint should flag."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_tier_gating.py (NEW — 13 tier gating tests)"
+  ],
+  "success_rate": {"backend": "100% (13/13 new gating tests + previous 35 still green)", "frontend": "85% (dashboard/match/top/admin gating all green; landing page hero card FAILS dynamic fetch requirement)"},
+  "test_credentials": "Admin: admin@winpulse.app / BetMojo2026! (Elite, no locks). Demo: demo@pronostix.ai / demo1234 was UPGRADED TO PRO by iteration 2's lifecycle tests — no longer a free user. Tests now register fresh TEST_free_*@winpulse.app users to validate free-tier behavior.",
+  "seed_data_creation": "Each test run creates one-or-more TEST_free_*@winpulse.app free users (no cleanup since user count is small; consider cleanup fixture in next iteration).",
+  "retest_needed": true,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/ -v (now 48 tests total). KEY testids working in iteration 3: upgrade-banner, upgrade-cta-dashboard, upgrade-banner-top, prediction-locked, upgrade-cta-match, register-name-input, register-email-input, register-password-input. NOTE: demo@pronostix.ai is now subscription_tier='pro' (upgraded during iter 2 lifecycle test). Use freshly-registered TEST_*@winpulse.app accounts for free-tier scenarios. World Cup: 12 matches present in /api/matches today with sport_title='FIFA World Cup'. Resend stays in test mode — only delivers to oswaldyobode567@gmail.com. LandingPage.jsx CRITICAL BUG documented above is the main thing to retest after main agent fixes it.",
+  "rca_of_the_issue": "LandingPage.jsx regression RCA: developer added imports for api, useState, useEffect, dayjs at the top of the file (lines 2 + 19-20) intending to fetch live picks, but never wrote the useEffect/useState/fetch logic. The render path on lines 121-141 still maps over the original hardcoded inline array. Reproduction: open https://prognosis-bet-1.preview.emergentagent.com/ in a logged-out browser — top-right hero card shows the three hardcoded fixtures. Fix: replace lines 122-141 with `const [livePicks, setLivePicks] = useState([]); useEffect(() => { api.get('/api/predictions/top').then(r => setLivePicks(r.data.slice(0,3))); }, []);` then render livePicks with a lock branch for items where item.locked===true (Lock icon + 'Pick réservé Pro' text per spec)."
+}

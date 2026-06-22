@@ -29,7 +29,8 @@ SUPPORTED_SPORTS = [
 # When using real Odds API, soccer/tennis are split into sub-leagues – this list
 # of safe sport keys avoids hitting too many endpoints in one go
 REAL_SPORT_KEYS = [
-    # Football
+    # Football — Coupe du Monde + leagues actives
+    "soccer_fifa_world_cup",
     "soccer_epl",
     "soccer_italy_serie_a",
     "soccer_conmebol_copa_libertadores",
@@ -37,8 +38,11 @@ REAL_SPORT_KEYS = [
     "soccer_brazil_serie_b",
     "soccer_norway_eliteserien",
     "soccer_sweden_allsvenskan",
-    "soccer_china_superleague",
+    "soccer_sweden_superettan",
+    "soccer_finland_veikkausliiga",
     "soccer_league_of_ireland",
+    "soccer_china_superleague",
+    "soccer_germany_dfb_pokal",
     # Basketball
     "basketball_wnba",
     "basketball_nba",
@@ -247,8 +251,17 @@ async def fetch_all_matches(db) -> List[Dict]:
             filtered.append(m)
     # Sort by date ascending
     filtered.sort(key=lambda x: x.get("commence_time", ""))
-    # Cap to avoid huge payloads
-    filtered = filtered[:60]
+    # Diversify: cap per competition so big tournaments don't crowd out others
+    per_comp_cap = 12
+    comp_counts: Dict[str, int] = {}
+    diversified: List[Dict] = []
+    for m in filtered:
+        key = m.get("sport_title") or "Other"
+        if comp_counts.get(key, 0) >= per_comp_cap:
+            continue
+        diversified.append(m)
+        comp_counts[key] = comp_counts.get(key, 0) + 1
+    filtered = diversified[:120]
 
     await db.odds_cache.update_one(
         {"_id": cache_key},

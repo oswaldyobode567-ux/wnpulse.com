@@ -124,3 +124,52 @@ async def send_payment_confirmation(to_email: str, user_name: str, tier: str, re
     except Exception as e:
         logger.error(f"Resend send failed: {e}")
         return {"status": "error", "error": str(e)}
+
+
+async def send_welcome_email(to_email: str, user_name: str) -> dict:
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email}
+    html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:auto;background:#f8fafc;">
+      <div style="background:linear-gradient(135deg,#ea580c 0%,#f43f5e 100%);color:#fff;padding:32px 24px;border-radius:16px 16px 0 0;">
+        <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.9;">Bienvenue sur {APP_NAME}</div>
+        <div style="font-size:30px;font-weight:800;letter-spacing:-.02em;margin-top:6px;">Salut {user_name} 👋</div>
+        <div style="font-size:14px;opacity:.95;margin-top:8px;">Ton compte est prêt. Sens battre le pouls des paris gagnants.</div>
+      </div>
+      <div style="background:#fff;padding:24px;">
+        <p style="color:#475569;font-size:15px;line-height:1.6;">
+          {APP_NAME} analyse chaque jour les matchs de la planète sportive et te livre les meilleurs pronostics chiffrés, avec une transparence totale sur le track record.
+        </p>
+        <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;padding:16px;margin:16px 0;">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:#9a3412;">Ton compte FREE inclut</div>
+          <ul style="font-size:14px;color:#475569;padding-left:20px;margin:8px 0 0;">
+            <li>Le pick gratuit du jour</li>
+            <li>Tous les matchs du jour (cotes visibles)</li>
+            <li>Le track record public</li>
+          </ul>
+        </div>
+        <div style="background:linear-gradient(135deg,#fff7ed,#fef2f2);border-radius:12px;padding:16px;border:1px solid #fed7aa;">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:#9a3412;">Passe Pro · 4 900 FCFA/mois</div>
+          <div style="font-size:14px;color:#475569;margin-top:6px;">Tous les pronostics, les 3 combinés (Sécurité / Équilibre / Jackpot), l'analyse IA experte et les alertes email VIP.</div>
+        </div>
+        <p style="text-align:center;margin-top:24px;">
+          <a href="#" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:12px 24px;border-radius:10px;display:inline-block;">Voir mes picks du jour →</a>
+        </p>
+        <p style="font-size:12px;color:#94a3b8;margin-top:24px;text-align:center;">🎯 Joue responsable. 18+.</p>
+      </div>
+      <div style="padding:16px;text-align:center;font-size:11px;color:#94a3b8;">© 2026 {APP_NAME}</div>
+    </div>
+    """
+    params = {
+        "from": f"{APP_NAME} <{SENDER_EMAIL}>",
+        "to": [to_email],
+        "subject": f"🔥 Bienvenue sur {APP_NAME}, {user_name} !",
+        "html": html,
+    }
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id")}
+    except Exception as e:
+        logger.warning(f"welcome email failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e)}
+

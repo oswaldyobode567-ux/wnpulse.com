@@ -1,4 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -12,8 +13,11 @@ import {
   BarChart3,
   Sparkles,
   Smartphone,
+  Lock,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import api from "@/lib/api";
+import dayjs from "dayjs";
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -221,9 +225,9 @@ export default function LandingPage() {
           </div>
           <div className="grid md:grid-cols-3 gap-5">
             {[
-              { id: "free", name: "Free", price: "0 FCFA", desc: "Pour découvrir", features: ["5 pronostics / jour", "1 sport au choix", "Statistiques de base"], cta: "Démarrer gratuit", highlight: false },
-              { id: "pro", name: "Pro", price: "4 900 FCFA", per: "/mois", desc: "Le plus populaire", features: ["Pronostics illimités", "Tous les sports", "Analyse IA experte", "3 combinés quotidiens", "Notifications email VIP"], cta: "Choisir Pro", highlight: true },
-              { id: "elite", name: "Elite", price: "14 900 FCFA", per: "/mois", desc: "Performance maximale", features: ["Tout Pro inclus", "Picks VIP >80% confiance", "Combinés boostés (5 picks)", "Bankroll & Kelly", "Support WhatsApp prio"], cta: "Choisir Elite", highlight: false },
+              { id: "free", name: "Free", price: "0 FCFA", desc: "Pour découvrir", features: ["1 pick gratuit du jour", "Tous les matchs (cotes visibles)", "Track record public"], cta: "Démarrer gratuit", highlight: false },
+              { id: "pro", name: "Pro", price: "4 900 FCFA", per: "/mois", desc: "Le plus populaire", features: ["Tous les pronostics débloqués", "Tous les sports (Coupe du Monde, NBA, Tennis…)", "Analyse IA experte sur chaque match", "Les 3 combinés du jour", "Email VIP avec les picks"], cta: "Choisir Pro", highlight: true },
+              { id: "elite", name: "Elite", price: "14 900 FCFA", per: "/mois", desc: "Performance max", features: ["Tout Pro inclus", "Picks VIP haute confiance (>80%)", "Combinés boostés (5 sélections)", "Bankroll & Kelly criterion", "Support WhatsApp prio"], cta: "Choisir Elite", highlight: false },
             ].map((p) => (
               <Card
                 key={p.id}

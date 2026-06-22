@@ -4,11 +4,13 @@ import AppLayout from "@/components/AppLayout";
 import MatchCard from "@/components/MatchCard";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "react-router-dom";
-import { Trophy, Flame, ChevronRight, Activity } from "lucide-react";
+import { Trophy, Flame, ChevronRight, Activity, Lock, Sparkles } from "lucide-react";
 import dayjs from "dayjs";
+import { useAuth } from "@/contexts/AuthContext";
 
 const SPORT_FILTERS = [
   { key: "all", label: "Tous" },
@@ -21,10 +23,12 @@ const SPORT_FILTERS = [
 ];
 
 export default function DashboardPage() {
+  const { user } = useAuth();
   const [matches, setMatches] = useState([]);
   const [topPicks, setTopPicks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [sport, setSport] = useState("all");
+  const isFree = !user?.subscription_tier || user.subscription_tier === "free";
 
   useEffect(() => {
     let mounted = true;
@@ -84,37 +88,75 @@ export default function DashboardPage() {
             </div>
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {topPicks.slice(0,3).map((p) => (
+              {topPicks.slice(0,3).map((p) => {
+                const locked = p.locked || !p.pick;
+                return (
                 <Link key={p.match_id} to={`/app/match/${p.match_id}`} data-testid={`top-pick-${p.match_id}`}>
-                  <Card className="relative overflow-hidden bg-gradient-to-br from-white to-slate-50 border-slate-200 p-5 hover:shadow-md hover:border-slate-300 transition-all h-full">
+                  <Card className={`relative overflow-hidden border p-5 hover:shadow-md transition-all h-full ${locked ? "bg-neutral-50 border-dashed border-orange-200" : "bg-gradient-to-br from-white to-orange-50/30 border-orange-200/60"}`}>
                     <div className="absolute top-3 right-3">
-                      <ConfidenceBadge label={p.label} confidence={p.confidence} />
+                      {locked ? (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 text-xs font-bold">
+                          <Lock className="h-3 w-3" /> PRO
+                        </span>
+                      ) : (
+                        <ConfidenceBadge label={p.label} confidence={p.confidence} />
+                      )}
                     </div>
                     <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-3 flex items-center gap-1">
                       <Flame className="h-3 w-3 text-orange-500" />
                       {p.sport_title}
                     </div>
-                    <div className="space-y-1 mb-4">
+                    <div className={`space-y-1 mb-4 ${locked ? "" : ""}`}>
                       <div className="font-heading font-bold text-base text-slate-900">{p.home_team}</div>
                       <div className="text-xs text-slate-400">vs</div>
                       <div className="font-heading font-bold text-base text-slate-900">{p.away_team}</div>
                     </div>
                     <div className="pt-3 border-t border-slate-100 flex items-end justify-between">
-                      <div>
-                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Pronostic</div>
-                        <div className="text-base font-bold text-orange-600">{p.pick}</div>
-                      </div>
-                      <div className="text-right">
-                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Cote</div>
-                        <div className="font-mono text-lg font-bold text-slate-900">{p.pick_odds}</div>
-                      </div>
+                      {locked ? (
+                        <div className="w-full">
+                          <div className="text-[10px] uppercase tracking-wider text-orange-600 font-bold mb-1">Pronostic verrouillé</div>
+                          <div className="text-xs text-slate-500">Passe Pro pour débloquer</div>
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Pronostic</div>
+                            <div className="text-base font-bold text-orange-600">{p.pick}</div>
+                          </div>
+                          <div className="text-right">
+                            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold">Cote</div>
+                            <div className="font-mono text-lg font-bold text-slate-900">{p.pick_odds}</div>
+                          </div>
+                        </>
+                      )}
                     </div>
                   </Card>
                 </Link>
-              ))}
+              );
+              })}
             </div>
           )}
         </section>
+
+        {/* Free tier upgrade CTA */}
+        {isFree && (
+          <Card className="mb-8 border-orange-200 bg-gradient-to-r from-orange-50 to-rose-50 p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4" data-testid="upgrade-banner">
+            <div className="h-11 w-11 rounded-xl wp-gradient-warm grid place-items-center text-white flex-shrink-0">
+              <Sparkles className="h-5 w-5" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <div className="font-heading font-bold text-slate-900">Tu n'as accès qu'au pick gratuit du jour.</div>
+              <div className="text-sm text-slate-700">
+                Débloque <strong>tous les pronostics</strong>, les <strong>3 combinés</strong> (Sécurité / Équilibre / Jackpot) et l'<strong>analyse IA</strong> dès <strong>4 900 FCFA / mois</strong>.
+              </div>
+            </div>
+            <Link to="/app/abonnement">
+              <Button className="wp-gradient-warm text-white border-0 hover:opacity-90" data-testid="upgrade-cta-dashboard">
+                Passer Pro <ChevronRight className="h-4 w-4 ml-1" />
+              </Button>
+            </Link>
+          </Card>
+        )}
 
         {/* Filters */}
         <section data-testid="matches-section">

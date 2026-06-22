@@ -59,11 +59,12 @@ export default function MatchDetailPage() {
   }
 
   const p = data.prediction;
+  const locked = p.locked || !p.pick;
   const labelColor = {
     safe: "bg-emerald-50 border-emerald-200",
     value: "bg-amber-50 border-amber-200",
     risky: "bg-rose-50 border-rose-200",
-  }[p.label] || "bg-slate-50 border-slate-200";
+  }[p.label] || "bg-orange-50 border-orange-200";
 
   const isPaid = user?.subscription_tier && user.subscription_tier !== "free";
 
@@ -97,6 +98,27 @@ export default function MatchDetailPage() {
         </Card>
 
         {/* Prediction summary */}
+        {locked ? (
+          <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
+            <div className="flex items-start justify-between gap-4 mb-4">
+              <div className="flex items-start gap-3">
+                <div className="h-10 w-10 rounded-xl wp-gradient-warm grid place-items-center text-white flex-shrink-0">
+                  <Lock className="h-5 w-5" />
+                </div>
+                <div>
+                  <div className="text-xs uppercase tracking-wider text-orange-700 font-bold mb-1">Pronostic verrouillé</div>
+                  <div className="font-heading text-xl font-extrabold text-slate-900">Passe Pro pour voir le pick complet</div>
+                  <div className="text-sm text-slate-700 mt-1">Inclut la cote optimale, le score de confiance, l'edge value et l'analyse IA experte.</div>
+                </div>
+              </div>
+            </div>
+            <Link to="/app/abonnement">
+              <Button className="wp-gradient-warm text-white border-0 hover:opacity-90" data-testid="upgrade-cta-match">
+                Débloquer dès 4 900 FCFA / mois <ChevronLeft className="h-4 w-4 ml-2 rotate-180" />
+              </Button>
+            </Link>
+          </Card>
+        ) : (
         <Card className={`border ${labelColor} p-6 mb-6`} data-testid="prediction-summary">
           <div className="flex items-start justify-between gap-4 mb-4">
             <div>
@@ -117,18 +139,19 @@ export default function MatchDetailPage() {
             <Stat label="Cote optimale" value={p.pick_odds} mono />
           </div>
         </Card>
+        )}
 
         {/* AI Analysis */}
         <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
-              <Brain className="h-5 w-5 text-blue-600" />
+              <Brain className="h-5 w-5 text-orange-600" />
               <h2 className="font-heading text-lg font-bold text-slate-900">Analyse experte IA</h2>
             </div>
-            {!analysis && (
+            {!analysis && !locked && (
               <Button
                 size="sm"
-                className="bg-blue-600 hover:bg-blue-700"
+                className="wp-gradient-warm text-white border-0 hover:opacity-90"
                 onClick={fetchAnalysis}
                 disabled={loadingAnalysis}
                 data-testid="run-analysis-btn"
