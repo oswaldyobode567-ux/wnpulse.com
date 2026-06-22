@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { Trophy, Flame, ChevronRight, Activity, Lock, Sparkles } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
+import SocialProofToast from "@/components/SocialProofToast";
 
 const SPORT_FILTERS = [
   { key: "all", label: "Tous" },
@@ -52,6 +53,7 @@ export default function DashboardPage() {
 
   return (
     <AppLayout>
+      <SocialProofToast />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
         <div className="flex items-end justify-between mb-8">

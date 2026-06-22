@@ -173,3 +173,41 @@ async def send_welcome_email(to_email: str, user_name: str) -> dict:
         logger.warning(f"welcome email failed for {to_email}: {e}")
         return {"status": "error", "error": str(e)}
 
+
+
+
+async def send_reset_password_email(to_email: str, user_name: str, token: str) -> dict:
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email, "token": token}
+    reset_url = f"https://prognosis-bet-1.preview.emergentagent.com/reset-password/{token}"
+    html = f"""
+    <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:auto;background:#f8fafc;padding:24px;">
+      <div style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+        <div style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;padding:28px 24px;">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.9;">{APP_NAME}</div>
+          <div style="font-size:24px;font-weight:800;margin-top:6px;">Réinitialisation du mot de passe</div>
+        </div>
+        <div style="padding:24px;color:#475569;font-size:15px;line-height:1.6;">
+          <p>Salut <strong>{user_name}</strong>,</p>
+          <p>Tu as demandé à réinitialiser ton mot de passe. Clique sur le bouton ci-dessous (le lien expire dans 2h).</p>
+          <p style="text-align:center;margin:24px 0;">
+            <a href="{reset_url}" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 28px;border-radius:10px;display:inline-block;font-size:15px;">Choisir un nouveau mot de passe</a>
+          </p>
+          <p style="font-size:12px;color:#94a3b8;">Si tu n'as pas demandé cela, ignore simplement cet email — ton mot de passe reste inchangé.</p>
+          <p style="font-size:11px;color:#cbd5e1;word-break:break-all;margin-top:24px;">Lien direct : {reset_url}</p>
+        </div>
+      </div>
+    </div>
+    """
+    params = {
+        "from": f"{APP_NAME} <{SENDER_EMAIL}>",
+        "to": [to_email],
+        "subject": f"🔑 Réinitialise ton mot de passe {APP_NAME}",
+        "html": html,
+    }
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id"), "token": token}
+    except Exception as e:
+        logger.warning(f"reset email failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e), "token": token}

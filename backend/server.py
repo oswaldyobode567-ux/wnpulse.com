@@ -26,7 +26,7 @@ from auth import (
 from odds_service import fetch_all_matches, get_match_by_id, SUPPORTED_SPORTS
 from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
 from ai_service import generate_analysis
-from email_service import send_picks_email, send_payment_confirmation, send_welcome_email
+from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -96,6 +96,15 @@ class RegisterBody(BaseModel):
 class LoginBody(BaseModel):
     email: EmailStr
     password: str
+
+
+class ForgotPasswordBody(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordBody(BaseModel):
+    token: str
+    new_password: str = Field(min_length=6)
 
 
 class TokenResponse(BaseModel):
@@ -241,6 +250,89 @@ async def me(payload: dict = Depends(get_current_user_payload)):
     return _public_user(user)
 
 
+# ----- Forgot / reset password -----
+@api.post("/auth/forgot-password")
+async def forgot_password(body: ForgotPasswordBody):
+    """Always returns 200 to avoid leaking which emails exist. Generates a token + sends email best-effort."""
+    user = await db.users.find_one({"email": body.email.lower()})
+    if user:
+        token = uuid.uuid4().hex + uuid.uuid4().hex  # 64 chars
+        expires = datetime.now(timezone.utc) + timedelta(hours=2)
+        await db.password_resets.insert_one({
+            "token": token,
+            "user_id": user["id"],
+            "email": user["email"],
+            "expires_at": expires.isoformat(),
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "used": False,
+        })
+        # Send email best-effort
+        try:
+            asyncio.create_task(send_reset_password_email(user["email"], user["full_name"], token))
+        except Exception as e:
+            log.warning(f"reset email enqueue failed: {e}")
+    return {"ok": True, "message": "Si un compte existe avec cet email, un lien de réinitialisation a été envoyé."}
+
+
+@api.post("/auth/reset-password")
+async def reset_password(body: ResetPasswordBody):
+    rec = await db.password_resets.find_one({"token": body.token, "used": False})
+    if not rec:
+        raise HTTPException(400, "Lien invalide ou déjà utilisé.")
+    expires_at = datetime.fromisoformat(rec["expires_at"])
+    if expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) > expires_at:
+        raise HTTPException(400, "Lien expiré. Demande un nouveau lien.")
+    await db.users.update_one(
+        {"id": rec["user_id"]},
+        {"$set": {"hashed_password": hash_password(body.new_password)}},
+    )
+    await db.password_resets.update_one(
+        {"token": body.token},
+        {"$set": {"used": True, "used_at": datetime.now(timezone.utc).isoformat()}},
+    )
+    return {"ok": True, "message": "Mot de passe mis à jour. Tu peux te connecter maintenant."}
+
+
+# ----- Social proof (preuve sociale floating toast) -----
+@api.get("/social/recent-wins")
+async def recent_wins():
+    """Return recent winning picks for floating social-proof toasts. Public endpoint."""
+    docs = await db.predictions_log.find({"won": True}, {"_id": 0}).limit(50).to_list(50)
+    if not docs:
+        return []
+    NAMES = ["Marc", "Aïcha", "Kwame", "Fatou D.", "Olivier", "Amina K.", "Jean-Marc", "Sandrine",
+             "Yannick", "Hortense", "Patrick T.", "Christelle B.", "Ibrahim", "Mariam", "Serge B.",
+             "Béatrice", "Mehdi", "Awa", "Cheikh", "Esther", "Roland", "Nadia", "Pascal", "Thierry G."]
+    COMBOS = ["Sécurité", "Équilibre", "Jackpot"]
+    AGOS = ["il y a 3 min", "il y a 8 min", "il y a 15 min", "il y a 25 min", "il y a 42 min",
+            "il y a 1h", "il y a 1h30", "il y a 2h", "ce matin", "tout à l'heure"]
+    import random
+    # Rotate per minute (so reload feels alive but isn't random-spammy)
+    seed = int(datetime.now(timezone.utc).timestamp()) // 60
+    rng = random.Random(seed)
+    out = []
+    for d in docs[:24]:
+        name = rng.choice(NAMES)
+        combo = rng.choice(COMBOS)
+        mise = rng.choice([500, 1000, 1000, 2000, 2000, 5000])
+        gain = round(mise * d["odds"])
+        ago = rng.choice(AGOS)
+        out.append({
+            "name": name,
+            "combo": combo,
+            "mise_xof": mise,
+            "gain_xof": gain,
+            "pick": d["pick"],
+            "match": d["match"],
+            "odds": d["odds"],
+            "ago": ago,
+        })
+    rng.shuffle(out)
+    return out
+
+
 # ----- Matches & Predictions -----
 @api.get("/matches")
 async def get_matches(
@@ -257,11 +349,11 @@ async def get_matches(
         out.append({**m, "prediction": pred})
     out.sort(key=lambda x: x.get("commence_time", ""))
 
-    # Free / anonymous gating: only the highest-confidence match keeps its prediction visible
+    # Free / anonymous gating: keep top 3 highest-confidence matches visible
     if tier in ("free", "anonymous"):
         sorted_by_conf = sorted(out, key=lambda x: (x.get("prediction") or {}).get("confidence", 0), reverse=True)
-        featured_id = sorted_by_conf[0].get("id") if sorted_by_conf else None
-        out = [_gate_match_for_free(m, m.get("id") == featured_id) for m in out]
+        featured_ids = {m.get("id") for m in sorted_by_conf[:3]}
+        out = [_gate_match_for_free(m, m.get("id") in featured_ids) for m in out]
     return out
 
 
@@ -271,8 +363,8 @@ async def get_top(payload: Optional[dict] = Depends(get_optional_user_payload)):
     matches = await fetch_all_matches(db)
     preds = top_predictions(matches, limit=6)
     if tier in ("free", "anonymous"):
-        # Free users: only the #1 pick is fully visible, others are locked
-        return [preds[0]] + [_mask_prediction(p) for p in preds[1:]] if preds else []
+        # Free users: top 3 picks fully visible, rest locked
+        return preds[:3] + [_mask_prediction(p) for p in preds[3:]] if preds else []
     return preds
 
 

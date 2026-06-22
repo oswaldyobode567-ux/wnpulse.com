@@ -19,7 +19,7 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
     try {
-      await login(email, password);
+      await login(email.trim().toLowerCase(), password);
       toast.success("Bienvenue !");
       navigate("/app");
     } catch (err) {
@@ -64,13 +64,21 @@ export default function LoginPage() {
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
                 required
+                autoCapitalize="off"
+                autoCorrect="off"
+                spellCheck={false}
                 data-testid="login-email-input"
                 placeholder="vous@email.com"
                 className="mt-1"
               />
             </div>
             <div>
-              <Label htmlFor="password">Mot de passe</Label>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="password">Mot de passe</Label>
+                <Link to="/forgot-password" className="text-xs text-orange-600 font-semibold hover:underline" data-testid="forgot-password-link">
+                  Mot de passe oublié ?
+                </Link>
+              </div>
               <Input
                 id="password"
                 type="password"
