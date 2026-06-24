@@ -631,8 +631,9 @@ async def admin_stats(_admin = Depends(_require_admin)):
 @api.post("/admin/broadcast/picks")
 async def admin_broadcast_picks(body: BroadcastBody, _admin = Depends(_require_admin)):
     """Send today's picks email to all paying subscribers."""
-    combos = await get_multi_combos()
-    combo = combos.get(body.combo_tier, combos["balanced"])
+    matches = await fetch_all_matches(db)
+    combos_raw = build_multi_combos(matches)
+    combo = combos_raw.get(body.combo_tier, combos_raw["balanced"])
     if not combo["legs"]:
         raise HTTPException(400, "Pas de picks disponibles aujourd'hui")
 
@@ -651,6 +652,35 @@ async def admin_broadcast_picks(body: BroadcastBody, _admin = Depends(_require_a
     drafted = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "draft")
     errors = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error") + sum(1 for r in results if isinstance(r, Exception))
     return {"users": len(users), "sent": sent, "drafted": drafted, "errors": errors, "combo_tier": body.combo_tier}
+
+
+@api.post("/admin/broadcast/free-weekly-teaser")
+async def admin_broadcast_weekly_teaser(_admin = Depends(_require_admin)):
+    """Friday teaser: send a teaser of THIS week's best pick to FREE users only.
+    Showcases what they're missing → strong conversion lever."""
+    matches = await fetch_all_matches(db)
+    combos_raw = build_multi_combos(matches)
+    combo = combos_raw.get("balanced") or combos_raw.get("safe")
+    if not combo or not combo["legs"]:
+        raise HTTPException(400, "Pas de picks disponibles cette semaine")
+
+    free_users = await db.users.find(
+        {"subscription_tier": "free"},
+        {"_id": 0, "email": 1, "full_name": 1}
+    ).to_list(5000)
+
+    if not free_users:
+        return {"sent": 0, "users": 0, "message": "Aucun utilisateur Free"}
+
+    from email_service import send_weekly_teaser_email
+    results = await asyncio.gather(
+        *[send_weekly_teaser_email(u["email"], u["full_name"], combo["legs"], combo["total_odds"]) for u in free_users],
+        return_exceptions=True,
+    )
+    sent = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "sent")
+    drafted = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "draft")
+    errors = sum(1 for r in results if isinstance(r, dict) and r.get("status") == "error") + sum(1 for r in results if isinstance(r, Exception))
+    return {"users": len(free_users), "sent": sent, "drafted": drafted, "errors": errors, "target": "free"}
 
 
 @api.post("/admin/test-email")

@@ -211,3 +211,87 @@ async def send_reset_password_email(to_email: str, user_name: str, token: str) -
     except Exception as e:
         logger.warning(f"reset email failed for {to_email}: {e}")
         return {"status": "error", "error": str(e), "token": token}
+
+
+async def send_weekly_teaser_email(to_email: str, user_name: str, picks: list, total_odds: float) -> dict:
+    """Friday teaser sent to FREE users to showcase what they're missing."""
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email}
+    # Show only first leg in clear, blur the rest
+    first = picks[0] if picks else None
+    locked_rows = ""
+    for i, p in enumerate(picks[1:], 2):
+        locked_rows += f"""
+        <tr><td style="padding:14px 16px;border-bottom:1px solid #f1f5f9;background:#fafafa;">
+          <div style="font-size:11px;color:#94a3b8;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-bottom:4px;">
+            #{i} · {p.get('sport_title','')}
+          </div>
+          <div style="filter:blur(5px);user-select:none;font-size:14px;color:#0f172a;">
+            ████████ vs ████████ — pick caché
+          </div>
+        </td></tr>
+        """
+    first_html = ""
+    if first:
+        first_html = f"""
+        <tr><td style="padding:16px;border-bottom:1px solid #f1f5f9;background:#ecfdf5;">
+          <div style="font-size:11px;color:#059669;text-transform:uppercase;letter-spacing:1px;font-weight:700;margin-bottom:4px;">
+            #1 GRATUIT · {first.get('sport_title','')}
+          </div>
+          <div style="font-size:15px;font-weight:700;color:#0f172a;">{first.get('home_team','')} vs {first.get('away_team','')}</div>
+          <div style="margin-top:6px;font-size:14px;">
+            <span style="color:#ea580c;font-weight:700;">{first.get('pick','')}</span>
+            <span style="color:#94a3b8;font-family:monospace;margin-left:8px;">@ {first.get('pick_odds','')}</span>
+            <span style="float:right;color:#10b981;font-weight:700;">{first.get('confidence',0)}%</span>
+          </div>
+        </td></tr>
+        """
+    html = f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;background:#f8fafc;font-family:-apple-system,sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;"><tr><td align="center">
+        <table width="600" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+          <tr><td style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;padding:28px 24px;">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.85;">{APP_NAME} · Vendredi</div>
+            <div style="font-size:26px;font-weight:800;margin-top:6px;">Tes paris de la semaine 🔥</div>
+            <div style="font-size:14px;opacity:.95;margin-top:6px;">Salut {user_name}, voici les picks que nos abonnés Pro jouent ce week-end.</div>
+          </td></tr>
+          <tr><td style="padding:20px 24px 8px;">
+            <p style="font-size:14px;color:#475569;margin:0 0 12px;line-height:1.6;">
+              Le combiné <strong>Équilibre</strong> de cette semaine combine <strong>{len(picks)} sélections</strong> avec un edge value sur plusieurs marchés (vainqueur, totaux, handicap).
+            </p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#fff;border-radius:12px;margin:12px 0;overflow:hidden;border:1px solid #e2e8f0;">
+              {first_html}
+              {locked_rows}
+            </table>
+            <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f172a;border-radius:12px;color:#fff;margin-top:8px;">
+              <tr><td style="padding:18px;">
+                <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;opacity:.7;font-weight:600;">Cote combiné Pro</div>
+                <div style="font-size:36px;font-weight:900;letter-spacing:-.02em;margin-top:4px;">@ {total_odds}</div>
+                <div style="font-size:13px;opacity:.8;margin-top:4px;">Mise 1 000 FCFA → <strong>{int(total_odds*1000)} FCFA</strong> potentiel</div>
+              </td></tr>
+            </table>
+            <p style="text-align:center;margin:24px 0 8px;">
+              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Débloquer le combiné · 4 900 FCFA/mois</a>
+            </p>
+            <p style="font-size:12px;color:#94a3b8;margin-top:16px;text-align:center;">🎯 Joue responsable. 18+. Ne mise jamais plus que ce que tu peux perdre.</p>
+          </td></tr>
+          <tr><td style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8;">
+            © 2026 {APP_NAME} · Tu reçois ce résumé hebdomadaire parce que tu as un compte Free.
+          </td></tr>
+        </table>
+      </td></tr></table>
+    </body></html>
+    """
+    params = {
+        "from": f"{APP_NAME} <{SENDER_EMAIL}>",
+        "to": [to_email],
+        "subject": f"🔥 Tes paris de la semaine — Combiné Pro @ {total_odds}",
+        "html": html,
+    }
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id")}
+    except Exception as e:
+        logger.warning(f"weekly teaser email failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e)}

@@ -23,7 +23,18 @@ export default function LoginPage() {
       toast.success("Bienvenue !");
       navigate("/app");
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Connexion impossible");
+      // Surface the EXACT error so user knows whether it's network, wrong pwd, or server
+      let msg;
+      if (err?.response) {
+        // Server replied with an error
+        msg = err.response.data?.detail || `Erreur ${err.response.status}`;
+      } else if (err?.request) {
+        msg = "Pas de réponse du serveur. Vérifie ta connexion internet puis réessaye.";
+      } else {
+        msg = err?.message || "Erreur inconnue";
+      }
+      toast.error(msg, { duration: 6000 });
+      console.error("[Login error]", err);
     } finally {
       setLoading(false);
     }
@@ -55,8 +66,7 @@ export default function LoginPage() {
         <Card className="w-full max-w-md p-8 border-neutral-200 shadow-lg">
           <h1 className="font-heading text-2xl font-extrabold text-slate-900 mb-1">Connexion</h1>
           <p className="text-sm text-slate-500 mb-6">Accède à tes pronostics du jour</p>
-          <form onSubmit={submit} className="space-y-4">
-            <div>
+          <form onSubmit={submit} className="space-y-4">            <div>
               <Label htmlFor="email">Email</Label>
               <Input
                 id="email"
@@ -104,6 +114,20 @@ export default function LoginPage() {
             <Link to="/register" className="text-orange-600 font-semibold" data-testid="goto-register-link">
               Créer un compte gratuit
             </Link>
+          </div>
+          <div className="mt-3 text-center">
+            <button
+              type="button"
+              onClick={() => {
+                localStorage.clear();
+                sessionStorage.clear();
+                toast.success("Cache vidé. Réessaye maintenant.");
+              }}
+              className="text-xs text-slate-400 hover:text-slate-600 underline"
+              data-testid="clear-cache-btn"
+            >
+              Problème de connexion ? Vider le cache local
+            </button>
           </div>
         </Card>
       </div>

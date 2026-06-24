@@ -86,6 +86,18 @@ export default function AdminPage() {
     }
   };
 
+  const broadcastFreeTeaser = async () => {
+    setBroadcasting(true);
+    try {
+      const { data } = await api.post("/admin/broadcast/free-weekly-teaser");
+      toast.success(`Teaser envoyé aux ${data.users} Free · ${data.sent} delivered · ${data.errors} erreurs`);
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Échec envoi");
+    } finally {
+      setBroadcasting(false);
+    }
+  };
+
   const testEmail = async () => {
     setBroadcasting(true);
     try {
@@ -244,7 +256,7 @@ export default function AdminPage() {
                   data-testid="broadcast-btn"
                 >
                   {broadcasting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
-                  Envoyer à tous les abonnés
+                  Envoyer aux abonnés Pro/Elite
                 </Button>
                 <Button
                   onClick={testEmail}
@@ -253,6 +265,25 @@ export default function AdminPage() {
                   data-testid="test-email-btn"
                 >
                   Test email (à moi)
+                </Button>
+              </div>
+
+              <div className="mt-8 pt-6 border-t border-neutral-200">
+                <div className="flex items-center gap-2 mb-2">
+                  <Mail className="h-5 w-5 text-emerald-600" />
+                  <h3 className="font-heading font-bold text-slate-900">Pari de la semaine — Vendredi</h3>
+                </div>
+                <p className="text-sm text-slate-600 mb-4">
+                  Envoie aux utilisateurs <strong>Free</strong> un teaser hebdomadaire montrant le 1er pick gratuit + les autres floutés. Levier de conversion idéal le vendredi.
+                </p>
+                <Button
+                  onClick={broadcastFreeTeaser}
+                  disabled={broadcasting}
+                  className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                  data-testid="broadcast-weekly-teaser-btn"
+                >
+                  {broadcasting ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+                  Envoyer le pari de la semaine aux Free
                 </Button>
               </div>
             </Card>

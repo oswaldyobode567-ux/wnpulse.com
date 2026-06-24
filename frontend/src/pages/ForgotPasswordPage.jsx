@@ -21,7 +21,16 @@ export default function ForgotPasswordPage() {
       await api.post("/auth/forgot-password", { email: email.trim().toLowerCase() });
       setSent(true);
     } catch (err) {
-      toast.error(err?.response?.data?.detail || "Erreur réseau");
+      let msg;
+      if (err?.response) {
+        msg = err.response.data?.detail || `Erreur ${err.response.status}`;
+      } else if (err?.request) {
+        msg = "Pas de réponse du serveur. Vérifie ta connexion internet.";
+      } else {
+        msg = err?.message || "Erreur réseau inattendue";
+      }
+      toast.error(msg, { duration: 6000 });
+      console.error("[Forgot error]", err);
     } finally {
       setLoading(false);
     }
