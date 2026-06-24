@@ -23,7 +23,7 @@ from auth import (
     get_current_user_payload,
     get_optional_user_payload,
 )
-from odds_service import fetch_all_matches, get_match_by_id, SUPPORTED_SPORTS
+from odds_service import fetch_all_matches, get_match_by_id, fetch_all_scores, SUPPORTED_SPORTS
 from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
 from ai_service import generate_analysis
 from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email
@@ -197,6 +197,63 @@ async def root():
 @api.get("/sports")
 async def list_sports():
     return SUPPORTED_SPORTS
+
+
+@api.get("/data/status")
+async def data_status():
+    """Return data freshness for the realtime UI indicators."""
+    odds_cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    scores_cached = await db.scores_cache.find_one({"_id": "all_scores"})
+    matches = (odds_cached or {}).get("data", []) or []
+    scores = (scores_cached or {}).get("data", []) or []
+
+    now = datetime.now(timezone.utc)
+    live_count = 0
+    upcoming_today = 0
+    sports_with_live: Dict[str, int] = {}
+    sports_with_upcoming: Dict[str, int] = {}
+
+    for m in matches:
+        try:
+            ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
+        except Exception:
+            continue
+        sport_title = m.get("sport_title", "")
+        # Live = commenced but not too long ago (within last 4 hours)
+        if now > ct and (now - ct) < timedelta(hours=4):
+            live_count += 1
+            sports_with_live[sport_title] = sports_with_live.get(sport_title, 0) + 1
+        elif ct.date() == now.date():
+            upcoming_today += 1
+            sports_with_upcoming[sport_title] = sports_with_upcoming.get(sport_title, 0) + 1
+
+    return {
+        "now": now.isoformat(),
+        "odds_updated_at": (odds_cached or {}).get("updated_at"),
+        "scores_updated_at": (scores_cached or {}).get("updated_at"),
+        "total_matches": len(matches),
+        "live_count": live_count,
+        "upcoming_today": upcoming_today,
+        "scores_count": len(scores),
+        "sports_with_live": sports_with_live,
+        "sports_with_upcoming": sports_with_upcoming,
+    }
+
+
+@api.get("/scores")
+async def get_scores():
+    """Return current live + recent finished scores."""
+    return await fetch_all_scores(db)
+
+
+@api.post("/data/refresh")
+async def force_refresh(payload: dict = Depends(get_current_user_payload)):
+    """Force-bust caches (rate-limited by 30s on client side)."""
+    await db.odds_cache.delete_many({})
+    await db.scores_cache.delete_many({})
+    matches = await fetch_all_matches(db)
+    await fetch_all_scores(db)
+    return {"ok": True, "matches": len(matches), "refreshed_at": datetime.now(timezone.utc).isoformat()}
 
 
 @api.get("/plans")

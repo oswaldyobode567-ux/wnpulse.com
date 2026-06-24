@@ -19,6 +19,9 @@ function sportIcon(sportKey = "") {
 export default function MatchCard({ match }) {
   const p = match.prediction || {};
   const locked = p.locked || !p.pick;
+  const movement = p.odds_movement;
+  const hasMovement = movement != null && Math.abs(movement) >= 0.01;
+  const movementColor = movement > 0 ? "text-emerald-600 bg-emerald-50 border-emerald-200" : "text-rose-600 bg-rose-50 border-rose-200";
 
   return (
     <Link
@@ -62,8 +65,14 @@ export default function MatchCard({ match }) {
             <>
               <div className="min-w-0">
                 <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-0.5">Pronostic</div>
-                <div className="text-sm font-semibold text-slate-900 truncate">
-                  {p.pick} <span className="text-slate-400 font-normal text-xs">@ {p.pick_odds}</span>
+                <div className="text-sm font-semibold text-slate-900 truncate flex items-center gap-1.5">
+                  <span>{p.pick}</span>
+                  <span className="text-slate-400 font-normal text-xs">@ {p.pick_odds}</span>
+                  {hasMovement && Math.abs(movement) >= 0.10 && (
+                    <span className={`inline-flex items-center gap-0.5 rounded-full px-1.5 py-0 text-[9px] font-bold border ${movementColor}`} title={`${p.previous_odds} → ${p.pick_odds}`} data-testid="odds-movement">
+                      {movement > 0 ? "▲" : "▼"}{Math.abs(movement).toFixed(2)}
+                    </span>
+                  )}
                 </div>
               </div>
               <ConfidenceBadge label={p.label} confidence={p.confidence} />

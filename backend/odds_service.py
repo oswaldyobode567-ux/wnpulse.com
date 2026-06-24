@@ -29,38 +29,44 @@ SUPPORTED_SPORTS = [
 # When using real Odds API, soccer/tennis are split into sub-leagues – this list
 # of safe sport keys avoids hitting too many endpoints in one go
 REAL_SPORT_KEYS = [
-    # Football — Coupe du Monde + leagues actives
+    # Football — Coupe du Monde + grandes ligues + Afrique
     "soccer_fifa_world_cup",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_europa_league",
     "soccer_epl",
+    "soccer_france_ligue_one",
+    "soccer_spain_la_liga",
+    "soccer_germany_bundesliga",
     "soccer_italy_serie_a",
+    "soccer_africa_caf_champions_league",
     "soccer_conmebol_copa_libertadores",
-    "soccer_conmebol_copa_sudamericana",
     "soccer_brazil_serie_b",
     "soccer_norway_eliteserien",
     "soccer_sweden_allsvenskan",
-    "soccer_sweden_superettan",
-    "soccer_finland_veikkausliiga",
     "soccer_league_of_ireland",
     "soccer_china_superleague",
-    "soccer_germany_dfb_pokal",
     # Basketball
     "basketball_wnba",
     "basketball_nba",
+    "basketball_euroleague",
     # US sports
     "americanfootball_nfl",
     "americanfootball_cfl",
     "americanfootball_ncaaf",
     "baseball_mlb",
     "icehockey_nhl",
-    # Tennis
+    # Tennis (saisonnier)
     "tennis_atp_wimbledon",
+    "tennis_wta_wimbledon",
     "tennis_wta_bad_homburg_open",
     # Combat
     "mma_mixed_martial_arts",
     "boxing_boxing",
-    # Other
+    # Australien/Rugby
     "aussierules_afl",
     "rugbyleague_nrl",
+    # Golf
+    "golf_pga_championship",
 ]
 
 
@@ -310,6 +316,58 @@ async def fetch_all_matches(db) -> List[Dict]:
         upsert=True,
     )
     return filtered
+
+
+async def fetch_scores_for_sport(sport_key: str, days_from: int = 1) -> List[Dict]:
+    """Fetch live + finished scores for a sport (last N days). Free endpoint on the Odds API."""
+    if not ODDS_API_KEY:
+        return []
+    url = f"{ODDS_API_BASE}/sports/{sport_key}/scores"
+    params = {
+        "apiKey": ODDS_API_KEY,
+        "daysFrom": days_from,
+        "dateFormat": "iso",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params=params)
+            if r.status_code != 200:
+                return []
+            return r.json()
+    except Exception:
+        return []
+
+
+async def fetch_all_scores(db) -> List[Dict]:
+    """Aggregate scores across active sports with short cache (60s for live freshness)."""
+    cached = await db.scores_cache.find_one({"_id": "all_scores"})
+    if cached:
+        updated = cached.get("updated_at")
+        if updated:
+            updated_dt = datetime.fromisoformat(updated) if isinstance(updated, str) else updated
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - updated_dt < timedelta(seconds=60):
+                return cached["data"]
+
+    scores: List[Dict] = []
+    # Only fetch scores for the sports that are likely active today
+    for sk in [
+        "soccer_fifa_world_cup", "basketball_wnba", "baseball_mlb",
+        "tennis_atp_wimbledon", "tennis_wta_wimbledon",
+        "mma_mixed_martial_arts", "icehockey_nhl",
+    ]:
+        try:
+            scores.extend(await fetch_scores_for_sport(sk))
+        except Exception:
+            pass
+
+    await db.scores_cache.update_one(
+        {"_id": "all_scores"},
+        {"$set": {"data": scores, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return scores
 
 
 async def get_match_by_id(db, match_id: str) -> Optional[Dict]:

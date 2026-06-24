@@ -12,6 +12,8 @@ import { Trophy, Flame, ChevronRight, Activity, Lock, Sparkles } from "lucide-re
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import SocialProofToast from "@/components/SocialProofToast";
+import { RealtimeBar, FreshnessStamp } from "@/components/RealtimeBar";
+import { useRealtimeMatches, useDataStatus } from "@/services/realtimeService";
 
 const SPORT_FILTERS = [
   { key: "all", label: "Tous" },
@@ -25,26 +27,20 @@ const SPORT_FILTERS = [
 
 export default function DashboardPage() {
   const { user } = useAuth();
-  const [matches, setMatches] = useState([]);
+  const { matches, loading, lastUpdate, refresh: refreshMatches } = useRealtimeMatches();
+  const { status } = useDataStatus();
   const [topPicks, setTopPicks] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [topLoading, setTopLoading] = useState(true);
   const [sport, setSport] = useState("all");
   const isFree = !user?.subscription_tier || user.subscription_tier === "free";
 
   useEffect(() => {
     let mounted = true;
-    Promise.all([
-      api.get("/matches"),
-      api.get("/predictions/top"),
-    ])
-      .then(([m, t]) => {
-        if (!mounted) return;
-        setMatches(m.data);
-        setTopPicks(t.data);
-      })
-      .finally(() => mounted && setLoading(false));
+    api.get("/predictions/top")
+      .then((t) => { if (mounted) setTopPicks(t.data); })
+      .finally(() => mounted && setTopLoading(false));
     return () => { mounted = false; };
-  }, []);
+  }, [lastUpdate]);
 
   const filtered = useMemo(() => {
     if (sport === "all") return matches;
@@ -56,7 +52,7 @@ export default function DashboardPage() {
       <SocialProofToast />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {/* Header */}
-        <div className="flex items-end justify-between mb-8">
+        <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
           <div>
             <div className="text-xs uppercase tracking-widest text-slate-500 font-semibold mb-1">
               {dayjs().format("dddd D MMMM YYYY")}
@@ -65,10 +61,10 @@ export default function DashboardPage() {
               Pronostics du jour
             </h1>
           </div>
-          <div className="hidden sm:flex items-center gap-2 text-xs text-emerald-700 font-semibold">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 live-dot" />
-            Données live
-          </div>
+        </div>
+        <div className="mb-8">
+          <RealtimeBar onRefresh={refreshMatches} />
+          <FreshnessStamp label="Cotes mises à jour" ts={lastUpdate} />
         </div>
 
         {/* À la une */}
