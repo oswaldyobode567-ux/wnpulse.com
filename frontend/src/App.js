@@ -16,6 +16,7 @@ import AdminPage from "@/pages/AdminPage";
 import TrackRecordPage from "@/pages/TrackRecordPage";
 import ValueBetsPage from "@/pages/ValueBetsPage";
 import ProfilePage from "@/pages/ProfilePage";
+import ParrainagePage from "@/pages/ParrainagePage";
 import LegalPage from "@/pages/LegalPage";
 
 function RequireAuth({ children, admin = false }) {
@@ -49,6 +50,7 @@ export default function App() {
           <Route path="/app/top" element={<RequireAuth><TopPicksPage /></RequireAuth>} />
           <Route path="/app/value-bets" element={<RequireAuth><ValueBetsPage /></RequireAuth>} />
           <Route path="/app/profil" element={<RequireAuth><ProfilePage /></RequireAuth>} />
+          <Route path="/app/parrainage" element={<RequireAuth><ParrainagePage /></RequireAuth>} />
           <Route path="/app/match/:matchId" element={<RequireAuth><MatchDetailPage /></RequireAuth>} />
           <Route path="/app/combines" element={<RequireAuth><CombosPage /></RequireAuth>} />
           <Route path="/app/historique" element={<RequireAuth><HistoryPage /></RequireAuth>} />

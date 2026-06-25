@@ -38,9 +38,11 @@ export function AuthProvider({ children }) {
     return data.user;
   };
 
-  const register = async (email, password, full_name) => {
+  const register = async (email, password, full_name, referral_code = null) => {
     const cleanEmail = email.trim().toLowerCase();
-    const { data } = await api.post("/auth/register", { email: cleanEmail, password, full_name });
+    const payload = { email: cleanEmail, password, full_name };
+    if (referral_code) payload.referral_code = referral_code.trim();
+    const { data } = await api.post("/auth/register", payload);
     localStorage.setItem("pronostix_token", data.access_token);
     localStorage.setItem("pronostix_user", JSON.stringify(data.user));
     setUser(data.user);

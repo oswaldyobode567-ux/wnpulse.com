@@ -10,7 +10,6 @@ import { Shield, Scale, Rocket, RefreshCw, TrendingUp, Lock, Gift, Sparkles } fr
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
-import SocialProofToast from "@/components/SocialProofToast";
 import PaymentModal from "@/components/payment/PaymentModal";
 
 const TIERS = [
@@ -88,7 +87,6 @@ export default function CombosPage() {
 
   return (
     <AppLayout>
-      <SocialProofToast />
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex items-start justify-between gap-4 mb-8">
           <div>

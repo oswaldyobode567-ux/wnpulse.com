@@ -3,6 +3,7 @@ import os
 import uuid
 import logging
 import asyncio
+from urllib.parse import quote as urllib_quote
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
@@ -91,6 +92,7 @@ class RegisterBody(BaseModel):
     email: EmailStr
     password: str = Field(min_length=6)
     full_name: str = Field(min_length=2)
+    referral_code: Optional[str] = None  # code of the inviter
 
 
 class LoginBody(BaseModel):
@@ -134,7 +136,17 @@ def _public_user(user_doc: dict) -> dict:
         "subscription_status": user_doc.get("subscription_status", "active"),
         "subscription_expires_at": user_doc.get("subscription_expires_at"),
         "created_at": user_doc.get("created_at"),
+        "referral_code": user_doc.get("referral_code"),
+        "referral_count": user_doc.get("referral_count", 0),
+        "referral_reward_claimed": bool(user_doc.get("referral_reward_claimed", False)),
     }
+
+
+def _gen_referral_code(full_name: str) -> str:
+    """Generate a unique-ish referral code from name + random suffix."""
+    base = "".join(c for c in (full_name or "WP").upper() if c.isalnum())[:3] or "WP"
+    suffix = uuid.uuid4().hex[:5].upper()
+    return f"{base}-{suffix}"
 
 
 async def _get_user(user_id: str) -> Optional[dict]:
@@ -365,6 +377,13 @@ async def register(body: RegisterBody):
         raise HTTPException(status_code=400, detail="Cet email est déjà utilisé.")
 
     user_id = str(uuid.uuid4())
+    # Try the referral code (case-insensitive) and increment the inviter's counter
+    inviter_id = None
+    if body.referral_code:
+        inviter = await db.users.find_one({"referral_code": body.referral_code.strip().upper()})
+        if inviter:
+            inviter_id = inviter["id"]
+
     user_doc = {
         "id": user_id,
         "email": body.email.lower(),
@@ -375,8 +394,17 @@ async def register(body: RegisterBody):
         "subscription_status": "active",
         "subscription_expires_at": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "referral_code": _gen_referral_code(body.full_name),
+        "referral_count": 0,
+        "referral_reward_claimed": False,
+        "referred_by": inviter_id,
     }
     await db.users.insert_one(user_doc)
+    if inviter_id:
+        await db.users.update_one(
+            {"id": inviter_id},
+            {"$inc": {"referral_count": 1}},
+        )
     token = create_access_token(user_id, body.email.lower())
     # Welcome email (best-effort, doesn't block registration)
     try:
@@ -845,6 +873,96 @@ async def admin_test_email(payload: dict = Depends(get_current_user_payload), _a
     combo = combos["balanced"]
     res = await send_picks_email(user["email"], user["full_name"], combo["legs"], combo["total_odds"])
     return res
+
+
+# ----- Referral program -----
+REFERRAL_THRESHOLD = 3  # invite 3 friends → 7 days Pro
+REFERRAL_REWARD_DAYS = 7
+
+
+@api.get("/referral/me")
+async def get_my_referral(payload: dict = Depends(get_current_user_payload)):
+    """Return the current user's referral status: code, count, share link, WhatsApp deep-link, reward state."""
+    user = await _get_user(payload["sub"])
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+
+    # Backfill referral_code for legacy users
+    code = user.get("referral_code")
+    if not code:
+        code = _gen_referral_code(user.get("full_name", "WP"))
+        await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code, "referral_count": user.get("referral_count", 0)}})
+
+    count = int(user.get("referral_count", 0))
+    claimed = bool(user.get("referral_reward_claimed", False))
+    base = os.environ.get("APP_BASE_URL", "https://wnpulse.com").rstrip("/")
+    share_url = f"{base}/register?ref={code}"
+
+    wa_msg = (
+        f"🔥 Salut ! Je viens de découvrir *WinPulse* — l'IA qui décrypte les pronostics sportifs (foot, basket, NFL...).\n\n"
+        f"Ils ont 70%+ de réussite sur le mois en cours 📊\n\n"
+        f"👉 Inscris-toi gratuitement avec mon code et on débloque tous les deux des avantages :\n"
+        f"{share_url}"
+    )
+    whatsapp_share = f"https://wa.me/?text={urllib_quote(wa_msg)}"
+
+    return {
+        "code": code,
+        "count": count,
+        "threshold": REFERRAL_THRESHOLD,
+        "reward_days": REFERRAL_REWARD_DAYS,
+        "claimed": claimed,
+        "eligible": count >= REFERRAL_THRESHOLD and not claimed,
+        "share_url": share_url,
+        "whatsapp_share": whatsapp_share,
+        "current_tier": user.get("subscription_tier", "free"),
+    }
+
+
+@api.post("/referral/claim")
+async def claim_referral_reward(payload: dict = Depends(get_current_user_payload)):
+    """Claim 7 days of Pro access if the user has at least 3 successful referrals."""
+    user = await _get_user(payload["sub"])
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable.")
+
+    count = int(user.get("referral_count", 0))
+    if user.get("referral_reward_claimed"):
+        raise HTTPException(status_code=400, detail="Récompense déjà réclamée.")
+    if count < REFERRAL_THRESHOLD:
+        raise HTTPException(status_code=400, detail=f"Il te faut {REFERRAL_THRESHOLD} parrainages (actuel : {count}).")
+
+    # Grant REFERRAL_REWARD_DAYS of Pro. Stack on top of existing expiry if any.
+    now = datetime.now(timezone.utc)
+    current_expiry = user.get("subscription_expires_at")
+    if current_expiry:
+        try:
+            base_dt = datetime.fromisoformat(current_expiry.replace("Z", "+00:00"))
+            if base_dt < now:
+                base_dt = now
+        except Exception:
+            base_dt = now
+    else:
+        base_dt = now
+    new_expiry = base_dt + timedelta(days=REFERRAL_REWARD_DAYS)
+
+    new_tier = "pro" if user.get("subscription_tier", "free") == "free" else user["subscription_tier"]
+    await db.users.update_one(
+        {"id": user["id"]},
+        {"$set": {
+            "subscription_tier": new_tier,
+            "subscription_status": "active",
+            "subscription_expires_at": new_expiry.isoformat(),
+            "referral_reward_claimed": True,
+        }},
+    )
+    return {
+        "status": "ok",
+        "tier": new_tier,
+        "expires_at": new_expiry.isoformat(),
+        "reward_days": REFERRAL_REWARD_DAYS,
+        "message": f"🎉 Bravo ! {REFERRAL_REWARD_DAYS} jours Pro activés.",
+    }
 
 
 # ----- Drip email campaigns J+1 / J+3 / J+5 -----

@@ -301,6 +301,14 @@ async def send_drip_day3(to_email: str, user_name: str, win_rate: float = 72.0, 
             <p style="font-size:14px;line-height:1.6;color:#64748b;font-style:italic;">
               Pas de promesses farfelues. Pas de "100% sûr". Juste des maths, des cotes value et de la transparence.
             </p>
+
+            <!-- Referral teaser -->
+            <div style="margin-top:24px;background:linear-gradient(135deg,#fff7ed,#fef2f2);border:1px dashed #ea580c;border-radius:12px;padding:16px;text-align:center;">
+              <div style="font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:1px;color:#9a3412;">🎁 Bonus parrainage</div>
+              <div style="font-size:16px;font-weight:800;color:#0f172a;margin-top:6px;">Invite 3 amis sur WhatsApp = <span style="background:#fde68a;padding:2px 8px;border-radius:6px;">7 jours Pro offerts</span></div>
+              <div style="margin-top:10px;"><a href="{APP_BASE_URL}/app/parrainage" style="color:#ea580c;text-decoration:underline;font-weight:600;font-size:13px;">Récupérer mon code parrainage →</a></div>
+            </div>
+
             <p style="text-align:center;margin:28px 0 12px;">
               <a href="{APP_BASE_URL}/resultats" style="color:#0f172a;text-decoration:underline;font-weight:600;font-size:14px;">📈 Voir le track record complet (public)</a>
             </p>

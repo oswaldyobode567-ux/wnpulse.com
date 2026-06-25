@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Target,
   User,
+  Gift,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -24,6 +25,7 @@ const NAV = [
   { to: "/app/value-bets", label: "Value bets", icon: Target, testId: "nav-value-bets" },
   { to: "/app/historique", label: "Track record", icon: History, testId: "nav-history" },
   { to: "/app/profil", label: "Profil", icon: User, testId: "nav-profile" },
+  { to: "/app/parrainage", label: "Parrainage", icon: Gift, testId: "nav-referral" },
   { to: "/app/abonnement", label: "Abonnement", icon: CreditCard, testId: "nav-subscription" },
 ];
 
