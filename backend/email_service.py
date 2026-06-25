@@ -11,6 +11,7 @@ logger = logging.getLogger("winpulse.email")
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "")
 SENDER_EMAIL = os.environ.get("SENDER_EMAIL", "onboarding@resend.dev")
 APP_NAME = os.environ.get("APP_NAME", "WinPulse")
+APP_BASE_URL = os.environ.get("APP_BASE_URL", "https://wnpulse.com").rstrip("/")
 
 if RESEND_API_KEY:
     resend.api_key = RESEND_API_KEY
@@ -179,7 +180,7 @@ async def send_welcome_email(to_email: str, user_name: str) -> dict:
 async def send_reset_password_email(to_email: str, user_name: str, token: str) -> dict:
     if not RESEND_API_KEY:
         return {"status": "draft", "to": to_email, "token": token}
-    reset_url = f"https://prognosis-bet-1.preview.emergentagent.com/reset-password/{token}"
+    reset_url = f"{APP_BASE_URL}/reset-password/{token}"
     html = f"""
     <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:600px;margin:auto;background:#f8fafc;padding:24px;">
       <div style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
@@ -241,7 +242,7 @@ async def send_drip_day1(to_email: str, user_name: str) -> dict:
               <li>L'email VIP quotidien</li>
             </ul>
             <p style="text-align:center;margin:28px 0 8px;">
-              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Passer Pro · 4 900 FCFA/mois</a>
+              <a href="{APP_BASE_URL}/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Passer Pro · 4 900 FCFA/mois</a>
             </p>
             <p style="font-size:12px;color:#94a3b8;margin-top:16px;text-align:center;">🎯 Joue responsable. 18+.</p>
           </td></tr>
@@ -301,10 +302,10 @@ async def send_drip_day3(to_email: str, user_name: str, win_rate: float = 72.0, 
               Pas de promesses farfelues. Pas de "100% sûr". Juste des maths, des cotes value et de la transparence.
             </p>
             <p style="text-align:center;margin:28px 0 12px;">
-              <a href="https://prognosis-bet-1.preview.emergentagent.com/resultats" style="color:#0f172a;text-decoration:underline;font-weight:600;font-size:14px;">📈 Voir le track record complet (public)</a>
+              <a href="{APP_BASE_URL}/resultats" style="color:#0f172a;text-decoration:underline;font-weight:600;font-size:14px;">📈 Voir le track record complet (public)</a>
             </p>
             <p style="text-align:center;margin:8px 0;">
-              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Rejoindre les Pro · 4 900 FCFA/mois</a>
+              <a href="{APP_BASE_URL}/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Rejoindre les Pro · 4 900 FCFA/mois</a>
             </p>
             <p style="font-size:12px;color:#94a3b8;margin-top:24px;text-align:center;">🎯 Performances passées ≠ garantie de résultats futurs. Joue responsable. 18+.</p>
           </td></tr>
@@ -348,7 +349,7 @@ async def send_drip_day5(to_email: str, user_name: str, discount_code: str = "WI
             </div>
             <p style="font-size:14px;">Ce code est <strong>personnel et expire dans 48 heures</strong>. Après ça, le tarif standard de 4 900 FCFA reprend.</p>
             <p style="text-align:center;margin:28px 0 8px;">
-              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement?promo={discount_code}" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:800;padding:16px 36px;border-radius:12px;display:inline-block;font-size:16px;box-shadow:0 8px 24px rgba(234,88,12,.3);">Activer mon code {discount_code} →</a>
+              <a href="{APP_BASE_URL}/app/abonnement?promo={discount_code}" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:800;padding:16px 36px;border-radius:12px;display:inline-block;font-size:16px;box-shadow:0 8px 24px rgba(234,88,12,.3);">Activer mon code {discount_code} →</a>
             </p>
             <p style="font-size:12px;color:#94a3b8;margin-top:24px;text-align:center;">🎯 Joue responsable. 18+. Aucun remboursement après activation.</p>
           </td></tr>
@@ -425,7 +426,7 @@ async def send_weekly_teaser_email(to_email: str, user_name: str, picks: list, t
               </td></tr>
             </table>
             <p style="text-align:center;margin:24px 0 8px;">
-              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Débloquer le combiné · 4 900 FCFA/mois</a>
+              <a href="{APP_BASE_URL}/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Débloquer le combiné · 4 900 FCFA/mois</a>
             </p>
             <p style="font-size:12px;color:#94a3b8;margin-top:16px;text-align:center;">🎯 Joue responsable. 18+. Ne mise jamais plus que ce que tu peux perdre.</p>
           </td></tr>
