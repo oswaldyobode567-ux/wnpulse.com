@@ -44,6 +44,7 @@ export default function LandingPage() {
             </div>
           </Link>
           <nav className="flex items-center gap-2">
+            <Link to="/resultats" className="hidden sm:inline-flex"><Button variant="ghost" size="sm" data-testid="public-trackrecord-link">📈 Track record</Button></Link>
             {user ? (
               <Button data-testid="open-app-btn" className="wp-gradient-warm text-white hover:opacity-90 border-0" onClick={() => navigate("/app")}>
                 Ouvrir l'app

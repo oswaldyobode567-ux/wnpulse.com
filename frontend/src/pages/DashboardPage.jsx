@@ -14,6 +14,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import SocialProofToast from "@/components/SocialProofToast";
 import { RealtimeBar, FreshnessStamp } from "@/components/RealtimeBar";
 import { useRealtimeMatches, useDataStatus } from "@/services/realtimeService";
+import PaymentModal from "@/components/payment/PaymentModal";
 
 const SPORT_FILTERS = [
   { key: "all", label: "Tous" },
@@ -32,6 +33,7 @@ export default function DashboardPage() {
   const [topPicks, setTopPicks] = useState([]);
   const [topLoading, setTopLoading] = useState(true);
   const [sport, setSport] = useState("all");
+  const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
   const isFree = !user?.subscription_tier || user.subscription_tier === "free";
 
   useEffect(() => {
@@ -148,11 +150,13 @@ export default function DashboardPage() {
                 Débloque <strong>tous les pronostics</strong>, les <strong>3 combinés</strong> (Sécurité / Équilibre / Jackpot) et l'<strong>analyse IA</strong> dès <strong>4 900 FCFA / mois</strong>.
               </div>
             </div>
-            <Link to="/app/abonnement">
-              <Button className="wp-gradient-warm text-white border-0 hover:opacity-90" data-testid="upgrade-cta-dashboard">
-                Passer Pro <ChevronRight className="h-4 w-4 ml-1" />
-              </Button>
-            </Link>
+            <Button
+              className="wp-gradient-warm text-white border-0 hover:opacity-90"
+              data-testid="upgrade-cta-dashboard"
+              onClick={() => setPayState({ isOpen: true, tier: "PRO" })}
+            >
+              Passer Pro <ChevronRight className="h-4 w-4 ml-1" />
+            </Button>
           </Card>
         )}
 
@@ -196,6 +200,11 @@ export default function DashboardPage() {
           )}
         </section>
       </div>
+      <PaymentModal
+        isOpen={payState.isOpen}
+        onClose={() => setPayState({ isOpen: false, tier: payState.tier })}
+        targetTier={payState.tier}
+      />
     </AppLayout>
   );
 }

@@ -13,6 +13,9 @@ import HistoryPage from "@/pages/HistoryPage";
 import SubscriptionPage from "@/pages/SubscriptionPage";
 import TopPicksPage from "@/pages/TopPicksPage";
 import AdminPage from "@/pages/AdminPage";
+import TrackRecordPage from "@/pages/TrackRecordPage";
+import ValueBetsPage from "@/pages/ValueBetsPage";
+import ProfilePage from "@/pages/ProfilePage";
 
 function RequireAuth({ children, admin = false }) {
   const { user, loading } = useAuth();
@@ -38,8 +41,11 @@ export default function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+          <Route path="/resultats" element={<TrackRecordPage />} />
           <Route path="/app" element={<RequireAuth><DashboardPage /></RequireAuth>} />
           <Route path="/app/top" element={<RequireAuth><TopPicksPage /></RequireAuth>} />
+          <Route path="/app/value-bets" element={<RequireAuth><ValueBetsPage /></RequireAuth>} />
+          <Route path="/app/profil" element={<RequireAuth><ProfilePage /></RequireAuth>} />
           <Route path="/app/match/:matchId" element={<RequireAuth><MatchDetailPage /></RequireAuth>} />
           <Route path="/app/combines" element={<RequireAuth><CombosPage /></RequireAuth>} />
           <Route path="/app/historique" element={<RequireAuth><HistoryPage /></RequireAuth>} />

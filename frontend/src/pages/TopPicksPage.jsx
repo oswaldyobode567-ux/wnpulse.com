@@ -9,11 +9,13 @@ import { Link } from "react-router-dom";
 import { Trophy, Flame, Lock, Sparkles, ChevronRight } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
+import PaymentModal from "@/components/payment/PaymentModal";
 
 export default function TopPicksPage() {
   const { user } = useAuth();
   const [picks, setPicks] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
   const isFree = !user?.subscription_tier || user.subscription_tier === "free";
 
   useEffect(() => {
@@ -104,6 +106,11 @@ export default function TopPicksPage() {
           </div>
         )}
       </div>
+      <PaymentModal
+        isOpen={payState.isOpen}
+        onClose={() => setPayState({ isOpen: false, tier: payState.tier })}
+        targetTier={payState.tier}
+      />
     </AppLayout>
   );
 }

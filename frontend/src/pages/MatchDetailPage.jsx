@@ -10,6 +10,7 @@ import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
+import PaymentModal from "@/components/payment/PaymentModal";
 
 export default function MatchDetailPage() {
   const { matchId } = useParams();
@@ -18,6 +19,7 @@ export default function MatchDetailPage() {
   const [analysis, setAnalysis] = useState(null);
   const [loadingMatch, setLoadingMatch] = useState(true);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
 
   useEffect(() => {
     setLoadingMatch(true);
@@ -112,11 +114,9 @@ export default function MatchDetailPage() {
                 </div>
               </div>
             </div>
-            <Link to="/app/abonnement">
-              <Button className="wp-gradient-warm text-white border-0 hover:opacity-90" data-testid="upgrade-cta-match">
-                Débloquer dès 4 900 FCFA / mois <ChevronLeft className="h-4 w-4 ml-2 rotate-180" />
-              </Button>
-            </Link>
+            <Button className="wp-gradient-warm text-white border-0 hover:opacity-90" data-testid="upgrade-cta-match" onClick={() => setPayState({ isOpen: true, tier: "PRO" })}>
+              Débloquer dès 4 900 FCFA / mois <ChevronLeft className="h-4 w-4 ml-2 rotate-180" />
+            </Button>
           </Card>
         ) : (
         <Card className={`border ${labelColor} p-6 mb-6`} data-testid="prediction-summary">
@@ -258,7 +258,7 @@ export default function MatchDetailPage() {
         </Card>
 
         {/* Bookmakers */}
-        <Card className="bg-white border-slate-200 p-6">
+        <Card className="bg-white border-slate-200 p-6 mb-6">
           <h2 className="font-heading text-lg font-bold text-slate-900 mb-4">Cotes par bookmaker</h2>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
@@ -285,8 +285,94 @@ export default function MatchDetailPage() {
             </table>
           </div>
         </Card>
+
+        {/* Stats panel — FootyStat style (deterministic mock from match id) */}
+        {!locked && <MatchStatsPanel home={data.home_team} away={data.away_team} seed={data.id} />}
       </div>
+      <PaymentModal
+        isOpen={payState.isOpen}
+        onClose={() => setPayState({ isOpen: false, tier: payState.tier })}
+        targetTier={payState.tier}
+      />
     </AppLayout>
+  );
+}
+
+function seededRng(seed) {
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
+  return () => { h = (h * 9301 + 49297) % 233280; return h / 233280; };
+}
+
+function MatchStatsPanel({ home, away, seed }) {
+  const rng = seededRng(seed || "x");
+  const homeForm = Array.from({ length: 5 }, () => rng() > 0.4 ? "W" : rng() > 0.5 ? "D" : "L");
+  const awayForm = Array.from({ length: 5 }, () => rng() > 0.45 ? "W" : rng() > 0.5 ? "D" : "L");
+  const h2h = Array.from({ length: 5 }, (_, i) => {
+    const hs = Math.floor(rng() * 4); const as = Math.floor(rng() * 4);
+    return { date: `${24 - i*2}/0${1 + (i%3)}/202${4 + (i%2)}`, comp: ["Coupe", "Championnat", "Amical"][i%3], score: `${hs}-${as}`, btts: hs > 0 && as > 0 };
+  });
+  const stats = [
+    { label: "Possession (%)", h: 50 + Math.floor(rng() * 14), a: 0 },
+    { label: "Tirs / match", h: 10 + Math.floor(rng() * 8), a: 8 + Math.floor(rng() * 7) },
+    { label: "Buts marqués / match", h: +(1.2 + rng() * 1.5).toFixed(1), a: +(1.0 + rng() * 1.3).toFixed(1) },
+    { label: "Buts encaissés / match", h: +(0.8 + rng() * 1.0).toFixed(1), a: +(1.0 + rng() * 1.0).toFixed(1) },
+    { label: "Clean sheets (5 derniers)", h: Math.floor(rng() * 4), a: Math.floor(rng() * 4) },
+  ];
+  stats[0].a = 100 - stats[0].h;
+  const injuries = {
+    home: [{ name: "Joueur clé A", status: "INDISPONIBLE" }, { name: "Milieu 2", status: "INCERTAIN" }],
+    away: [{ name: "Attaquant", status: "INCERTAIN" }],
+  };
+  const formColor = (r) => r === "W" ? "bg-emerald-500" : r === "D" ? "bg-amber-500" : "bg-rose-500";
+
+  return (
+    <div className="space-y-5" data-testid="stats-panel">
+      <div className="bg-white border border-neutral-200 rounded-xl p-5">
+        <h3 className="font-heading font-bold text-slate-900 mb-3">📅 Confrontations directes (H2H)</h3>
+        <table className="w-full text-sm">
+          <thead><tr className="text-xs uppercase tracking-wider text-slate-500 border-b border-neutral-200"><th className="py-1 text-left">Date</th><th className="py-1 text-left">Compétition</th><th className="py-1 text-center">Score</th><th className="py-1 text-center">BTTS</th></tr></thead>
+          <tbody>{h2h.map((m, i) => (
+            <tr key={i} className="border-b border-neutral-100"><td className="py-2 text-slate-600 text-xs font-mono">{m.date}</td><td className="py-2 text-slate-700 text-xs">{m.comp}</td><td className="py-2 text-center font-mono font-bold">{m.score}</td><td className="py-2 text-center"><span className={`text-[10px] px-1.5 py-0.5 rounded ${m.btts ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{m.btts ? "OUI" : "NON"}</span></td></tr>
+          ))}</tbody>
+        </table>
+      </div>
+
+      <div className="grid sm:grid-cols-2 gap-4">
+        {[["Domicile", home, homeForm], ["Extérieur", away, awayForm]].map(([lbl, team, form], k) => (
+          <div key={k} className="bg-white border border-neutral-200 rounded-xl p-4">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{lbl}</div>
+            <div className="font-heading font-bold text-slate-900 mb-3">{team}</div>
+            <div className="text-xs text-slate-500 mb-2">5 derniers matchs</div>
+            <div className="flex gap-1.5">{form.map((r, i) => <span key={i} className={`h-7 w-7 rounded-full grid place-items-center text-xs font-bold text-white ${formColor(r)}`} title={r === "W" ? "Victoire" : r === "D" ? "Nul" : "Défaite"}>{r}</span>)}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white border border-neutral-200 rounded-xl p-5">
+        <h3 className="font-heading font-bold text-slate-900 mb-4">📊 Comparaison statistique</h3>
+        <div className="space-y-3">{stats.map((s, i) => {
+          const total = (Number(s.h) || 0) + (Number(s.a) || 0); const hp = total > 0 ? (s.h / total) * 100 : 50;
+          return (
+            <div key={i}>
+              <div className="flex justify-between text-xs mb-1"><span className="font-bold font-mono text-orange-600">{s.h}</span><span className="text-slate-500">{s.label}</span><span className="font-bold font-mono text-rose-600">{s.a}</span></div>
+              <div className="h-2 bg-neutral-100 rounded-full overflow-hidden flex"><div className="bg-orange-500" style={{ width: `${hp}%` }} /><div className="bg-rose-500 flex-1" /></div>
+            </div>
+          );
+        })}</div>
+      </div>
+
+      <div className="bg-white border border-neutral-200 rounded-xl p-5">
+        <h3 className="font-heading font-bold text-slate-900 mb-3">🏥 Blessures & suspensions</h3>
+        <div className="grid sm:grid-cols-2 gap-3">{[[home, injuries.home], [away, injuries.away]].map(([t, list], k) => (
+          <div key={k}><div className="text-xs font-bold text-slate-700 mb-2">{t}</div>
+            <div className="space-y-1">{list.map((p, i) => (
+              <div key={i} className="flex items-center justify-between text-xs"><span className="text-slate-700">{p.name}</span><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === "INDISPONIBLE" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>{p.status}</span></div>
+            ))}</div>
+          </div>
+        ))}</div>
+      </div>
+    </div>
   );
 }
 

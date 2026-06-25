@@ -10,6 +10,8 @@ import {
   Zap,
   Crown,
   ShieldCheck,
+  Target,
+  User,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -19,7 +21,9 @@ const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true, testId: "nav-dashboard" },
   { to: "/app/top", label: "À la une", icon: Trophy, testId: "nav-top" },
   { to: "/app/combines", label: "Combinés", icon: Layers, testId: "nav-combos" },
+  { to: "/app/value-bets", label: "Value bets", icon: Target, testId: "nav-value-bets" },
   { to: "/app/historique", label: "Track record", icon: History, testId: "nav-history" },
+  { to: "/app/profil", label: "Profil", icon: User, testId: "nav-profile" },
   { to: "/app/abonnement", label: "Abonnement", icon: CreditCard, testId: "nav-subscription" },
 ];
 

@@ -261,6 +261,102 @@ async def get_plans():
     return [{"id": k, **v} for k, v in PLANS.items()]
 
 
+@api.get("/track-record")
+async def track_record(page: int = 1, per_page: int = 20):
+    """PUBLIC track record — visible without auth for trust/conversion."""
+    docs = await db.predictions_log.find({}, {"_id": 0}).sort("datetime", -1).to_list(500)
+    total = len(docs)
+    if total == 0:
+        return {"stats": {"total": 0, "wins": 0, "win_rate": 0, "roi_percent": 0, "current_streak": 0, "avg_odds": 0, "profit_units": 0}, "results": [], "chart": [], "page": 1, "per_page": per_page, "total_pages": 0}
+
+    # Stats over last 30 days
+    cutoff_30 = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    last30 = [d for d in docs if d.get("datetime", "") >= cutoff_30]
+    wins30 = sum(1 for d in last30 if d.get("won"))
+    roi_30_units = sum((d["odds"] - 1) if d["won"] else -1 for d in last30)
+    roi_30_pct = round((roi_30_units / len(last30)) * 100, 1) if last30 else 0
+
+    wins = sum(1 for d in docs if d.get("won"))
+    win_rate = round((wins / total) * 100, 1)
+    avg_odds = round(sum(d["odds"] for d in docs) / total, 2)
+
+    # Current streak (consecutive wins from most recent)
+    streak = 0
+    for d in docs:
+        if d.get("won"):
+            streak += 1
+        else:
+            break
+
+    # Cumulative ROI chart — 60 days, base 10 000 FCFA, 200 FCFA stake
+    BASE = 10000; STAKE = 200
+    daily = {}
+    for d in docs:
+        date = d.get("date", "")
+        profit = (d["odds"] - 1) * STAKE if d.get("won") else -STAKE
+        daily[date] = daily.get(date, 0) + profit
+    sorted_dates = sorted(daily.keys())
+    cum = BASE
+    chart = []
+    for date in sorted_dates:
+        cum += daily[date]
+        chart.append({"date": date, "balance": round(cum), "profit": daily[date]})
+
+    # Pagination
+    start = (page - 1) * per_page
+    page_docs = docs[start:start + per_page]
+    results = []
+    for d in page_docs:
+        profit = round((d["odds"] - 1) * STAKE) if d.get("won") else -STAKE
+        results.append({**d, "profit_xof": profit, "status": "won" if d.get("won") else "lost"})
+
+    return {
+        "stats": {
+            "total": total, "wins": wins, "losses": total - wins,
+            "win_rate": win_rate, "roi_percent": roi_30_pct,
+            "current_streak": streak, "avg_odds": avg_odds,
+            "profit_units_30d": round(roi_30_units, 1),
+            "balance_now": cum, "base": BASE, "stake_xof": STAKE,
+        },
+        "results": results,
+        "chart": chart,
+        "page": page, "per_page": per_page,
+        "total_pages": (total + per_page - 1) // per_page,
+    }
+
+
+@api.get("/value-bets")
+async def value_bets(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    """Detect value bets across all matches. Free users get count only, Pro/Elite see full list."""
+    tier = await _get_tier_from_payload(payload)
+    matches = await fetch_all_matches(db)
+    bets = []
+    for m in matches:
+        pred = analyze_match(m)
+        for mk in (pred.get("markets") or []):
+            edge = mk.get("edge", 0)
+            if edge >= 5:  # threshold for value bet
+                bets.append({
+                    "match_id": m.get("id"),
+                    "sport_title": m.get("sport_title"),
+                    "home_team": m.get("home_team"),
+                    "away_team": m.get("away_team"),
+                    "commence_time": m.get("commence_time"),
+                    "market": mk.get("market"),
+                    "market_label": mk.get("market_label"),
+                    "pick": mk.get("pick"),
+                    "pick_odds": mk.get("pick_odds"),
+                    "our_prob": round((1 / mk.get("pick_odds", 1)) * 100 + edge, 1) if mk.get("pick_odds") else 0,
+                    "implied_prob": round((1 / mk.get("pick_odds", 1)) * 100, 1) if mk.get("pick_odds") else 0,
+                    "edge": edge,
+                    "confidence": mk.get("confidence"),
+                })
+    bets.sort(key=lambda b: b["edge"], reverse=True)
+    if tier in ("free", "anonymous"):
+        return {"count": len(bets), "tier": "free", "bets": [], "locked": True}
+    return {"count": len(bets), "tier": tier, "bets": bets[:30], "locked": False}
+
+
 # ----- Auth -----
 @api.post("/auth/register", response_model=TokenResponse)
 async def register(body: RegisterBody):
@@ -555,7 +651,7 @@ async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current
     if body.tier not in ("pro", "elite"):
         raise HTTPException(400, "Plan invalide")
     plan = PLANS[body.tier]
-    ref = f"WP-{uuid.uuid4().hex[:8].upper()}"
+    ref = f"PE-{uuid.uuid4().hex[:8].upper()}"
     doc = {
         "id": str(uuid.uuid4()),
         "user_id": payload["sub"],
@@ -575,11 +671,12 @@ async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current
         "tier": body.tier,
         "instructions": {
             "operator": "MTN Mobile Money Bénin",
-            "merchant_number": os.environ.get("MOMO_MERCHANT_PHONE", "+229 01 52 64 51 51"),
+            "merchant_number": os.environ.get("MOMO_MERCHANT_PHONE", "+229 01 67 30 54 39"),
+            "whatsapp_number": os.environ.get("MOMO_WHATSAPP_PHONE", "+229 01 67 30 54 39"),
             "steps": [
                 "Composez *880# sur votre téléphone MTN Bénin",
                 "Choisissez 'Transfert d'argent'",
-                f"Saisissez le numéro marchand : {os.environ.get('MOMO_MERCHANT_PHONE', '+229 01 52 64 51 51')}",
+                f"Saisissez le numéro marchand : {os.environ.get('MOMO_MERCHANT_PHONE', '+229 01 67 30 54 39')}",
                 f"Montant : {plan['price_xof']} FCFA",
                 f"Référence (motif) : {ref}",
                 "Confirmez avec votre code PIN MTN",

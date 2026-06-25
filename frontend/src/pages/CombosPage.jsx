@@ -11,6 +11,7 @@ import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import SocialProofToast from "@/components/SocialProofToast";
+import PaymentModal from "@/components/payment/PaymentModal";
 
 const TIERS = [
   {
@@ -65,6 +66,7 @@ export default function CombosPage() {
   const [combos, setCombos] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTier, setActiveTier] = useState("balanced");
+  const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
 
   const fetchCombos = async () => {
     setLoading(true);
@@ -179,11 +181,9 @@ export default function CombosPage() {
             <div className="flex-1 text-sm text-orange-900">
               <strong>Pas de combiné gratuit aujourd'hui.</strong> Reviens demain ou passe Pro pour débloquer les 3 combinés tout de suite.
             </div>
-            <Link to="/app/abonnement">
-              <Button size="sm" className="wp-gradient-warm text-white border-0" data-testid="upgrade-from-combos-btn">
-                Passer Pro
-              </Button>
-            </Link>
+            <Button size="sm" className="wp-gradient-warm text-white border-0" data-testid="upgrade-from-combos-btn" onClick={() => setPayState({ isOpen: true, tier: "PRO" })}>
+              Passer Pro
+            </Button>
           </Card>
         )}
 
@@ -263,6 +263,11 @@ export default function CombosPage() {
           </div>
         )}
       </div>
+      <PaymentModal
+        isOpen={payState.isOpen}
+        onClose={() => setPayState({ isOpen: false, tier: payState.tier })}
+        targetTier={payState.tier}
+      />
     </AppLayout>
   );
 }
