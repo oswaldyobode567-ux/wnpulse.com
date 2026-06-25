@@ -49,6 +49,7 @@ export default function LandingPage() {
           </Link>
           <nav className="flex items-center gap-2">
             <Link to="/resultats" className="hidden sm:inline-flex"><Button variant="ghost" size="sm" data-testid="public-trackrecord-link">📈 Track record</Button></Link>
+            <Link to="/blog" className="hidden md:inline-flex"><Button variant="ghost" size="sm" data-testid="public-blog-link">📰 Blog</Button></Link>
             {user ? (
               <Button data-testid="open-app-btn" className="wp-gradient-warm text-white hover:opacity-90 border-0" onClick={() => navigate("/app")}>
                 Ouvrir l'app
@@ -463,6 +464,8 @@ export default function LandingPage() {
             <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold" data-testid="footer-legal-jeu">Jeu responsable · 18+</Link>
             <span className="text-slate-300">·</span>
             <Link to="/resultats" className="text-slate-600 hover:text-orange-600 font-semibold">Track record</Link>
+            <span className="text-slate-300">·</span>
+            <Link to="/blog" className="text-slate-600 hover:text-orange-600 font-semibold">Blog</Link>
           </div>
           <div className="text-sm text-slate-500 text-center">© 2026 WinPulse SARL · Cotonou, Bénin · Joue responsable · 18+</div>
           <div className="text-xs text-slate-400 max-w-2xl text-center">Les pronostics sont des analyses statistiques, pas des garanties. Mise ce que tu peux perdre. WinPulse n'accepte aucun pari et ne joue pas pour ses utilisateurs.</div>

@@ -146,6 +146,8 @@ export default function AppLayout({ children }) {
         <footer className="border-t border-neutral-200 bg-white py-5 px-4">
           <div className="max-w-6xl mx-auto flex flex-col items-center gap-2 text-xs">
             <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+              <Link to="/blog" className="text-slate-500 hover:text-orange-600 font-semibold">Blog</Link>
+              <span className="text-slate-300">·</span>
               <Link to="/legal/mentions-legales" className="text-slate-500 hover:text-orange-600 font-semibold">Mentions légales</Link>
               <span className="text-slate-300">·</span>
               <Link to="/legal/cgv" className="text-slate-500 hover:text-orange-600 font-semibold">CGV</Link>

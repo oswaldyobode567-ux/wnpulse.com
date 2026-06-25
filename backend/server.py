@@ -1036,6 +1036,210 @@ async def _drip_loop():
         await asyncio.sleep(6 * 3600)
 
 
+# ----- Public SEO endpoints (no /api prefix needed for sitemap/robots — but we keep /api for k8s routing) -----
+@api.get("/blog/posts")
+async def list_blog_posts(tag: Optional[str] = None, limit: int = 20):
+    """List published blog posts (lightweight: no content_md)."""
+    await _ensure_blog_seeded()
+    query = {"published": True}
+    if tag:
+        query["tags"] = tag
+    cursor = db.blog_posts.find(query, {"_id": 0, "content_md": 0}).sort("published_at", -1).limit(limit)
+    posts = await cursor.to_list(limit)
+    return {"posts": posts, "count": len(posts)}
+
+
+@api.get("/blog/posts/{slug}")
+async def get_blog_post(slug: str):
+    """Fetch a single blog post by slug."""
+    await _ensure_blog_seeded()
+    post = await db.blog_posts.find_one({"slug": slug, "published": True}, {"_id": 0})
+    if not post:
+        raise HTTPException(status_code=404, detail="Article introuvable")
+    # Related posts (same tag, excluding self)
+    related = []
+    if post.get("tags"):
+        cursor = db.blog_posts.find(
+            {"slug": {"$ne": slug}, "published": True, "tags": {"$in": post["tags"]}},
+            {"_id": 0, "content_md": 0},
+        ).limit(3)
+        related = await cursor.to_list(3)
+    return {"post": post, "related": related}
+
+
+@api.get("/sitemap.xml")
+async def sitemap_xml():
+    """Generate XML sitemap for Google indexing."""
+    from fastapi.responses import Response
+    base = os.environ.get("APP_BASE_URL", "https://wnpulse.com").rstrip("/")
+    await _ensure_blog_seeded()
+    posts = await db.blog_posts.find({"published": True}, {"_id": 0, "slug": 1, "published_at": 1}).to_list(100)
+
+    static_urls = [
+        ("/", "1.0", "daily"),
+        ("/resultats", "0.9", "daily"),
+        ("/login", "0.5", "monthly"),
+        ("/register", "0.7", "monthly"),
+        ("/blog", "0.9", "weekly"),
+        ("/legal/mentions-legales", "0.3", "yearly"),
+        ("/legal/cgv", "0.3", "yearly"),
+        ("/legal/confidentialite", "0.3", "yearly"),
+        ("/legal/jeu-responsable", "0.5", "yearly"),
+    ]
+
+    items = []
+    for path, prio, freq in static_urls:
+        items.append(f"<url><loc>{base}{path}</loc><priority>{prio}</priority><changefreq>{freq}</changefreq></url>")
+    for p in posts:
+        items.append(
+            f"<url><loc>{base}/blog/{p['slug']}</loc><lastmod>{p.get('published_at', '')[:10]}</lastmod><priority>0.8</priority><changefreq>monthly</changefreq></url>"
+        )
+
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(items)
+        + "\n</urlset>"
+    )
+    return Response(content=xml, media_type="application/xml")
+
+
+@api.get("/robots.txt")
+async def robots_txt():
+    from fastapi.responses import Response
+    base = os.environ.get("APP_BASE_URL", "https://wnpulse.com").rstrip("/")
+    body = f"User-agent: *\nAllow: /\nDisallow: /app/\nDisallow: /admin\n\nSitemap: {base}/api/sitemap.xml\n"
+    return Response(content=body, media_type="text/plain")
+
+
+async def _ensure_blog_seeded():
+    """Insert the blog seed posts on first call if collection is empty."""
+    count = await db.blog_posts.count_documents({})
+    if count > 0:
+        return
+    try:
+        from blog_seed import BLOG_POSTS
+    except Exception as e:
+        log.warning(f"blog_seed import failed: {e}")
+        return
+    docs = [{**p, "published": True} for p in BLOG_POSTS]
+    if docs:
+        await db.blog_posts.insert_many(docs)
+        log.info(f"Seeded {len(docs)} blog posts")
+
+
+# ----- Auto-settle worker: settle predictions from finished matches -----
+async def _run_auto_settle() -> dict:
+    """Fetch finished matches from the Odds API scores endpoint and settle predictions into predictions_log.
+    Idempotent: matches already settled (by match_id) are skipped."""
+    summary = {"scanned": 0, "settled": 0, "wins": 0, "losses": 0, "skipped": 0, "errors": 0}
+    try:
+        from odds_service import fetch_all_scores
+        scores = await fetch_all_scores(db)
+    except Exception as e:
+        log.warning(f"auto-settle: fetch_scores failed: {e}")
+        return {**summary, "error": str(e)}
+
+    for event in scores or []:
+        summary["scanned"] += 1
+        if not event.get("completed"):
+            continue
+        match_id = event.get("id") or f"{event.get('home_team')}-{event.get('away_team')}-{event.get('commence_time', '')[:10]}"
+        # Skip if already settled
+        existing = await db.predictions_log.find_one({"match_id": match_id})
+        if existing:
+            summary["skipped"] += 1
+            continue
+
+        # Determine winner from scores
+        home = event.get("home_team")
+        away = event.get("away_team")
+        scores_arr = event.get("scores") or []
+        try:
+            score_map = {s.get("name"): float(s.get("score", 0)) for s in scores_arr}
+            home_score = score_map.get(home, 0)
+            away_score = score_map.get(away, 0)
+        except Exception:
+            summary["errors"] += 1
+            continue
+
+        if home_score > away_score:
+            winner = home
+        elif away_score > home_score:
+            winner = away
+        else:
+            winner = "Draw"
+
+        # Pick = favorite (lowest odds) — placeholder logic
+        pick = home  # default
+        odds = 1.85
+        try:
+            bookmakers = event.get("bookmakers") or []
+            if bookmakers:
+                outcomes = bookmakers[0].get("markets", [{}])[0].get("outcomes", [])
+                if outcomes:
+                    fav = min(outcomes, key=lambda o: float(o.get("price", 99)))
+                    pick = fav.get("name", home)
+                    odds = float(fav.get("price", 1.85))
+        except Exception:
+            pass
+
+        won = (pick == winner)
+        profit = (odds - 1) if won else -1.0
+
+        doc = {
+            "id": str(uuid.uuid4()),
+            "match_id": match_id,
+            "date": (event.get("commence_time") or datetime.now(timezone.utc).isoformat())[:10],
+            "datetime": event.get("commence_time"),
+            "match": f"{home} vs {away}",
+            "home_team": home,
+            "away_team": away,
+            "league": event.get("sport_title", ""),
+            "sport_key": event.get("sport_key", ""),
+            "pick": pick,
+            "odds": round(odds, 2),
+            "confidence": 60,  # placeholder until ML scoring is wired
+            "score_home": home_score,
+            "score_away": away_score,
+            "winner": winner,
+            "won": won,
+            "profit": profit,
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "source": "auto_settle",
+        }
+        try:
+            await db.predictions_log.insert_one(doc)
+            summary["settled"] += 1
+            if won:
+                summary["wins"] += 1
+            else:
+                summary["losses"] += 1
+        except Exception as e:
+            log.warning(f"auto-settle: insert failed for {match_id}: {e}")
+            summary["errors"] += 1
+
+    return summary
+
+
+@api.post("/admin/auto-settle/run")
+async def admin_auto_settle_run(_admin = Depends(_require_admin)):
+    """Manually trigger the auto-settle worker."""
+    return await _run_auto_settle()
+
+
+async def _auto_settle_loop():
+    """Background loop: settle finished matches every 4 hours."""
+    await asyncio.sleep(180)  # let app warm up
+    while True:
+        try:
+            res = await _run_auto_settle()
+            log.info(f"auto-settle result: {res}")
+        except Exception as e:
+            log.error(f"auto-settle loop error: {e}")
+        await asyncio.sleep(4 * 3600)
+
+
 app.include_router(api)
 
 
@@ -1043,7 +1247,8 @@ app.include_router(api)
 async def start_drip_worker():
     """Kick off the drip background loop."""
     asyncio.create_task(_drip_loop())
-    log.info("Drip email campaign worker started (J+1, J+3, J+5 — every 6h)")
+    asyncio.create_task(_auto_settle_loop())
+    log.info("Background workers started: drip (J+1/J+3/J+5 every 6h) + auto-settle (every 4h)")
 
 
 @app.on_event("startup")
