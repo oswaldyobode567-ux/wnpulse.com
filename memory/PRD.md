@@ -1,56 +1,107 @@
-# PRD — WinPulse
+# WinPulse — Product Requirements Document
 
-## Problem statement (original, FR)
-> Application de pronostics de paris sportifs (FootyStats + BetAI mais en mieux). Pronostics par IA, combinés en temps réel, multi-sports (foot, basket, tennis, NFL, hockey, MMA), abonnement mensuel par MTN Mobile Money +229 01 52 64 51 51 selon graduation. Soft, clair, analyse poussée. Couleurs vibrantes. Nom ludique fun et jouissif. Combinés du plus safe au plus risqué.
+## Original Problem Statement
+Build an AI-powered sports betting prediction application called **WinPulse**:
+- Real-time odds + multi-sport coverage via The Odds API
+- AI analysis using Claude Sonnet 4.5
+- Subscription tiers (Free / Pro 4 900 FCFA / Elite 14 900 FCFA) via MTN Mobile Money Bénin
+- Combo predictions and free daily picks
+- Vibrant orange/rose UI + social proof, live scores, public track record, value bets, FootyStat-style match stats, profile.
 
-## Branding
-- **Name**: WinPulse — "Ton pouls de gagnant"
-- **Primary**: orange-600 #ea580c (energy, action)
-- **Pulse accent**: rose-500 #f43f5e (live indicators)
-- **Win green**: emerald-500 #10b981
-- **Tone**: soft, clean, vibrant; FR-first
+## Company / Editor
+- **Name:** WinPulse SARL
+- **HQ:** Cotonou, Littoral, Bénin
+- **Contact:** contact@winpulse.com
+- **MTN MoMo / WhatsApp:** +229 01 67 30 54 39
+- **Refund policy:** No refund after activation (explicit consent checkbox on payment)
 
-## Architecture
-- **Backend** FastAPI + MongoDB (motor) — port 8001, prefix `/api`
-- **Frontend** React (CRA + craco) + shadcn/ui + Tailwind
-- **AI** Emergent LLM key (referred to as "IA experte" in UI) — on-demand + cached daily per match
-- **Odds** The Odds API (real key) — 23 sport keys, 14-day horizon, 60 matches cap, MongoDB cache 60min
-- **Emails** Resend (test mode for now — need verified sender domain for production broadcast)
-- **Paiement** MTN Mobile Money manuel + panneau admin de validation
+## Tech Stack
+- **Frontend:** React 18, Tailwind, Shadcn UI, Recharts, dayjs
+- **Backend:** FastAPI, MongoDB (Motor async)
+- **Email:** Resend
+- **AI:** Claude Sonnet 4.5 (via Emergent LLM key)
+- **Auth:** JWT custom
+- **Realtime:** smart polling (no websockets)
 
-## Stratégie d'économie API
-- Cache MongoDB 60 min sur les odds (`odds_cache`)
-- Moteur de scoring déterministe (consensus + vig retiré + variance) → confidence pour TOUS les matchs sans IA
-- IA appelée uniquement sur match detail on-demand, cache journalier (`ai_analysis_cache`)
-- Free tier n'appelle pas l'IA (fallback engine)
+## Implemented Features
+### Auth & Onboarding
+- JWT register/login, forgot password + email reset, social proof toast
+### Core Product
+- Real-time matches dashboard, top picks, multi-market combos (Safe/Balanced/Jackpot)
+- Match Detail page with H2H/Form/Injuries stats (FootyStat style)
+- Value Bets detector
+- Public Track Record page with Recharts charts
+- User Profile page
+### Subscriptions
+- 3 tiers (Free / Pro 4900 / Elite 14900 FCFA)
+- **PaymentModal** (Feb 2026) — 3-step flow Récap → Paiement → Confirmation
+  - PE-XXXXXXXX reference, MTN merchant +229 01 67 30 54 39
+  - WhatsApp pre-filled confirmation deep-link
+  - "Aucun remboursement" consent checkbox (required to proceed)
+  - Wired on Dashboard, Subscription, Combos, TopPicks, ValueBets, MatchDetail, Profile
+### Communications
+- Welcome email, payment confirmation, weekly teaser, reset password
+- **Drip campaign (Feb 2026)** — J+1 / J+3 / J+5 emails to Free users, idempotent via `drip_sent_days` field, background loop runs every 6h, admin endpoints `/api/admin/drip/preview` and `/api/admin/drip/run`
+### Legal (Feb 2026)
+- 4 pages at `/legal/:slug`:
+  - `/legal/mentions-legales` — Éditeur, hébergeur (Emergent), propriété intellectuelle
+  - `/legal/cgv` — 10 sections, no-refund policy explicit, droit béninois, juridiction Cotonou
+  - `/legal/confidentialite` — Loi n° 2017-20 du Bénin (Code du numérique), droits APDP, sous-traitants
+  - `/legal/jeu-responsable` — 18+, signes d'addiction, ressources d'aide
+- Footer link on Landing + AppLayout
+### Admin
+- Admin panel with pending payments validation, broadcast picks, drip trigger
+- Stats (revenue, paid users, conversions)
 
-## Implemented (22/06/2026)
-### Iteration 1
-- Landing pro, auth JWT, dashboard, top picks, match detail, history, combiné v1, subscription
-### Iteration 2 (this run)
-- **Rebrand WinPulse** + palette vibrante orange/rose
-- **Real Odds API integration** — 60 matchs réels (MMA, ATP Wimbledon, MLB, WNBA, Brazil Série B…)
-- **Multi-combos** : 3 niveaux **Sécurité / Équilibre / Jackpot** auto-générés
-- **Admin panel** /app/admin : KPIs (revenue/users/payments), validation paiements 1-clic, broadcast emails
-- **Resend email integration** : confirmation paiement automatique + broadcast picks aux abonnés
-- **Admin seeding** automatique au démarrage backend
-- Suppression de toute mention de l'agent IA dans l'UI ("IA experte" / "Moteur statistique")
+## Key Backend Endpoints
+- Auth: `/api/auth/login`, `/api/auth/register`, `/api/auth/forgot-password`, `/api/auth/reset-password`
+- Data: `/api/data/status`, `/api/data/refresh`, `/api/scores`, `/api/matches`, `/api/matches/{id}`
+- Predictions: `/api/predictions/top`, `/api/predictions/combos`, `/api/track-record`, `/api/value-bets`
+- Subscription: `/api/plans`, `/api/subscription/checkout`, `/api/subscription/payments`
+- Admin: `/api/admin/payments`, `/api/admin/payments/{ref}/confirm|reject`, `/api/admin/users`, `/api/admin/stats`, `/api/admin/broadcast/picks`, `/api/admin/drip/preview`, `/api/admin/drip/run`
 
-## Tests
-- Backend pytest 35/35 PASS
-- Frontend Playwright : tous les flows critiques PASS (incluant cycle complet register→checkout→admin-confirm→upgrade)
+## Backlog / Roadmap
 
-## Backlog (P1)
-- Vérifier un domaine d'envoi sur resend.com (sinon broadcast échoue sauf vers admin)
-- Webhook MTN MoMo officiel (API marchand) pour activation automatique
-- Migration des anciens refs PRX- vers WP- (cosmétique)
-- Désactiver `/api/subscription/confirm/{ref}` self-confirm en production
+### 🔴 P0 — Required for commercial launch
+- [ ] **Odds API paid plan (~$30/mo)** — current free tier limited to 500 req/mo → mock fallback
+- [ ] **Acquire domain** (e.g. winpulse.bj or .com) — for site + emails
+- [ ] **Verify domain on Resend** (DNS SPF/DKIM/DMARC) — emails currently only delivered to whitelisted addresses
+- [ ] **Deploy to production domain** via Emergent
 
-## Backlog (P2)
-- Bankroll tracker + Kelly calculator
-- Marchés alternatifs (Over/Under, BTTS, handicaps)
-- Programme parrainage / referral
-- Page publique du track record (SEO)
-- Notifications WhatsApp via Twilio
-- Page admin pour gérer les sports/leagues affichés (toggle on/off)
+### 🟠 P1 — Strong impact
+- [ ] **Real MTN MoMo API** integration (currently manual admin validation via WhatsApp)
+- [ ] **Auto-reveal results worker** — auto-settle predictions to WIN/LOSS when matches finish
+- [ ] **A/B test promo codes** in drip day-5 (currently hardcoded WIN30)
 
+### 🟡 P2 — Nice-to-have
+- [ ] Refactor `server.py` into modular APIRouters (`/routes/auth`, `/routes/odds`, etc.)
+- [ ] WhatsApp Business API for instant pick notifications
+- [ ] Referral program (viral growth via WhatsApp share)
+- [ ] Mobile app (React Native)
+
+## Test Credentials
+See `/app/memory/test_credentials.md`
+
+## File Architecture
+```
+/app/
+├── backend/
+│   ├── server.py (auth, odds, predictions, subs, admin, drip)
+│   ├── email_service.py (welcome, picks, teaser, reset, drip_day1/3/5)
+│   ├── odds_service.py, prediction_engine.py, ai_service.py, auth.py
+│   └── .env (MOMO_MERCHANT_PHONE=+229 01 67 30 54 39)
+├── frontend/src/
+│   ├── App.js (routing incl. /legal/:slug)
+│   ├── components/
+│   │   ├── payment/PaymentModal.jsx (3-step, PE-XXX ref, WhatsApp link)
+│   │   ├── AppLayout.jsx (with legal footer)
+│   │   ├── MatchCard.jsx, RealtimeBar.jsx, SocialProofToast.jsx
+│   ├── pages/
+│   │   ├── LegalPage.jsx (mentions / cgv / confidentialite / jeu-responsable)
+│   │   ├── Landing/Dashboard/TopPicks/Combos/Match/Profile/TrackRecord/ValueBets...
+│   ├── services/realtimeService.js
+│   └── contexts/AuthContext.jsx
+└── memory/ (PRD.md, test_credentials.md)
+```
+
+Last updated: Feb 2026

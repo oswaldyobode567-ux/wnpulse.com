@@ -74,6 +74,7 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const [payerName, setPayerName] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
 
   // Reset whenever the modal is opened/closed or tier changes
   useEffect(() => {
@@ -84,6 +85,7 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
       setPayerName(user?.full_name || "");
       setSubmitting(false);
       setConfirmed(false);
+      setAcceptedTerms(false);
     }
   }, [isOpen, tierKey, user?.full_name]);
 
@@ -121,6 +123,10 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
     }
     if (!payerName.trim()) {
       toast.error("Nom complet requis");
+      return;
+    }
+    if (!acceptedTerms) {
+      toast.error("Vous devez accepter les conditions de remboursement");
       return;
     }
     setSubmitting(true);
@@ -256,14 +262,30 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                 Aucune carte requise · Validation manuelle par notre équipe sous 1h
               </div>
 
+              {/* No-refund consent checkbox */}
+              <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-amber-200 bg-amber-50/60 p-3 hover:bg-amber-50 transition-colors">
+                <input
+                  type="checkbox"
+                  checked={acceptedTerms}
+                  onChange={(e) => setAcceptedTerms(e.target.checked)}
+                  className="mt-0.5 h-4 w-4 rounded border-amber-400 text-orange-600 focus:ring-orange-500 cursor-pointer"
+                  data-testid="payment-accept-terms"
+                />
+                <span className="text-xs text-slate-700 leading-relaxed">
+                  J'ai compris qu'<strong>aucun remboursement n'est possible après activation</strong> de l'abonnement (service numérique consommable immédiatement). J'accepte les{" "}
+                  <a href="/legal/cgv" target="_blank" rel="noopener noreferrer" className="text-orange-700 font-semibold underline">CGV</a> et la{" "}
+                  <a href="/legal/confidentialite" target="_blank" rel="noopener noreferrer" className="text-orange-700 font-semibold underline">politique de confidentialité</a>.
+                </span>
+              </label>
+
               <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end pt-1">
                 <Button variant="ghost" onClick={handleClose} data-testid="payment-cancel-btn">
                   Annuler
                 </Button>
                 <Button
-                  className={`bg-gradient-to-r ${tier.accent} text-white border-0 hover:opacity-90 font-semibold`}
+                  className={`bg-gradient-to-r ${tier.accent} text-white border-0 hover:opacity-90 font-semibold disabled:opacity-50`}
                   onClick={goToInstructions}
-                  disabled={submitting}
+                  disabled={submitting || !acceptedTerms}
                   data-testid="payment-next-btn"
                 >
                   {submitting ? (

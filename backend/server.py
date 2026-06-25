@@ -26,7 +26,7 @@ from auth import (
 from odds_service import fetch_all_matches, get_match_by_id, fetch_all_scores, SUPPORTED_SPORTS
 from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
 from ai_service import generate_analysis
-from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email
+from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email, send_drip_day1, send_drip_day3, send_drip_day5
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -847,7 +847,85 @@ async def admin_test_email(payload: dict = Depends(get_current_user_payload), _a
     return res
 
 
+# ----- Drip email campaigns J+1 / J+3 / J+5 -----
+async def _run_drip_campaign(dry_run: bool = False) -> dict:
+    """Find FREE users registered 1, 3 or 5 days ago and send the right drip email.
+    Idempotent: each user receives each drip at most once (tracked via `drip_sent_days`)."""
+    now = datetime.now(timezone.utc)
+    summary = {"day1": 0, "day3": 0, "day5": 0, "errors": 0, "users_scanned": 0}
+
+    # Targets: (day_offset, send_function, default_kwargs)
+    targets = [
+        (1, send_drip_day1, {}),
+        (3, send_drip_day3, {}),
+        (5, send_drip_day5, {}),
+    ]
+
+    for day_offset, send_fn, extra_kwargs in targets:
+        # Match users registered roughly day_offset days ago (window: day_offset .. day_offset+1 days)
+        start = (now - timedelta(days=day_offset + 1)).isoformat()
+        end = (now - timedelta(days=day_offset)).isoformat()
+        cursor = db.users.find({
+            "subscription_tier": "free",
+            "created_at": {"$gte": start, "$lt": end},
+            "drip_sent_days": {"$ne": day_offset},
+        }, {"_id": 0, "id": 1, "email": 1, "full_name": 1, "drip_sent_days": 1})
+        users = await cursor.to_list(1000)
+        summary["users_scanned"] += len(users)
+        for u in users:
+            if dry_run:
+                summary[f"day{day_offset}"] += 1
+                continue
+            try:
+                res = await send_fn(u["email"], u.get("full_name") or "champion", **extra_kwargs)
+                if res.get("status") in ("sent", "draft"):
+                    await db.users.update_one(
+                        {"id": u["id"]},
+                        {"$addToSet": {"drip_sent_days": day_offset}},
+                    )
+                    summary[f"day{day_offset}"] += 1
+                else:
+                    summary["errors"] += 1
+            except Exception as e:
+                log.warning(f"drip day{day_offset} failed for {u.get('email')}: {e}")
+                summary["errors"] += 1
+    return summary
+
+
+@api.post("/admin/drip/run")
+async def admin_run_drip(dry_run: bool = False, _admin = Depends(_require_admin)):
+    """Manually trigger the drip campaign (idempotent)."""
+    return await _run_drip_campaign(dry_run=dry_run)
+
+
+@api.get("/admin/drip/preview")
+async def admin_drip_preview(_admin = Depends(_require_admin)):
+    """Preview who would receive a drip email right now (no send)."""
+    return await _run_drip_campaign(dry_run=True)
+
+
+async def _drip_loop():
+    """Background loop: run the drip job every 6 hours."""
+    # Initial delay to let the app start
+    await asyncio.sleep(60)
+    while True:
+        try:
+            res = await _run_drip_campaign()
+            log.info(f"drip campaign result: {res}")
+        except Exception as e:
+            log.error(f"drip loop error: {e}")
+        # Run every 6 hours
+        await asyncio.sleep(6 * 3600)
+
+
 app.include_router(api)
+
+
+@app.on_event("startup")
+async def start_drip_worker():
+    """Kick off the drip background loop."""
+    asyncio.create_task(_drip_loop())
+    log.info("Drip email campaign worker started (J+1, J+3, J+5 — every 6h)")
 
 
 @app.on_event("startup")

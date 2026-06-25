@@ -16,6 +16,7 @@ import AdminPage from "@/pages/AdminPage";
 import TrackRecordPage from "@/pages/TrackRecordPage";
 import ValueBetsPage from "@/pages/ValueBetsPage";
 import ProfilePage from "@/pages/ProfilePage";
+import LegalPage from "@/pages/LegalPage";
 
 function RequireAuth({ children, admin = false }) {
   const { user, loading } = useAuth();
@@ -42,6 +43,8 @@ export default function App() {
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
           <Route path="/resultats" element={<TrackRecordPage />} />
+          <Route path="/legal/:slug" element={<LegalPage />} />
+          <Route path="/legal" element={<Navigate to="/legal/mentions-legales" replace />} />
           <Route path="/app" element={<RequireAuth><DashboardPage /></RequireAuth>} />
           <Route path="/app/top" element={<RequireAuth><TopPicksPage /></RequireAuth>} />
           <Route path="/app/value-bets" element={<RequireAuth><ValueBetsPage /></RequireAuth>} />

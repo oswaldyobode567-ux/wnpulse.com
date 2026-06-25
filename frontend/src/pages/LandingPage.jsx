@@ -295,9 +295,20 @@ export default function LandingPage() {
       </section>
 
       <footer className="border-t border-neutral-200 bg-white">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col sm:flex-row items-center justify-between gap-4">
-          <div className="text-sm text-slate-500">© 2026 WinPulse · Joue responsable · 18+</div>
-          <div className="text-xs text-slate-400">Les pronostics sont des analyses statistiques, pas des garanties. Mise ce que tu peux perdre.</div>
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col items-center gap-4">
+          <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs">
+            <Link to="/legal/mentions-legales" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-mentions">Mentions légales</Link>
+            <span className="text-slate-300">·</span>
+            <Link to="/legal/cgv" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-cgv">CGV</Link>
+            <span className="text-slate-300">·</span>
+            <Link to="/legal/confidentialite" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-confidentialite">Confidentialité</Link>
+            <span className="text-slate-300">·</span>
+            <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold" data-testid="footer-legal-jeu">Jeu responsable · 18+</Link>
+            <span className="text-slate-300">·</span>
+            <Link to="/resultats" className="text-slate-600 hover:text-orange-600 font-semibold">Track record</Link>
+          </div>
+          <div className="text-sm text-slate-500 text-center">© 2026 WinPulse SARL · Cotonou, Bénin · Joue responsable · 18+</div>
+          <div className="text-xs text-slate-400 max-w-2xl text-center">Les pronostics sont des analyses statistiques, pas des garanties. Mise ce que tu peux perdre. WinPulse n'accepte aucun pari et ne joue pas pour ses utilisateurs.</div>
         </div>
       </footer>
     </div>

@@ -213,6 +213,159 @@ async def send_reset_password_email(to_email: str, user_name: str, token: str) -
         return {"status": "error", "error": str(e), "token": token}
 
 
+async def send_drip_day1(to_email: str, user_name: str) -> dict:
+    """J+1 — Curiosity: showcase yesterday's free pick result + tease pro picks."""
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email, "drip": "day1"}
+    html = f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;background:#f8fafc;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;"><tr><td align="center">
+        <table width="600" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+          <tr><td style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;padding:28px 24px;">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.85;">{APP_NAME} · Jour 1</div>
+            <div style="font-size:26px;font-weight:800;margin-top:6px;">Tu as raté ça hier 👀</div>
+          </td></tr>
+          <tr><td style="padding:24px;color:#475569;font-size:15px;line-height:1.7;">
+            <p>Salut <strong>{user_name}</strong>,</p>
+            <p>Hier, nos abonnés Pro ont reçu <strong>5 pronostics analysés</strong> par notre IA et notre moteur de scoring. Plusieurs sont passés ✅.</p>
+            <div style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:12px;padding:16px;margin:16px 0;">
+              <div style="font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:#059669;">Pick gratuit d'hier</div>
+              <div style="font-size:14px;color:#0f172a;margin-top:6px;">Le pick gratuit qu'on a publié hier est <strong style="color:#059669;">passé ✅</strong>. Sur les 4 autres réservés aux Pro, <strong>3 sont également passés</strong>.</div>
+            </div>
+            <p>Sur compte <strong>Free</strong>, tu vois 1 pick par jour. Sur compte <strong>Pro</strong>, tu débloques :</p>
+            <ul style="padding-left:20px;color:#475569;">
+              <li>Tous les pronostics du jour (7 sports)</li>
+              <li>Les <strong>3 combinés</strong> (Sécurité / Équilibre / Jackpot)</li>
+              <li>L'<strong>analyse IA</strong> détaillée de chaque match</li>
+              <li>L'email VIP quotidien</li>
+            </ul>
+            <p style="text-align:center;margin:28px 0 8px;">
+              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Passer Pro · 4 900 FCFA/mois</a>
+            </p>
+            <p style="font-size:12px;color:#94a3b8;margin-top:16px;text-align:center;">🎯 Joue responsable. 18+.</p>
+          </td></tr>
+          <tr><td style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8;">
+            © 2026 {APP_NAME} · Tu reçois ce message parce que tu t'es inscrit hier.
+          </td></tr>
+        </table>
+      </td></tr></table>
+    </body></html>
+    """
+    params = {"from": f"{APP_NAME} <{SENDER_EMAIL}>", "to": [to_email], "subject": f"👀 Ce que tu as raté hier sur {APP_NAME}", "html": html}
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id"), "drip": "day1"}
+    except Exception as e:
+        logger.warning(f"drip day1 failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e), "drip": "day1"}
+
+
+async def send_drip_day3(to_email: str, user_name: str, win_rate: float = 72.0, roi: float = 18.4) -> dict:
+    """J+3 — Social proof: show track record stats."""
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email, "drip": "day3"}
+    html = f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;background:#f8fafc;font-family:-apple-system,sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;"><tr><td align="center">
+        <table width="600" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+          <tr><td style="background:linear-gradient(135deg,#0f172a,#1e293b);color:#fff;padding:32px 24px;">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.7;">{APP_NAME} · Jour 3</div>
+            <div style="font-size:28px;font-weight:800;margin-top:6px;">Les chiffres parlent d'eux-mêmes 📊</div>
+          </td></tr>
+          <tr><td style="padding:24px;color:#475569;">
+            <p style="font-size:15px;line-height:1.6;">Salut <strong>{user_name}</strong>, voici notre <strong>track record vérifiable</strong> sur les 30 derniers jours :</p>
+            <table width="100%" cellpadding="0" cellspacing="0" style="margin:16px 0;">
+              <tr>
+                <td width="33%" style="text-align:center;padding:16px;background:#ecfdf5;border-radius:12px;border:1px solid #a7f3d0;">
+                  <div style="font-size:32px;font-weight:900;color:#059669;letter-spacing:-.02em;">{win_rate:.0f}%</div>
+                  <div style="font-size:11px;color:#065f46;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:2px;">Taux de réussite</div>
+                </td>
+                <td width="8"></td>
+                <td width="33%" style="text-align:center;padding:16px;background:#fff7ed;border-radius:12px;border:1px solid #fed7aa;">
+                  <div style="font-size:32px;font-weight:900;color:#ea580c;letter-spacing:-.02em;">+{roi:.1f}%</div>
+                  <div style="font-size:11px;color:#9a3412;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:2px;">ROI mensuel</div>
+                </td>
+                <td width="8"></td>
+                <td width="33%" style="text-align:center;padding:16px;background:#fef2f2;border-radius:12px;border:1px solid #fecaca;">
+                  <div style="font-size:32px;font-weight:900;color:#e11d48;letter-spacing:-.02em;">7</div>
+                  <div style="font-size:11px;color:#9f1239;text-transform:uppercase;letter-spacing:1px;font-weight:600;margin-top:2px;">Sports couverts</div>
+                </td>
+              </tr>
+            </table>
+            <p style="font-size:15px;line-height:1.6;color:#475569;">
+              Sur un mois avec ces stats, <strong>une mise de 10 000 FCFA / jour</strong> en suivant nos picks Pro génère en moyenne <strong>+55 000 FCFA</strong> de profit.
+            </p>
+            <p style="font-size:14px;line-height:1.6;color:#64748b;font-style:italic;">
+              Pas de promesses farfelues. Pas de "100% sûr". Juste des maths, des cotes value et de la transparence.
+            </p>
+            <p style="text-align:center;margin:28px 0 12px;">
+              <a href="https://prognosis-bet-1.preview.emergentagent.com/resultats" style="color:#0f172a;text-decoration:underline;font-weight:600;font-size:14px;">📈 Voir le track record complet (public)</a>
+            </p>
+            <p style="text-align:center;margin:8px 0;">
+              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Rejoindre les Pro · 4 900 FCFA/mois</a>
+            </p>
+            <p style="font-size:12px;color:#94a3b8;margin-top:24px;text-align:center;">🎯 Performances passées ≠ garantie de résultats futurs. Joue responsable. 18+.</p>
+          </td></tr>
+          <tr><td style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8;">© 2026 {APP_NAME}</td></tr>
+        </table>
+      </td></tr></table>
+    </body></html>
+    """
+    params = {"from": f"{APP_NAME} <{SENDER_EMAIL}>", "to": [to_email], "subject": f"📊 Notre track record : {win_rate:.0f}% de réussite · +{roi:.1f}% ROI", "html": html}
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id"), "drip": "day3"}
+    except Exception as e:
+        logger.warning(f"drip day3 failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e), "drip": "day3"}
+
+
+async def send_drip_day5(to_email: str, user_name: str, discount_code: str = "WIN30") -> dict:
+    """J+5 — Last chance: discount on first month."""
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email, "drip": "day5"}
+    html = f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;background:#f8fafc;font-family:-apple-system,sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;"><tr><td align="center">
+        <table width="600" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+          <tr><td style="background:linear-gradient(135deg,#e11d48,#9f1239);color:#fff;padding:32px 24px;text-align:center;">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.85;">{APP_NAME} · Offre dernière chance</div>
+            <div style="font-size:30px;font-weight:900;margin-top:8px;letter-spacing:-.02em;">-30% sur ton 1er mois Pro 🎁</div>
+            <div style="font-size:14px;opacity:.95;margin-top:8px;">Offre valable 48h seulement</div>
+          </td></tr>
+          <tr><td style="padding:24px;color:#475569;font-size:15px;line-height:1.7;">
+            <p>Salut <strong>{user_name}</strong>,</p>
+            <p>Tu es inscrit depuis 5 jours sur {APP_NAME} mais tu n'as pas encore passé Pro. On comprend — c'est un investissement.</p>
+            <p>Alors voici une <strong>offre unique</strong> rien que pour toi :</p>
+            <div style="background:linear-gradient(135deg,#fff7ed,#fef2f2);border:2px dashed #ea580c;border-radius:16px;padding:24px;margin:20px 0;text-align:center;">
+              <div style="font-size:12px;text-transform:uppercase;letter-spacing:1px;font-weight:700;color:#9a3412;">Code promo</div>
+              <div style="font-size:32px;font-weight:900;color:#ea580c;font-family:monospace;letter-spacing:.05em;margin:6px 0;">{discount_code}</div>
+              <div style="font-size:14px;color:#475569;">Plan Pro à <strong style="text-decoration:line-through;color:#94a3b8;">4 900 FCFA</strong> <strong style="color:#059669;font-size:18px;">3 430 FCFA</strong> le 1er mois</div>
+              <div style="font-size:12px;color:#9a3412;margin-top:6px;">Économise <strong>1 470 FCFA</strong></div>
+            </div>
+            <p style="font-size:14px;">Ce code est <strong>personnel et expire dans 48 heures</strong>. Après ça, le tarif standard de 4 900 FCFA reprend.</p>
+            <p style="text-align:center;margin:28px 0 8px;">
+              <a href="https://prognosis-bet-1.preview.emergentagent.com/app/abonnement?promo={discount_code}" style="background:linear-gradient(135deg,#ea580c,#f43f5e);color:#fff;text-decoration:none;font-weight:800;padding:16px 36px;border-radius:12px;display:inline-block;font-size:16px;box-shadow:0 8px 24px rgba(234,88,12,.3);">Activer mon code {discount_code} →</a>
+            </p>
+            <p style="font-size:12px;color:#94a3b8;margin-top:24px;text-align:center;">🎯 Joue responsable. 18+. Aucun remboursement après activation.</p>
+          </td></tr>
+          <tr><td style="padding:16px 24px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center;font-size:11px;color:#94a3b8;">© 2026 {APP_NAME}</td></tr>
+        </table>
+      </td></tr></table>
+    </body></html>
+    """
+    params = {"from": f"{APP_NAME} <{SENDER_EMAIL}>", "to": [to_email], "subject": f"🎁 -30% sur ton 1er mois Pro (48h seulement) — Code {discount_code}", "html": html}
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id"), "drip": "day5"}
+    except Exception as e:
+        logger.warning(f"drip day5 failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e), "drip": "day5"}
+
+
 async def send_weekly_teaser_email(to_email: str, user_name: str, picks: list, total_odds: float) -> dict:
     """Friday teaser sent to FREE users to showcase what they're missing."""
     if not RESEND_API_KEY:

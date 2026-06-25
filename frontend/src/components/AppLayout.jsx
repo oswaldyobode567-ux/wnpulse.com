@@ -139,7 +139,23 @@ export default function AppLayout({ children }) {
         })}
       </nav>
 
-      <main className="lg:pl-64 pb-24 lg:pb-0 min-h-screen">{children}</main>
+      <main className="lg:pl-64 pb-24 lg:pb-0 min-h-screen flex flex-col">
+        <div className="flex-1">{children}</div>
+        <footer className="border-t border-neutral-200 bg-white py-5 px-4">
+          <div className="max-w-6xl mx-auto flex flex-col items-center gap-2 text-xs">
+            <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+              <Link to="/legal/mentions-legales" className="text-slate-500 hover:text-orange-600 font-semibold">Mentions légales</Link>
+              <span className="text-slate-300">·</span>
+              <Link to="/legal/cgv" className="text-slate-500 hover:text-orange-600 font-semibold">CGV</Link>
+              <span className="text-slate-300">·</span>
+              <Link to="/legal/confidentialite" className="text-slate-500 hover:text-orange-600 font-semibold">Confidentialité</Link>
+              <span className="text-slate-300">·</span>
+              <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold">Jeu responsable · 18+</Link>
+            </div>
+            <div className="text-slate-400">© 2026 WinPulse SARL · Cotonou, Bénin</div>
+          </div>
+        </footer>
+      </main>
     </div>
   );
 }
