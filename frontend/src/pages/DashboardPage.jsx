@@ -51,17 +51,39 @@ export default function DashboardPage() {
   return (
     <AppLayout>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
-        <div className="flex items-end justify-between mb-4 flex-wrap gap-3">
-          <div>
-            <div className="text-xs uppercase tracking-widest text-slate-500 font-semibold mb-1">
-              {dayjs().format("dddd D MMMM YYYY")}
+        {/* Hero greeting */}
+        <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-slate-900 via-slate-900 to-orange-950 text-white p-6 sm:p-8 mb-6">
+          <div className="absolute -top-20 -right-20 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-20 -left-20 h-72 w-72 rounded-full bg-rose-500/15 blur-3xl pointer-events-none" />
+          <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+            <div>
+              <div className="text-[11px] uppercase tracking-[0.18em] text-orange-300 font-bold mb-1.5">
+                {dayjs().format("dddd D MMMM YYYY")}
+              </div>
+              <h1 className="font-heading text-3xl sm:text-4xl lg:text-5xl font-black tracking-tighter leading-[1]">
+                Salut {user?.full_name?.split(" ")[0] || "champion"} 👋
+              </h1>
+              <p className="mt-2 text-slate-300 text-sm sm:text-base">
+                {isFree
+                  ? "Aujourd'hui, on a sélectionné les meilleurs picks. Passe Pro pour tout débloquer."
+                  : `${(user?.subscription_tier || "pro").toUpperCase()} actif — bonne stratégie aujourd'hui.`}
+              </p>
             </div>
-            <h1 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
-              Pronostics du jour
-            </h1>
+            <div className="flex items-center gap-3">
+              <div className="bg-white/10 backdrop-blur-sm rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
+                <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Confiance moy.</div>
+                <div className="font-heading text-2xl font-black mt-0.5 bg-gradient-to-r from-orange-300 to-rose-300 bg-clip-text text-transparent">
+                  {topPicks.length ? Math.round(topPicks.reduce((a, p) => a + (p.confidence || 0), 0) / topPicks.length) : "—"}%
+                </div>
+              </div>
+              <div className="bg-white/10 backdrop-blur-sm rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
+                <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Picks dispo</div>
+                <div className="font-heading text-2xl font-black mt-0.5 text-white">{topPicks.length}</div>
+              </div>
+            </div>
           </div>
-        </div>
+        </Card>
+
         <div className="mb-8">
           <RealtimeBar onRefresh={refreshMatches} />
           <FreshnessStamp label="Cotes mises à jour" ts={lastUpdate} />

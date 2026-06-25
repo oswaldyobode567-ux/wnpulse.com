@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Crown, CreditCard, BarChart3, Target, Trophy, Flame, History, Mail } from "lucide-react";
+import { Crown, CreditCard, BarChart3, Target, Trophy, Flame, History, Mail, Sparkles } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import dayjs from "dayjs";
@@ -26,22 +26,45 @@ export default function ProfilePage() {
   return (
     <AppLayout>
       <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        <div className={`rounded-2xl p-6 mb-6 border bg-gradient-to-br ${tierData.gradient}`} data-testid="profile-header">
-          <div className="flex items-center justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-4">
-              <div className="h-16 w-16 rounded-2xl wp-gradient-warm grid place-items-center text-white text-2xl font-extrabold shadow-lg">
-                {user?.full_name?.[0]?.toUpperCase() || "?"}
+        {/* Epic profile header */}
+        <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-slate-900 via-slate-900 to-orange-900 text-white p-6 sm:p-8 mb-6" data-testid="profile-header">
+          <div className="absolute -top-32 -right-32 h-72 w-72 rounded-full bg-orange-500/30 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-32 -left-32 h-72 w-72 rounded-full bg-rose-500/20 blur-3xl pointer-events-none" />
+          <div className="relative flex items-center justify-between gap-4 flex-wrap">
+            <div className="flex items-center gap-5">
+              <div className="relative">
+                <div className="h-20 w-20 rounded-2xl wp-gradient-warm grid place-items-center text-white text-3xl font-black shadow-2xl shadow-orange-600/40 ring-4 ring-white/10">
+                  {user?.full_name?.[0]?.toUpperCase() || "?"}
+                </div>
+                {tier !== "free" && (
+                  <div className="absolute -bottom-1 -right-1 h-7 w-7 rounded-full bg-yellow-400 grid place-items-center ring-2 ring-slate-900">
+                    {tier === "elite" ? <Crown className="h-3.5 w-3.5 text-slate-900" /> : <Sparkles className="h-3.5 w-3.5 text-slate-900" />}
+                  </div>
+                )}
               </div>
               <div>
-                <h1 className="font-heading text-2xl font-extrabold text-slate-900">{user?.full_name}</h1>
-                <div className="text-sm text-slate-600 flex items-center gap-1"><Mail className="h-3.5 w-3.5" /> {user?.email}</div>
+                <h1 className="font-heading text-2xl sm:text-3xl font-black text-white tracking-tight">{user?.full_name}</h1>
+                <div className="text-sm text-slate-300 flex items-center gap-1 mt-0.5"><Mail className="h-3.5 w-3.5" /> {user?.email}</div>
+                <div className="mt-3 flex items-center gap-2">
+                  <Badge className={`text-xs font-bold py-1 px-2.5 ${tier === "elite" ? "bg-yellow-400 text-slate-900 border-0" : tier === "pro" ? "bg-orange-500 text-white border-0" : "bg-slate-700 text-slate-200 border-0"}`}>
+                    {tier === "elite" && <Crown className="h-3 w-3 mr-1" />} Plan {tierData.label}
+                  </Badge>
+                  {user?.referral_count > 0 && (
+                    <Badge className="bg-emerald-500 text-white border-0 text-xs font-bold">
+                      {user.referral_count} parrainage{user.referral_count > 1 ? "s" : ""}
+                    </Badge>
+                  )}
+                </div>
               </div>
             </div>
-            <Badge className={tierData.cls + " text-sm font-bold py-1.5 px-3"} data-testid="profile-tier">
-              {tier === "elite" && <Crown className="h-3.5 w-3.5 mr-1" />} Plan {tierData.label}
-            </Badge>
+            <div className="hidden sm:block text-right">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-white/60 font-bold">Membre depuis</div>
+              <div className="font-heading text-lg font-bold text-white mt-0.5">
+                {user?.created_at ? dayjs(user.created_at).format("MMM YYYY") : "—"}
+              </div>
+            </div>
           </div>
-        </div>
+        </Card>
 
         <Tabs defaultValue="subscription" className="space-y-6">
           <TabsList className="bg-neutral-100">

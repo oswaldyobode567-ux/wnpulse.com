@@ -39,17 +39,25 @@ export default function TrackRecordPage() {
       </header>
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="mb-8 text-center">
-          <div className="inline-flex items-center gap-2 rounded-full bg-emerald-50 border border-emerald-200 px-3 py-1 text-xs font-bold text-emerald-700 mb-3">
-            <span className="h-2 w-2 rounded-full bg-emerald-500 live-dot" />
-            Track record 100% transparent
+        {/* Epic hero */}
+        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-900 via-slate-900 to-orange-900 text-white p-8 sm:p-12 mb-10 ring-1 ring-white/10">
+          <div className="absolute -top-24 -right-24 h-72 w-72 rounded-full bg-emerald-400/30 blur-3xl pointer-events-none" />
+          <div className="absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-orange-400/30 blur-3xl pointer-events-none" />
+          <div className="relative text-center">
+            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-400/20 border border-emerald-400/40 px-3 py-1 text-xs font-bold text-emerald-200 mb-4 backdrop-blur-sm">
+              <span className="h-2 w-2 rounded-full bg-emerald-400 live-dot" />
+              Track record 100% transparent · vérifiable
+            </div>
+            <h1 className="font-heading text-4xl sm:text-6xl font-black tracking-tighter leading-[0.95]">
+              Nos résultats.<br />
+              <span className="bg-gradient-to-r from-emerald-300 via-orange-300 to-rose-300 bg-clip-text text-transparent">
+                Sans triche.
+              </span>
+            </h1>
+            <p className="mt-4 text-slate-300 max-w-2xl mx-auto text-base">
+              Chaque pronostic est publié automatiquement après le match. Pas de cherry-picking, pas d'effacement. Tout est là.
+            </p>
           </div>
-          <h1 className="font-heading text-3xl sm:text-5xl font-extrabold tracking-tight text-slate-900">
-            Nos résultats. Sans triche.
-          </h1>
-          <p className="mt-3 text-slate-600 max-w-2xl mx-auto">
-            Chaque pronostic est publié automatiquement après le match. Pas de cherry-picking, pas d'effacement. Tout est ici.
-          </p>
         </div>
 
         {loading || !data ? (
