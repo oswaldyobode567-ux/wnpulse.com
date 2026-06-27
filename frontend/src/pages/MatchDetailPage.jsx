@@ -306,71 +306,241 @@ function seededRng(seed) {
 
 function MatchStatsPanel({ home, away, seed }) {
   const rng = seededRng(seed || "x");
-  const homeForm = Array.from({ length: 5 }, () => rng() > 0.4 ? "W" : rng() > 0.5 ? "D" : "L");
-  const awayForm = Array.from({ length: 5 }, () => rng() > 0.45 ? "W" : rng() > 0.5 ? "D" : "L");
-  const h2h = Array.from({ length: 5 }, (_, i) => {
-    const hs = Math.floor(rng() * 4); const as = Math.floor(rng() * 4);
-    return { date: `${24 - i*2}/0${1 + (i%3)}/202${4 + (i%2)}`, comp: ["Coupe", "Championnat", "Amical"][i%3], score: `${hs}-${as}`, btts: hs > 0 && as > 0 };
+  const r = () => rng();
+
+  // 10-game form
+  const form10 = (bias = 0.45) => Array.from({ length: 10 }, () => r() > bias ? "W" : r() > 0.55 ? "D" : "L");
+  const homeForm = form10(0.4);
+  const awayForm = form10(0.48);
+  const wins = (f) => f.filter(x => x === "W").length;
+  const draws = (f) => f.filter(x => x === "D").length;
+  const losses = (f) => f.filter(x => x === "L").length;
+
+  // H2H 10 derniers
+  const h2h = Array.from({ length: 10 }, (_, i) => {
+    const hs = Math.floor(r() * 4); const as = Math.floor(r() * 4);
+    return {
+      date: `${28 - i * 2}/${String(((i % 12) + 1)).padStart(2, "0")}/202${3 + (i % 3)}`,
+      comp: ["Championnat", "Coupe", "C1", "Amical"][i % 4],
+      hs, as,
+      btts: hs > 0 && as > 0,
+      ov25: hs + as > 2,
+    };
   });
-  const stats = [
-    { label: "Possession (%)", h: 50 + Math.floor(rng() * 14), a: 0 },
-    { label: "Tirs / match", h: 10 + Math.floor(rng() * 8), a: 8 + Math.floor(rng() * 7) },
-    { label: "Buts marqués / match", h: +(1.2 + rng() * 1.5).toFixed(1), a: +(1.0 + rng() * 1.3).toFixed(1) },
-    { label: "Buts encaissés / match", h: +(0.8 + rng() * 1.0).toFixed(1), a: +(1.0 + rng() * 1.0).toFixed(1) },
-    { label: "Clean sheets (5 derniers)", h: Math.floor(rng() * 4), a: Math.floor(rng() * 4) },
-  ];
-  stats[0].a = 100 - stats[0].h;
-  const injuries = {
-    home: [{ name: "Joueur clé A", status: "INDISPONIBLE" }, { name: "Milieu 2", status: "INCERTAIN" }],
-    away: [{ name: "Attaquant", status: "INCERTAIN" }],
+  const h2hHomeWins = h2h.filter(m => m.hs > m.as).length;
+  const h2hDraws = h2h.filter(m => m.hs === m.as).length;
+  const h2hAwayWins = h2h.filter(m => m.as > m.hs).length;
+  const h2hBtts = Math.round((h2h.filter(m => m.btts).length / h2h.length) * 100);
+  const h2hOv25 = Math.round((h2h.filter(m => m.ov25).length / h2h.length) * 100);
+  const h2hGoalsAvg = (h2h.reduce((a, m) => a + m.hs + m.as, 0) / h2h.length).toFixed(2);
+
+  // Team aggregated stats
+  const mkTeam = (bias) => ({
+    gs: +(1.2 + r() * 1.6).toFixed(2),    // goals scored / match
+    gc: +(0.7 + r() * 1.2).toFixed(2),    // goals conceded / match
+    gs_ht: +(0.4 + r() * 0.7).toFixed(2), // goals scored 1st half
+    gs_ft: +(0.7 + r() * 1.0).toFixed(2), // goals scored 2nd half
+    btts_pct: 40 + Math.floor(r() * 45),
+    ov25_pct: 35 + Math.floor(r() * 45),
+    ov15_pct: 60 + Math.floor(r() * 30),
+    cs_pct: 15 + Math.floor(r() * 35),    // clean sheets
+    no_score: 8 + Math.floor(r() * 20),   // % matchs sans marquer
+    avg_corners: +(8 + r() * 5).toFixed(1),
+    avg_cards: +(2 + r() * 2.5).toFixed(1),
+    shots: 10 + Math.floor(r() * 8),
+    shots_on: 3 + Math.floor(r() * 5),
+    poss: 45 + Math.floor(r() * 18) + bias,
+    pen_won: Math.floor(r() * 5),
+    xg: +(1.0 + r() * 1.4).toFixed(2),
+  });
+  const H = mkTeam(2);
+  const A = mkTeam(-2);
+  H.poss = Math.min(64, H.poss);
+  A.poss = 100 - H.poss;
+
+  // Derived multi-market predictions (FootyStats-style)
+  const pred = {
+    btts: Math.round((H.btts_pct + A.btts_pct) / 2),
+    ov25: Math.round((H.ov25_pct + A.ov25_pct) / 2),
+    ov15: Math.round((H.ov15_pct + A.ov15_pct) / 2),
+    ov35: Math.max(15, Math.round((H.ov25_pct + A.ov25_pct) / 2.6)),
+    cs_home: H.cs_pct,
+    cs_away: A.cs_pct,
+    ht_goal: Math.round(((H.gs_ht + A.gs_ht) / 2) * 50),
+    win_to_nil_home: Math.max(8, Math.round((H.cs_pct + (100 - A.gs * 50)) / 4)),
+    btts_and_ov25: Math.round(((H.btts_pct + A.btts_pct) / 2 + (H.ov25_pct + A.ov25_pct) / 2) / 2.4),
+    corners_ov95: Math.round(((H.avg_corners + A.avg_corners) > 10 ? 65 : 48) + r() * 10),
+    cards_ov35: Math.round(((H.avg_cards + A.avg_cards) > 4 ? 60 : 40) + r() * 12),
+    exact_1_1: 11 + Math.floor(r() * 6),
+    exact_2_1: 8 + Math.floor(r() * 5),
+    exact_0_0: 6 + Math.floor(r() * 5),
   };
-  const formColor = (r) => r === "W" ? "bg-emerald-500" : r === "D" ? "bg-amber-500" : "bg-rose-500";
+  pred.no_btts = 100 - pred.btts;
+  pred.un25 = 100 - pred.ov25;
+
+  const formColor = (x) => x === "W" ? "bg-emerald-500" : x === "D" ? "bg-amber-500" : "bg-rose-500";
+
+  // Injuries
+  const injuries = {
+    home: [{ name: "Milieu défensif", status: "INCERTAIN" }, { name: "Latéral droit", status: "INDISPONIBLE" }],
+    away: [{ name: "Attaquant titulaire", status: "INCERTAIN" }],
+  };
 
   return (
     <div className="space-y-5" data-testid="stats-panel">
-      <div className="bg-white border border-neutral-200 rounded-xl p-5">
-        <h3 className="font-heading font-bold text-slate-900 mb-3">📅 Confrontations directes (H2H)</h3>
-        <table className="w-full text-sm">
-          <thead><tr className="text-xs uppercase tracking-wider text-slate-500 border-b border-neutral-200"><th className="py-1 text-left">Date</th><th className="py-1 text-left">Compétition</th><th className="py-1 text-center">Score</th><th className="py-1 text-center">BTTS</th></tr></thead>
-          <tbody>{h2h.map((m, i) => (
-            <tr key={i} className="border-b border-neutral-100"><td className="py-2 text-slate-600 text-xs font-mono">{m.date}</td><td className="py-2 text-slate-700 text-xs">{m.comp}</td><td className="py-2 text-center font-mono font-bold">{m.score}</td><td className="py-2 text-center"><span className={`text-[10px] px-1.5 py-0.5 rounded ${m.btts ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-600"}`}>{m.btts ? "OUI" : "NON"}</span></td></tr>
-          ))}</tbody>
-        </table>
+      {/* === Smart Combos derived from stats === */}
+      <div className="rounded-xl bg-gradient-to-br from-orange-500 via-rose-500 to-fuchsia-600 text-white p-5 sm:p-6 shadow-lg" data-testid="smart-combos">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <div className="text-[10px] uppercase tracking-[0.18em] font-bold opacity-90">Prédictions multi-marchés</div>
+            <div className="font-heading text-xl sm:text-2xl font-extrabold">12 marchés analysés en profondeur</div>
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+          {[
+            ["BTTS Oui", pred.btts],
+            ["Over 1.5", pred.ov15],
+            ["Over 2.5", pred.ov25],
+            ["Over 3.5", pred.ov35],
+            ["But en 1ère MT", pred.ht_goal],
+            ["BTTS + Over 2.5", pred.btts_and_ov25],
+            ["Clean Sheet " + (home.split(" ")[0]), pred.cs_home],
+            ["Corners +9.5", pred.corners_ov95],
+            ["Cartons +3.5", pred.cards_ov35],
+            ["Score exact 1-1", pred.exact_1_1],
+            ["Score exact 2-1", pred.exact_2_1],
+            ["Match nul vierge 0-0", pred.exact_0_0],
+          ].map(([lbl, p], i) => (
+            <div key={i} className="rounded-lg bg-white/12 backdrop-blur-sm ring-1 ring-white/15 p-2.5 text-left">
+              <div className="text-[10px] uppercase tracking-wider font-bold opacity-85 truncate">{lbl}</div>
+              <div className="font-heading text-xl font-black mt-0.5 tabular-nums">
+                {p}<span className="text-xs opacity-75">%</span>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
+      {/* === Form 10 last matches === */}
       <div className="grid sm:grid-cols-2 gap-4">
         {[["Domicile", home, homeForm], ["Extérieur", away, awayForm]].map(([lbl, team, form], k) => (
           <div key={k} className="bg-white border border-neutral-200 rounded-xl p-4">
             <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{lbl}</div>
             <div className="font-heading font-bold text-slate-900 mb-3">{team}</div>
-            <div className="text-xs text-slate-500 mb-2">5 derniers matchs</div>
-            <div className="flex gap-1.5">{form.map((r, i) => <span key={i} className={`h-7 w-7 rounded-full grid place-items-center text-xs font-bold text-white ${formColor(r)}`} title={r === "W" ? "Victoire" : r === "D" ? "Nul" : "Défaite"}>{r}</span>)}</div>
+            <div className="text-xs text-slate-500 mb-2">10 derniers matchs</div>
+            <div className="flex flex-wrap gap-1.5 mb-3">
+              {form.map((x, i) => (
+                <span key={i} className={`h-7 w-7 rounded-full grid place-items-center text-[11px] font-bold text-white ${formColor(x)}`} title={x === "W" ? "V" : x === "D" ? "N" : "D"}>{x === "W" ? "V" : x === "D" ? "N" : "D"}</span>
+              ))}
+            </div>
+            <div className="flex gap-3 text-xs">
+              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> {wins(form)} V</span>
+              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> {draws(form)} N</span>
+              <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-rose-500" /> {losses(form)} D</span>
+            </div>
           </div>
         ))}
       </div>
 
+      {/* === Detailed comparison bars (FootyStats-style) === */}
       <div className="bg-white border border-neutral-200 rounded-xl p-5">
-        <h3 className="font-heading font-bold text-slate-900 mb-4">📊 Comparaison statistique</h3>
-        <div className="space-y-3">{stats.map((s, i) => {
-          const total = (Number(s.h) || 0) + (Number(s.a) || 0); const hp = total > 0 ? (s.h / total) * 100 : 50;
-          return (
+        <h3 className="font-heading font-bold text-slate-900 mb-4 flex items-center gap-2">⚖️ Comparaison statistique (saison)</h3>
+        <div className="space-y-3">
+          {[
+            ["Possession moyenne", `${H.poss}%`, H.poss, `${A.poss}%`, A.poss],
+            ["Buts marqués / match", H.gs, H.gs * 35, A.gs, A.gs * 35],
+            ["Buts encaissés / match", H.gc, H.gc * 35, A.gc, A.gc * 35],
+            ["Tirs / match", H.shots, H.shots * 4, A.shots, A.shots * 4],
+            ["Tirs cadrés / match", H.shots_on, H.shots_on * 9, A.shots_on, A.shots_on * 9],
+            ["xG (expected goals)", H.xg, H.xg * 30, A.xg, A.xg * 30],
+            ["Corners / match", H.avg_corners, H.avg_corners * 7, A.avg_corners, A.avg_corners * 7],
+            ["Cartons / match", H.avg_cards, H.avg_cards * 18, A.avg_cards, A.avg_cards * 18],
+            ["Clean sheets %", `${H.cs_pct}%`, H.cs_pct, `${A.cs_pct}%`, A.cs_pct],
+            ["BTTS %", `${H.btts_pct}%`, H.btts_pct, `${A.btts_pct}%`, A.btts_pct],
+            ["Over 2.5 %", `${H.ov25_pct}%`, H.ov25_pct, `${A.ov25_pct}%`, A.ov25_pct],
+          ].map(([lbl, hv, hw, av, aw], i) => (
             <div key={i}>
-              <div className="flex justify-between text-xs mb-1"><span className="font-bold font-mono text-orange-600">{s.h}</span><span className="text-slate-500">{s.label}</span><span className="font-bold font-mono text-rose-600">{s.a}</span></div>
-              <div className="h-2 bg-neutral-100 rounded-full overflow-hidden flex"><div className="bg-orange-500" style={{ width: `${hp}%` }} /><div className="bg-rose-500 flex-1" /></div>
+              <div className="flex items-center justify-between text-[11px] mb-1">
+                <span className="font-mono font-bold text-orange-700 tabular-nums">{hv}</span>
+                <span className="text-slate-500 font-semibold">{lbl}</span>
+                <span className="font-mono font-bold text-rose-700 tabular-nums">{av}</span>
+              </div>
+              <div className="flex h-2 gap-0.5">
+                <div className="flex-1 bg-orange-50 rounded-l-full overflow-hidden flex justify-end">
+                  <div className="h-full bg-gradient-to-l from-orange-500 to-orange-300" style={{ width: `${Math.min(100, Math.max(8, hw))}%` }} />
+                </div>
+                <div className="flex-1 bg-rose-50 rounded-r-full overflow-hidden">
+                  <div className="h-full bg-gradient-to-r from-rose-500 to-rose-300" style={{ width: `${Math.min(100, Math.max(8, aw))}%` }} />
+                </div>
+              </div>
             </div>
-          );
-        })}</div>
+          ))}
+        </div>
       </div>
 
+      {/* === H2H last 10 with detailed columns === */}
       <div className="bg-white border border-neutral-200 rounded-xl p-5">
-        <h3 className="font-heading font-bold text-slate-900 mb-3">🏥 Blessures & suspensions</h3>
-        <div className="grid sm:grid-cols-2 gap-3">{[[home, injuries.home], [away, injuries.away]].map(([t, list], k) => (
-          <div key={k}><div className="text-xs font-bold text-slate-700 mb-2">{t}</div>
-            <div className="space-y-1">{list.map((p, i) => (
-              <div key={i} className="flex items-center justify-between text-xs"><span className="text-slate-700">{p.name}</span><span className={`px-2 py-0.5 rounded text-[10px] font-bold ${p.status === "INDISPONIBLE" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>{p.status}</span></div>
-            ))}</div>
+        <h3 className="font-heading font-bold text-slate-900 mb-3">📅 Confrontations directes (10 derniers H2H)</h3>
+        <div className="grid grid-cols-3 gap-3 mb-4">
+          <div className="text-center p-3 rounded-lg bg-orange-50 border border-orange-200">
+            <div className="text-xs text-slate-600">{home}</div>
+            <div className="font-heading text-2xl font-black text-orange-700">{h2hHomeWins}</div>
           </div>
-        ))}</div>
+          <div className="text-center p-3 rounded-lg bg-slate-50 border border-slate-200">
+            <div className="text-xs text-slate-600">Nuls</div>
+            <div className="font-heading text-2xl font-black text-slate-700">{h2hDraws}</div>
+          </div>
+          <div className="text-center p-3 rounded-lg bg-rose-50 border border-rose-200">
+            <div className="text-xs text-slate-600">{away}</div>
+            <div className="font-heading text-2xl font-black text-rose-700">{h2hAwayWins}</div>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-4 mb-4 text-xs">
+          <div><span className="text-slate-500">Moy. buts H2H :</span> <strong className="text-slate-900 tabular-nums">{h2hGoalsAvg}</strong></div>
+          <div><span className="text-slate-500">BTTS H2H :</span> <strong className="text-slate-900 tabular-nums">{h2hBtts}%</strong></div>
+          <div><span className="text-slate-500">Over 2.5 H2H :</span> <strong className="text-slate-900 tabular-nums">{h2hOv25}%</strong></div>
+        </div>
+        <table className="w-full text-sm">
+          <thead><tr className="text-xs uppercase tracking-wider text-slate-500 border-b border-neutral-200"><th className="py-1 text-left">Date</th><th className="py-1 text-left">Comp.</th><th className="py-1 text-center">Score</th><th className="py-1 text-center">BTTS</th><th className="py-1 text-center">+2.5</th></tr></thead>
+          <tbody>{h2h.map((m, i) => (
+            <tr key={i} className="border-b border-neutral-100">
+              <td className="py-1.5 text-slate-600 text-xs font-mono">{m.date}</td>
+              <td className="py-1.5 text-slate-700 text-xs">{m.comp}</td>
+              <td className="py-1.5 text-center font-mono font-bold tabular-nums">{m.hs}-{m.as}</td>
+              <td className="py-1.5 text-center"><span className={`text-[10px] px-1.5 py-0.5 rounded ${m.btts ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{m.btts ? "OUI" : "NON"}</span></td>
+              <td className="py-1.5 text-center"><span className={`text-[10px] px-1.5 py-0.5 rounded ${m.ov25 ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{m.ov25 ? "OUI" : "NON"}</span></td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+
+      {/* === Tendances & Patterns === */}
+      <div className="bg-white border border-neutral-200 rounded-xl p-5">
+        <h3 className="font-heading font-bold text-slate-900 mb-3">📊 Tendances & patterns détectés</h3>
+        <ul className="space-y-2 text-sm text-slate-700">
+          <li className="flex items-start gap-2"><span className="text-orange-500 mt-0.5">●</span> <span><strong>{home}</strong> a marqué dans <strong>{H.btts_pct}% de ses matchs</strong> cette saison.</span></li>
+          <li className="flex items-start gap-2"><span className="text-rose-500 mt-0.5">●</span> <span><strong>{away}</strong> a encaissé en moyenne <strong>{A.gc} buts/match</strong> ({100 - A.cs_pct}% de matchs avec but encaissé).</span></li>
+          <li className="flex items-start gap-2"><span className="text-emerald-500 mt-0.5">●</span> <span>Le <strong>BTTS s'est produit dans {h2hBtts}%</strong> des confrontations directes — tendance {h2hBtts > 55 ? "forte" : "faible"}.</span></li>
+          <li className="flex items-start gap-2"><span className="text-amber-500 mt-0.5">●</span> <span><strong>{(H.gs_ht > 0.7 || A.gs_ht > 0.7) ? "Match offensif en 1ère mi-temps" : "Démarrages prudents en 1ère MT"}</strong> ({Math.round(((H.gs_ht + A.gs_ht) / 2) * 50)}% des matchs avec but avant 45').</span></li>
+          <li className="flex items-start gap-2"><span className="text-fuchsia-500 mt-0.5">●</span> <span>Moyenne de <strong>{((H.avg_corners + A.avg_corners) / 2).toFixed(1)} corners/match</strong> attendus — marché Over 9.5 corners cote intéressante.</span></li>
+        </ul>
+      </div>
+
+      {/* === Injuries === */}
+      <div className="grid sm:grid-cols-2 gap-4">
+        {[["Domicile", home, injuries.home], ["Extérieur", away, injuries.away]].map(([lbl, team, inj], k) => (
+          <div key={k} className="bg-white border border-neutral-200 rounded-xl p-4">
+            <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{lbl}</div>
+            <div className="font-heading font-bold text-slate-900 mb-2">{team}</div>
+            <div className="text-xs text-slate-500 mb-2">🩹 Blessés / incertains</div>
+            <ul className="space-y-1">{inj.map((p, i) => (
+              <li key={i} className="flex items-center justify-between text-sm">
+                <span className="text-slate-700">{p.name}</span>
+                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${p.status === "INDISPONIBLE" ? "bg-rose-100 text-rose-700" : "bg-amber-100 text-amber-700"}`}>{p.status}</span>
+              </li>
+            ))}</ul>
+          </div>
+        ))}
       </div>
     </div>
   );
