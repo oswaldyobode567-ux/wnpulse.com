@@ -1,20 +1,44 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
-import { Crown, CreditCard, BarChart3, Target, Trophy, Flame, History, Mail, Sparkles } from "lucide-react";
+import { Crown, CreditCard, BarChart3, Target, Trophy, Flame, History, Mail, Sparkles, Sunrise } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { PieChart, Pie, Cell, ResponsiveContainer, Tooltip } from "recharts";
 import dayjs from "dayjs";
+import api from "@/lib/api";
+import { toast } from "sonner";
 import PaymentModal from "@/components/payment/PaymentModal";
 
 export default function ProfilePage() {
-  const { user } = useAuth();
+  const { user, refresh } = useAuth();
   const tier = user?.subscription_tier || "free";
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
+  const [autoFollower, setAutoFollower] = useState(user?.auto_follower_enabled ?? true);
+  const [savingPref, setSavingPref] = useState(false);
+
+  useEffect(() => {
+    setAutoFollower(user?.auto_follower_enabled ?? true);
+  }, [user?.auto_follower_enabled]);
+
+  const toggleAutoFollower = async (val) => {
+    setAutoFollower(val);
+    setSavingPref(true);
+    try {
+      await api.patch("/me/preferences", { auto_follower_enabled: val });
+      await refresh?.();
+      toast.success(val ? "Suiveur 7h activé ✨" : "Suiveur 7h désactivé");
+    } catch (e) {
+      setAutoFollower(!val);
+      toast.error(e?.response?.data?.detail || "Échec de la mise à jour");
+    } finally {
+      setSavingPref(false);
+    }
+  };
   const tierData = {
     free: { label: "Free", cls: "bg-slate-100 text-slate-700 border-slate-200", gradient: "from-slate-50 to-slate-100" },
     pro: { label: "Pro", cls: "bg-orange-100 text-orange-700 border-orange-200", gradient: "from-orange-50 to-rose-50" },
@@ -107,6 +131,37 @@ export default function ProfilePage() {
                   </div>
                 ))}
               </div>
+
+              {/* Suiveur automatique — réservé aux Pro/Elite */}
+              {tier !== "free" && (
+                <div className="mt-6 pt-6 border-t border-neutral-200" data-testid="auto-follower-card">
+                  <div className="flex items-start justify-between gap-4 flex-wrap">
+                    <div className="flex items-start gap-3 flex-1 min-w-[260px]">
+                      <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-orange-500 to-rose-500 grid place-items-center text-white shadow-md shadow-orange-500/30">
+                        <Sunrise className="h-5 w-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-heading font-extrabold text-slate-900">Suiveur automatique</h3>
+                          <Badge className="bg-orange-100 text-orange-700 border-orange-200 text-[10px]">Inclus {tier === "elite" ? "Elite" : "Pro"}</Badge>
+                        </div>
+                        <p className="text-sm text-slate-600 mt-1 max-w-md">
+                          Reçois <strong>chaque matin à 7h</strong> (heure Bénin) un email avec le combiné Équilibre du jour. Zéro effort, juste à suivre.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-600">{autoFollower ? "Activé" : "Désactivé"}</span>
+                      <Switch
+                        checked={autoFollower}
+                        onCheckedChange={toggleAutoFollower}
+                        disabled={savingPref}
+                        data-testid="auto-follower-toggle"
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
             </Card>
           </TabsContent>
 

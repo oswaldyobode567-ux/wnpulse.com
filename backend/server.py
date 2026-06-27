@@ -139,6 +139,10 @@ class BroadcastBody(BaseModel):
     combo_tier: Optional[str] = "balanced"  # safe/balanced/jackpot
 
 
+class PreferencesBody(BaseModel):
+    auto_follower_enabled: Optional[bool] = None
+
+
 def _public_user(user_doc: dict) -> dict:
     return {
         "id": user_doc["id"],
@@ -152,6 +156,7 @@ def _public_user(user_doc: dict) -> dict:
         "referral_code": user_doc.get("referral_code"),
         "referral_count": user_doc.get("referral_count", 0),
         "referral_reward_claimed": bool(user_doc.get("referral_reward_claimed", False)),
+        "auto_follower_enabled": bool(user_doc.get("auto_follower_enabled", True)),
     }
 
 
@@ -465,6 +470,23 @@ async def me(payload: dict = Depends(get_current_user_payload)):
     user = await _get_user(payload["sub"])
     if not user:
         raise HTTPException(404, "Utilisateur introuvable")
+    return _public_user(user)
+
+
+@api.patch("/me/preferences")
+async def update_preferences(body: PreferencesBody, payload: dict = Depends(get_current_user_payload)):
+    """Update user preferences (e.g. auto-follower toggle for Pro/Elite users)."""
+    user = await _get_user(payload["sub"])
+    if not user:
+        raise HTTPException(404, "Utilisateur introuvable")
+    updates = {}
+    if body.auto_follower_enabled is not None:
+        if user.get("subscription_tier", "free") == "free":
+            raise HTTPException(403, "Suiveur automatique réservé aux plans Pro et Elite")
+        updates["auto_follower_enabled"] = bool(body.auto_follower_enabled)
+    if updates:
+        await db.users.update_one({"id": user["id"]}, {"$set": updates})
+        user = await _get_user(user["id"])
     return _public_user(user)
 
 
@@ -1322,6 +1344,186 @@ async def _auto_settle_loop():
         await asyncio.sleep(4 * 3600)
 
 
+# ----- "Suiveur automatique" : push quotidien à 7h Bénin (UTC+1) -----
+# Pour les abonnés Pro/Elite : email avec les picks du jour + lien wa.me pré-rempli
+# Côté admin : récap copiable à blaster manuellement sur WhatsApp groupé
+
+AUTO_FOLLOWER_HOUR_LOCAL = 7    # 7h heure locale Bénin
+BENIN_UTC_OFFSET_HOURS = 1      # Bénin = UTC+1 toute l'année
+
+
+def _benin_today_str() -> str:
+    now_utc = datetime.now(timezone.utc)
+    local = now_utc + timedelta(hours=BENIN_UTC_OFFSET_HOURS)
+    return local.strftime("%Y-%m-%d")
+
+
+def _seconds_until_next_local_7h() -> float:
+    now_utc = datetime.now(timezone.utc)
+    local = now_utc + timedelta(hours=BENIN_UTC_OFFSET_HOURS)
+    target_local = local.replace(hour=AUTO_FOLLOWER_HOUR_LOCAL, minute=0, second=0, microsecond=0)
+    if local >= target_local:
+        target_local = target_local + timedelta(days=1)
+    return (target_local - local).total_seconds()
+
+
+def _format_whatsapp_blast(combo: dict, today_str: str) -> str:
+    """Build the WhatsApp broadcast message for the admin to copy/paste."""
+    lines = [
+        f"🔥 *WinPulse · Picks du {today_str}*",
+        f"_Combiné Équilibre · Cote totale : {combo.get('total_odds', '—')}_",
+        "",
+    ]
+    for i, leg in enumerate(combo.get("legs", []), 1):
+        lines.append(
+            f"{i}. *{leg.get('home_team','?')} vs {leg.get('away_team','?')}*\n"
+            f"   👉 {leg.get('pick','?')} @ {leg.get('pick_odds','?')} ({leg.get('confidence',0)}%)"
+        )
+    lines += [
+        "",
+        "Mise type 1 000 FCFA → potentiel " + str(int((combo.get('total_odds') or 0) * 1000)) + " FCFA",
+        "",
+        "📲 Connecte-toi sur https://wnpulse.com pour voir l'analyse IA complète.",
+        "🎯 Joue responsable. 18+",
+    ]
+    return "\n".join(lines)
+
+
+async def _run_auto_follower(dry_run: bool = False) -> dict:
+    """Send today's picks email to Pro/Elite users opted in, once per local day.
+    Returns a summary dict. Idempotent via `auto_follower_last_sent_date`."""
+    today = _benin_today_str()
+    summary = {"date": today, "candidates": 0, "sent": 0, "skipped_already_sent": 0, "errors": 0, "no_picks": False}
+
+    matches = await fetch_all_matches(db)
+    combos_raw = build_multi_combos(matches)
+    combo = combos_raw.get("balanced") or combos_raw.get("safe")
+    if not combo or not combo.get("legs"):
+        summary["no_picks"] = True
+        return summary
+
+    summary["combo_total_odds"] = combo.get("total_odds")
+    summary["combo_legs"] = len(combo["legs"])
+
+    cursor = db.users.find(
+        {
+            "subscription_tier": {"$in": ["pro", "elite"]},
+            "subscription_status": "active",
+        },
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "auto_follower_enabled": 1, "auto_follower_last_sent_date": 1},
+    )
+    users = await cursor.to_list(5000)
+    summary["candidates"] = len(users)
+
+    for u in users:
+        # Default = enabled if missing
+        if u.get("auto_follower_enabled") is False:
+            continue
+        if u.get("auto_follower_last_sent_date") == today:
+            summary["skipped_already_sent"] += 1
+            continue
+        if dry_run:
+            summary["sent"] += 1
+            continue
+        try:
+            res = await send_picks_email(
+                u["email"],
+                u.get("full_name") or "champion",
+                combo["legs"],
+                combo["total_odds"],
+            )
+            if res.get("status") in ("sent", "draft"):
+                await db.users.update_one(
+                    {"id": u["id"]},
+                    {"$set": {"auto_follower_last_sent_date": today}},
+                )
+                summary["sent"] += 1
+            else:
+                summary["errors"] += 1
+        except Exception as e:
+            log.warning(f"auto-follower send failed for {u.get('email')}: {e}")
+            summary["errors"] += 1
+
+    # Persist WhatsApp blast payload so admin can fetch it any time during the day
+    blast_text = _format_whatsapp_blast(combo, today)
+    await db.auto_follower_blasts.update_one(
+        {"date": today},
+        {"$set": {
+            "date": today,
+            "blast_text": blast_text,
+            "combo_total_odds": combo.get("total_odds"),
+            "legs_count": len(combo["legs"]),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+        }},
+        upsert=True,
+    )
+    summary["blast_text"] = blast_text
+    return summary
+
+
+@api.post("/admin/auto-follower/run")
+async def admin_auto_follower_run(dry_run: bool = False, _admin = Depends(_require_admin)):
+    """Manually trigger the auto-follower campaign (idempotent per day)."""
+    return await _run_auto_follower(dry_run=dry_run)
+
+
+@api.get("/admin/auto-follower/preview")
+async def admin_auto_follower_preview(_admin = Depends(_require_admin)):
+    """Preview today's auto-follower run without sending anything."""
+    return await _run_auto_follower(dry_run=True)
+
+
+@api.get("/admin/whatsapp-blast")
+async def admin_whatsapp_blast(_admin = Depends(_require_admin)):
+    """Return today's WhatsApp blast text. Generates it on the fly if missing."""
+    today = _benin_today_str()
+    doc = await db.auto_follower_blasts.find_one({"date": today}, {"_id": 0})
+    if not doc:
+        # Generate without sending
+        res = await _run_auto_follower(dry_run=True)
+        doc = await db.auto_follower_blasts.find_one({"date": today}, {"_id": 0}) or {
+            "date": today,
+            "blast_text": res.get("blast_text", ""),
+            "combo_total_odds": res.get("combo_total_odds"),
+            "legs_count": res.get("combo_legs", 0),
+        }
+    # Stats: how many subscribers will receive the email at 7am
+    subs = await db.users.count_documents({
+        "subscription_tier": {"$in": ["pro", "elite"]},
+        "subscription_status": "active",
+        "auto_follower_enabled": {"$ne": False},
+    })
+    return {**doc, "active_subscribers": subs}
+
+
+async def _auto_follower_loop():
+    """Daily scheduler: trigger _run_auto_follower at 7am Africa/Porto-Novo (UTC+1)."""
+    # Small warm-up
+    await asyncio.sleep(120)
+    # First-time catch-up: if we never ran today and it's already past 7am, run immediately
+    try:
+        today = _benin_today_str()
+        last = await db.auto_follower_blasts.find_one({"date": today}, {"_id": 0, "date": 1})
+        local_hour = (datetime.now(timezone.utc) + timedelta(hours=BENIN_UTC_OFFSET_HOURS)).hour
+        if not last and local_hour >= AUTO_FOLLOWER_HOUR_LOCAL:
+            log.info("auto-follower: catch-up run on startup")
+            res = await _run_auto_follower()
+            log.info(f"auto-follower catch-up result: {res}")
+    except Exception as e:
+        log.warning(f"auto-follower catch-up failed: {e}")
+
+    while True:
+        try:
+            wait_s = _seconds_until_next_local_7h()
+            log.info(f"auto-follower: next run in {int(wait_s)}s (~{round(wait_s/3600,1)}h)")
+            await asyncio.sleep(wait_s)
+            res = await _run_auto_follower()
+            log.info(f"auto-follower result: {res}")
+        except Exception as e:
+            log.error(f"auto-follower loop error: {e}")
+            await asyncio.sleep(600)
+
+
 app.include_router(api)
 
 
@@ -1330,7 +1532,8 @@ async def start_drip_worker():
     """Kick off the drip background loop."""
     asyncio.create_task(_drip_loop())
     asyncio.create_task(_auto_settle_loop())
-    log.info("Background workers started: drip (J+1/J+3/J+5 every 6h) + auto-settle (every 4h)")
+    asyncio.create_task(_auto_follower_loop())
+    log.info("Background workers started: drip (J+1/J+3/J+5 every 6h) + auto-settle (every 4h) + auto-follower (daily 7am Bénin)")
 
 
 @app.on_event("startup")

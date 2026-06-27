@@ -1,0 +1,43 @@
+{
+  "summary": "Iteration 4 — Suiveur automatique (auto-follower 7h Bénin) backend + UI. Created /app/backend/tests/test_auto_follower.py with 13 tests covering /api/auth/me auto_follower_enabled field, PATCH /me/preferences (Pro/Elite only, 403 for Free), POST /api/admin/auto-follower/run (admin-only, dry-run shape with date/candidates/sent/skipped_already_sent/errors/blast_text), GET /api/admin/auto-follower/preview, GET /api/admin/whatsapp-blast (active_subscribers count + blast_text), idempotence per-day, and blog_seed.py phone number fix (+229 01 66 28 06 03 line 216, +33 7 67 97 17 52 line 230, old number absent). RESULT: 12 PASS / 1 SKIP (idempotence test correctly skipped because backend returned no_picks=true today — Odds API quota / no balanced combo available — expected per agent context, code handles gracefully with status 200 + no_picks=true). Frontend Playwright validated: ProfilePage /app/profil tab-subscription → auto-follower-card visible, toggle default aria-checked=true, click triggers PATCH /me/preferences→200 + toast 'Suiveur 7h désactivé', toggle persists across re-click. AdminPage /app/admin → tab-auto-follower → auto-follower-panel visible, Aperçu button triggers POST /admin/auto-follower/run?dry_run=true (200) + GET /admin/whatsapp-blast (200), buttons run/copy present. Landing regression OK — hero now shows dynamic live picks (Denver Nuggets, Vegas Golden Knights, Coco Gauff) instead of hardcoded Real/Barca — iteration_3 critical bug confirmed FIXED.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/admin/auto-follower/run", "issue": "When no_picks=true today (Odds API quota / no balanced combo), the response correctly returns 200 with no_picks=true but blast_text key is OMITTED rather than empty string. Not a bug per se but admin UI must defend against missing key (currently does via 'Aperçu non encore généré' fallback). Idempotence cannot be exercised on no_picks days."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "AdminPage Suiveur 7h panel", "issues": ["When no_picks today, the 'Ouvrir WhatsApp' button (data-testid auto-follower-whatsapp-btn) is hidden because blast_text is the placeholder string — this is correct behavior but the requirement (#8) explicitly lists 'Ouvrir WhatsApp présent'. To be verifiable, either (a) re-test on a day with picks, or (b) keep the WhatsApp button visible even with empty blast (disabled state) — minor UX choice."]}
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_auto_follower.py",
+    "/app/test_reports/pytest/iter4_auto_follower.xml"
+  ],
+  "action_items": [
+    "OPTIONAL: Consider including blast_text='' explicitly in the no_picks response shape for forward-compat with the admin UI and to keep the API contract consistent.",
+    "OPTIONAL: Render the 'Ouvrir WhatsApp' button as disabled (instead of hidden) when blast_text is empty so the requirement #8 testid is always present.",
+    "PRODUCT: Daily 7am loop relies on _benin_today_str + sleep-until-7am; ensure server timezone has the asyncio task properly running after restarts (verify in production logs after 7am Benin time)."
+  ],
+  "critical_code_review_comments": [
+    "server.py _run_auto_follower idempotency: only PATCHes auto_follower_last_sent_date when dry_run=False AND send_picks_email returns status sent/draft. A failed send (errors+=1) does NOT mark the user, which means next call will retry — good behavior.",
+    "server.py auto_follower_blasts collection upsert by date — clean. blast_text persisted so GET /admin/whatsapp-blast is fast.",
+    "PATCH /me/preferences correctly gates on subscription_tier=='free' returning 403; verified end-to-end with fresh free user.",
+    "ProfilePage.jsx toggle uses optimistic UI then PATCH — verified PATCH=200 path triggers toast and persists state across remount.",
+    "AdminPage.jsx loadBlastPreview() fires both /admin/auto-follower/run dry_run=true AND /admin/whatsapp-blast — minor duplication of network calls; one would suffice since /run returns blast_text inline. Not a bug.",
+    "blog_seed.py line 216 has +229 01 66 28 06 03 (merchant) and line 230 has +33 7 67 97 17 52 (support) — confirmed present, old +229 01 67 30 54 39 fully removed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_auto_follower.py (NEW — 13 tests)"
+  ],
+  "success_rate": {"backend": "92% (12/13 — 1 SKIP due to no_picks, not a failure)", "frontend": "100% (profile toggle + admin panel + landing regression all green)"},
+  "test_credentials": "Admin Elite: oswaldyobode567@gmail.com / kirikou36 (per /app/memory/test_credentials.md). Free test users created on-the-fly as TEST_freeauto_<ts>@example.com.",
+  "seed_data_creation": "test_auto_follower.py creates 1 free user per module via /api/auth/register with TEST_freeauto_<timestamp>@example.com — no cleanup (low volume).",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Run: cd /app && python -m pytest backend/tests/ -v (now 61 tests total: 48 from iter3 + 13 new). KEY testids in iter4: auto-follower-card, auto-follower-toggle, tab-auto-follower, auto-follower-panel, auto-follower-preview-btn, auto-follower-run-btn, auto-follower-refresh-btn, auto-follower-copy-btn, auto-follower-whatsapp-btn (only when blast_text non-empty), auto-follower-blast-text. Admin routes are /app/admin and /app/profil (not /admin or /profile — wildcard redirects unknown paths to /). ProfilePage subscription tab is the third tab data-testid tab-subscription. When testing idempotence locally, ensure /api/predictions/combos returns a 'balanced' or 'safe' combo (Odds API quota must be fresh) — else test_idempotence_second_real_run_skips will SKIP not FAIL. LandingPage hero card now uses live picks via api.get('/predictions/top') — the iteration_3 hardcoded regression has been resolved.",
+  "rca_of_the_issue": "No new bug; the SKIPPED idempotence test is RCA'd: _run_auto_follower returns early with {no_picks: true} when build_multi_combos yields neither balanced nor safe combo. The Odds API quota is shared across the day and 'predictions/combos' currently returns no candidates (verified via dry-run response). This is the expected graceful-no-op path documented in agent_to_agent_context_note. To force idempotence to RUN: seed a synthetic combo or wait for a fresh Odds API window."
+}

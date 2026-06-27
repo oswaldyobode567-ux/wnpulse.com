@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle2, XCircle, Send, Users, Wallet, Clock, Mail, Loader2, ShieldCheck } from "lucide-react";
+import { CheckCircle2, XCircle, Send, Users, Wallet, Clock, Mail, Loader2, ShieldCheck, Sunrise, Copy, MessageCircle } from "lucide-react";
 import { toast } from "sonner";
 import dayjs from "dayjs";
 import { cn } from "@/lib/utils";
@@ -27,6 +27,17 @@ export default function AdminPage() {
   const [comboTier, setComboTier] = useState("balanced");
   const [broadcasting, setBroadcasting] = useState(false);
   const [actionLoading, setActionLoading] = useState(null);
+  const [blast, setBlast] = useState(null);
+  const [autoFollowerRunning, setAutoFollowerRunning] = useState(false);
+
+  const loadBlast = async () => {
+    try {
+      const { data } = await api.get("/admin/whatsapp-blast");
+      setBlast(data);
+    } catch (e) {
+      // silent: panel will show empty state
+    }
+  };
 
   const loadAll = async () => {
     setLoading(true);
@@ -46,7 +57,7 @@ export default function AdminPage() {
     }
   };
 
-  useEffect(() => { loadAll(); /* eslint-disable-next-line */ }, [statusFilter]);
+  useEffect(() => { loadAll(); loadBlast(); /* eslint-disable-next-line */ }, [statusFilter]);
 
   const confirmPayment = async (ref) => {
     setActionLoading(ref);
@@ -112,6 +123,35 @@ export default function AdminPage() {
     }
   };
 
+  const runAutoFollower = async (dryRun = false) => {
+    setAutoFollowerRunning(true);
+    try {
+      const { data } = await api.post(`/admin/auto-follower/run?dry_run=${dryRun}`);
+      if (data.no_picks) {
+        toast.warning("Pas de combiné disponible aujourd'hui");
+      } else if (dryRun) {
+        toast.info(`Dry-run : ${data.sent} abonnés recevront l'email`);
+      } else {
+        toast.success(`Suiveur 7h envoyé · ${data.sent} email(s) · ${data.skipped_already_sent} déjà reçu · ${data.errors} erreur(s)`);
+      }
+      await loadBlast();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Échec du Suiveur");
+    } finally {
+      setAutoFollowerRunning(false);
+    }
+  };
+
+  const copyBlast = () => {
+    if (!blast?.blast_text) return;
+    navigator.clipboard?.writeText(blast.blast_text);
+    toast.success("Message WhatsApp copié dans le presse-papier");
+  };
+
+  const whatsappBlastUrl = blast?.blast_text
+    ? `https://wa.me/?text=${encodeURIComponent(blast.blast_text)}`
+    : null;
+
   return (
     <AppLayout>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -144,6 +184,9 @@ export default function AdminPage() {
             <TabsTrigger value="payments" data-testid="tab-payments">Paiements</TabsTrigger>
             <TabsTrigger value="users" data-testid="tab-users">Utilisateurs</TabsTrigger>
             <TabsTrigger value="broadcast" data-testid="tab-broadcast">Envoi emails</TabsTrigger>
+            <TabsTrigger value="auto-follower" data-testid="tab-auto-follower">
+              <Sunrise className="h-3.5 w-3.5 mr-1.5" />Suiveur 7h
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="payments">
@@ -288,9 +331,103 @@ export default function AdminPage() {
               </div>
             </Card>
           </TabsContent>
+
+          <TabsContent value="auto-follower">
+            <Card className="bg-white border-neutral-200 p-6" data-testid="auto-follower-panel">
+              <div className="flex items-center gap-2 mb-2">
+                <Sunrise className="h-5 w-5 text-orange-600" />
+                <h2 className="font-heading font-bold text-slate-900">Suiveur automatique — 7h Bénin</h2>
+              </div>
+              <p className="text-sm text-slate-600 mb-6">
+                Chaque matin à <strong>7h00 (UTC+1)</strong>, un email avec le combiné Équilibre du jour est envoyé automatiquement à tous les abonnés <strong>Pro/Elite</strong> ayant activé l'option. En parallèle, on prépare ici le message <strong>WhatsApp</strong> à blaster manuellement sur ton numéro support.
+              </p>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+                <MiniStat label="Date locale" value={blast?.date || "—"} />
+                <MiniStat label="Abonnés actifs" value={blast?.active_subscribers ?? "—"} accent="emerald" />
+                <MiniStat label="Cote du jour" value={blast?.combo_total_odds || "—"} mono />
+                <MiniStat label="Picks" value={blast?.legs_count || 0} />
+              </div>
+
+              <div className="flex flex-wrap gap-2 mb-6">
+                <Button
+                  onClick={() => runAutoFollower(true)}
+                  variant="outline"
+                  disabled={autoFollowerRunning}
+                  data-testid="auto-follower-preview-btn"
+                >
+                  {autoFollowerRunning ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                  Aperçu (sans envoi)
+                </Button>
+                <Button
+                  onClick={() => runAutoFollower(false)}
+                  className="wp-gradient-warm text-white border-0"
+                  disabled={autoFollowerRunning}
+                  data-testid="auto-follower-run-btn"
+                >
+                  {autoFollowerRunning ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Send className="h-4 w-4 mr-2" />}
+                  Envoyer maintenant aux abonnés
+                </Button>
+                <Button
+                  onClick={loadBlast}
+                  variant="ghost"
+                  size="sm"
+                  data-testid="auto-follower-refresh-btn"
+                >
+                  Rafraîchir
+                </Button>
+              </div>
+
+              <div className="rounded-xl border-2 border-emerald-200 bg-emerald-50/60 p-4">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-2">
+                    <MessageCircle className="h-4 w-4 text-emerald-700" />
+                    <span className="font-heading font-bold text-emerald-900 text-sm">Message WhatsApp à blaster</span>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={copyBlast}
+                      disabled={!blast?.blast_text}
+                      data-testid="auto-follower-copy-btn"
+                    >
+                      <Copy className="h-3.5 w-3.5 mr-1" /> Copier
+                    </Button>
+                    {whatsappBlastUrl && (
+                      <a href={whatsappBlastUrl} target="_blank" rel="noopener noreferrer">
+                        <Button size="sm" className="bg-[#25D366] hover:bg-[#1ebe5c] text-white" data-testid="auto-follower-whatsapp-btn">
+                          <MessageCircle className="h-3.5 w-3.5 mr-1" /> Ouvrir WhatsApp
+                        </Button>
+                      </a>
+                    )}
+                  </div>
+                </div>
+                <pre className="whitespace-pre-wrap text-xs text-slate-800 font-mono bg-white/70 border border-emerald-200 rounded-lg p-3 max-h-72 overflow-y-auto" data-testid="auto-follower-blast-text">
+{blast?.blast_text || "Aperçu non encore généré. Clique sur \"Aperçu\" pour préparer le message du jour."}
+                </pre>
+                <p className="text-[11px] text-emerald-800/80 mt-2">
+                  💡 Astuce : crée une <strong>liste de diffusion WhatsApp</strong> avec tes abonnés Pro/Elite. Ouvre la liste, colle le message et envoie.
+                </p>
+              </div>
+            </Card>
+          </TabsContent>
         </Tabs>
       </div>
     </AppLayout>
+  );
+}
+
+function MiniStat({ label, value, accent, mono }) {
+  const cls = {
+    emerald: "text-emerald-700",
+    orange: "text-orange-700",
+  }[accent] || "text-slate-900";
+  return (
+    <div className="rounded-lg border border-neutral-200 bg-slate-50/60 p-3">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">{label}</div>
+      <div className={cn("font-heading font-extrabold text-lg mt-0.5", cls, mono && "font-mono")}>{value}</div>
+    </div>
   );
 }
 

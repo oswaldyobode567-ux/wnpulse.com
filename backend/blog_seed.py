@@ -213,7 +213,7 @@ Pour un transfert de **5 000 FCFA**, MTN prélève environ **25 FCFA** de frais 
 C'est ultra rapide :
 1. Compose **\\*880#** sur ton téléphone MTN
 2. Choisis "Transfert d'argent"
-3. Tape le numéro marchand WinPulse : **+229 01 67 30 54 39**
+3. Tape le numéro marchand WinPulse : **+229 01 66 28 06 03** (KOUKPAKI VIANEY)
 4. Montant : **4 900 FCFA** (Pro) ou **14 900 FCFA** (Elite)
 5. Référence : la **référence PE-XXXXXXXX** générée pendant ton inscription
 6. Confirme avec ton **code PIN MTN**
@@ -227,7 +227,7 @@ C'est ultra rapide :
 
 ⚠️ **N'envoie pas d'argent à un numéro inconnu** qui te promet "100% gagnant" ou "pronostics secrets". WinPulse ne te demandera **jamais** d'envoyer de l'argent en dehors du système d'abonnement officiel.
 
-⚠️ Si tu reçois un SMS suspect prétendant venir de MTN ou WinPulse, vérifie d'abord avec notre support WhatsApp officiel : **+229 01 67 30 54 39**.
+⚠️ Si tu reçois un SMS suspect prétendant venir de MTN ou WinPulse, vérifie d'abord avec notre support WhatsApp officiel : **+33 7 67 97 17 52**.
 
 ## 7. MoMo vs autres méthodes (Moov, Coris, etc.)
 
