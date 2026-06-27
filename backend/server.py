@@ -8,7 +8,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, APIRouter, Depends, HTTPException, status
+from fastapi import FastAPI, APIRouter, Depends, HTTPException, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, EmailStr, Field
@@ -40,10 +40,23 @@ api = APIRouter(prefix="/api")
 app.add_middleware(
     CORSMiddleware,
     allow_credentials=True,
-    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[o.strip() for o in os.environ.get("CORS_ORIGINS", "https://wnpulse.com").split(",") if o.strip()],
+    allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "Accept", "Origin", "User-Agent"],
+    max_age=86400,
 )
+
+
+# ---- Security headers middleware ----
+@app.middleware("http")
+async def security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    return response
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("winpulse")
@@ -414,11 +427,35 @@ async def register(body: RegisterBody):
     return TokenResponse(access_token=token, user=_public_user(user_doc))
 
 
+# In-memory brute force protection (per-IP). Resets every 15 min.
+from collections import defaultdict, deque
+_login_attempts: dict = defaultdict(deque)
+_LOGIN_MAX_ATTEMPTS = 7
+_LOGIN_WINDOW_SECONDS = 900  # 15 min
+
+
+def _check_login_throttle(ip: str) -> bool:
+    """Return True if the IP is allowed to attempt login. Cleans old entries."""
+    now = datetime.now(timezone.utc).timestamp()
+    dq = _login_attempts[ip]
+    # Pop entries older than the window
+    while dq and (now - dq[0]) > _LOGIN_WINDOW_SECONDS:
+        dq.popleft()
+    if len(dq) >= _LOGIN_MAX_ATTEMPTS:
+        return False
+    dq.append(now)
+    return True
+
+
 @api.post("/auth/login", response_model=TokenResponse)
-async def login(body: LoginBody):
-    user = await db.users.find_one({"email": body.email.lower()})
+async def login(body: LoginBody, request: Request):
+    ip = request.client.host if request.client else "unknown"
+    if not _check_login_throttle(ip):
+        raise HTTPException(status_code=429, detail="Trop de tentatives. Réessayez dans 15 minutes.")
+    email_clean = (body.email or "").strip().lower()
+    user = await db.users.find_one({"email": email_clean})
     if not user or not verify_password(body.password, user["hashed_password"]):
-        raise HTTPException(status_code=400, detail="Identifiants invalides.")
+        raise HTTPException(status_code=400, detail="Identifiants invalides. Vérifie ton email et ton mot de passe.")
     token = create_access_token(user["id"], user["email"])
     return TokenResponse(access_token=token, user=_public_user(user))
 
@@ -699,16 +736,18 @@ async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current
         "tier": body.tier,
         "instructions": {
             "operator": "MTN Mobile Money Bénin",
-            "merchant_number": os.environ.get("MOMO_MERCHANT_PHONE", "+229 01 67 30 54 39"),
-            "whatsapp_number": os.environ.get("MOMO_WHATSAPP_PHONE", "+229 01 67 30 54 39"),
+            "merchant_number": os.environ.get("MOMO_MERCHANT_PHONE", "+229 01 66 28 06 03"),
+            "merchant_owner": os.environ.get("MOMO_OWNER_NAME", "KOUKPAKI VIANEY"),
+            "whatsapp_number": os.environ.get("MOMO_WHATSAPP_PHONE", "+229 01 60 48 39 57"),
             "steps": [
                 "Composez *880# sur votre téléphone MTN Bénin",
                 "Choisissez 'Transfert d'argent'",
-                f"Saisissez le numéro marchand : {os.environ.get('MOMO_MERCHANT_PHONE', '+229 01 67 30 54 39')}",
+                f"Saisissez le numéro : {os.environ.get('MOMO_MERCHANT_PHONE', '+229 01 66 28 06 03')}",
+                f"Vérifiez le nom affiché : {os.environ.get('MOMO_OWNER_NAME', 'KOUKPAKI VIANEY')}",
                 f"Montant : {plan['price_xof']} FCFA",
                 f"Référence (motif) : {ref}",
                 "Confirmez avec votre code PIN MTN",
-                "Envoyez-nous une capture du SMS de confirmation via WhatsApp pour activation rapide.",
+                f"Envoyez la capture du SMS de confirmation sur WhatsApp ({os.environ.get('MOMO_WHATSAPP_PHONE', '+229 01 60 48 39 57')}) pour activation rapide.",
             ],
         },
     }
@@ -1253,18 +1292,20 @@ async def start_drip_worker():
 
 @app.on_event("startup")
 async def seed_admin():
-    """Seed the admin user from env vars if it doesn't exist."""
+    """Seed/promote admin from env vars. If ADMIN_RESET_PASSWORD=true, also resets the password and tier on every startup."""
     admin_email = os.environ.get("ADMIN_EMAIL", "").lower().strip()
     admin_password = os.environ.get("ADMIN_PASSWORD", "")
     admin_name = os.environ.get("ADMIN_NAME", "Admin")
+    reset_pw = os.environ.get("ADMIN_RESET_PASSWORD", "false").lower() == "true"
     if not admin_email or not admin_password:
         return
     existing = await db.users.find_one({"email": admin_email})
     if existing:
-        # Ensure admin flag is set
-        if not existing.get("is_admin"):
-            await db.users.update_one({"email": admin_email}, {"$set": {"is_admin": True}})
-            log.info(f"Promoted {admin_email} to admin")
+        update = {"is_admin": True, "subscription_tier": "elite", "subscription_status": "active"}
+        if reset_pw:
+            update["hashed_password"] = hash_password(admin_password)
+        await db.users.update_one({"email": admin_email}, {"$set": update})
+        log.info(f"Admin {admin_email} ensured (is_admin=True, tier=elite, password_reset={reset_pw})")
         return
     await db.users.insert_one({
         "id": str(uuid.uuid4()),
@@ -1276,6 +1317,9 @@ async def seed_admin():
         "subscription_status": "active",
         "subscription_expires_at": None,
         "created_at": datetime.now(timezone.utc).isoformat(),
+        "referral_code": _gen_referral_code(admin_name),
+        "referral_count": 0,
+        "referral_reward_claimed": False,
     })
     log.info(f"Seeded admin user {admin_email}")
 

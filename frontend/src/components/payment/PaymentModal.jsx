@@ -58,8 +58,9 @@ function formatXof(n) {
   return n.toLocaleString("fr-FR");
 }
 
-const MERCHANT = "+229 01 67 30 54 39";
-const WHATSAPP = "+229 01 67 30 54 39";
+const MERCHANT = "+229 01 66 28 06 03";
+const OWNER_NAME = "KOUKPAKI VIANEY";
+const WHATSAPP = "+229 01 60 48 39 57";
 
 export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const navigate = useNavigate();
@@ -98,6 +99,7 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
       `• Référence : *${reference}*`,
       `• Montant : *${formatXof(tier.price)} FCFA*`,
       `• Numéro MTN MoMo utilisé : *${phone || "(à compléter)"}*`,
+      `• Destinataire payé : *${OWNER_NAME}*`,
       `• Nom : *${payerName || user?.full_name || "(à compléter)"}*`,
       `• Email du compte : *${user?.email || "(non connecté)"}*`,
       ``,
@@ -315,20 +317,22 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                 </div>
 
                 <div className="grid grid-cols-1 gap-2.5">
-                  <CopyRow label="Numéro marchand" value={MERCHANT} onCopy={copy} testid="copy-merchant" />
+                  <CopyRow label="Numéro MTN MoMo" value={MERCHANT} onCopy={copy} testid="copy-merchant" />
+                  <CopyRow label="Nom du destinataire" value={OWNER_NAME} onCopy={copy} testid="copy-owner" />
                   <CopyRow label="Montant" value={`${formatXof(tier.price)} FCFA`} rawValue={tier.price} onCopy={copy} testid="copy-amount" />
                   <CopyRow label="Référence (motif)" value={reference} onCopy={copy} testid="copy-reference" mono />
                 </div>
               </div>
 
               <ol className="text-sm text-slate-700 space-y-2 list-decimal pl-5">
-                <li>Composez <span className="font-mono font-bold">*880#</span> sur votre téléphone MTN Bénin.</li>
-                <li>Choisissez <strong>Transfert d'argent</strong>.</li>
-                <li>Saisissez le <strong>numéro marchand</strong> ci-dessus.</li>
-                <li>Indiquez le <strong>montant</strong> exact : <span className="font-mono">{formatXof(tier.price)} FCFA</span>.</li>
-                <li>Saisissez la <strong>référence</strong> (<span className="font-mono">{reference}</span>) comme motif.</li>
-                <li>Validez avec votre <strong>code PIN MTN</strong>.</li>
-                <li>Envoyez la capture du SMS de confirmation via WhatsApp pour activation rapide.</li>
+                <li>Composez <span className="font-mono font-bold">*880#</span> sur ton téléphone MTN Bénin.</li>
+                <li>Choisis <strong>Transfert d'argent</strong>.</li>
+                <li>Saisis le <strong>numéro</strong> : <span className="font-mono">{MERCHANT}</span></li>
+                <li><strong>Vérifie le nom affiché</strong> : il doit être <strong className="text-orange-700">{OWNER_NAME}</strong>. Sinon, annule immédiatement.</li>
+                <li>Montant exact : <span className="font-mono">{formatXof(tier.price)} FCFA</span>.</li>
+                <li>Référence (motif) : <span className="font-mono">{reference}</span>.</li>
+                <li>Confirme avec ton <strong>code PIN MTN</strong>.</li>
+                <li>Envoie la capture du SMS de confirmation sur WhatsApp <span className="font-mono">{WHATSAPP}</span>.</li>
               </ol>
 
               <a

@@ -12,11 +12,11 @@ const COMPANY = {
   city: "Cotonou",
   region: "Littoral",
   country: "Bénin",
-  email: "contact@winpulse.com",
-  phone: "+229 01 67 30 54 39",
-  whatsapp: "+229 01 67 30 54 39",
+  email: "contact@wnpulse.com",
+  phone: "+229 01 66 28 06 03",
+  whatsapp: "+229 01 60 48 39 57",
   host: "Emergent (https://emergent.sh)",
-  domain: "winpulse.com",
+  domain: "wnpulse.com",
 };
 
 const PAGES = {
