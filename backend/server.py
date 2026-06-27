@@ -839,13 +839,56 @@ async def admin_stats(_admin = Depends(_require_admin)):
     elite_users = await db.users.count_documents({"subscription_tier": "elite"})
     pending = await db.payments.count_documents({"status": "pending"})
     confirmed = await db.payments.count_documents({"status": "confirmed"})
+    rejected = await db.payments.count_documents({"status": "rejected"})
+
     # Revenue
-    confirmed_pays = await db.payments.find({"status": "confirmed"}, {"amount_xof": 1}).to_list(1000)
+    confirmed_pays = await db.payments.find({"status": "confirmed"}, {"amount_xof": 1, "created_at": 1}).to_list(2000)
     revenue = sum(p.get("amount_xof", 0) for p in confirmed_pays)
+
+    # Conversion rate: paid users / total users
+    paying_users = pro_users + elite_users
+    conversion_rate = round((paying_users / total_users) * 100, 1) if total_users else 0
+
+    # ARPU (Average Revenue Per User)
+    arpu = round(revenue / paying_users, 0) if paying_users else 0
+
+    # MRR (current month confirmed payments)
+    now = datetime.now(timezone.utc)
+    month_start = datetime(now.year, now.month, 1, tzinfo=timezone.utc).isoformat()
+    mrr_pays = await db.payments.find({"status": "confirmed", "created_at": {"$gte": month_start}}, {"amount_xof": 1}).to_list(2000)
+    mrr = sum(p.get("amount_xof", 0) for p in mrr_pays)
+
+    # Registrations in last 7 days
+    week_start = (now - timedelta(days=7)).isoformat()
+    new_users_7d = await db.users.count_documents({"created_at": {"$gte": week_start}})
+
+    # Referrals
+    total_referrals = await db.users.count_documents({"referred_by": {"$ne": None, "$exists": True}})
+    rewards_claimed = await db.users.count_documents({"referral_reward_claimed": True})
+
+    # Blog stats
+    blog_posts_count = await db.blog_posts.count_documents({"published": True})
+
+    # Predictions log
+    settled = await db.predictions_log.count_documents({})
+    wins = await db.predictions_log.count_documents({"won": True})
+    win_rate = round((wins / settled) * 100, 1) if settled else 0
+
     return {
-        "users": {"total": total_users, "pro": pro_users, "elite": elite_users, "free": total_users - pro_users - elite_users},
-        "payments": {"pending": pending, "confirmed": confirmed},
+        "users": {
+            "total": total_users,
+            "pro": pro_users,
+            "elite": elite_users,
+            "free": total_users - pro_users - elite_users,
+            "new_last_7d": new_users_7d,
+        },
+        "payments": {"pending": pending, "confirmed": confirmed, "rejected": rejected},
         "revenue_xof": revenue,
+        "mrr_xof": mrr,
+        "arpu_xof": arpu,
+        "conversion_rate_pct": conversion_rate,
+        "referrals": {"total_referred": total_referrals, "rewards_claimed": rewards_claimed},
+        "content": {"blog_posts": blog_posts_count, "predictions_settled": settled, "win_rate_pct": win_rate},
     }
 
 

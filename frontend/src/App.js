@@ -20,6 +20,8 @@ import ParrainagePage from "@/pages/ParrainagePage";
 import BlogPage from "@/pages/BlogPage";
 import BlogPostPage from "@/pages/BlogPostPage";
 import LegalPage from "@/pages/LegalPage";
+import WhatsAppWidget from "@/components/WhatsAppWidget";
+import PageTracker from "@/components/PageTracker";
 
 function RequireAuth({ children, admin = false }) {
   const { user, loading } = useAuth();
@@ -62,6 +64,8 @@ export default function App() {
           <Route path="/app/admin" element={<RequireAuth admin><AdminPage /></RequireAuth>} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+        <PageTracker />
+        <WhatsAppWidget />
         <Toaster position="top-right" richColors />
       </BrowserRouter>
     </AuthProvider>
