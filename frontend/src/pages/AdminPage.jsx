@@ -394,12 +394,21 @@ export default function AdminPage() {
                     >
                       <Copy className="h-3.5 w-3.5 mr-1" /> Copier
                     </Button>
-                    {whatsappBlastUrl && (
+                    {whatsappBlastUrl ? (
                       <a href={whatsappBlastUrl} target="_blank" rel="noopener noreferrer">
                         <Button size="sm" className="bg-[#25D366] hover:bg-[#1ebe5c] text-white" data-testid="auto-follower-whatsapp-btn">
                           <MessageCircle className="h-3.5 w-3.5 mr-1" /> Ouvrir WhatsApp
                         </Button>
                       </a>
+                    ) : (
+                      <Button
+                        size="sm"
+                        className="bg-slate-200 text-slate-400"
+                        disabled
+                        data-testid="auto-follower-whatsapp-btn"
+                      >
+                        <MessageCircle className="h-3.5 w-3.5 mr-1" /> Ouvrir WhatsApp
+                      </Button>
                     )}
                   </div>
                 </div>

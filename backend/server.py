@@ -1400,6 +1400,7 @@ async def _run_auto_follower(dry_run: bool = False) -> dict:
     combo = combos_raw.get("balanced") or combos_raw.get("safe")
     if not combo or not combo.get("legs"):
         summary["no_picks"] = True
+        summary["blast_text"] = ""
         return summary
 
     summary["combo_total_odds"] = combo.get("total_odds")

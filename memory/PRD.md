@@ -7,7 +7,7 @@ AI-powered sports betting prediction app for Bénin market with Claude Sonnet AI
 - **Name:** WinPulse SARL · Cotonou, Littoral, Bénin
 - **Contact:** contact@wnpulse.com (✅ Resend verified Feb 2026 — emails delivered worldwide)
 - **MTN MoMo (compte personnel):** +229 01 66 28 06 03 — KOUKPAKI VIANEY
-- **WhatsApp Support:** +229 01 60 48 39 57
+- **WhatsApp Support:** +33 7 67 97 17 52
 - **Domain:** wnpulse.com (Namecheap, deployment pending click)
 
 ## Admin
@@ -21,7 +21,7 @@ AI-powered sports betting prediction app for Bénin market with Claude Sonnet AI
 - **Email:** Resend (verified domain wnpulse.com)
 - **AI:** Claude Sonnet 4.5
 - **Analytics:** PostHog (already installed) + Google Analytics 4 placeholder + Facebook Pixel placeholder
-- **Workers:** drip emails (6h) + auto-settle (4h)
+- **Workers:** drip emails (6h) + auto-settle (4h) + auto-follower 7am Bénin (daily push email + WhatsApp blast prep)
 
 ## Security Hardening
 - CORS restricted to wnpulse.com domains
@@ -86,27 +86,37 @@ AI-powered sports betting prediction app for Bénin market with Claude Sonnet AI
 - 4 pages: mentions-legales, cgv, confidentialite, jeu-responsable
 - Compliant with Bénin loi 2017-20 + APDP
 
+### Auto-Follower Worker (NEW Feb 2026)
+- "Suiveur automatique" : push quotidien à **7h heure Bénin (UTC+1)** pour les abonnés Pro/Elite opt-in
+- Email automatique via Resend avec le combiné Équilibre du jour (idempotent : `auto_follower_last_sent_date`)
+- Récap WhatsApp pré-rédigé persisté dans `auto_follower_blasts` pour push manuel par l'admin
+- Toggle utilisateur dans ProfilePage (activé par défaut sur Pro/Elite)
+- Admin panel : tab "Suiveur 7h" avec preview, run, copy WhatsApp, open WhatsApp
+
 ### Admin Panel
 - 1-click payment confirmation/rejection
 - User management
 - Broadcast picks email
 - Drip & auto-settle manual triggers
+- Auto-follower preview/run + WhatsApp blast text
 - Stats dashboard
 
 ## Key Backend Endpoints
 - Auth: `/api/auth/{login,register,forgot-password,reset-password,me}`
+- User Prefs: `/api/me/preferences` (PATCH — auto_follower_enabled)
 - Data: `/api/data/{status,refresh}`, `/api/scores`, `/api/matches`
 - Predictions: `/api/predictions/{top,combos}`, `/api/track-record`, `/api/value-bets`
 - Subscription: `/api/plans`, `/api/subscription/{checkout,payments}`
 - Referral: `/api/referral/{me,claim}`
 - Blog/SEO: `/api/blog/posts`, `/api/blog/posts/{slug}`, `/api/sitemap.xml`, `/api/robots.txt`
-- Admin: `/api/admin/{payments,users,stats,broadcast/*,drip/*,auto-settle/run}`, payments confirm/reject
+- Admin: `/api/admin/{payments,users,stats,broadcast/*,drip/*,auto-settle/run,auto-follower/{run,preview},whatsapp-blast}`, payments confirm/reject
 
 ## DB Schema
-- `users`: id, email, full_name, hashed_password, is_admin, subscription_tier, subscription_status, subscription_expires_at, created_at, referral_code, referral_count, referral_reward_claimed, referred_by, drip_sent_days
+- `users`: id, email, full_name, hashed_password, is_admin, subscription_tier, subscription_status, subscription_expires_at, created_at, referral_code, referral_count, referral_reward_claimed, referred_by, drip_sent_days, **auto_follower_enabled, auto_follower_last_sent_date**
 - `payments`: reference (PE-XXXXXXXX), user_id, tier, amount_xof, phone, payer_name, status, created_at
 - `predictions_log`: match_id, date, datetime, match, home/away_team, league, sport_key, pick, odds, confidence, score_home/away, winner, won, profit, settled_at, source
 - `blog_posts`: slug, title, excerpt, cover, tags, author, read_min, published_at, meta_description, content_md, published
+- `auto_follower_blasts`: date (YYYY-MM-DD), blast_text, combo_total_odds, legs_count, generated_at
 
 ## Backlog
 
