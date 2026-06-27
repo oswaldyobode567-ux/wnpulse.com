@@ -14,7 +14,7 @@ const COMPANY = {
   country: "Bénin",
   email: "contact@wnpulse.com",
   phone: "+229 01 66 28 06 03",
-  whatsapp: "+229 01 60 48 39 57",
+  whatsapp: "+33 7 67 97 17 52",
   host: "Emergent (https://emergent.sh)",
   domain: "wnpulse.com",
 };

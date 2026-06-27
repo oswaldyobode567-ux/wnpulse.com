@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { MessageCircle, X, ChevronRight, Sparkles, Send } from "lucide-react";
 
-const WHATSAPP_NUMBER = "2290160483957"; // +229 01 60 48 39 57 stripped
+const WHATSAPP_NUMBER = "33767971752"; // +33 7 67 97 17 52
 const COMPANY = "WinPulse";
 
 const FAQ = [

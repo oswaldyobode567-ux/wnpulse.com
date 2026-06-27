@@ -22,6 +22,7 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
 import dayjs from "dayjs";
+import LiveHeatmap from "@/components/LiveHeatmap";
 
 export default function LandingPage() {
   const navigate = useNavigate();
@@ -245,6 +246,9 @@ export default function LandingPage() {
           })}
         </div>
       </section>
+
+      {/* ========== LIVE HEATMAP ========== */}
+      <LiveHeatmap />
 
       {/* ========== TESTIMONIALS SECTION ========== */}
       <section id="testimonials" className="bg-gradient-to-b from-white via-orange-50/30 to-white py-20 border-t border-neutral-200 relative overflow-hidden">

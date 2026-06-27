@@ -60,7 +60,7 @@ function formatXof(n) {
 
 const MERCHANT = "+229 01 66 28 06 03";
 const OWNER_NAME = "KOUKPAKI VIANEY";
-const WHATSAPP = "+229 01 60 48 39 57";
+const WHATSAPP = "+33 7 67 97 17 52";
 
 export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const navigate = useNavigate();

@@ -738,7 +738,7 @@ async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current
             "operator": "MTN Mobile Money Bénin",
             "merchant_number": os.environ.get("MOMO_MERCHANT_PHONE", "+229 01 66 28 06 03"),
             "merchant_owner": os.environ.get("MOMO_OWNER_NAME", "KOUKPAKI VIANEY"),
-            "whatsapp_number": os.environ.get("MOMO_WHATSAPP_PHONE", "+229 01 60 48 39 57"),
+            "whatsapp_number": os.environ.get("MOMO_WHATSAPP_PHONE", "+33 7 67 97 17 52"),
             "steps": [
                 "Composez *880# sur votre téléphone MTN Bénin",
                 "Choisissez 'Transfert d'argent'",
@@ -747,7 +747,7 @@ async def checkout(body: PaymentRequestBody, payload: dict = Depends(get_current
                 f"Montant : {plan['price_xof']} FCFA",
                 f"Référence (motif) : {ref}",
                 "Confirmez avec votre code PIN MTN",
-                f"Envoyez la capture du SMS de confirmation sur WhatsApp ({os.environ.get('MOMO_WHATSAPP_PHONE', '+229 01 60 48 39 57')}) pour activation rapide.",
+                f"Envoyez la capture du SMS de confirmation sur WhatsApp ({os.environ.get('MOMO_WHATSAPP_PHONE', '+33 7 67 97 17 52')}) pour activation rapide.",
             ],
         },
     }
