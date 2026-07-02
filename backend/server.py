@@ -464,9 +464,23 @@ def _throttle_clear(ip: str, email: str) -> None:
     _login_attempts.pop(_throttle_key(ip, email), None)
 
 
+def _real_client_ip(request: Request) -> str:
+    """Return the true client IP, honoring Cloudflare / K8s ingress forwarded headers."""
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf.strip()
+    xff = request.headers.get("x-forwarded-for", "")
+    if xff:
+        return xff.split(",")[0].strip()
+    xri = request.headers.get("x-real-ip")
+    if xri:
+        return xri.strip()
+    return request.client.host if request.client else "unknown"
+
+
 @api.post("/auth/login", response_model=TokenResponse)
 async def login(body: LoginBody, request: Request):
-    ip = request.client.host if request.client else "unknown"
+    ip = _real_client_ip(request)
     email_clean = (body.email or "").strip().lower()
 
     allowed, wait_s = _throttle_check(ip, email_clean)

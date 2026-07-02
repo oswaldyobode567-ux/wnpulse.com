@@ -1,0 +1,29 @@
+{
+  "summary": "Re-tested login throttle fix on public URL after _real_client_ip() helper added. All 7/7 pytest cases in test_login_throttle_fix.py now PASS (was 5/7 in iter5). Admin login isolation regression confirmed OK.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_login_throttle_fix.py",
+    "/app/test_reports/pytest/iter6_throttle.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "_real_client_ip() helper correctly prioritizes CF-Connecting-IP > X-Forwarded-For (first hop) > X-Real-IP > request.client.host — good order for Cloudflare + K8s ingress.",
+    "Consider adding trusted-proxy validation in production to prevent header spoofing bypass of throttle."
+  ],
+  "updated_files": [],
+  "success_rate": {"backend": "100%", "frontend": "N/A (skipped per request)"},
+  "test_credentials": "Admin: oswaldyobode567@gmail.com / kirikou36 (from request)",
+  "seed_data_creation": "None",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Login throttle fix verified end-to-end on public URL. 7/7 pytest green in 23.5s. Suiveur automatique panel not re-tested since frontend testing was explicitly skipped this iteration; iter4 confirmed it renders.",
+  "rca of the issue": "Iter5 root cause: request.client.host returned K8s ingress upstream IP, so throttle bucket keyed on identical IP for all public callers effectively still worked but pytest hitting via public URL was collapsing to a single IP. Fix: _real_client_ip() now reads cf-connecting-ip / x-forwarded-for (first hop) headers. Verified: 11 wrong attempts → 10× HTTP 400 then HTTP 429, admin isolation preserved."
+}
