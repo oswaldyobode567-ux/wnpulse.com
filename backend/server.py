@@ -1,6 +1,7 @@
 """WinPulse - Main FastAPI server."""
 import os
 import uuid
+import hashlib
 import logging
 import asyncio
 from urllib.parse import quote as urllib_quote
@@ -1757,7 +1758,7 @@ async def _run_value_bet_alerts(dry_run: bool = False) -> dict:
     # Fingerprint of today's alert batch (so a user gets one email per batch max)
     today_str = _benin_today_str()
     batch_ids = sorted(f"{b['match_id']}:{b['market']}:{b['pick']}" for b in unique_bets)
-    batch_hash = str(hash(tuple(batch_ids)))[-8:]
+    batch_hash = hashlib.sha1(("|".join(batch_ids)).encode()).hexdigest()[:8]
     batch_key = f"{today_str}-{batch_hash}"
 
     users = await db.users.find(

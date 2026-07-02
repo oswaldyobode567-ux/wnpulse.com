@@ -21,7 +21,7 @@ AI-powered sports betting prediction app for Bénin market with Claude Sonnet AI
 - **Email:** Resend (verified domain wnpulse.com)
 - **AI:** Claude Sonnet 4.5
 - **Analytics:** PostHog (already installed) + Google Analytics 4 placeholder + Facebook Pixel placeholder
-- **Workers:** drip emails (6h) + auto-settle (4h) + auto-follower 7am Bénin (daily push email + WhatsApp blast prep)
+- **Workers:** drip emails (6h) + auto-settle (4h) + auto-follower 7am Bénin (daily push email + WhatsApp blast prep) + value-bet alerts (every 6h, email push Pro/Elite when edge ≥15%)
 
 ## Security Hardening
 - CORS restricted to wnpulse.com domains
@@ -85,6 +85,19 @@ AI-powered sports betting prediction app for Bénin market with Claude Sonnet AI
 ### Legal
 - 4 pages: mentions-legales, cgv, confidentialite, jeu-responsable
 - Compliant with Bénin loi 2017-20 + APDP
+
+### Combo Builder (FootyStats-style, NEW Feb 2026)
+- Route `/app/builder`, page ComboBuilderPage.jsx
+- Backend serves 40+ pick options per football match (h2h + totals + spreads + btts + draw_no_bet from Odds API + 7 IA synthetic markets: Double Chance 1X/12/X2, DNB, BTTS Yes/No, Over 1.5/2.5, Clean Sheet home/away)
+- User selects picks across matches → live totals (odds, avg confidence, Kelly quarter stake %)
+- Save personal combos, list, delete, share via WhatsApp with pre-filled message
+- Deep IA stats per match: home/draw/away probs, BTTS%, Over 2.5%, Over 1.5%, Clean sheets
+
+### Value Bet Alerts (NEW Feb 2026)
+- Background worker every 6h detects picks with edge ≥ 15% (IA probability vs bookie implied probability)
+- Email push to Pro/Elite subscribers via Resend (`send_value_bet_alert`)
+- Idempotent via `user.value_bet_batches_sent` (SHA1 batch key, bounded to last 20 batches)
+- Admin panel: `/api/admin/value-bets/{run,preview}` — preview + force send
 
 ### Auto-Follower Worker (NEW Feb 2026)
 - "Suiveur automatique" : push quotidien à **7h heure Bénin (UTC+1)** pour les abonnés Pro/Elite opt-in
