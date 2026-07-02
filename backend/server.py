@@ -271,6 +271,56 @@ async def data_status():
     }
 
 
+@api.get("/data/source-audit")
+async def data_source_audit():
+    """PUBLIC audit endpoint: prove that matches come from the real Odds API (not mock data).
+    Anyone (including the site owner) can hit this to verify data authenticity."""
+    from odds_service import ODDS_API_KEY
+    matches = await fetch_all_matches(db)
+    per_sport: Dict[str, Dict] = {}
+    mock_ids = 0
+    real_ids = 0
+
+    for m in matches:
+        sk = m.get("sport_key", "unknown")
+        mid = m.get("id", "")
+        is_mock = len(mid) == 16 and all(c in "0123456789abcdef" for c in mid)
+        if is_mock:
+            mock_ids += 1
+        else:
+            real_ids += 1
+
+        if sk not in per_sport:
+            per_sport[sk] = {
+                "sport_key": sk,
+                "sport_title": m.get("sport_title", ""),
+                "count": 0,
+                "sample_matches": [],
+                "num_bookmakers_avg": 0,
+                "is_mock": False,
+            }
+        per_sport[sk]["count"] += 1
+        if len(per_sport[sk]["sample_matches"]) < 3:
+            per_sport[sk]["sample_matches"].append({
+                "home_team": m.get("home_team"),
+                "away_team": m.get("away_team"),
+                "commence_time": m.get("commence_time"),
+                "num_bookmakers": len(m.get("bookmakers", [])),
+            })
+        if is_mock:
+            per_sport[sk]["is_mock"] = True
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "odds_api_configured": bool(ODDS_API_KEY),
+        "total_matches": len(matches),
+        "real_matches": real_ids,
+        "mock_matches": mock_ids,
+        "data_source": "live" if mock_ids == 0 and ODDS_API_KEY else ("mixed" if mock_ids and real_ids else "mock"),
+        "sports": sorted(per_sport.values(), key=lambda x: -x["count"]),
+    }
+
+
 @api.get("/scores")
 async def get_scores():
     """Return current live + recent finished scores."""

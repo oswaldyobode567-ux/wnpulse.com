@@ -1,0 +1,28 @@
+{
+  "summary": "Iter8 — Validated the new /api/data/source-audit endpoint + LiveDataBadge component on both /app (Dashboard, compact) and /app/builder (Combo Builder, full). Backend pytest 6/6 PASSED. Frontend E2E on public URL confirmed: badge visible with correct text, tooltip opens on click and lists sports with LIVE tags. Login regression (5x admin) still 5×200.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_source_audit.py",
+    "/app/test_reports/pytest/iter8_source_audit.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py now 1917 lines — same recommendation as iter7 to split into routers (builder.py, admin.py, value_bets.py, data_audit.py).",
+    "In /api/data/source-audit the mock-detection heuristic is len(id)==16 && hex. Real Odds API ids are longer (~32+ chars) so this holds today, but if Odds API ever returns 16-hex-shaped ids the badge would flip to 'mixed' incorrectly. Consider a stronger provenance marker (e.g. explicit m.get('source') tagged at ingestion).",
+    "LiveDataBadge fetches /data/source-audit on every mount and every 60s — fine, but two badges (Dashboard + Builder) means 2 concurrent fetches when both mounted; consider a shared context/hook to dedupe.",
+    "Tooltip renders sport tags with class that applies text-transform: uppercase. DOM text is 'live' lowercase, which slightly hurts automated testability. Consider hardcoding 'LIVE'/'DÉMO' as the text so data-testid consumers can assert on innerText directly."
+  ],
+  "updated_files": ["/app/backend/tests/test_source_audit.py (new)"],
+  "success_rate": {"backend": "100% (6/6)", "frontend": "100% on badge+tooltip flow on both pages"},
+  "test_credentials": "Admin oswaldyobode567@gmail.com / kirikou36 — worked.",
+  "seed_data_creation": "None. Read-only tests.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Endpoint /api/data/source-audit is PUBLIC (no auth). Returns data_source=live when Odds API key configured and 0 mock ids. Badge testid: live-data-badge, tooltip testid: live-data-tooltip. In tooltip DOM, the LIVE/DÉMO tag text is lowercase but CSS-uppercased — assert case-insensitively.",
+  "rca of the issue": "N/A — feature validated end-to-end."
+}

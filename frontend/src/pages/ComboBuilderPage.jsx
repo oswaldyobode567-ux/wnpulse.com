@@ -11,6 +11,7 @@ import api from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { toast } from "sonner";
 import dayjs from "dayjs";
+import LiveDataBadge from "@/components/LiveDataBadge";
 
 const SPORT_TABS = [
   { key: "all", label: "Tous" },
@@ -189,12 +190,13 @@ export default function ComboBuilderPage() {
     <AppLayout>
       <div className="max-w-7xl mx-auto p-4 sm:p-6 pb-24">
         <div className="mb-6">
-          <div className="flex items-center gap-2 mb-1">
+          <div className="flex items-center gap-2 mb-1 flex-wrap">
             <div className="h-8 w-8 rounded-lg bg-gradient-to-br from-orange-500 to-rose-500 grid place-items-center shadow-md shadow-orange-500/30">
               <Sparkles className="h-4 w-4 text-white" strokeWidth={2.5} />
             </div>
             <h1 className="font-heading text-2xl sm:text-3xl font-extrabold text-slate-900">Combo Builder</h1>
             <Badge className="bg-orange-100 text-orange-700 border-orange-200 text-[10px] ml-1">Nouveau</Badge>
+            <div className="ml-auto"><LiveDataBadge /></div>
           </div>
           <p className="text-sm text-slate-600 max-w-2xl">
             Construis ton propre combiné à partir de <strong>40+ marchés analysés par notre IA</strong> (vainqueur, double chance, BTTS, over/under, handicaps, mi-temps…). Style FootyStats.

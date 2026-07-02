@@ -14,6 +14,7 @@ import { useAuth } from "@/contexts/AuthContext";
 import { RealtimeBar, FreshnessStamp } from "@/components/RealtimeBar";
 import { useRealtimeMatches, useDataStatus } from "@/services/realtimeService";
 import PaymentModal from "@/components/payment/PaymentModal";
+import LiveDataBadge from "@/components/LiveDataBadge";
 
 const SPORT_FILTERS = [
   { key: "all", label: "Tous" },
@@ -57,8 +58,9 @@ export default function DashboardPage() {
           <div className="absolute -bottom-20 -left-20 h-72 w-72 rounded-full bg-rose-500/15 blur-3xl pointer-events-none" />
           <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-4">
             <div>
-              <div className="text-[11px] uppercase tracking-[0.18em] text-orange-300 font-bold mb-1.5">
-                {dayjs().format("dddd D MMMM YYYY")}
+              <div className="text-[11px] uppercase tracking-[0.18em] text-orange-300 font-bold mb-1.5 flex items-center gap-2 flex-wrap">
+                <span>{dayjs().format("dddd D MMMM YYYY")}</span>
+                <LiveDataBadge compact />
               </div>
               <h1 className="font-heading text-3xl sm:text-4xl lg:text-5xl font-black tracking-tighter leading-[1]">
                 Salut {user?.full_name?.split(" ")[0] || "champion"} 👋
