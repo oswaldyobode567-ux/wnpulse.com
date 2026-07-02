@@ -432,37 +432,78 @@ async def register(body: RegisterBody):
     return TokenResponse(access_token=token, user=_public_user(user_doc))
 
 
-# In-memory brute force protection (per-IP). Resets every 15 min.
+# In-memory brute force protection — counts ONLY failed attempts per (IP, email).
+# Successful logins CLEAR the counter (so legitimate users are never locked out).
 from collections import defaultdict, deque
 _login_attempts: dict = defaultdict(deque)
-_LOGIN_MAX_ATTEMPTS = 7
-_LOGIN_WINDOW_SECONDS = 900  # 15 min
+_LOGIN_MAX_FAILED = 10          # up from 7 — more forgiving for typos
+_LOGIN_WINDOW_SECONDS = 900     # 15 min sliding window
 
 
-def _check_login_throttle(ip: str) -> bool:
-    """Return True if the IP is allowed to attempt login. Cleans old entries."""
+def _throttle_key(ip: str, email: str) -> str:
+    return f"{ip}:{(email or '').strip().lower()}"
+
+
+def _throttle_check(ip: str, email: str) -> tuple[bool, int]:
+    """Return (allowed, seconds_until_reset). Does NOT increment — read-only."""
     now = datetime.now(timezone.utc).timestamp()
-    dq = _login_attempts[ip]
-    # Pop entries older than the window
+    dq = _login_attempts[_throttle_key(ip, email)]
     while dq and (now - dq[0]) > _LOGIN_WINDOW_SECONDS:
         dq.popleft()
-    if len(dq) >= _LOGIN_MAX_ATTEMPTS:
-        return False
-    dq.append(now)
-    return True
+    if len(dq) >= _LOGIN_MAX_FAILED:
+        wait = int(_LOGIN_WINDOW_SECONDS - (now - dq[0]))
+        return False, max(wait, 1)
+    return True, 0
+
+
+def _throttle_record_failure(ip: str, email: str) -> None:
+    _login_attempts[_throttle_key(ip, email)].append(datetime.now(timezone.utc).timestamp())
+
+
+def _throttle_clear(ip: str, email: str) -> None:
+    _login_attempts.pop(_throttle_key(ip, email), None)
 
 
 @api.post("/auth/login", response_model=TokenResponse)
 async def login(body: LoginBody, request: Request):
     ip = request.client.host if request.client else "unknown"
-    if not _check_login_throttle(ip):
-        raise HTTPException(status_code=429, detail="Trop de tentatives. Réessayez dans 15 minutes.")
     email_clean = (body.email or "").strip().lower()
+
+    allowed, wait_s = _throttle_check(ip, email_clean)
+    if not allowed:
+        minutes = max(1, wait_s // 60)
+        log.warning(f"login THROTTLED for {email_clean} from {ip} — wait {wait_s}s")
+        raise HTTPException(status_code=429, detail=f"Trop de tentatives échouées. Réessayez dans {minutes} min.")
+
     user = await db.users.find_one({"email": email_clean})
     if not user or not verify_password(body.password, user["hashed_password"]):
+        _throttle_record_failure(ip, email_clean)
         raise HTTPException(status_code=400, detail="Identifiants invalides. Vérifie ton email et ton mot de passe.")
+
+    # Success → CLEAR the counter so legit users are never blocked
+    _throttle_clear(ip, email_clean)
     token = create_access_token(user["id"], user["email"])
     return TokenResponse(access_token=token, user=_public_user(user))
+
+
+@api.post("/admin/unlock-login/{email}")
+async def admin_unlock_login(email: str, _admin = Depends(_require_admin)):
+    """Admin failsafe: wipe login throttle for a given email across all IPs.
+    Use this if a user reports being locked out."""
+    email_lc = email.strip().lower()
+    keys_to_clear = [k for k in list(_login_attempts.keys()) if k.endswith(f":{email_lc}")]
+    for k in keys_to_clear:
+        _login_attempts.pop(k, None)
+    return {"unlocked": len(keys_to_clear), "email": email_lc}
+
+
+@api.post("/admin/unlock-login-all")
+async def admin_unlock_login_all(_admin = Depends(_require_admin)):
+    """Admin failsafe: wipe the entire login throttle map (all IPs, all emails)."""
+    n = len(_login_attempts)
+    _login_attempts.clear()
+    return {"cleared_keys": n}
+
 
 
 @api.get("/auth/me")

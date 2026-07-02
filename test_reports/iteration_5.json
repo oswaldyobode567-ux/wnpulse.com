@@ -1,0 +1,42 @@
+{
+  "summary": "Verified login throttle fix (iter5). MAIN USER BUG IS FIXED — admin oswaldyobode567@gmail.com/kirikou36 now succeeds 15+ times in a row (was blocked at 7). Failures→success clears the counter. Bcrypt does not crash on any existing DB user. 3 successive logout/login cycles pass on the UI. BUT: throttle does NOT trigger via public URL (Cloudflare/ingress) because request.client.host varies per upstream connection — brute-force protection is effectively disabled in production. Locally on :8001 it works (10× 400 then 429), publicly it stays at 400 for 15+ tries. This is a real security regression that needs a fix using X-Forwarded-For / CF-Connecting-IP header.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "/api/auth/login", "issue": "Throttle uses request.client.host which is the immediate upstream IP (varies per request behind Cloudflare/K8s ingress). Result: brute-force lockout NEVER kicks in via the public URL — verified 15 consecutive bad-password attempts all returned 400, never 429. Fix: read client IP from X-Forwarded-For (first hop) or CF-Connecting-IP header, fall back to request.client.host.", "priority": "HIGH"}
+    ],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_login_throttle_fix.py",
+    "/app/test_reports/pytest/iter5_login.xml"
+  ],
+  "action_items": [
+    "Fix throttle key to use real client IP via X-Forwarded-For / CF-Connecting-IP header — currently the rate-limit is bypassed in prod. Suggested snippet: ip = (request.headers.get('cf-connecting-ip') or request.headers.get('x-forwarded-for','').split(',')[0].strip() or (request.client.host if request.client else 'unknown'))",
+    "After the header-IP fix, re-run test_login_throttle_fix.py — tests 3/4/5 should turn green."
+  ],
+  "critical_code_review_comments": [
+    "server.py line 469: `ip = request.client.host` is not the real client behind Cloudflare/K8s ingress — must read forwarded headers otherwise per-IP throttle is toothless.",
+    "Login throttle map is in-memory (dict) so it resets on every backend reload/restart — acceptable per user note, but note that watchfiles reloads (dev mode) will wipe it too.",
+    "Positive: successful logins correctly clear the failure counter (line 484). The main user-blocking bug is properly fixed."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_login_throttle_fix.py (new)"
+  ],
+  "success_rate": {"backend": "57% (4/7 pytest — 3 failures are due to header-IP issue above, not the user-facing bug)", "frontend": "100%"},
+  "test_credentials": "admin oswaldyobode567@gmail.com / kirikou36 — confirmed working after the fix",
+  "seed_data_creation": "None. Test uses synthetic emails throttle_target@example.com etc. that never exist in DB.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "User-facing login bug (legit users being locked out) is FIXED and validated (tests 1,2 pass; 3 successive UI logouts/logins pass). Remaining issue: throttle uses request.client.host which behind Cloudflare returns a varying upstream IP, so the rate-limit never fires publicly. Fix by adding X-Forwarded-For / CF-Connecting-IP header lookup in _throttle_key call site (server.py line 469). After that fix, rerun /app/backend/tests/test_login_throttle_fix.py — expect 7/7 green.",
+  "regression_checks": {
+    "auto_follower_admin_tab": "PASS — [data-testid='tab-auto-follower'] renders in /app/admin",
+    "auto_follower_profile_toggle": "PASS — [data-testid='auto-follower-toggle'] renders in /app/profil, shows 'Activé' for Elite user",
+    "three_successive_logins": "PASS — 3 logout/relogin cycles in UI, all reached /app, none blocked"
+  },
+  "rca_of_the_issue": "Original bug root cause (throttle counting successful logins) is CORRECTLY fixed by the main agent — verified via tests 1,2,7 all green and UI flow. Newly surfaced regression: the throttle IP source (request.client.host) does not reflect the true client behind Cloudflare/Kubernetes ingress, so per-IP counters key on the ingress upstream IP which rotates per connection, effectively disabling brute-force lockout on the public URL. Locally on :8001 (direct connection) the throttle works exactly as designed (10× 400 → 429). Mitigation: use CF-Connecting-IP or first entry of X-Forwarded-For for IP identity."
+}
