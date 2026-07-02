@@ -457,3 +457,62 @@ async def send_weekly_teaser_email(to_email: str, user_name: str, picks: list, t
     except Exception as e:
         logger.warning(f"weekly teaser email failed for {to_email}: {e}")
         return {"status": "error", "error": str(e)}
+
+
+
+async def send_value_bet_alert(to_email: str, user_name: str, bets: list) -> dict:
+    """VIP alert: 1-5 value bets found by the IA (edge >= 15%)."""
+    if not RESEND_API_KEY:
+        return {"status": "draft", "to": to_email, "type": "value_bet"}
+    if not bets:
+        return {"status": "noop", "reason": "no bets"}
+    rows = ""
+    for b in bets[:5]:
+        rows += f"""
+        <tr><td style="padding:12px 14px;border-bottom:1px solid #f1f5f9;">
+          <div style="font-size:11px;text-transform:uppercase;letter-spacing:1.5px;color:#64748b;font-weight:700;">{b.get('sport_title','—')}</div>
+          <div style="font-size:14px;color:#0f172a;font-weight:700;margin-top:2px;">{b.get('home_team','?')} vs {b.get('away_team','?')}</div>
+          <div style="font-size:13px;color:#475569;margin-top:6px;">
+            💡 <strong>{b.get('pick','?')}</strong> @ <strong style="color:#059669;">{b.get('pick_odds','?')}</strong>
+            &nbsp;·&nbsp;
+            <span style="background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:6px;font-weight:700;font-size:11px;">Edge +{b.get('edge',0):.1f}%</span>
+          </div>
+        </td></tr>
+        """
+    html = f"""
+    <!DOCTYPE html><html><head><meta charset="utf-8"></head>
+    <body style="margin:0;background:#f8fafc;font-family:-apple-system,sans-serif;">
+      <table width="100%" cellpadding="0" cellspacing="0" style="padding:24px 0;"><tr><td align="center">
+        <table width="600" style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,.06);">
+          <tr><td style="background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:28px 24px;">
+            <div style="font-size:11px;text-transform:uppercase;letter-spacing:2px;font-weight:700;opacity:.85;">{APP_NAME} · Alerte Value</div>
+            <div style="font-size:26px;font-weight:800;margin-top:6px;">💎 {len(bets)} cote(s) sous-évaluée(s)</div>
+          </td></tr>
+          <tr><td style="padding:22px 24px 8px;color:#475569;font-size:15px;line-height:1.6;">
+            <p>Salut <strong>{user_name}</strong>, notre IA vient de détecter des cotes que les bookmakers ont <strong>sous-estimées</strong>. Edge minimum : +15%.</p>
+          </td></tr>
+          <tr><td style="padding:8px 12px 20px;">
+            <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+              {rows}
+            </table>
+          </td></tr>
+          <tr><td style="padding:0 24px 24px;text-align:center;">
+            <a href="{APP_BASE_URL}/app/builder" style="background:linear-gradient(135deg,#059669,#047857);color:#fff;text-decoration:none;font-weight:700;padding:14px 32px;border-radius:10px;display:inline-block;font-size:15px;">Ouvrir le Combo Builder →</a>
+            <div style="font-size:12px;color:#94a3b8;margin-top:16px;">🎯 Joue responsable. 18+. Edge = écart entre proba IA et proba bookmaker.</div>
+          </td></tr>
+        </table>
+      </td></tr></table>
+    </body></html>
+    """
+    params = {
+        "from": f"{APP_NAME} <{SENDER_EMAIL}>",
+        "to": [to_email],
+        "subject": f"💎 {len(bets)} value bet(s) détectée(s) · {APP_NAME}",
+        "html": html,
+    }
+    try:
+        result = await asyncio.to_thread(resend.Emails.send, params)
+        return {"status": "sent", "email_id": result.get("id")}
+    except Exception as e:
+        logger.warning(f"value bet email failed for {to_email}: {e}")
+        return {"status": "error", "error": str(e)}

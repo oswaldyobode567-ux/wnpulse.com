@@ -1,0 +1,33 @@
+{
+  "summary": "End-to-end tested Lot A + Lot C + Value-bet alerts. 13/13 backend pytest PASSED (builder/matches, /builder/stats, /builder/save+list+delete, /admin/value-bets preview+run idempotent, /admin/value-bets requires-admin, prediction_engine synthetic markets ≥5 from h2h-only, 15/15 successive admin logins regression). Frontend E2E on /app/builder confirmed on public URL: sidebar 'Combo Builder' with NEW badge, page loads with 60 matches, soccer tab filters to 46, expanding Spain vs Austria shows 10 picks with IA stats (72%/19.6%/8.4% + BTTS 59.2% + Over2.5 80%), IA purple badges on synthetic markets, pick click updates Mon Combiné panel (Cote 4.4 / Conf 89% / Kelly 22%), save persists into 'Mes combinés enregistrés', delete removes it, WhatsApp button present.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_builder_and_value_bets.py",
+    "/app/test_reports/pytest/iter7_builder.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is 1866 lines — split into routers (builder.py, admin.py, value_bets.py) for maintainability. Threshold >700 lines exceeded.",
+    "ComboBuilderPage.jsx also large (~500 lines) — consider splitting MatchRow + PanelSidebar into separate files.",
+    "builder_stats derives probs client-side from odds; comment already notes 'bientôt: forme réelle 10 derniers matchs, H2H, xG'. OK for now but should not be marketed as real historical stats.",
+    "value_bet_batches_sent field is $push with $slice: -20 — good bounded growth. Batch key uses python hash() which is salted per-process; if worker restarts, same batch could get different key and re-send. Consider deterministic hash (hashlib.sha1)."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_builder_and_value_bets.py (new)"
+  ],
+  "success_rate": {"backend": "100% (13/13)", "frontend": "100% on critical flows"},
+  "test_credentials": "Admin oswaldyobode567@gmail.com / kirikou36 (Elite) — worked for all tests.",
+  "seed_data_creation": "TEST_combo_iter7 and TEST_UI_combo created and cleaned up in-test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All new endpoints (/api/builder/*, /api/admin/value-bets/{preview,run}) working. ComboBuilder frontend E2E green on public URL. Auto-follower toggle lives inside ProfilePage → tab-subscription → auto-follower-card / auto-follower-toggle (there is no standalone tab-auto-follower). Login throttle fix (iter6) still holds — 15 successive admin logins all HTTP 200. Non-deterministic Python hash() on batch_key could cause worker-restart re-sends (minor).",
+  "rca of the issue": "N/A — no bugs found."
+}

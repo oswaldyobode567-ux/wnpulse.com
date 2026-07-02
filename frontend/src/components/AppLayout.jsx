@@ -13,6 +13,7 @@ import {
   Target,
   User,
   Gift,
+  Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true, testId: "nav-dashboard" },
   { to: "/app/top", label: "À la une", icon: Trophy, testId: "nav-top" },
   { to: "/app/combines", label: "Combinés", icon: Layers, testId: "nav-combos" },
+  { to: "/app/builder", label: "Combo Builder", icon: Sparkles, testId: "nav-builder", badge: "New" },
   { to: "/app/value-bets", label: "Value bets", icon: Target, testId: "nav-value-bets" },
   { to: "/app/historique", label: "Track record", icon: History, testId: "nav-history" },
   { to: "/app/profil", label: "Profil", icon: User, testId: "nav-profile" },
@@ -77,7 +79,12 @@ export default function AppLayout({ children }) {
                 )}
               >
                 <Icon className={cn("h-4 w-4", active && "text-orange-400")} strokeWidth={2} />
-                {item.label}
+                <span className="flex-1">{item.label}</span>
+                {item.badge && (
+                  <span className="text-[9px] font-bold uppercase tracking-wider bg-orange-500 text-white px-1.5 py-0.5 rounded">
+                    {item.badge}
+                  </span>
+                )}
               </Link>
             );
           })}

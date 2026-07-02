@@ -203,11 +203,11 @@ def get_all_mock_matches() -> List[Dict]:
 
 # ---------- REAL API (with cache) ----------
 
-async def _fetch_real_sport(sport_key: str, markets: str = "h2h") -> List[Dict]:
+async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str = "eu,uk") -> List[Dict]:
     url = f"{ODDS_API_BASE}/sports/{sport_key}/odds"
     params = {
         "apiKey": ODDS_API_KEY,
-        "regions": "eu",
+        "regions": regions,
         "markets": markets,
         "oddsFormat": "decimal",
         "dateFormat": "iso",
@@ -242,11 +242,21 @@ def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
     return list(by_id.values())
 
 
+# Football deep markets — try in priority order (some require paid plan; fails silently to h2h)
+SOCCER_DEEP_MARKETS = "h2h,totals,spreads,btts,draw_no_bet"
+# Basketball / US sports deep markets
+BASKET_DEEP_MARKETS = "h2h,totals,spreads"
 # Sports for which we fetch additional markets (totals + spreads) — top engagement
 DEEP_MARKET_SPORTS = {
     "soccer_fifa_world_cup",
     "soccer_epl",
     "soccer_italy_serie_a",
+    "soccer_france_ligue_one",
+    "soccer_spain_la_liga",
+    "soccer_germany_bundesliga",
+    "soccer_uefa_champs_league",
+    "soccer_uefa_europa_league",
+    "soccer_africa_caf_champions_league",
     "basketball_nba",
     "basketball_wnba",
     "americanfootball_nfl",
@@ -273,9 +283,10 @@ async def fetch_all_matches(db) -> List[Dict]:
         matches: List[Dict] = []
         for sk in REAL_SPORT_KEYS:
             try:
-                base = await _fetch_real_sport(sk, markets="h2h")
+                base = await _fetch_real_sport(sk, markets="h2h", regions="eu,uk,us")
                 if sk in DEEP_MARKET_SPORTS:
-                    deep = await _fetch_real_sport(sk, markets="totals,spreads")
+                    deep_markets = SOCCER_DEEP_MARKETS if sk.startswith("soccer") else BASKET_DEEP_MARKETS
+                    deep = await _fetch_real_sport(sk, markets=deep_markets, regions="eu,uk")
                     base = _merge_events(base, deep)
                 matches.extend(base)
             except Exception:

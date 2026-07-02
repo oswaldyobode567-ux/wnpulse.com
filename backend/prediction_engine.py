@@ -20,23 +20,41 @@ def _implied_probs(outcomes: List[Dict]) -> Dict[str, float]:
 
 def _label_for_market(market_key: str) -> str:
     return {
-        "h2h": "Vainqueur",
-        "totals": "Total points/buts",
+        "h2h": "Vainqueur (1X2)",
+        "totals": "Total buts/points",
         "spreads": "Handicap",
         "btts": "Les 2 équipes marquent",
-    }.get(market_key, market_key.upper())
+        "draw_no_bet": "Match nul remboursé",
+        "double_chance": "Double chance",
+        "h2h_h1": "Vainqueur 1re mi-temps",
+        "totals_h1": "Total buts 1re mi-temps",
+        "team_totals": "Total d'une équipe",
+        # Synthetic (derived) markets — computed from h2h/totals when Odds API doesn't return them
+        "syn_btts": "Les 2 équipes marquent (IA)",
+        "syn_over_25": "+ de 2.5 buts (IA)",
+        "syn_over_15": "+ de 1.5 buts (IA)",
+        "syn_double_chance": "Double chance (IA)",
+        "syn_draw_no_bet": "Match nul remboursé (IA)",
+        "syn_clean_sheet_home": "Domicile sans encaisser (IA)",
+        "syn_clean_sheet_away": "Extérieur sans encaisser (IA)",
+    }.get(market_key, market_key.upper().replace("_", " "))
 
 
 def _outcome_label(market_key: str, outcome_name: str, point: Optional[float] = None) -> str:
-    if market_key == "h2h":
+    if market_key in ("h2h", "h2h_h1"):
         return outcome_name
-    if market_key == "totals":
-        # outcome_name = "Over" or "Under"
+    if market_key in ("totals", "totals_h1"):
         side = "+ de" if outcome_name.lower() == "over" else "- de"
         return f"{side} {point}" if point is not None else outcome_name
     if market_key == "spreads":
         sign = "+" if (point is not None and point >= 0) else ""
         return f"{outcome_name} ({sign}{point})" if point is not None else outcome_name
+    if market_key == "btts":
+        return "Oui — 2 équipes marquent" if outcome_name.lower() in ("yes", "oui") else "Non — 1 équipe max"
+    if market_key == "draw_no_bet":
+        return f"{outcome_name} (nul remboursé)"
+    if market_key == "double_chance":
+        return outcome_name  # already e.g. "1X", "12", "X2"
     return outcome_name
 
 
@@ -106,6 +124,105 @@ def _analyze_market(market_key: str, bookmakers: List[Dict], home: str, away: st
     }
 
 
+# ---------- Synthetic markets (derived from h2h) ----------
+
+def _h2h_probs(bookmakers: List[Dict], home: str, away: str) -> Optional[Dict[str, float]]:
+    """Return normalized 1/X/2 probabilities averaged across bookmakers."""
+    per_outcome: Dict[str, List[float]] = {}
+    for bm in bookmakers:
+        for m in bm.get("markets", []):
+            if m.get("key") != "h2h":
+                continue
+            ip = _implied_probs(m.get("outcomes", []))
+            for n, p in ip.items():
+                per_outcome.setdefault(n, []).append(p)
+    if not per_outcome:
+        return None
+    return {k: statistics.mean(v) for k, v in per_outcome.items()}
+
+
+def _synthetic_markets(bookmakers: List[Dict], home: str, away: str, sport_key: str) -> List[Dict]:
+    """Derive additional markets from h2h when the bookmaker doesn't provide them.
+    These give the user 8-10 extra pick options per match with a clear "IA" label."""
+    out: List[Dict] = []
+    if not sport_key.startswith("soccer"):
+        return out  # synthetic markets are football-only for now
+    probs = _h2h_probs(bookmakers, home, away)
+    if not probs:
+        return out
+    p_home = probs.get(home, 0)
+    p_away = probs.get(away, 0)
+    p_draw = probs.get("Draw", max(0, 1 - p_home - p_away))
+
+    def _mk(market_key: str, pick_raw: str, pick_label: str, prob: float, base_odds: float):
+        # Confidence proportional to prob with a slight de-rate (synthetic penalty)
+        conf = max(0, min(100, prob * 100 - 5))
+        return {
+            "market": market_key,
+            "market_label": _label_for_market(market_key),
+            "pick": pick_label,
+            "pick_raw": pick_raw,
+            "pick_point": None,
+            "pick_odds": round(base_odds, 2),
+            "confidence": round(conf, 1),
+            "label": "safe" if conf >= 70 else ("value" if conf >= 55 else "risky"),
+            "edge": 0.0,
+            "num_books": 0,
+            "synthetic": True,
+        }
+
+    # 1) Double Chance (three variants)
+    dc = {
+        "1X": p_home + p_draw,
+        "12": p_home + p_away,
+        "X2": p_draw + p_away,
+    }
+    for combo_name, combo_prob in dc.items():
+        if combo_prob >= 0.55:  # only offer likely double chances
+            odds = round(1 / max(combo_prob * 1.03, 0.01), 2)  # add 3% margin
+            out.append(_mk("syn_double_chance", combo_name, f"Double chance {combo_name}", combo_prob, odds))
+
+    # 2) Draw No Bet — favor stronger team, refunded on draw
+    if p_home > p_away:
+        p_dnb = p_home / max(p_home + p_away, 0.01)
+        out.append(_mk("syn_draw_no_bet", "home", f"{home} (nul remboursé)", p_dnb, 1 / max(p_dnb * 1.03, 0.01)))
+    elif p_away > p_home:
+        p_dnb = p_away / max(p_home + p_away, 0.01)
+        out.append(_mk("syn_draw_no_bet", "away", f"{away} (nul remboursé)", p_dnb, 1 / max(p_dnb * 1.03, 0.01)))
+
+    # 3) BTTS estimate — higher when both teams have similar attacking strength
+    # Simple model: p(btts) = 4 * p_home_win * p_away_win + 0.35 baseline (approx real-world 55%)
+    p_btts = min(0.85, 0.35 + 4 * p_home * p_away)
+    if p_btts >= 0.5:
+        out.append(_mk("syn_btts", "yes", "Oui — 2 équipes marquent (IA)", p_btts, 1 / max(p_btts * 1.05, 0.01)))
+    else:
+        out.append(_mk("syn_btts", "no", "Non — 1 équipe max (IA)", 1 - p_btts, 1 / max((1 - p_btts) * 1.05, 0.01)))
+
+    # 4) Over 2.5 goals — model: 0.35 baseline + 3 * (1 - p_draw) (favorites tend to score more)
+    p_over25 = min(0.80, 0.30 + 2.5 * (1 - p_draw) * (p_home + p_away) / 1.6)
+    if p_over25 >= 0.55:
+        out.append(_mk("syn_over_25", "over", "+ de 2.5 buts (IA)", p_over25, 1 / max(p_over25 * 1.05, 0.01)))
+    elif p_over25 <= 0.42:
+        out.append(_mk("syn_over_25", "under", "- de 2.5 buts (IA)", 1 - p_over25, 1 / max((1 - p_over25) * 1.05, 0.01)))
+
+    # 5) Over 1.5 goals — nearly always safe: p ≈ 0.75 + 0.15 × favorite advantage
+    p_over15 = min(0.92, 0.72 + 0.2 * (max(p_home, p_away) - 0.4))
+    if p_over15 >= 0.75:
+        out.append(_mk("syn_over_15", "over", "+ de 1.5 buts (IA)", p_over15, 1 / max(p_over15 * 1.05, 0.01)))
+
+    # 6) Clean sheet for a dominant favorite (p_win >= 0.55 AND small draw)
+    if p_home >= 0.55 and p_draw >= 0.15:
+        p_cs = min(0.55, p_home * 0.55)
+        if p_cs >= 0.35:
+            out.append(_mk("syn_clean_sheet_home", "home_cs", f"{home} sans encaisser (IA)", p_cs, 1 / max(p_cs * 1.05, 0.01)))
+    if p_away >= 0.55 and p_draw >= 0.15:
+        p_cs = min(0.55, p_away * 0.55)
+        if p_cs >= 0.35:
+            out.append(_mk("syn_clean_sheet_away", "away_cs", f"{away} sans encaisser (IA)", p_cs, 1 / max(p_cs * 1.05, 0.01)))
+
+    return out
+
+
 # ---------- Top-level match analyzer ----------
 
 def analyze_match(match: Dict) -> Dict:
@@ -130,12 +247,26 @@ def analyze_match(match: Dict) -> Dict:
                 market_keys.add(m["key"])
 
     market_results = []
-    for mk in ["h2h", "totals", "spreads", "btts"]:
+    for mk in ["h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance", "h2h_h1", "totals_h1"]:
         if mk not in market_keys:
             continue
         res = _analyze_market(mk, bookmakers, home, away)
         if res:
             market_results.append(res)
+
+    # Enrich with synthetic markets (football only) — always available even on free plan
+    sport_key = match.get("sport_key", "") or ""
+    for syn in _synthetic_markets(bookmakers, home, away, sport_key):
+        # Avoid duplicating a real market when a synthetic equivalent already exists
+        real_equivalents = {
+            "syn_btts": "btts",
+            "syn_double_chance": "double_chance",
+            "syn_draw_no_bet": "draw_no_bet",
+        }
+        equiv = real_equivalents.get(syn["market"])
+        if equiv and equiv in market_keys:
+            continue  # real market wins
+        market_results.append(syn)
 
     if not market_results:
         return empty

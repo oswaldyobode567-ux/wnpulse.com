@@ -27,7 +27,7 @@ from auth import (
 from odds_service import fetch_all_matches, get_match_by_id, fetch_all_scores, SUPPORTED_SPORTS
 from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
 from ai_service import generate_analysis
-from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email, send_drip_day1, send_drip_day3, send_drip_day5
+from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email, send_drip_day1, send_drip_day3, send_drip_day5, send_value_bet_alert
 
 mongo_url = os.environ["MONGO_URL"]
 client = AsyncIOMotorClient(mongo_url)
@@ -688,6 +688,140 @@ async def get_multi_combos(payload: Optional[dict] = Depends(get_optional_user_p
                 c["legs"] = [_mask_prediction(l) for l in c["legs"]]
                 c["locked"] = True
     return combos
+
+
+# ---------- Combo Builder (FootyStats-style) ----------
+
+class SavedComboBody(BaseModel):
+    name: Optional[str] = None
+    legs: List[dict]  # each leg: match_id, pick, pick_odds, confidence, market, market_label, home_team, away_team
+
+
+@api.get("/builder/matches")
+async def builder_matches(
+    sport: Optional[str] = None,
+    payload: Optional[dict] = Depends(get_optional_user_payload),
+):
+    """Returns matches enriched with ALL pick options per match — for the combo builder UI.
+    Pro/Elite see everything; Free see options but confidence/odds masked on all-but-safe picks."""
+    tier = await _get_tier_from_payload(payload)
+    matches = await fetch_all_matches(db)
+    out = []
+    for m in matches:
+        if sport and not m.get("sport_key", "").startswith(sport):
+            continue
+        pred = analyze_match(m)
+        if not pred.get("markets"):
+            continue
+        # Group by market_label so UI can display Vainqueur, BTTS, Over etc. cleanly
+        picks = pred["markets"]
+        # For free users, mask everything except the top-1 safest pick
+        if tier in ("free", "anonymous"):
+            picks_sorted = sorted(picks, key=lambda p: p.get("confidence", 0), reverse=True)
+            for i, p in enumerate(picks_sorted):
+                if i == 0:
+                    continue  # keep the best pick visible
+                p["pick_odds"] = None
+                p["confidence"] = None
+                p["locked"] = True
+            picks = picks_sorted
+        out.append({
+            "match_id": m["id"],
+            "sport_key": m.get("sport_key"),
+            "sport_title": m.get("sport_title"),
+            "home_team": m.get("home_team"),
+            "away_team": m.get("away_team"),
+            "commence_time": m.get("commence_time"),
+            "best_pick": pred.get("pick"),
+            "best_pick_odds": pred.get("pick_odds"),
+            "best_confidence": pred.get("confidence"),
+            "picks": picks,
+            "num_books": len(m.get("bookmakers", [])),
+            "tier_gate": "free" if tier in ("free", "anonymous") else tier,
+        })
+    return {"matches": out[:60], "total": len(out)}
+
+
+@api.get("/builder/stats/{match_id}")
+async def builder_stats(match_id: str, _payload: Optional[dict] = Depends(get_optional_user_payload)):
+    """Deep FootyStats-style stats derived from odds + h2h history."""
+    match = await get_match_by_id(db, match_id)
+    if not match:
+        raise HTTPException(404, "Match introuvable")
+    from prediction_engine import _h2h_probs  # noqa
+    probs = _h2h_probs(match.get("bookmakers", []), match.get("home_team", ""), match.get("away_team", ""))
+    if not probs:
+        return {"match_id": match_id, "stats": None}
+    home = match["home_team"]
+    away = match["away_team"]
+    p_home = probs.get(home, 0)
+    p_away = probs.get(away, 0)
+    p_draw = probs.get("Draw", max(0, 1 - p_home - p_away))
+
+    # Simple modeled stats (would be replaced by real historical data if StatsBomb-like feed added later)
+    p_btts = min(0.85, 0.35 + 4 * p_home * p_away)
+    p_over25 = min(0.80, 0.30 + 2.5 * (1 - p_draw) * (p_home + p_away) / 1.6)
+    p_over15 = min(0.92, 0.72 + 0.2 * (max(p_home, p_away) - 0.4))
+
+    return {
+        "match_id": match_id,
+        "home_team": home,
+        "away_team": away,
+        "probs": {
+            "home_win": round(p_home * 100, 1),
+            "draw": round(p_draw * 100, 1),
+            "away_win": round(p_away * 100, 1),
+        },
+        "expectations": {
+            "btts_yes_pct": round(p_btts * 100, 1),
+            "over_2_5_pct": round(p_over25 * 100, 1),
+            "over_1_5_pct": round(p_over15 * 100, 1),
+            "clean_sheet_home_pct": round(min(55, p_home * 55), 1),
+            "clean_sheet_away_pct": round(min(55, p_away * 55), 1),
+        },
+        "form_note": "Estimations dérivées des cotes bookmakers agrégées (modèle IA WinPulse). Bientôt : forme réelle 10 derniers matchs, H2H, xG.",
+    }
+
+
+@api.post("/builder/save")
+async def builder_save(body: SavedComboBody, payload: dict = Depends(get_current_user_payload)):
+    """Save a personal combo to the user's collection."""
+    user_id = payload["sub"]
+    if not body.legs:
+        raise HTTPException(400, "Combo vide")
+    if len(body.legs) > 15:
+        raise HTTPException(400, "Maximum 15 jambes par combo")
+    total_odds = 1.0
+    for leg in body.legs:
+        total_odds *= float(leg.get("pick_odds") or 1)
+    doc = {
+        "id": str(uuid.uuid4()),
+        "user_id": user_id,
+        "name": (body.name or "").strip()[:80] or f"Mon combo {datetime.now(timezone.utc).strftime('%d/%m %H:%M')}",
+        "legs": body.legs,
+        "total_odds": round(total_odds, 2),
+        "num_legs": len(body.legs),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.saved_combos.insert_one(doc)
+    doc.pop("_id", None)
+    return doc
+
+
+@api.get("/builder/my-combos")
+async def builder_my_combos(payload: dict = Depends(get_current_user_payload)):
+    combos = await db.saved_combos.find(
+        {"user_id": payload["sub"]},
+        {"_id": 0},
+    ).sort("created_at", -1).limit(50).to_list(50)
+    return {"combos": combos}
+
+
+@api.delete("/builder/my-combos/{combo_id}")
+async def builder_delete_combo(combo_id: str, payload: dict = Depends(get_current_user_payload)):
+    res = await db.saved_combos.delete_one({"id": combo_id, "user_id": payload["sub"]})
+    return {"deleted": res.deleted_count}
+
 
 
 @api.get("/matches/{match_id}")
@@ -1553,7 +1687,6 @@ async def admin_whatsapp_blast(_admin = Depends(_require_admin)):
 
 
 async def _auto_follower_loop():
-    """Daily scheduler: trigger _run_auto_follower at 7am Africa/Porto-Novo (UTC+1)."""
     # Small warm-up
     await asyncio.sleep(120)
     # First-time catch-up: if we never ran today and it's already past 7am, run immediately
@@ -1580,6 +1713,107 @@ async def _auto_follower_loop():
             await asyncio.sleep(600)
 
 
+# ---------- Value bet alerts (edge >= 15%) — email push for Pro/Elite ----------
+
+VALUE_BET_MIN_EDGE = 15.0  # percentage points
+VALUE_BET_CHECK_INTERVAL_HOURS = 6
+
+
+async def _run_value_bet_alerts(dry_run: bool = False) -> dict:
+    """Detect value bets today, email each Pro/Elite user once per bet (idempotent)."""
+    summary = {"detected": 0, "candidates": 0, "sent": 0, "skipped_already_sent": 0, "errors": 0}
+    matches = await fetch_all_matches(db)
+    value_bets = []
+    for m in matches:
+        pred = analyze_match(m)
+        for mk in pred.get("markets", []):
+            if mk.get("edge", 0) >= VALUE_BET_MIN_EDGE and mk.get("pick_odds"):
+                value_bets.append({
+                    "match_id": pred["match_id"],
+                    "sport_title": pred.get("sport_title"),
+                    "home_team": pred.get("home_team"),
+                    "away_team": pred.get("away_team"),
+                    "pick": mk["pick"],
+                    "pick_odds": mk["pick_odds"],
+                    "confidence": mk["confidence"],
+                    "edge": mk["edge"],
+                    "market": mk["market"],
+                    "commence_time": pred.get("commence_time"),
+                })
+    # Dedupe by (match_id, market, pick) so we don't email the same bet twice ever
+    seen_ids = set()
+    unique_bets = []
+    for b in value_bets:
+        key = f"{b['match_id']}:{b['market']}:{b['pick']}"
+        if key in seen_ids:
+            continue
+        seen_ids.add(key)
+        unique_bets.append(b)
+    summary["detected"] = len(unique_bets)
+
+    if not unique_bets:
+        return summary
+
+    # Fingerprint of today's alert batch (so a user gets one email per batch max)
+    today_str = _benin_today_str()
+    batch_ids = sorted(f"{b['match_id']}:{b['market']}:{b['pick']}" for b in unique_bets)
+    batch_hash = str(hash(tuple(batch_ids)))[-8:]
+    batch_key = f"{today_str}-{batch_hash}"
+
+    users = await db.users.find(
+        {"subscription_tier": {"$in": ["pro", "elite"]}, "subscription_status": "active"},
+        {"_id": 0, "id": 1, "email": 1, "full_name": 1, "value_bet_batches_sent": 1},
+    ).to_list(5000)
+    summary["candidates"] = len(users)
+
+    for u in users:
+        already = (u.get("value_bet_batches_sent") or [])
+        if batch_key in already:
+            summary["skipped_already_sent"] += 1
+            continue
+        if dry_run:
+            summary["sent"] += 1
+            continue
+        try:
+            res = await send_value_bet_alert(u["email"], u.get("full_name") or "champion", unique_bets)
+            if res.get("status") in ("sent", "draft"):
+                await db.users.update_one(
+                    {"id": u["id"]},
+                    {"$push": {"value_bet_batches_sent": {"$each": [batch_key], "$slice": -20}}},
+                )
+                summary["sent"] += 1
+            else:
+                summary["errors"] += 1
+        except Exception as e:
+            log.warning(f"value bet email failed for {u.get('email')}: {e}")
+            summary["errors"] += 1
+
+    return summary
+
+
+async def _value_bet_loop():
+    """Background loop: check for value bets every 6 hours."""
+    await asyncio.sleep(600)  # warm-up
+    while True:
+        try:
+            res = await _run_value_bet_alerts()
+            log.info(f"value-bet alerts result: {res}")
+        except Exception as e:
+            log.error(f"value-bet loop error: {e}")
+        await asyncio.sleep(VALUE_BET_CHECK_INTERVAL_HOURS * 3600)
+
+
+@api.post("/admin/value-bets/run")
+async def admin_value_bets_run(dry_run: bool = False, _admin = Depends(_require_admin)):
+    """Manually trigger a value bet alert scan + email push."""
+    return await _run_value_bet_alerts(dry_run=dry_run)
+
+
+@api.get("/admin/value-bets/preview")
+async def admin_value_bets_preview(_admin = Depends(_require_admin)):
+    return await _run_value_bet_alerts(dry_run=True)
+
+
 app.include_router(api)
 
 
@@ -1589,7 +1823,8 @@ async def start_drip_worker():
     asyncio.create_task(_drip_loop())
     asyncio.create_task(_auto_settle_loop())
     asyncio.create_task(_auto_follower_loop())
-    log.info("Background workers started: drip (J+1/J+3/J+5 every 6h) + auto-settle (every 4h) + auto-follower (daily 7am Bénin)")
+    asyncio.create_task(_value_bet_loop())
+    log.info("Background workers started: drip (J+1/J+3/J+5 every 6h) + auto-settle (every 4h) + auto-follower (daily 7am Bénin) + value-bet alerts (every 6h)")
 
 
 @app.on_event("startup")
