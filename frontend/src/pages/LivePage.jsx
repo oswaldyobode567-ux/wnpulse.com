@@ -207,7 +207,7 @@ function MatchRow({ match, status }) {
 
       {match.last_update && status !== "upcoming" && (
         <div className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-neutral-100">
-          Actualisé {dayjs(match.last_update).fromNow ? dayjs(match.last_update).fromNow() : dayjs(match.last_update).format("HH:mm")}
+          Actualisé à {dayjs(match.last_update).format("HH:mm")}
         </div>
       )}
     </Card>
