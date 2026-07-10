@@ -19,6 +19,7 @@ import ProfilePage from "@/pages/ProfilePage";
 import ParrainagePage from "@/pages/ParrainagePage";
 import ComboBuilderPage from "@/pages/ComboBuilderPage";
 import TodayCombosPage from "@/pages/TodayCombosPage";
+import LivePage from "@/pages/LivePage";
 import BlogPage from "@/pages/BlogPage";
 import BlogPostPage from "@/pages/BlogPostPage";
 import LegalPage from "@/pages/LegalPage";
@@ -63,6 +64,7 @@ export default function App() {
           <Route path="/app/combines" element={<RequireAuth><CombosPage /></RequireAuth>} />
           <Route path="/app/builder" element={<RequireAuth><ComboBuilderPage /></RequireAuth>} />
           <Route path="/app/aujourdhui" element={<RequireAuth><TodayCombosPage /></RequireAuth>} />
+          <Route path="/app/live" element={<RequireAuth><LivePage /></RequireAuth>} />
           <Route path="/app/historique" element={<RequireAuth><HistoryPage /></RequireAuth>} />
           <Route path="/app/abonnement" element={<RequireAuth><SubscriptionPage /></RequireAuth>} />
           <Route path="/app/admin" element={<RequireAuth admin><AdminPage /></RequireAuth>} />

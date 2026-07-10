@@ -1,0 +1,24 @@
+{
+  "summary": "Iter9 — Validated login stability post hot-reload storm + new Live section (/app/live). Backend pytest 5/5 PASSED (admin login 200, 5x consecutive 200, throttle 10x400 → 429 on 11th, /api/scores returns 109 matches with required shape, regression endpoints OK). Frontend E2E on public URL: nav-live sidebar item with LIVE badge visible, 3 tabs (En direct/Terminés/À venir) all present and switch correctly, live match card renders (Spain 1 – Belgium 1 FIFA World Cup with pulsing LIVE badge), 10 completed matches rendered with scores and 'Terminé' status, 30 upcoming rendered. /app/aujourdhui and /app/builder still load without errors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": [
+    "/app/backend/tests/test_live_and_login.py",
+    "/app/test_reports/pytest/iter9_live.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "LivePage.jsx polling: setInterval(load, 45000) does not pause when tab is hidden; consider document.visibilityState guard to avoid needless API traffic when the tab is backgrounded.",
+    "LivePage.jsx uses dayjs(...).fromNow but the relative-time plugin may not be extended globally; the ternary `dayjs(...).fromNow ? .fromNow() : format('HH:mm')` will call fromNow() as a function even if not extended (fromNow is always defined). Confirm dayjs relativeTime plugin is installed globally or import it in this file to avoid returning `Invalid Date` strings.",
+    "server.py now ~1943 lines — same recommendation as prior iterations to split into routers.",
+    "GET /api/scores has no auth guard; fine for the public Live page use case but any private user info should never be tunneled through it."
+  ],
+  "updated_files": ["/app/backend/tests/test_live_and_login.py (new)"],
+  "success_rate": {"backend": "100% (5/5)", "frontend": "100% on Live page + regressions"},
+  "test_credentials": "Admin oswaldyobode567@gmail.com / kirikou36 — working.",
+  "seed_data_creation": "None. Throttle test created a transient email throttle entry, then cleared via /api/admin/unlock-login.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Live page is at /app/live (RequireAuth). Sidebar nav-live testid works. Tab testids: live-tab-live, live-tab-completed, live-tab-upcoming. Match card testid: live-match-{id}. Backend throttle is _LOGIN_MAX_FAILED=10 with 15min sliding window, cleared on success. /api/scores is public (no auth), cached 60s, returns list with fields id, sport_key, sport_title, home_team, away_team, completed, scores[{name,score}], last_update, commence_time. At test time: 1 live (FIFA WC Spain-Belgium 1-1), 10 completed with scores, 88 upcoming.",
+  "rca of the issue": "Original 502 login failure was transient — resolved by main agent's restart. Confirmed stable across 5 consecutive logins."
+}
