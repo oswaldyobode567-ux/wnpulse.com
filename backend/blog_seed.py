@@ -542,4 +542,228 @@ Si tu réponds "oui" aux 3, tu peux y aller. Sinon, **patience**.
 👉 **[Crée ton compte gratuit](/register)** et reçois nos 3 combinés du jour + 1 pick gratuit chaque matin — sans débourser un franc CFA.
 """,
     },
+
+    # ---- NEW: Mercato / actu ----
+    {
+        "slug": "mercato-ete-2026-top-transferts-a-suivre",
+        "title": "Mercato été 2026 : le top 10 des transferts à suivre pour tes paris",
+        "excerpt": "Kylian Mbappé, Erling Haaland, Bellingham… Voici les mouvements du mercato qui vont bouger les cotes cette saison.",
+        "cover": "https://images.unsplash.com/photo-1522778119026-d647f0596c20?w=1200&q=80&auto=format&fit=crop",
+        "tags": ["Mercato", "Football", "Analyse"],
+        "author": "Équipe WinPulse",
+        "read_min": 5,
+        "published_at": "2026-06-28T09:00:00+00:00",
+        "meta_description": "Top 10 des transferts du mercato été 2026 à surveiller pour anticiper les cotes des bookmakers en Ligue 1, Premier League, La Liga et Serie A.",
+        "content_md": """## Pourquoi le mercato est LE facteur oublié dans le pari sportif
+
+La majorité des parieurs regardent la forme, le classement, les blessures. Mais **90% des cotes de début de saison sont calées sur les rosters de la saison précédente**. C'est là qu'on peut prendre les bookmakers de vitesse.
+
+Voici les 10 mouvements qui vont **changer les cotes** dès la reprise 2026-2027.
+
+## 1. Le PSG et le poste de N°9
+
+Le Paris Saint-Germain cherche un attaquant depuis le départ de Mbappé. Les cibles chaudes : **Victor Osimhen (Napoli)**, **Rasmus Højlund (Manchester United)**, **Serhou Guirassy (Dortmund)**. Chacun a un profil radicalement différent — Osimhen dominant dans les airs, Højlund pivot moderne, Guirassy finisseur pur.
+
+**Impact bookmakers** : si le PSG signe Osimhen, ses cotes sur "buteur premier match" et "victoire Ligue 1" chutent de ~15%. Anticipe.
+
+## 2. Bellingham, la rumeur qui ne meurt pas
+
+Jude Bellingham serait courtisé par le City et Liverpool. Un départ du Real ferait plonger les cotes "vainqueur Liga" du club madrilène de 1.35 à ~1.65 dans les premières semaines.
+
+## 3. Les frères Diamant africains
+
+Trois talents africains à surveiller :
+- **Rayan Cherki (OL → Bayer Leverkusen ?)** : profil unique, va faire exploser les cotes "buteur/passeur" de son nouveau club
+- **Karim Adeyemi (Dortmund → ?)** : vitesse pure, va faire monter les cotes "over 2.5 buts" partout où il joue
+- **Ademola Lookman (Atalanta → ?)** : Ballon d'or Africain 2025, sa nouvelle destination change les équilibres Serie A
+
+## 4. La Ligue 1 se prépare à recevoir des stars
+
+Le nouveau propriétaire de l'OM investit massivement. Rumeurs : **Adrien Rabiot en libre**, **Nabil Bentaleb**, et surtout un attaquant top-6 européen. Bookmakers vont réviser les cotes marseillaises à la baisse.
+
+## 5. Manchester United vend, ne recrute plus
+
+INEOS a décidé de faire le ménage : Antony, Casemiro, Sancho sur le départ. **Attention aux paris sur ManU en début de saison** — les cotes ne reflètent pas encore l'instabilité vestiaire. Miser sur le nul ou l'adversaire jusqu'en novembre.
+
+## Notre stratégie mercato
+
+Chez WinPulse, on met à jour notre modèle IA **hebdomadairement** avec les mouvements confirmés. Les cotes bookmakers mettent 3 à 5 semaines à s'adapter — c'est là qu'on chasse la **value**.
+
+---
+
+👉 **[Rejoins-nous](/register)** pour recevoir chaque semaine nos alertes value bet directement dans ta boîte mail (offert avec le plan Pro).
+""",
+    },
+    {
+        "slug": "actu-can-cameroun-2026-groupes-favoris-outsiders",
+        "title": "CAN Cameroun 2026 : les groupes, favoris et outsiders à surveiller",
+        "excerpt": "Le tirage au sort de la CAN 2026 a livré son verdict. Voici nos analyses groupe par groupe, avec les paris à privilégier.",
+        "cover": "https://images.unsplash.com/photo-1543326727-cf6c39e8f84c?w=1200&q=80&auto=format&fit=crop",
+        "tags": ["CAN 2026", "Football", "Analyse"],
+        "author": "Équipe WinPulse",
+        "read_min": 7,
+        "published_at": "2026-06-25T09:00:00+00:00",
+        "meta_description": "Analyse complète des groupes de la CAN Cameroun 2026 : favoris, outsiders, meilleures cotes et pronostics WinPulse pour chaque groupe.",
+        "content_md": """## Un tirage explosif pour la CAN 2026
+
+Le tirage au sort de la CAN Cameroun 2026 est tombé et il promet du spectacle. Le **Cameroun (pays hôte)** hérite d'un groupe abordable, tandis que **le groupe C fait figure de "groupe de la mort"**. Analyse détaillée.
+
+## Groupe A — Cameroun, Cap-Vert, Guinée équatoriale, Comores
+
+Le Cameroun a la mission historique de gagner à domicile. Avec Onana dans les buts et Mbeumo devant, les Lions Indomptables partent favoris (**cote WinPulse : 1.65**).
+
+**Notre pari du groupe** : Cap-Vert qualifié en 2e position. La sélection cap-verdienne monte en puissance depuis 3 tournois. Cote actuelle chez les bookmakers : **2.80** — nous estimons la vraie cote à **2.10**.
+
+## Groupe B — Sénégal, Algérie, Zambie, Malawi
+
+Le choc **Sénégal vs Algérie** dès le 2e journée sera l'un des matchs les plus regardés. Sadio Mané et Ismaïla Sarr en face de Riyad Mahrez, Baghdad Bounedjah et la nouvelle génération algérienne.
+
+**Notre analyse IA** : Match nul très probable (cote 3.10). Les 2 sélections vont privilégier de ne pas perdre. **Value bet : Under 2.5 buts** — cote 1.90.
+
+## Groupe C — Le groupe de la mort
+
+Maroc, Côte d'Ivoire, Ghana, Tunisie. **4 équipes qui peuvent toutes gagner la CAN**. Impossible de prédire qui passera. Notre stratégie : parier sur les buts (**Over 1.5 dans les 6 matchs du groupe**).
+
+## Groupe D — Nigeria, Égypte, Burkina, Ouganda
+
+Nigeria et Égypte sont favorites, mais attention au Burkina Faso qui a un noyau très solide. **Pari WinPulse** : Burkina qualifié en 2e (cote 3.40, valeur réelle 2.60).
+
+## Groupe E — Bénin ?!
+
+Grande nouvelle : notre équipe nationale, **les Écureuils du Bénin**, est qualifiée pour la CAN 2026. On les retrouve dans un groupe abordable avec la RDC, l'Angola et le Kenya.
+
+**Notre coup de coeur** : Bénin sort de son groupe en 3e des meilleurs troisièmes. Cote actuelle **6.00**, valeur réelle selon notre modèle : **3.80**. C'est LA value du tournoi.
+
+## Notre pronostic final
+
+Vainqueur CAN 2026 selon notre IA :
+1. **Maroc** — cote 4.50 (valeur réelle 3.20) ✅
+2. **Nigeria** — cote 5.00 (valeur réelle 4.80)
+3. **Sénégal** — cote 6.00 (valeur réelle 6.50)
+
+---
+
+👉 **[Passe Pro](/register)** pour recevoir chaque matin des CAN 2026 nos combinés dédiés avec les meilleures cotes bookmakers du jour.
+""",
+    },
+    {
+        "slug": "wimbledon-2026-comment-parier-tennis-grand-chelem",
+        "title": "Wimbledon 2026 : notre méthode pour parier sur le Grand Chelem",
+        "excerpt": "Alcaraz, Sinner, Djokovic… Voici les marchés tennis rentables pendant Wimbledon et notre stratégie WinPulse.",
+        "cover": "https://images.unsplash.com/photo-1622279457486-62dcc4a431d6?w=1200&q=80&auto=format&fit=crop",
+        "tags": ["Tennis", "Wimbledon", "Grand Chelem"],
+        "author": "Équipe WinPulse",
+        "read_min": 5,
+        "published_at": "2026-06-30T09:00:00+00:00",
+        "meta_description": "Guide complet pour parier sur Wimbledon 2026 : favoris, outsiders, marchés rentables (sets, jeux, break) et stratégie de mise WinPulse.",
+        "content_md": """## Wimbledon, le tournoi le plus prévisible… et le plus piégeux
+
+Le gazon anglais est un terrain particulier. **Les serveurs surpuissants dominent**, mais les surprises sont rares — plus rares que sur terre battue.
+
+C'est cette combinaison qui rend Wimbledon **rentable à parier** — si tu sais quels marchés jouer.
+
+## Les 3 marchés WinPulse pour Wimbledon
+
+### 1. Vainqueur du match (mais pas n'importe quel joueur)
+
+**Statistique clé** : les tops 10 mondiaux gagnent 92% de leurs matchs contre les 100+ du classement à Wimbledon (contre 84% en général).
+
+**Notre pari** : combiner 3-4 favoris top-10 en début de tournoi. Cote combinée moyenne : **2.30 à 3.10**. Taux de réussite historique WinPulse : **78%**.
+
+### 2. Nombre de sets
+
+Les matchs Wimbledon vont souvent en 3-4 sets à cause du service. **Le marché "Match en moins de 4 sets"** est régulièrement sous-coté chez les bookmakers.
+
+**Exemple concret** : Alcaraz vs un joueur classé 50+ → cote "Sans 5e set" à 1.45 alors que la stat historique est 1.30.
+
+### 3. Nombre de jeux
+
+Wimbledon = beaucoup de tie-breaks. Le marché **"+22.5 jeux dans le match"** est notre préféré. Cote moyenne 1.85, taux de succès WinPulse : **72%**.
+
+## Nos coups de coeur 2026
+
+- **Carlos Alcaraz** : le favori absolu (cote 2.20). Son jeu convient parfaitement au gazon.
+- **Jannik Sinner** : cote 3.40, mais attention à sa condition physique.
+- **Novak Djokovic** : cote 5.00. À 39 ans, il reste dangereux — surtout sur cette surface.
+
+**Outsider WinPulse** : **Ben Shelton** — sa puissance de service peut le porter loin. Cote 15.00, valeur réelle estimée 12.00.
+
+## Stratégie de mise
+
+- **Bankroll dédiée Wimbledon** : 5-10% de ta bankroll totale
+- **Mise unitaire** : 1-2% par pari
+- **Nombre de paris/jour** : max 4-5
+
+---
+
+👉 **[Ouvre ton compte gratuit](/register)** — chaque matin de Wimbledon, on t'envoie nos 3 picks du jour avec analyse détaillée.
+""",
+    },
+    {
+        "slug": "mtn-mobile-money-parier-benin-guide-2026",
+        "title": "MTN Mobile Money & pari sportif au Bénin : le guide 2026",
+        "excerpt": "Comment déposer, retirer et parier en toute sécurité avec MoMo au Bénin. Les frais, les astuces, les pièges.",
+        "cover": "https://images.unsplash.com/photo-1601597111158-2fceff292cdc?w=1200&q=80&auto=format&fit=crop",
+        "tags": ["MoMo", "Bénin", "Paiement"],
+        "author": "Équipe WinPulse",
+        "read_min": 4,
+        "published_at": "2026-06-20T09:00:00+00:00",
+        "meta_description": "Guide complet MTN Mobile Money 2026 pour les parieurs béninois : dépôts, retraits, frais, sécurité et bonnes pratiques.",
+        "content_md": """## MTN MoMo, l'infrastructure de paiement du Bénin
+
+**Au Bénin, 8 parieurs sur 10 utilisent MTN Mobile Money**. C'est rapide, ça marche 24/7, et c'est disponible dans presque tous les quartiers de Cotonou, Porto-Novo, Parakou et Abomey-Calavi.
+
+Mais il y a des règles à connaître pour ne pas se faire avoir.
+
+## Étape 1 : Créer un compte MTN MoMo
+
+Si tu n'as pas encore de compte MoMo :
+1. Va dans une agence MTN avec ta CNI
+2. Demande "Activation Mobile Money"
+3. Choisis un code PIN à 4 chiffres — **jamais** ton année de naissance
+4. Reçois ton compte activé sous 15 min
+
+## Étape 2 : Déposer sur WinPulse
+
+Sur WinPulse, notre process est ultra simple :
+1. Choisis ton abonnement (**Pro 4 900 FCFA** ou **Elite 14 900 FCFA**)
+2. Envoie le montant au numéro marchand : **+229 01 66 28 06 03** (KOUKPAKI VIANEY)
+3. Note la référence du transfert
+4. Colle-la dans notre formulaire
+5. Ton compte est activé sous 30 min
+
+## Frais MTN MoMo à connaître
+
+| Opération | Frais |
+|---|---|
+| Dépôt agent → compte | 0.5% |
+| Transfert compte → compte MTN | 1.0% |
+| Retrait agent | 1.5% |
+| Transfert vers Moov/autre opérateur | 2.0% |
+
+**Notre astuce** : privilégie les transferts MTN → MTN pour économiser 50% de frais.
+
+## Sécurité : les pièges à éviter
+
+⚠️ **Attention aux arnaques classiques** :
+1. Faux SMS "MTN Bonus" : ne clique JAMAIS sur un lien reçu par SMS
+2. Faux agents WhatsApp : notre seul numéro support est **+33 7 67 97 17 52**
+3. Codes promo "gratuits" en échange de ton PIN : **jamais donner ton PIN à qui que ce soit**
+
+## Pourquoi WinPulse et pas un bookmaker classique ?
+
+Chez les bookmakers 1xBet, Betwinner, Melbet, tu vas payer :
+- Frais de dépôt : 1-2%
+- Frais de retrait : 3-5%
+- Attente retrait : jusqu'à 72h
+
+Avec WinPulse, tu paies **une seule fois par mois** ton abonnement (4 900 ou 14 900 FCFA), et tu utilises nos pronostics chez le bookmaker de ton choix.
+
+**Calcul rapide** : si tu paries 100 000 FCFA/mois, tu économises **3 000 à 7 000 FCFA de frais** en passant par WinPulse.
+
+---
+
+👉 **[Crée ton compte gratuit maintenant](/register)** et paie ton abonnement en 2 minutes via MoMo.
+""",
+    },
 ]

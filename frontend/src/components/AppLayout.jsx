@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true, testId: "nav-dashboard" },
+  { to: "/app/aujourdhui", label: "Aujourd'hui", icon: Zap, testId: "nav-today", badge: "New" },
   { to: "/app/top", label: "À la une", icon: Trophy, testId: "nav-top" },
   { to: "/app/combines", label: "Combinés", icon: Layers, testId: "nav-combos" },
   { to: "/app/builder", label: "Combo Builder", icon: Sparkles, testId: "nav-builder", badge: "New" },

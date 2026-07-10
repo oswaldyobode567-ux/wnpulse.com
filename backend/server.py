@@ -26,7 +26,7 @@ from auth import (
     get_optional_user_payload,
 )
 from odds_service import fetch_all_matches, get_match_by_id, fetch_all_scores, SUPPORTED_SPORTS
-from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos
+from prediction_engine import analyze_match, top_predictions, build_combo, build_multi_combos, build_today_combos_by_sport
 from ai_service import generate_analysis
 from email_service import send_picks_email, send_payment_confirmation, send_welcome_email, send_reset_password_email, send_drip_day1, send_drip_day3, send_drip_day5, send_value_bet_alert
 
@@ -739,6 +739,25 @@ async def get_multi_combos(payload: Optional[dict] = Depends(get_optional_user_p
                 c["legs"] = [_mask_prediction(l) for l in c["legs"]]
                 c["locked"] = True
     return combos
+
+
+@api.get("/predictions/today-combos")
+async def today_combos_by_sport(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    """Returns combos of TODAY's matches only, split per sport family, across 4 odds tiers
+    (Sûr 2-4, Booster 5-12, Extra 15-30, Jackpot 40+). Only the first tier is unlocked for Free users."""
+    tier = await _get_tier_from_payload(payload)
+    matches = await fetch_all_matches(db)
+    data = build_today_combos_by_sport(matches)
+    if tier in ("free", "anonymous"):
+        for _fk, fam in data["families"].items():
+            for tk, combo in fam["tiers"].items():
+                if combo.get("free_today") and combo.get("legs"):
+                    combo["unlocked_for_free"] = True
+                else:
+                    combo["legs"] = [_mask_prediction(l) for l in combo["legs"]]
+                    combo["locked"] = True
+    return data
+
 
 
 # ---------- Combo Builder (FootyStats-style) ----------
@@ -1457,19 +1476,26 @@ async def robots_txt():
 
 
 async def _ensure_blog_seeded():
-    """Insert the blog seed posts on first call if collection is empty."""
-    count = await db.blog_posts.count_documents({})
-    if count > 0:
-        return
+    """Insert/upsert blog seed posts. Runs on every startup — idempotent via slug key."""
     try:
         from blog_seed import BLOG_POSTS
     except Exception as e:
         log.warning(f"blog_seed import failed: {e}")
         return
-    docs = [{**p, "published": True} for p in BLOG_POSTS]
-    if docs:
-        await db.blog_posts.insert_many(docs)
-        log.info(f"Seeded {len(docs)} blog posts")
+    inserted, updated = 0, 0
+    for p in BLOG_POSTS:
+        doc = {**p, "published": True}
+        res = await db.blog_posts.update_one(
+            {"slug": p["slug"]},
+            {"$set": doc},
+            upsert=True,
+        )
+        if res.upserted_id:
+            inserted += 1
+        elif res.modified_count:
+            updated += 1
+    if inserted or updated:
+        log.info(f"Blog seed sync: {inserted} inserted, {updated} updated")
 
 
 # ----- Auto-settle worker: settle predictions from finished matches -----

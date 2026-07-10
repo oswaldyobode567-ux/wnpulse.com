@@ -21,7 +21,10 @@ AI-powered sports betting prediction app for Bénin market with Claude Sonnet AI
 - **Email:** Resend (verified domain wnpulse.com)
 - **AI:** Claude Sonnet 4.5
 - **Analytics:** PostHog (already installed) + Google Analytics 4 placeholder + Facebook Pixel placeholder
-- **Workers:** drip emails (6h) + auto-settle (4h) + auto-follower 7am Bénin (daily push email + WhatsApp blast prep) + value-bet alerts (every 6h, email push Pro/Elite when edge ≥15%)
+- **Combinés du jour multi-niveaux (Feb 2026 iter9)**: `/app/aujourdhui` — 4 tiers Sûr(2-4) / Booster(5-12) / Extra(15-30) / Jackpot(40+) filtrés STRICTEMENT sur les matchs du jour (UTC+1 Bénin), par sport family (foot, basket, tennis, NFL, hockey, MLB, MMA, boxing, AFL, rugby). Endpoint `/api/predictions/today-combos`.
+- **Marchés synthétiques IA étendus**: en plus des 7 initiaux, prediction_engine génère maintenant cartons over 3.5/4.5, corners over 9.5/10.5, premier buteur home/away — soit 12+ marchés IA par match foot en plus des marchés Odds API réels.
+- **Blog enrichi (10 articles)**: ajouts Mercato été 2026, CAN Cameroun 2026, Wimbledon 2026, MTN MoMo Bénin. Bouton Blog mis en avant sur Landing (badge "Live" pulse).
+- **Workers**: drip emails (6h) + auto-settle (4h) + auto-follower 7am Bénin (daily push email + WhatsApp blast prep) + value-bet alerts (every 6h, email push Pro/Elite when edge ≥15%)
 
 ## Security Hardening
 - CORS restricted to wnpulse.com domains

@@ -50,7 +50,12 @@ export default function LandingPage() {
           </Link>
           <nav className="flex items-center gap-2">
             <Link to="/resultats" className="hidden sm:inline-flex"><Button variant="ghost" size="sm" data-testid="public-trackrecord-link">📈 Track record</Button></Link>
-            <Link to="/blog" className="hidden md:inline-flex"><Button variant="ghost" size="sm" data-testid="public-blog-link">📰 Blog</Button></Link>
+            <Link to="/blog" className="inline-flex">
+              <Button variant="ghost" size="sm" className="relative text-orange-700 font-bold hover:bg-orange-50" data-testid="public-blog-link">
+                📰 Blog
+                <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wider bg-orange-500 text-white px-1.5 py-0.5 rounded animate-pulse">Live</span>
+              </Button>
+            </Link>
             {user ? (
               <Button data-testid="open-app-btn" className="wp-gradient-warm text-white hover:opacity-90 border-0" onClick={() => navigate("/app")}>
                 Ouvrir l'app

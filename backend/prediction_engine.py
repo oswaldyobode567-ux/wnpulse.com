@@ -5,7 +5,7 @@ Each market is scored independently; combos can mix market types.
 """
 from typing import Dict, List, Optional, Tuple
 import statistics
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 
 # ---------- Market analysis primitives ----------
@@ -37,6 +37,12 @@ def _label_for_market(market_key: str) -> str:
         "syn_draw_no_bet": "Match nul remboursé (IA)",
         "syn_clean_sheet_home": "Domicile sans encaisser (IA)",
         "syn_clean_sheet_away": "Extérieur sans encaisser (IA)",
+        "syn_cards_over_35": "+ de 3.5 cartons (IA)",
+        "syn_cards_over_45": "+ de 4.5 cartons (IA)",
+        "syn_corners_over_95": "+ de 9.5 corners (IA)",
+        "syn_corners_over_105": "+ de 10.5 corners (IA)",
+        "syn_first_to_score_home": "1er buteur (IA)",
+        "syn_first_to_score_away": "1er buteur (IA)",
     }.get(market_key, market_key.upper().replace("_", " "))
 
 
@@ -220,6 +226,32 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str, sport_key: 
         if p_cs >= 0.35:
             out.append(_mk("syn_clean_sheet_away", "away_cs", f"{away} sans encaisser (IA)", p_cs, 1 / max(p_cs * 1.05, 0.01)))
 
+    # 7) Cartons: intensity = combined win probability spread → tight matches yield more cards
+    tightness = 1 - abs(p_home - p_away)  # 0-1, high when balanced
+    p_cards_over_35 = 0.35 + tightness * 0.35   # ~35-70%
+    p_cards_over_45 = 0.20 + tightness * 0.25   # ~20-45%
+    if p_cards_over_35 >= 0.55:
+        out.append(_mk("syn_cards_over_35", "over", "+ de 3.5 cartons (IA)", p_cards_over_35, 1 / max(p_cards_over_35 * 1.06, 0.01)))
+    if p_cards_over_45 >= 0.35:
+        out.append(_mk("syn_cards_over_45", "over", "+ de 4.5 cartons (IA)", p_cards_over_45, 1 / max(p_cards_over_45 * 1.08, 0.01)))
+
+    # 8) Corners: proxy = attack strength via (1 - p_draw)
+    attack_intensity = 1 - p_draw
+    p_corners_over_95 = 0.45 + attack_intensity * 0.35   # ~45-80%
+    p_corners_over_105 = 0.30 + attack_intensity * 0.30  # ~30-60%
+    if p_corners_over_95 >= 0.6:
+        out.append(_mk("syn_corners_over_95", "over", "+ de 9.5 corners (IA)", p_corners_over_95, 1 / max(p_corners_over_95 * 1.06, 0.01)))
+    if p_corners_over_105 >= 0.5:
+        out.append(_mk("syn_corners_over_105", "over", "+ de 10.5 corners (IA)", p_corners_over_105, 1 / max(p_corners_over_105 * 1.08, 0.01)))
+
+    # 9) First team to score — favorite has the edge
+    if p_home > p_away and p_home >= 0.4:
+        p_fts_home = min(0.75, p_home * 0.85 + 0.1)
+        out.append(_mk("syn_first_to_score_home", "home", f"{home} marque en premier (IA)", p_fts_home, 1 / max(p_fts_home * 1.05, 0.01)))
+    elif p_away > p_home and p_away >= 0.4:
+        p_fts_away = min(0.75, p_away * 0.85 + 0.1)
+        out.append(_mk("syn_first_to_score_away", "away", f"{away} marque en premier (IA)", p_fts_away, 1 / max(p_fts_away * 1.05, 0.01)))
+
     return out
 
 
@@ -381,6 +413,134 @@ def build_combo(matches: List[Dict], legs: int = 3, min_confidence: float = 65) 
     picks.sort(key=lambda p: p["confidence"], reverse=True)
     selected = _pick_diversified_multi(picks, legs)
     return {**_stats(selected), "generated_at": datetime.now(timezone.utc).isoformat()}
+
+
+def _is_today(commence_time: str) -> bool:
+    """Return True if the match starts within today's window (Africa/Porto-Novo, UTC+1)."""
+    if not commence_time:
+        return False
+    try:
+        ct = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+    except Exception:
+        return False
+    now_utc = datetime.now(timezone.utc)
+    local_now = now_utc + timedelta(hours=1)  # UTC+1
+    local_ct = ct + timedelta(hours=1)
+    return local_now.date() == local_ct.date()
+
+
+TODAY_TIER_TARGETS = [
+    # (key, label, tagline, min_odds, max_odds, legs, min_conf, description)
+    ("sure", "Sûr", "Cotes 2 → 4", 2.0, 4.0, 2, 72,
+     "Petite cote, forte probabilité. Pour sécuriser la journée."),
+    ("booster", "Booster", "Cotes 5 → 12", 4.5, 12.0, 3, 65,
+     "Le rapport idéal risque/gain — 3 à 4 picks confiants."),
+    ("extra", "Extra", "Cotes 15 → 30", 13.0, 30.0, 4, 58,
+     "Le combiné signature WinPulse. Cote juteuse, IA gonflée à bloc."),
+    ("jackpot", "Jackpot", "Cotes 40 → 100+", 30.0, 200.0, 5, 50,
+     "Pour les chasseurs de gros gains. Petite mise, gros rêve."),
+]
+
+
+def _pick_for_target_odds(pool: List[Dict], legs: int, min_odds: float, max_odds: float) -> List[Dict]:
+    """Select `legs` diversified picks whose combined odds fall in [min_odds, max_odds].
+    Strategy: geometric mean per leg = target_geom = (min*max)^0.5 ** (1/legs).
+    Score each pick by proximity to target_geom * high confidence. Greedy pick.
+    """
+    if not pool:
+        return []
+    target_total = (min_odds * max_odds) ** 0.5
+    target_per_leg = target_total ** (1.0 / legs)
+
+    # Score = confidence bonus for being close to target_per_leg odds
+    def _score(p):
+        odds = p.get("pick_odds") or 1
+        proximity = 1.0 / (1.0 + abs(odds - target_per_leg))
+        return proximity * (0.35 + p.get("confidence", 0) / 200)
+
+    ordered = sorted(pool, key=_score, reverse=True)
+    selected: List[Dict] = []
+    used_matches: set = set()
+    running = 1.0
+    for p in ordered:
+        if p["match_id"] in used_matches:
+            continue
+        if len(selected) >= legs:
+            break
+        new_total = running * (p["pick_odds"] or 1)
+        # Skip if this leg would blow past max_odds — but only after we have min legs
+        if new_total > max_odds * 1.25 and len(selected) >= max(2, legs - 1):
+            continue
+        selected.append(p)
+        used_matches.add(p["match_id"])
+        running = new_total
+    # If below min_odds and we still have room, take higher-odds picks
+    if running < min_odds and len(selected) < legs:
+        boosters = [p for p in pool if p["match_id"] not in used_matches and (p.get("pick_odds") or 1) >= target_per_leg * 1.2]
+        boosters.sort(key=lambda p: p.get("pick_odds") or 1, reverse=True)
+        for p in boosters:
+            if len(selected) >= legs:
+                break
+            selected.append(p)
+            used_matches.add(p["match_id"])
+            running *= (p.get("pick_odds") or 1)
+            if running >= min_odds:
+                break
+    return selected
+
+
+SPORT_FAMILIES = [
+    ("all", "Tous sports"),
+    ("soccer", "Football"),
+    ("basketball", "Basketball"),
+    ("tennis", "Tennis"),
+    ("americanfootball", "NFL / CFL"),
+    ("icehockey", "Hockey"),
+    ("baseball", "MLB"),
+    ("mma", "MMA / UFC"),
+    ("boxing", "Boxe"),
+    ("aussierules", "AFL"),
+    ("rugbyleague", "Rugby"),
+]
+
+
+def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
+    """For each sport family, return combos across 4 odds tiers using TODAY's matches only."""
+    today_matches = [m for m in matches if _is_today(m.get("commence_time", ""))]
+    all_picks_today = [p for p in _flatten_market_picks(today_matches) if p["pick_odds"]]
+
+    per_family = {}
+    for family_key, family_label in SPORT_FAMILIES:
+        if family_key == "all":
+            family_picks = all_picks_today
+        else:
+            family_picks = [p for p in all_picks_today if (p.get("sport_key", "") or "").startswith(family_key)]
+        tiers = {}
+        for tkey, tlabel, ttag, tmin, tmax, tlegs, tconf, tdesc in TODAY_TIER_TARGETS:
+            pool = [p for p in family_picks if p["confidence"] >= tconf]
+            legs = _pick_for_target_odds(pool, tlegs, tmin, tmax)
+            stats = _stats(legs)
+            tiers[tkey] = {
+                **stats,
+                "tier": tkey,
+                "label": tlabel,
+                "tagline": ttag,
+                "target_odds_min": tmin,
+                "target_odds_max": tmax,
+                "description": tdesc,
+                "free_today": (tkey == "sure"),
+            }
+        per_family[family_key] = {
+            "family_key": family_key,
+            "family_label": family_label,
+            "matches_today": sum(1 for m in today_matches if family_key == "all" or (m.get("sport_key") or "").startswith(family_key)),
+            "tiers": tiers,
+        }
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "total_matches_today": len(today_matches),
+        "families": per_family,
+    }
 
 
 def build_multi_combos(matches: List[Dict]) -> Dict:
