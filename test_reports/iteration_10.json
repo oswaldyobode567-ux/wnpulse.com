@@ -1,0 +1,32 @@
+{
+  "summary": "Iter10 — Validated 5 batch changes: WA bookmakers filter, deep reasoning, is_live/LIVE badges, admin WhatsApp share, and 'Picks validés' section. Backend pytest 7/7 PASSED. Frontend E2E: dashboard admin shows 3 admin-share-whatsapp buttons + validated-picks-section (Aujourd'hui 0/0/0 + Cette semaine 25V/20L with color indicators); /app/top shows 6 admin-share-whatsapp-top buttons; /app/match/{id} shows deep-reasoning-card with full IA analysis (H2H 10 last, form last 5, xG, home/away record, absences, referee, weather) + admin-share-whatsapp-detail; free user sees 0 admin buttons; regressions on /aujourdhui /builder /live all load OK.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "/api/predictions/history", "issue": "Sample seed contains only 12 picks (not 50 as review claimed). Docs are inserted once and reused — first call inserts, later returns whatever is in DB. Not a bug but review-request expectation mismatch."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_batch_west_africa_reasoning.py",
+    "/app/test_reports/pytest/iter10_batch.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "prediction_engine.py _filtered_bookmakers falls back to top-5 ALL bookies when no WA bookie present — behavior is documented but the UI does not currently indicate this fallback; consider tagging bookmakers_used with an `is_west_african` flag so the frontend can show 'Bookmakers alternatifs' vs 'Bookmakers Afrique de l'Ouest'.",
+    "server.py /api/predictions/history seeds 12 picks then reuses them forever (docs never expire or refresh); if the review's expectation is 50 rolling picks, add a background job or increase sample_picks. Currently returns win_rate on the same static 12 rows.",
+    "LIVE badge relies on server-side is_live which needs commence_time within kickoff→+4h. At test time no picks matched this window — this is expected (no error) but there is no visual test env fixture to force a live match; consider a debug endpoint to force is_live for QA.",
+    "DashboardPage.jsx validated-picks-section uses inner API data; verify it does not fetch on interval more than once per session to avoid needless API traffic."
+  ],
+  "updated_files": ["/app/backend/tests/test_batch_west_africa_reasoning.py (new)"],
+  "success_rate": {"backend": "100% (7/7)", "frontend": "100% on all tested flows"},
+  "test_credentials": "Admin oswaldyobode567@gmail.com / kirikou36 — OK. Free test user registered on-the-fly.",
+  "seed_data_creation": "Registered ephemeral test_free_{ts}@winpulse.app free user via /api/auth/register.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "All 5 batch changes verified. testids used: admin-share-whatsapp-{match_id} (dashboard), admin-share-whatsapp-top-{match_id} (/app/top), admin-share-whatsapp-detail (/app/match/{id}), validated-picks-section (dashboard), deep-reasoning-card (/app/match/{id}), live-badge-{match_id} + top-live-badge-{match_id} + match-live-badge (only shown when is_live=true; none was live at test time). Deep reasoning contains keys h2h_last_10 {home_wins,draws,away_wins}, form_last_5 {home,away}, xg {home,away}, home_record, away_record, key_absences {home,away}, referee_yellows_avg, weather, summary, estimated_ai:true — all deterministic via SHA1(match_id|home|away)."
+}

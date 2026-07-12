@@ -8,13 +8,14 @@ import { Button } from "@/components/ui/button";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link } from "react-router-dom";
-import { Trophy, Flame, ChevronRight, Activity, Lock, Sparkles } from "lucide-react";
+import { Trophy, Flame, ChevronRight, Activity, Lock, Sparkles, Radio, Send, CheckCircle2, XCircle, Clock, TrendingUp } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { RealtimeBar, FreshnessStamp } from "@/components/RealtimeBar";
 import { useRealtimeMatches, useDataStatus } from "@/services/realtimeService";
 import PaymentModal from "@/components/payment/PaymentModal";
 import LiveDataBadge from "@/components/LiveDataBadge";
+import { toast } from "sonner";
 
 const SPORT_FILTERS = [
   { key: "all", label: "Tous" },
@@ -34,15 +35,38 @@ export default function DashboardPage() {
   const [topLoading, setTopLoading] = useState(true);
   const [sport, setSport] = useState("all");
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
+  const [validatedPicks, setValidatedPicks] = useState([]);
   const isFree = !user?.subscription_tier || user.subscription_tier === "free";
+  const isAdmin = Boolean(user?.is_admin);
 
   useEffect(() => {
     let mounted = true;
     api.get("/predictions/top")
       .then((t) => { if (mounted) setTopPicks(t.data); })
       .finally(() => mounted && setTopLoading(false));
+    // Load validated picks (today + week) — endpoint returns {predictions, stats}
+    api.get("/predictions/history")
+      .then((r) => { if (mounted) setValidatedPicks(r.data?.predictions || []); })
+      .catch(() => { /* silent */ });
     return () => { mounted = false; };
   }, [lastUpdate]);
+
+  const shareWhatsAppPick = (p, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const lines = [
+      `🎯 *Pick WinPulse*`,
+      `${p.sport_title || "Sport"} · ${dayjs(p.commence_time).format("DD/MM HH:mm")}`,
+      "",
+      `*${p.home_team}* vs *${p.away_team}*`,
+      `👉 ${p.pick} @ *${p.pick_odds}*`,
+      `Confiance IA : ${Math.round(p.confidence || 0)}%`,
+      "",
+      "Analyse complète : https://wnpulse.com",
+    ];
+    window.open(`https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`, "_blank");
+    toast.success("Ouvre WhatsApp pour partager");
+  };
 
   const filtered = useMemo(() => {
     if (sport === "all") return matches;
@@ -114,8 +138,13 @@ export default function DashboardPage() {
                 const locked = p.locked || !p.pick;
                 return (
                 <Link key={p.match_id} to={`/app/match/${p.match_id}`} data-testid={`top-pick-${p.match_id}`}>
-                  <Card className={`relative overflow-hidden border p-5 hover:shadow-md transition-all h-full ${locked ? "bg-neutral-50 border-dashed border-orange-200" : "bg-gradient-to-br from-white to-orange-50/30 border-orange-200/60"}`}>
-                    <div className="absolute top-3 right-3">
+                  <Card className={`relative overflow-hidden border p-5 hover:shadow-md transition-all h-full ${locked ? "bg-neutral-50 border-dashed border-orange-200" : "bg-gradient-to-br from-white to-orange-50/30 border-orange-200/60"} ${p.is_live ? "ring-2 ring-rose-500/40" : ""}`}>
+                    <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                      {p.is_live && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2 py-0.5 text-[10px] font-black uppercase tracking-wider animate-pulse" data-testid={`live-badge-${p.match_id}`}>
+                          <Radio className="h-2.5 w-2.5" /> LIVE
+                        </span>
+                      )}
                       {locked ? (
                         <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 text-xs font-bold">
                           <Lock className="h-3 w-3" /> PRO
@@ -152,6 +181,16 @@ export default function DashboardPage() {
                         </>
                       )}
                     </div>
+                    {isAdmin && !locked && (
+                      <button
+                        onClick={(e) => shareWhatsAppPick(p, e)}
+                        className="absolute bottom-3 right-3 h-7 w-7 rounded-full bg-[#25D366] hover:bg-[#1ebe5c] text-white grid place-items-center shadow-sm"
+                        title="Partager sur WhatsApp"
+                        data-testid={`admin-share-whatsapp-${p.match_id}`}
+                      >
+                        <Send className="h-3 w-3" />
+                      </button>
+                    )}
                   </Card>
                 </Link>
               );
@@ -159,6 +198,9 @@ export default function DashboardPage() {
             </div>
           )}
         </section>
+
+        {/* Picks validés — historique aujourd'hui + semaine */}
+        <ValidatedPicksSection picks={validatedPicks} />
 
         {/* Free tier upgrade CTA */}
         {isFree && (
@@ -228,5 +270,88 @@ export default function DashboardPage() {
         targetTier={payState.tier}
       />
     </AppLayout>
+  );
+}
+
+
+function ValidatedPicksSection({ picks }) {
+  const today = dayjs().format("YYYY-MM-DD");
+  const startOfWeek = dayjs().startOf("week").format("YYYY-MM-DD");
+
+  const todayPicks = (picks || []).filter((p) => (p.date || p.datetime || "").slice(0, 10) === today);
+  const weekPicks = (picks || []).filter((p) => {
+    const d = (p.date || p.datetime || "").slice(0, 10);
+    return d >= startOfWeek && d !== today;
+  });
+
+  const statsFor = (arr) => {
+    const wins = arr.filter((p) => p.won === true).length;
+    const losses = arr.filter((p) => p.won === false).length;
+    const pending = arr.filter((p) => p.won == null).length;
+    return { wins, losses, pending, total: arr.length };
+  };
+  const tStats = statsFor(todayPicks);
+  const wStats = statsFor(weekPicks);
+  const total = todayPicks.length + weekPicks.length;
+
+  if (total === 0) return null;
+
+  return (
+    <section className="mb-8" data-testid="validated-picks-section">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Trophy className="h-5 w-5 text-emerald-500" />
+          <h2 className="font-heading font-bold text-lg text-slate-900">Picks validés</h2>
+          <span className="text-[10px] uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-full px-2 py-0.5 font-bold">Track record vivant</span>
+        </div>
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <ValidatedPicksBlock title={`Aujourd'hui (${dayjs().format("DD/MM")})`} picks={todayPicks} stats={tStats} testId="validated-today" />
+        <ValidatedPicksBlock title="Cette semaine" picks={weekPicks} stats={wStats} testId="validated-week" />
+      </div>
+    </section>
+  );
+}
+
+
+function ValidatedPicksBlock({ title, picks, stats, testId }) {
+  return (
+    <Card className="p-4 bg-white border-neutral-200" data-testid={testId}>
+      <div className="flex items-center justify-between mb-3">
+        <h3 className="font-heading font-bold text-slate-900 text-sm">{title}</h3>
+        <div className="flex items-center gap-2 text-[11px]">
+          <span className="flex items-center gap-0.5 text-emerald-600 font-bold"><CheckCircle2 className="h-3 w-3" /> {stats.wins}</span>
+          <span className="flex items-center gap-0.5 text-rose-600 font-bold"><XCircle className="h-3 w-3" /> {stats.losses}</span>
+          <span className="flex items-center gap-0.5 text-amber-600 font-bold"><Clock className="h-3 w-3" /> {stats.pending}</span>
+        </div>
+      </div>
+      {picks.length === 0 ? (
+        <div className="text-xs text-slate-400 py-3 text-center">Aucun pick pour cette période.</div>
+      ) : (
+        <div className="space-y-1.5 max-h-72 overflow-y-auto">
+          {picks.slice(0, 20).map((p, i) => {
+            const won = p.won;
+            const icon = won === true ? <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" /> : won === false ? <XCircle className="h-4 w-4 text-rose-500 shrink-0" /> : <Clock className="h-4 w-4 text-amber-500 shrink-0" />;
+            const bg = won === true ? "bg-emerald-50 border-emerald-100" : won === false ? "bg-rose-50 border-rose-100" : "bg-amber-50 border-amber-100";
+            return (
+              <div key={p.match_id || i} className={`flex items-center gap-2 p-2 rounded-lg border ${bg} text-xs`} data-testid={`validated-pick-${i}`}>
+                {icon}
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-slate-900 truncate">{p.match || `${p.home_team} vs ${p.away_team}`}</div>
+                  <div className="text-slate-500 truncate">
+                    <span className="font-bold text-slate-700">{p.pick}</span> @ {p.odds}
+                    {p.score_home != null && p.score_away != null && <span className="ml-2 font-mono">· {p.score_home}-{p.score_away}</span>}
+                  </div>
+                </div>
+                {won === true && p.profit != null && (
+                  <span className="text-[11px] font-bold text-emerald-700 shrink-0">+{Math.round(p.profit)}</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Card>
   );
 }

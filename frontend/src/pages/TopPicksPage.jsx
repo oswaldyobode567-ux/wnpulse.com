@@ -6,10 +6,11 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
 import { Link } from "react-router-dom";
-import { Trophy, Flame, Lock, Sparkles, ChevronRight } from "lucide-react";
+import { Trophy, Flame, Lock, Sparkles, ChevronRight, Radio, Send } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
+import { toast } from "sonner";
 
 export default function TopPicksPage() {
   const { user } = useAuth();
@@ -17,10 +18,19 @@ export default function TopPicksPage() {
   const [loading, setLoading] = useState(true);
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
   const isFree = !user?.subscription_tier || user.subscription_tier === "free";
+  const isAdmin = Boolean(user?.is_admin);
 
   useEffect(() => {
     api.get("/predictions/top").then((r) => setPicks(r.data)).finally(() => setLoading(false));
   }, []);
+
+  const shareWA = (p, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = `🎯 *Pick WinPulse*\n${p.sport_title} · ${dayjs(p.commence_time).format("DD/MM HH:mm")}\n\n*${p.home_team}* vs *${p.away_team}*\n👉 ${p.pick} @ *${p.pick_odds}*\nConfiance IA : ${Math.round(p.confidence || 0)}%\n\nhttps://wnpulse.com`;
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+    toast.success("WhatsApp ouvert");
+  };
 
   return (
     <AppLayout>
@@ -60,8 +70,13 @@ export default function TopPicksPage() {
               const locked = p.locked || !p.pick;
               return (
               <Link key={p.match_id} to={`/app/match/${p.match_id}`} data-testid={`top-pick-card-${p.match_id}`}>
-                <Card className={`border p-5 hover:shadow-md transition-all h-full relative ${locked ? "bg-neutral-50 border-dashed border-orange-200" : "bg-white border-orange-200/60"}`}>
-                  <div className="absolute top-3 right-3">
+                <Card className={`border p-5 hover:shadow-md transition-all h-full relative ${locked ? "bg-neutral-50 border-dashed border-orange-200" : "bg-white border-orange-200/60"} ${p.is_live ? "ring-2 ring-rose-500/40" : ""}`}>
+                  <div className="absolute top-3 right-3 flex items-center gap-1.5">
+                    {p.is_live && (
+                      <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2 py-0.5 text-[10px] font-black uppercase tracking-wider animate-pulse" data-testid={`top-live-badge-${p.match_id}`}>
+                        <Radio className="h-2.5 w-2.5" /> LIVE
+                      </span>
+                    )}
                     {locked ? (
                       <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 text-xs font-bold">
                         <Lock className="h-3 w-3" /> PRO
@@ -99,6 +114,16 @@ export default function TopPicksPage() {
                       </>
                     )}
                   </div>
+                  {isAdmin && !locked && (
+                    <button
+                      onClick={(e) => shareWA(p, e)}
+                      className="absolute bottom-3 right-3 h-8 w-8 rounded-full bg-[#25D366] hover:bg-[#1ebe5c] text-white grid place-items-center shadow-md"
+                      title="Partager sur WhatsApp"
+                      data-testid={`admin-share-whatsapp-top-${p.match_id}`}
+                    >
+                      <Send className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                 </Card>
               </Link>
               );

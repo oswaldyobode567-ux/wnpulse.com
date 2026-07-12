@@ -7,10 +7,11 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
-import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock } from "lucide-react";
+import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio, Send, TrendingUp, Users } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
+import { toast } from "sonner";
 
 export default function MatchDetailPage() {
   const { matchId } = useParams();
@@ -20,6 +21,7 @@ export default function MatchDetailPage() {
   const [loadingMatch, setLoadingMatch] = useState(true);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
+  const isAdmin = Boolean(user?.is_admin);
 
   useEffect(() => {
     setLoadingMatch(true);
@@ -78,11 +80,18 @@ export default function MatchDetailPage() {
         </Link>
 
         {/* Match header */}
-        <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="match-header">
-          <div className="flex items-center gap-2 mb-4 text-xs text-slate-500">
-            <Badge variant="outline" className="font-mono">{data.sport_title}</Badge>
-            <span>·</span>
-            <span>{dayjs(data.commence_time).format("dddd D MMM · HH:mm")}</span>
+        <Card className={`bg-white border-slate-200 p-6 mb-6 ${data.is_live ? "ring-2 ring-rose-500/40" : ""}`} data-testid="match-header">
+          <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <Badge variant="outline" className="font-mono">{data.sport_title}</Badge>
+              <span>·</span>
+              <span>{dayjs(data.commence_time).format("dddd D MMM · HH:mm")}</span>
+            </div>
+            {data.is_live && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2.5 py-1 text-[11px] font-black uppercase tracking-wider animate-pulse" data-testid="match-live-badge">
+                <Radio className="h-3 w-3" /> LIVE
+              </span>
+            )}
           </div>
           <div className="grid grid-cols-3 items-center gap-4">
             <div className="text-center">
@@ -143,6 +152,26 @@ export default function MatchDetailPage() {
             <Stat label="Prob. pick" value={`${(p.implied_probs?.[p.pick] || 0).toFixed(1)}%`} />
             <Stat label="Cote optimale" value={p.pick_odds} mono />
           </div>
+          {isAdmin && (
+            <div className="mt-4 pt-4 border-t border-slate-200/60 flex items-center justify-between gap-2">
+              <div className="text-xs text-slate-500">
+                <strong className="text-slate-700">Bookmakers utilisés :</strong>{" "}
+                {(p.bookmakers_used || []).slice(0, 5).map((b) => b.title || b.key).join(", ") || "—"}
+              </div>
+              <Button
+                onClick={() => {
+                  const text = `🎯 *Pick WinPulse*\n${data.sport_title} · ${dayjs(data.commence_time).format("DD/MM HH:mm")}\n\n*${data.home_team}* vs *${data.away_team}*\n👉 ${p.pick} @ *${p.pick_odds}*\nConfiance IA : ${Math.round(p.confidence || 0)}%\nMarché : ${p.market_label}\n\nhttps://wnpulse.com`;
+                  window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
+                  toast.success("WhatsApp ouvert");
+                }}
+                size="sm"
+                className="bg-[#25D366] hover:bg-[#1ebe5c] text-white h-8"
+                data-testid="admin-share-whatsapp-detail"
+              >
+                <Send className="h-3.5 w-3.5 mr-1.5" /> Partager
+              </Button>
+            </div>
+          )}
         </Card>
         )}
 
@@ -177,6 +206,31 @@ export default function MatchDetailPage() {
                   </div>
                 );
               })}
+            </div>
+          </Card>
+        )}
+
+        {/* Deep reasoning — H2H / xG / forme / absences / arbitre / météo */}
+        {!locked && p.reasoning && (
+          <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="deep-reasoning-card">
+            <div className="flex items-center gap-2 mb-4">
+              <TrendingUp className="h-5 w-5 text-emerald-600" />
+              <h2 className="font-heading text-lg font-bold text-slate-900">Analyse détaillée</h2>
+              <Badge className="bg-purple-100 text-purple-700 border-purple-200 text-[10px] ml-1">IA</Badge>
+            </div>
+            <p className="text-sm text-slate-700 leading-relaxed mb-4">{p.reasoning.summary}</p>
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4" data-testid="reasoning-grid">
+              <ReasonBox label="H2H (10 derniers)" value={`${p.reasoning.h2h_last_10.home_wins}V-${p.reasoning.h2h_last_10.draws}N-${p.reasoning.h2h_last_10.away_wins}D`} sub={`${data.home_team}`} />
+              <ReasonBox label="Forme récente" value={`${p.reasoning.form_last_5.home} / ${p.reasoning.form_last_5.away}`} mono />
+              <ReasonBox label="xG moyens" value={`${p.reasoning.xg.home} vs ${p.reasoning.xg.away}`} mono />
+              <ReasonBox label="Domicile" value={p.reasoning.home_record} />
+              <ReasonBox label="Extérieur" value={p.reasoning.away_record} />
+              <ReasonBox label="Absences clés" value={`${data.home_team.split(" ")[0]}: ${p.reasoning.key_absences.home} · ${data.away_team.split(" ")[0]}: ${p.reasoning.key_absences.away}`} />
+              <ReasonBox label="Cartons arbitre" value={`${p.reasoning.referee_yellows_avg}/match`} />
+              <ReasonBox label="Conditions" value={p.reasoning.weather} />
+            </div>
+            <div className="text-[10px] text-slate-400 italic pt-3 border-t border-slate-100">
+              Estimations IA basées sur les cotes bookmakers agrégées + historique modélisé. Plan Odds API payant requis pour les données réelles complètes (xG live, blessures officielles, arbitre).
             </div>
           </Card>
         )}
@@ -551,6 +605,16 @@ function Stat({ label, value, mono }) {
     <div>
       <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-0.5">{label}</div>
       <div className={`font-bold text-slate-900 ${mono ? "font-mono" : ""}`}>{value}</div>
+    </div>
+  );
+}
+
+function ReasonBox({ label, value, sub, mono }) {
+  return (
+    <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
+      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{label}</div>
+      <div className={`text-sm font-bold text-slate-900 ${mono ? "font-mono" : ""}`}>{value}</div>
+      {sub && <div className="text-[10px] text-slate-400 mt-0.5">{sub}</div>}
     </div>
   );
 }
