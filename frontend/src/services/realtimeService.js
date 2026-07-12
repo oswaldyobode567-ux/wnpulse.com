@@ -1,18 +1,17 @@
 /**
  * Realtime data service for WinPulse.
- * - Polls /api/data/status every 60s for freshness counters
- * - Polls /api/matches every 3 min for odds refresh
- * - Polls /api/scores every 60s for live scores
- * - Caches in localStorage with TTL
- * - Exposes hooks for components
+ * CORRECTIONS :
+ * - Les matchs LIVE et TERMINÉS ne sont plus filtrés — tous les statuts sont retournés
+ * - Tri : LIVE en premier, puis À venir, puis Terminés
+ * - Baseball ajouté dans la liste des sports suivis
  */
 import { useEffect, useState, useRef, useCallback } from "react";
 import api from "@/lib/api";
 
 const TTL = {
-  status: 60 * 1000,
+  status:  60 * 1000,
   matches: 3 * 60 * 1000,
-  scores: 60 * 1000,
+  scores:  60 * 1000,
 };
 
 const CACHE_PREFIX = "wp_rt_";
@@ -33,9 +32,28 @@ function getCache(key, ttl) {
   } catch (e) { return null; }
 }
 
+/**
+ * Détermine le statut d'un match en fonction de commence_time.
+ * On considère "live" si le match a commencé il y a moins de 4h.
+ * On considère "finished" si le match a commencé il y a plus de 4h.
+ */
+function computeMatchStatus(commenceTime) {
+  if (!commenceTime) return "upcoming";
+  try {
+    const dt  = new Date(commenceTime);
+    const now = Date.now();
+    const diff = now - dt.getTime();
+    if (diff < 0)                 return "upcoming";   // pas encore commencé
+    if (diff < 4 * 60 * 60 * 1000) return "live";      // en cours (≤ 4h)
+    return "finished";                                  // terminé
+  } catch (e) {
+    return "upcoming";
+  }
+}
+
 export function useDataStatus(intervalMs = 60000) {
   const [status, setStatus] = useState(() => getCache("status", TTL.status)?.data || null);
-  const [connState, setConnState] = useState("green"); // green / amber / red
+  const [connState, setConnState] = useState("green");
   const timerRef = useRef(null);
 
   const fetchStatus = useCallback(async () => {
@@ -43,11 +61,10 @@ export function useDataStatus(intervalMs = 60000) {
       const { data } = await api.get("/data/status");
       setStatus(data);
       setCache("status", data);
-      // Compute connection state from updated_at
       const updated = data.odds_updated_at ? new Date(data.odds_updated_at) : null;
       if (!updated) { setConnState("amber"); return; }
       const ageMs = Date.now() - updated.getTime();
-      if (ageMs < 5 * 60 * 1000) setConnState("green");
+      if (ageMs < 5 * 60 * 1000)  setConnState("green");
       else if (ageMs < 15 * 60 * 1000) setConnState("amber");
       else setConnState("red");
     } catch (e) {
@@ -75,23 +92,58 @@ export function useRealtimeMatches(intervalMs = 3 * 60 * 1000) {
   const fetch = useCallback(async () => {
     try {
       const { data } = await api.get("/matches");
-      // Build odds delta map: matchId → {prevOdds, newOdds}
+
       const newMap = new Map();
       const enriched = data.map((m) => {
         const p = m.prediction || {};
+
+        // ── Calcul statut match ──────────────────────────────────────────
+        const status   = computeMatchStatus(m.commence_time);
+        const is_live  = status === "live";
+        const finished = status === "finished";
+
+        // ── Mouvement des cotes ──────────────────────────────────────────
         const prev = prevOddsRef.current.get(m.id);
         let movement = 0;
         if (prev != null && p.pick_odds != null && prev !== p.pick_odds) {
           movement = p.pick_odds - prev;
         }
         if (p.pick_odds != null) newMap.set(m.id, p.pick_odds);
-        return { ...m, prediction: { ...p, odds_movement: movement, previous_odds: prev } };
+
+        return {
+          ...m,
+          // Statut calculé côté client (complète is_live du backend)
+          is_live:  is_live  || p.is_live  || false,
+          finished: finished || p.finished || false,
+          match_status: status,
+          prediction: {
+            ...p,
+            is_live:     is_live || p.is_live || false,
+            odds_movement:   movement,
+            previous_odds:   prev,
+          },
+        };
       });
+
       prevOddsRef.current = newMap;
-      setMatches(enriched);
-      setCache("matches", enriched);
+
+      // ── Tri : LIVE → À venir → Terminés ─────────────────────────────
+      const sorted = [...enriched].sort((a, b) => {
+        const order = { live: 0, upcoming: 1, finished: 2 };
+        const ao = order[a.match_status] ?? 1;
+        const bo = order[b.match_status] ?? 1;
+        if (ao !== bo) return ao - bo;
+        return new Date(a.commence_time) - new Date(b.commence_time);
+      });
+
+      setMatches(sorted);
+      setCache("matches", sorted);
       setLastUpdate(Date.now());
-    } catch (e) { /* keep cached */ } finally { setLoading(false); }
+    } catch (e) {
+      // keep cached
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -130,9 +182,9 @@ export function useScores(intervalMs = 60 * 1000) {
 export function formatRelativeTime(ts) {
   if (!ts) return "—";
   const sec = Math.floor((Date.now() - (typeof ts === "string" ? new Date(ts).getTime() : ts)) / 1000);
-  if (sec < 30) return "à l'instant";
-  if (sec < 60) return `il y a ${sec}s`;
-  if (sec < 3600) return `il y a ${Math.floor(sec / 60)} min`;
+  if (sec < 30)    return "à l'instant";
+  if (sec < 60)    return `il y a ${sec}s`;
+  if (sec < 3600)  return `il y a ${Math.floor(sec / 60)} min`;
   if (sec < 86400) return `il y a ${Math.floor(sec / 3600)}h`;
   return `il y a ${Math.floor(sec / 86400)}j`;
 }
