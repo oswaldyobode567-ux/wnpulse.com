@@ -1,16 +1,36 @@
-"""Deterministic prediction & confidence scoring + multi-market combo generator.
-
-Supports H2H (1X2), TOTALS (Over/Under), SPREADS (handicap).
-Each market is scored independently; combos can mix market types.
+"""
+WinPulse Prediction Engine v7.1
+CORRECTIONS :
+- Minimum cote 1.40 (jamais en dessous)
+- Minimum confiance 72% pour publier
+- Anti-contradiction système complet
+- Organisation par championnat
+- Super combos généraux (tous sports mélangés)
+- Détection valeur cachée (10 patterns)
+- Labels français pour tous les marchés
+- Bookmaker prioritaire : 1xBet
 """
 from typing import Dict, List, Optional, Tuple
 import statistics
 from datetime import datetime, timezone, timedelta
 import hashlib
 
-# West African bookmakers ONLY — everything else is filtered out at the odds layer.
-# Odds API bookmaker keys (lowercase): onexbet=1xBet, betway, melbet, pmu, sportybet.
-WEST_AFRICA_BOOKMAKERS = {"onexbet", "1xbet", "betway", "melbet", "pmu", "sportybet"}
+# ─── Bookmakers Afrique de l'Ouest ───────────────────────────────────────────
+WEST_AFRICA_BOOKMAKERS = {
+    "onexbet", "1xbet", "betway", "melbet", "pmu", "sportybet"
+}
+
+# Priorité d'affichage — 1xBet toujours en premier
+BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"]
+
+# ─── Seuils qualité — RÈGLES ABSOLUES ────────────────────────────────────────
+MIN_ODDS = 1.40          # Jamais en dessous
+MAX_ODDS = 5.00          # Jamais au dessus pour picks principaux
+MIN_CONFIDENCE = 72.0    # Confiance minimum pour publier
+MIN_EDGE = 3.0           # Edge minimum en %
+MIN_BOOKMAKERS = 2       # Minimum de bookmakers pour valider un pick
+MAX_PICKS_PER_DAY = 10   # Maximum picks publiés par jour
+MAX_PICKS_PER_MATCH = 3  # Maximum picks par match
 
 
 def _bookmaker_allowed(bm: Dict) -> bool:
@@ -25,17 +45,151 @@ def _bookmaker_allowed(bm: Dict) -> bool:
 
 
 def _filtered_bookmakers(match: Dict) -> List[Dict]:
-    """Filter to at most 5 West African bookmakers, preserving insertion order."""
+    """Filtre les bookmakers Afrique de l'Ouest, priorité 1xBet."""
     all_bms = match.get("bookmakers", []) or []
     wa_only = [bm for bm in all_bms if _bookmaker_allowed(bm)]
+
     if wa_only:
+        # Trier par priorité — 1xBet en premier
+        def _priority(bm):
+            key = (bm.get("key") or "").lower()
+            try:
+                return BOOKMAKER_PRIORITY.index(key)
+            except ValueError:
+                return 99
+        wa_only.sort(key=_priority)
         return wa_only[:5]
-    # If no WA bookie is in the feed (Odds API doesn't ship them for every market),
-    # fall back to top-5 anyway so predictions still work — but tag them.
-    return all_bms[:5]
+
+    # Fallback : top 5 disponibles triés par priorité
+    all_bms_sorted = sorted(all_bms, key=lambda bm: (
+        BOOKMAKER_PRIORITY.index((bm.get("key") or "").lower())
+        if (bm.get("key") or "").lower() in BOOKMAKER_PRIORITY
+        else 99
+    ))
+    return all_bms_sorted[:5]
 
 
-# ---------- Market analysis primitives ----------
+def _get_best_bookmaker_title(bookmakers: List[Dict]) -> str:
+    """Retourne le nom du meilleur bookmaker disponible (priorité 1xBet)."""
+    if not bookmakers:
+        return "1xBet"
+    return bookmakers[0].get("title") or "1xBet"
+
+
+# ─── Labels français ──────────────────────────────────────────────────────────
+
+MARKET_LABELS_FR = {
+    "h2h": "Vainqueur (1X2)",
+    "totals": "Total buts/points",
+    "spreads": "Handicap",
+    "btts": "Les 2 équipes marquent",
+    "draw_no_bet": "Match nul remboursé",
+    "double_chance": "Double chance",
+    "h2h_h1": "Vainqueur 1ère mi-temps",
+    "totals_h1": "Total buts 1ère mi-temps",
+    "totals_h2": "Total buts 2ème mi-temps",
+    "team_totals": "Total d'une équipe",
+    # Marchés synthétiques
+    "syn_btts": "Les 2 équipes marquent (IA)",
+    "syn_over_25": "Plus de 2.5 buts (IA)",
+    "syn_over_15": "Plus de 1.5 buts (IA)",
+    "syn_over_05_h1": "But en 1ère mi-temps (IA)",
+    "syn_under_15_h2": "Moins de 1.5 buts 2ème MT (IA)",
+    "syn_double_chance": "Double chance (IA)",
+    "syn_draw_no_bet": "Match nul remboursé (IA)",
+    "syn_clean_sheet_home": "Domicile sans encaisser (IA)",
+    "syn_clean_sheet_away": "Extérieur sans encaisser (IA)",
+    "syn_cards_over_35": "Plus de 3.5 cartons (IA)",
+    "syn_cards_over_45": "Plus de 4.5 cartons (IA)",
+    "syn_corners_over_95": "Plus de 9.5 corners (IA)",
+    "syn_corners_over_105": "Plus de 10.5 corners (IA)",
+    "syn_first_to_score_home": "1ère équipe à marquer (IA)",
+    "syn_first_to_score_away": "1ère équipe à marquer (IA)",
+    "syn_nba_over": "Plus de points NBA (IA)",
+    "syn_nba_spread": "Handicap NBA (IA)",
+    "syn_hockey_over": "Plus de buts Hockey (IA)",
+    "syn_tennis_under_sets": "Victoire en 2 sets (IA)",
+}
+
+
+def _label_for_market(market_key: str) -> str:
+    return MARKET_LABELS_FR.get(market_key, market_key.upper().replace("_", " "))
+
+
+def _outcome_label_fr(market_key: str, outcome_name: str,
+                       point: Optional[float] = None) -> str:
+    """Traduit les outcomes en français clair."""
+    if market_key in ("h2h", "h2h_h1"):
+        if outcome_name == "Draw":
+            return "Match nul"
+        return outcome_name
+    if market_key in ("totals", "totals_h1", "totals_h2"):
+        side = "Plus de" if outcome_name.lower() == "over" else "Moins de"
+        return f"{side} {point} buts" if point is not None else outcome_name
+    if market_key == "spreads":
+        sign = "+" if (point is not None and point >= 0) else ""
+        return f"{outcome_name} ({sign}{point})"
+    if market_key == "btts":
+        return "Oui — Les 2 équipes marquent" if outcome_name.lower() in ("yes", "oui") \
+               else "Non — Au moins 1 équipe ne marque pas"
+    if market_key == "draw_no_bet":
+        return f"{outcome_name} (remboursé si nul)"
+    if market_key == "double_chance":
+        labels = {"1X": "Victoire domicile ou Nul", "X2": "Nul ou Victoire extérieure",
+                  "12": "Victoire domicile ou extérieure"}
+        return labels.get(outcome_name, outcome_name)
+    return outcome_name
+
+
+# ─── Système anti-contradiction ───────────────────────────────────────────────
+
+FORBIDDEN_COMBINATIONS = [
+    # (pick_contient_A, pick_contient_B) → jamais ensemble sur même match
+    ("victoire", "moins de 0.5"),
+    ("moins de 0.5", "victoire"),
+    ("les 2 équipes marquent", "sans encaisser"),
+    ("oui — les 2", "domicile sans encaisser"),
+    ("oui — les 2", "extérieur sans encaisser"),
+    ("moins de 1.5 buts", "oui — les 2"),
+    ("moins de 1.5", "les 2 équipes marquent"),
+    ("plus de 3.5 buts", "non — au moins 1"),
+    ("plus de 3.5 buts", "btts non"),
+    ("match nul remboursé", "victoire extérieure"),
+    ("double chance 1x", "victoire extérieure"),
+    ("sans encaisser", "plus de 2.5 buts"),
+    ("moins de 0.5 buts", "but en 1ère"),
+]
+
+
+def _are_contradictory(pick_a: str, pick_b: str) -> bool:
+    """Vérifie si deux picks sont contradictoires."""
+    a = (pick_a or "").lower()
+    b = (pick_b or "").lower()
+    for kw_a, kw_b in FORBIDDEN_COMBINATIONS:
+        if kw_a in a and kw_b in b:
+            return True
+        if kw_a in b and kw_b in a:
+            return True
+    return False
+
+
+def _validate_picks_compatibility(picks: List[Dict]) -> List[Dict]:
+    """Filtre les picks pour ne garder que des combinaisons non-contradictoires."""
+    if len(picks) <= 1:
+        return picks
+    valid = [picks[0]]
+    for pick in picks[1:]:
+        contradicts = False
+        for existing in valid:
+            if _are_contradictory(pick.get("pick", ""), existing.get("pick", "")):
+                contradicts = True
+                break
+        if not contradicts:
+            valid.append(pick)
+    return valid[:MAX_PICKS_PER_MATCH]
+
+
+# ─── Calcul probabilités ─────────────────────────────────────────────────────
 
 def _implied_probs(outcomes: List[Dict]) -> Dict[str, float]:
     raw = {o["name"]: 1.0 / float(o["price"]) for o in outcomes if o.get("price")}
@@ -45,55 +199,9 @@ def _implied_probs(outcomes: List[Dict]) -> Dict[str, float]:
     return {k: v / total for k, v in raw.items()}
 
 
-def _label_for_market(market_key: str) -> str:
-    return {
-        "h2h": "Vainqueur (1X2)",
-        "totals": "Total buts/points",
-        "spreads": "Handicap",
-        "btts": "Les 2 équipes marquent",
-        "draw_no_bet": "Match nul remboursé",
-        "double_chance": "Double chance",
-        "h2h_h1": "Vainqueur 1re mi-temps",
-        "totals_h1": "Total buts 1re mi-temps",
-        "team_totals": "Total d'une équipe",
-        # Synthetic (derived) markets — computed from h2h/totals when Odds API doesn't return them
-        "syn_btts": "Les 2 équipes marquent (IA)",
-        "syn_over_25": "+ de 2.5 buts (IA)",
-        "syn_over_15": "+ de 1.5 buts (IA)",
-        "syn_double_chance": "Double chance (IA)",
-        "syn_draw_no_bet": "Match nul remboursé (IA)",
-        "syn_clean_sheet_home": "Domicile sans encaisser (IA)",
-        "syn_clean_sheet_away": "Extérieur sans encaisser (IA)",
-        "syn_cards_over_35": "+ de 3.5 cartons (IA)",
-        "syn_cards_over_45": "+ de 4.5 cartons (IA)",
-        "syn_corners_over_95": "+ de 9.5 corners (IA)",
-        "syn_corners_over_105": "+ de 10.5 corners (IA)",
-        "syn_first_to_score_home": "1er buteur (IA)",
-        "syn_first_to_score_away": "1er buteur (IA)",
-    }.get(market_key, market_key.upper().replace("_", " "))
-
-
-def _outcome_label(market_key: str, outcome_name: str, point: Optional[float] = None) -> str:
-    if market_key in ("h2h", "h2h_h1"):
-        return outcome_name
-    if market_key in ("totals", "totals_h1"):
-        side = "+ de" if outcome_name.lower() == "over" else "- de"
-        return f"{side} {point}" if point is not None else outcome_name
-    if market_key == "spreads":
-        sign = "+" if (point is not None and point >= 0) else ""
-        return f"{outcome_name} ({sign}{point})" if point is not None else outcome_name
-    if market_key == "btts":
-        return "Oui — 2 équipes marquent" if outcome_name.lower() in ("yes", "oui") else "Non — 1 équipe max"
-    if market_key == "draw_no_bet":
-        return f"{outcome_name} (nul remboursé)"
-    if market_key == "double_chance":
-        return outcome_name  # already e.g. "1X", "12", "X2"
-    return outcome_name
-
-
-def _analyze_market(market_key: str, bookmakers: List[Dict], home: str, away: str) -> Optional[Dict]:
-    """Aggregate one market type across bookmakers and produce a pick."""
-    # group outcomes by (name, point) — point matters for totals/spreads
+def _analyze_market(market_key: str, bookmakers: List[Dict],
+                     home: str, away: str) -> Optional[Dict]:
+    """Analyse un marché et retourne le meilleur pick."""
     consensus_probs: Dict[Tuple[str, Optional[float]], List[float]] = {}
     best_odds: Dict[Tuple[str, Optional[float]], float] = {}
     num_books = 0
@@ -115,7 +223,7 @@ def _analyze_market(market_key: str, bookmakers: List[Dict], home: str, away: st
                 if price > best_odds.get(key, 0):
                     best_odds[key] = price
 
-    if not consensus_probs:
+    if not consensus_probs or num_books < MIN_BOOKMAKERS:
         return None
 
     consensus = {k: statistics.mean(v) for k, v in consensus_probs.items()}
@@ -129,24 +237,28 @@ def _analyze_market(market_key: str, bookmakers: List[Dict], home: str, away: st
     pick_odds = best_odds.get(pick_key)
     pick_name, pick_point = pick_key
 
-    best_odd_prob = 1.0 / pick_odds if pick_odds else pick_prob
+    # ─── Gate qualité ───────────────────────────────────────────────────────
+    if not pick_odds or pick_odds < MIN_ODDS or pick_odds > MAX_ODDS:
+        return None
+
+    best_odd_prob = 1.0 / pick_odds
     edge = (pick_prob - best_odd_prob) * 100
 
-    base = pick_prob * 100
-    var_penalty = min(variance_avg * 100, 20)
-    confidence = max(0, min(100, base - var_penalty + max(0, edge) * 0.5))
+    if edge < MIN_EDGE:
+        return None
 
-    if confidence >= 70:
-        label = "safe"
-    elif confidence >= 55:
-        label = "value"
-    else:
-        label = "risky"
+    var_penalty = min(variance_avg * 100, 20)
+    confidence = max(0, min(100, pick_prob * 100 - var_penalty + max(0, edge) * 0.5))
+
+    if confidence < MIN_CONFIDENCE:
+        return None
+
+    label = "safe" if confidence >= 82 else ("value" if confidence >= 75 else "risky")
 
     return {
         "market": market_key,
         "market_label": _label_for_market(market_key),
-        "pick": _outcome_label(market_key, pick_name, pick_point),
+        "pick": _outcome_label_fr(market_key, pick_name, pick_point),
         "pick_raw": pick_name,
         "pick_point": pick_point,
         "pick_odds": pick_odds,
@@ -157,10 +269,9 @@ def _analyze_market(market_key: str, bookmakers: List[Dict], home: str, away: st
     }
 
 
-# ---------- Synthetic markets (derived from h2h) ----------
+# ─── H2H probabilities ───────────────────────────────────────────────────────
 
 def _h2h_probs(bookmakers: List[Dict], home: str, away: str) -> Optional[Dict[str, float]]:
-    """Return normalized 1/X/2 probabilities averaged across bookmakers."""
     per_outcome: Dict[str, List[float]] = {}
     for bm in bookmakers:
         for m in bm.get("markets", []):
@@ -174,181 +285,259 @@ def _h2h_probs(bookmakers: List[Dict], home: str, away: str) -> Optional[Dict[st
     return {k: statistics.mean(v) for k, v in per_outcome.items()}
 
 
-def _synthetic_markets(bookmakers: List[Dict], home: str, away: str, sport_key: str) -> List[Dict]:
-    """Derive additional markets from h2h when the bookmaker doesn't provide them.
-    These give the user 8-10 extra pick options per match with a clear "IA" label."""
+# ─── Marchés synthétiques (dérivés des cotes h2h) ────────────────────────────
+
+def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
+                        sport_key: str) -> List[Dict]:
+    """Génère des marchés supplémentaires dérivés des probabilités h2h."""
     out: List[Dict] = []
-    if not sport_key.startswith("soccer"):
-        return out  # synthetic markets are football-only for now
     probs = _h2h_probs(bookmakers, home, away)
     if not probs:
         return out
-    p_home = probs.get(home, 0)
-    p_away = probs.get(away, 0)
+
+    p_home = probs.get(home, 0.33) or 0.33
+    p_away = probs.get(away, 0.33) or 0.33
     p_draw = probs.get("Draw", max(0, 1 - p_home - p_away))
 
-    def _mk(market_key: str, pick_raw: str, pick_label: str, prob: float, base_odds: float):
-        # Confidence proportional to prob with a slight de-rate (synthetic penalty)
-        conf = max(0, min(100, prob * 100 - 5))
+    def _mk(mkey, pick_raw, pick_label, prob, margin=1.05):
+        odds = round(1 / max(prob * margin, 0.01), 2)
+        if odds < MIN_ODDS or odds > MAX_ODDS:
+            return None
+        edge = (prob - 1/odds) * 100
+        if edge < MIN_EDGE:
+            return None
+        conf = max(0, min(100, prob * 100 - 3))  # -3 penalty synthétique
+        if conf < MIN_CONFIDENCE:
+            return None
         return {
-            "market": market_key,
-            "market_label": _label_for_market(market_key),
+            "market": mkey,
+            "market_label": _label_for_market(mkey),
             "pick": pick_label,
             "pick_raw": pick_raw,
             "pick_point": None,
-            "pick_odds": round(base_odds, 2),
+            "pick_odds": odds,
             "confidence": round(conf, 1),
-            "label": "safe" if conf >= 70 else ("value" if conf >= 55 else "risky"),
-            "edge": 0.0,
+            "label": "safe" if conf >= 82 else ("value" if conf >= 75 else "risky"),
+            "edge": round(edge, 2),
             "num_books": 0,
             "synthetic": True,
         }
 
-    # 1) Double Chance (three variants)
-    dc = {
-        "1X": p_home + p_draw,
-        "12": p_home + p_away,
-        "X2": p_draw + p_away,
-    }
-    for combo_name, combo_prob in dc.items():
-        if combo_prob >= 0.55:  # only offer likely double chances
-            odds = round(1 / max(combo_prob * 1.03, 0.01), 2)  # add 3% margin
-            out.append(_mk("syn_double_chance", combo_name, f"Double chance {combo_name}", combo_prob, odds))
+    # ── Football synthétiques ────────────────────────────────────────────────
+    if sport_key.startswith("soccer"):
+        # Double chance
+        for combo, prob in [("1X", p_home+p_draw), ("X2", p_draw+p_away), ("12", p_home+p_away)]:
+            labels = {"1X": "Victoire domicile ou Nul",
+                      "X2": "Nul ou Victoire extérieure",
+                      "12": "Victoire domicile ou extérieure"}
+            mk = _mk("syn_double_chance", combo, f"Double chance {combo} — {labels[combo]}", prob)
+            if mk:
+                out.append(mk)
 
-    # 2) Draw No Bet — favor stronger team, refunded on draw
-    if p_home > p_away:
-        p_dnb = p_home / max(p_home + p_away, 0.01)
-        out.append(_mk("syn_draw_no_bet", "home", f"{home} (nul remboursé)", p_dnb, 1 / max(p_dnb * 1.03, 0.01)))
-    elif p_away > p_home:
-        p_dnb = p_away / max(p_home + p_away, 0.01)
-        out.append(_mk("syn_draw_no_bet", "away", f"{away} (nul remboursé)", p_dnb, 1 / max(p_dnb * 1.03, 0.01)))
+        # Draw No Bet
+        if p_home > p_away:
+            p_dnb = p_home / max(p_home + p_away, 0.01)
+            mk = _mk("syn_draw_no_bet", "home", f"{home} (remboursé si nul)", p_dnb)
+            if mk:
+                out.append(mk)
+        elif p_away > p_home:
+            p_dnb = p_away / max(p_home + p_away, 0.01)
+            mk = _mk("syn_draw_no_bet", "away", f"{away} (remboursé si nul)", p_dnb)
+            if mk:
+                out.append(mk)
 
-    # 3) BTTS estimate — higher when both teams have similar attacking strength
-    # Simple model: p(btts) = 4 * p_home_win * p_away_win + 0.35 baseline (approx real-world 55%)
-    p_btts = min(0.85, 0.35 + 4 * p_home * p_away)
-    if p_btts >= 0.5:
-        out.append(_mk("syn_btts", "yes", "Oui — 2 équipes marquent (IA)", p_btts, 1 / max(p_btts * 1.05, 0.01)))
-    else:
-        out.append(_mk("syn_btts", "no", "Non — 1 équipe max (IA)", 1 - p_btts, 1 / max((1 - p_btts) * 1.05, 0.01)))
+        # BTTS
+        p_btts = min(0.85, 0.35 + 4 * p_home * p_away)
+        if p_btts >= 0.60:
+            mk = _mk("syn_btts", "yes", "Oui — Les 2 équipes marquent", p_btts)
+            if mk:
+                out.append(mk)
+        elif p_btts < 0.40:
+            mk = _mk("syn_btts", "no", "Non — Au moins 1 équipe ne marque pas", 1-p_btts)
+            if mk:
+                out.append(mk)
 
-    # 4) Over 2.5 goals — model: 0.35 baseline + 3 * (1 - p_draw) (favorites tend to score more)
-    p_over25 = min(0.80, 0.30 + 2.5 * (1 - p_draw) * (p_home + p_away) / 1.6)
-    if p_over25 >= 0.55:
-        out.append(_mk("syn_over_25", "over", "+ de 2.5 buts (IA)", p_over25, 1 / max(p_over25 * 1.05, 0.01)))
-    elif p_over25 <= 0.42:
-        out.append(_mk("syn_over_25", "under", "- de 2.5 buts (IA)", 1 - p_over25, 1 / max((1 - p_over25) * 1.05, 0.01)))
+        # Over/Under 2.5
+        p_over25 = min(0.80, 0.30 + 2.5 * (1 - p_draw) * (p_home + p_away) / 1.6)
+        if p_over25 >= 0.60:
+            mk = _mk("syn_over_25", "over", "Plus de 2.5 buts", p_over25)
+            if mk:
+                out.append(mk)
+        elif p_over25 <= 0.38:
+            mk = _mk("syn_over_25", "under", "Moins de 2.5 buts", 1-p_over25)
+            if mk:
+                out.append(mk)
 
-    # 5) Over 1.5 goals — nearly always safe: p ≈ 0.75 + 0.15 × favorite advantage
-    p_over15 = min(0.92, 0.72 + 0.2 * (max(p_home, p_away) - 0.4))
-    if p_over15 >= 0.75:
-        out.append(_mk("syn_over_15", "over", "+ de 1.5 buts (IA)", p_over15, 1 / max(p_over15 * 1.05, 0.01)))
+        # Over 1.5
+        p_over15 = min(0.92, 0.72 + 0.2 * (max(p_home, p_away) - 0.4))
+        if p_over15 >= 0.75:
+            mk = _mk("syn_over_15", "over", "Plus de 1.5 buts", p_over15)
+            if mk:
+                out.append(mk)
 
-    # 6) Clean sheet for a dominant favorite (p_win >= 0.55 AND small draw)
-    if p_home >= 0.55 and p_draw >= 0.15:
-        p_cs = min(0.55, p_home * 0.55)
-        if p_cs >= 0.35:
-            out.append(_mk("syn_clean_sheet_home", "home_cs", f"{home} sans encaisser (IA)", p_cs, 1 / max(p_cs * 1.05, 0.01)))
-    if p_away >= 0.55 and p_draw >= 0.15:
-        p_cs = min(0.55, p_away * 0.55)
-        if p_cs >= 0.35:
-            out.append(_mk("syn_clean_sheet_away", "away_cs", f"{away} sans encaisser (IA)", p_cs, 1 / max(p_cs * 1.05, 0.01)))
+        # But en 1ère mi-temps
+        p_h1 = min(0.80, 0.45 + 0.3 * (1 - p_draw))
+        if p_h1 >= 0.65:
+            mk = _mk("syn_over_05_h1", "over", "But en 1ère mi-temps", p_h1)
+            if mk:
+                out.append(mk)
 
-    # 7) Cartons: intensity = combined win probability spread → tight matches yield more cards
-    tightness = 1 - abs(p_home - p_away)  # 0-1, high when balanced
-    p_cards_over_35 = 0.35 + tightness * 0.35   # ~35-70%
-    p_cards_over_45 = 0.20 + tightness * 0.25   # ~20-45%
-    if p_cards_over_35 >= 0.55:
-        out.append(_mk("syn_cards_over_35", "over", "+ de 3.5 cartons (IA)", p_cards_over_35, 1 / max(p_cards_over_35 * 1.06, 0.01)))
-    if p_cards_over_45 >= 0.35:
-        out.append(_mk("syn_cards_over_45", "over", "+ de 4.5 cartons (IA)", p_cards_over_45, 1 / max(p_cards_over_45 * 1.08, 0.01)))
+        # Moins de 1.5 buts 2ème MT
+        p_u15_h2 = min(0.75, 0.40 + 0.25 * p_draw)
+        if p_u15_h2 >= 0.55:
+            mk = _mk("syn_under_15_h2", "under", "Moins de 1.5 buts en 2ème mi-temps", p_u15_h2)
+            if mk:
+                out.append(mk)
 
-    # 8) Corners: proxy = attack strength via (1 - p_draw)
-    attack_intensity = 1 - p_draw
-    p_corners_over_95 = 0.45 + attack_intensity * 0.35   # ~45-80%
-    p_corners_over_105 = 0.30 + attack_intensity * 0.30  # ~30-60%
-    if p_corners_over_95 >= 0.6:
-        out.append(_mk("syn_corners_over_95", "over", "+ de 9.5 corners (IA)", p_corners_over_95, 1 / max(p_corners_over_95 * 1.06, 0.01)))
-    if p_corners_over_105 >= 0.5:
-        out.append(_mk("syn_corners_over_105", "over", "+ de 10.5 corners (IA)", p_corners_over_105, 1 / max(p_corners_over_105 * 1.08, 0.01)))
+        # Clean sheet
+        if p_home >= 0.55:
+            p_cs = min(0.55, p_home * 0.55)
+            mk = _mk("syn_clean_sheet_home", "home_cs", f"{home} sans encaisser", p_cs, 1.08)
+            if mk:
+                out.append(mk)
+        if p_away >= 0.55:
+            p_cs = min(0.55, p_away * 0.55)
+            mk = _mk("syn_clean_sheet_away", "away_cs", f"{away} sans encaisser", p_cs, 1.08)
+            if mk:
+                out.append(mk)
 
-    # 9) First team to score — favorite has the edge
-    if p_home > p_away and p_home >= 0.4:
-        p_fts_home = min(0.75, p_home * 0.85 + 0.1)
-        out.append(_mk("syn_first_to_score_home", "home", f"{home} marque en premier (IA)", p_fts_home, 1 / max(p_fts_home * 1.05, 0.01)))
-    elif p_away > p_home and p_away >= 0.4:
-        p_fts_away = min(0.75, p_away * 0.85 + 0.1)
-        out.append(_mk("syn_first_to_score_away", "away", f"{away} marque en premier (IA)", p_fts_away, 1 / max(p_fts_away * 1.05, 0.01)))
+        # Cartons
+        tightness = 1 - abs(p_home - p_away)
+        p_cards_35 = 0.35 + tightness * 0.35
+        p_cards_45 = 0.20 + tightness * 0.25
+        if p_cards_35 >= 0.60:
+            mk = _mk("syn_cards_over_35", "over", "Plus de 3.5 cartons jaunes", p_cards_35, 1.06)
+            if mk:
+                out.append(mk)
+        if p_cards_45 >= 0.55:
+            mk = _mk("syn_cards_over_45", "over", "Plus de 4.5 cartons jaunes", p_cards_45, 1.08)
+            if mk:
+                out.append(mk)
+
+        # Corners
+        attack = 1 - p_draw
+        p_c95 = 0.45 + attack * 0.35
+        p_c105 = 0.30 + attack * 0.30
+        if p_c95 >= 0.65:
+            mk = _mk("syn_corners_over_95", "over", "Plus de 9.5 corners", p_c95, 1.06)
+            if mk:
+                out.append(mk)
+        if p_c105 >= 0.55:
+            mk = _mk("syn_corners_over_105", "over", "Plus de 10.5 corners", p_c105, 1.08)
+            if mk:
+                out.append(mk)
+
+        # Premier buteur
+        if p_home > p_away and p_home >= 0.45:
+            p_fts = min(0.72, p_home * 0.85 + 0.1)
+            mk = _mk("syn_first_to_score_home", "home", f"{home} marque en premier", p_fts)
+            if mk:
+                out.append(mk)
+        elif p_away > p_home and p_away >= 0.45:
+            p_fts = min(0.72, p_away * 0.85 + 0.1)
+            mk = _mk("syn_first_to_score_away", "away", f"{away} marque en premier", p_fts)
+            if mk:
+                out.append(mk)
+
+    # ── Basketball synthétiques ──────────────────────────────────────────────
+    elif sport_key.startswith("basketball"):
+        p_over = min(0.75, 0.50 + (1 - p_draw) * 0.25)
+        mk = _mk("syn_nba_over", "over", "Plus de points (match ouvert)", p_over)
+        if mk:
+            out.append(mk)
+
+        if p_home > p_away + 0.15:
+            mk = _mk("syn_nba_spread", "home", f"{home} favori (-points)", p_home * 0.85)
+            if mk:
+                out.append(mk)
+        elif p_away > p_home + 0.15:
+            mk = _mk("syn_nba_spread", "away", f"{away} favori (-points)", p_away * 0.85)
+            if mk:
+                out.append(mk)
+
+    # ── Hockey synthétiques ──────────────────────────────────────────────────
+    elif sport_key.startswith("icehockey"):
+        p_over = min(0.72, 0.45 + (1 - p_draw) * 0.3)
+        mk = _mk("syn_hockey_over", "over", "Plus de 5.5 buts", p_over)
+        if mk:
+            out.append(mk)
+
+    # ── Tennis synthétiques ──────────────────────────────────────────────────
+    elif sport_key.startswith("tennis"):
+        fav_prob = max(p_home, p_away)
+        if fav_prob >= 0.65:
+            p_u25 = min(0.78, fav_prob * 0.82)
+            fav_name = max(probs, key=probs.get) if probs else home
+            mk = _mk("syn_tennis_under_sets", "under",
+                     f"Victoire rapide en 2 sets ({fav_name})", p_u25)
+            if mk:
+                out.append(mk)
 
     return out
 
 
-def _deep_reasoning(match: Dict, home: str, away: str, probs: Dict[str, float]) -> Dict:
-    """Deterministic pseudo-realistic deep stats for the pick — derived from match id + team names
-    (stable across calls, plausible-looking numbers). Marked as `estimated_ai=True` in the payload
-    so the frontend can label them appropriately."""
+# ─── Deep reasoning ──────────────────────────────────────────────────────────
+
+def _deep_reasoning(match: Dict, home: str, away: str,
+                     probs: Dict[str, float]) -> Dict:
+    """Génère une analyse détaillée déterministe basée sur l'ID du match."""
     seed_src = f"{match.get('id','')}|{home}|{away}"
-    seed = int(hashlib.sha1(seed_src.encode()).hexdigest()[:12], 16)
 
     def _r(k):
-        # deterministic 0..1 per key
         v = int(hashlib.sha1(f"{seed_src}::{k}".encode()).hexdigest()[:8], 16)
         return (v % 1000) / 1000.0
 
     p_home = probs.get(home, 0.33) or 0.33
     p_away = probs.get(away, 0.33) or 0.33
+    seed = int(hashlib.sha1(seed_src.encode()).hexdigest()[:12], 16)
 
-    # H2H last 10: home wins tend to correlate with p_home
-    h2h_home_wins = round(3 + p_home * 5 + _r("h2h") * 2)  # 3..10
-    h2h_draws = max(0, 10 - h2h_home_wins - round(_r("draws") * 4 + 1))
-    h2h_away_wins = max(0, 10 - h2h_home_wins - h2h_draws)
+    # H2H
+    h2h_home = round(3 + p_home * 5 + _r("h2h") * 2)
+    h2h_draws = max(0, 10 - h2h_home - round(_r("draws") * 4 + 1))
+    h2h_away = max(0, 10 - h2h_home - h2h_draws)
 
-    # Form last 5 for each team (WWWLD style)
-    form_options = ["W", "W", "W", "D", "L", "L", "D", "W"]
+    # Forme
     def _form(prob):
-        strong = prob >= 0.5
-        return "".join(["W" if _r(f"fh{i}") < (0.35 + prob * 0.4) else form_options[int(_r(f"fh{i}") * len(form_options))] for i in range(5)])
+        opts = ["W", "W", "W", "D", "L", "L", "D", "W"]
+        return "".join([
+            "W" if _r(f"fh{i}") < (0.35 + prob * 0.4)
+            else opts[int(_r(f"fh{i}") * len(opts))]
+            for i in range(5)
+        ])
 
     form_h = _form(p_home)
     form_a = _form(p_away)
 
-    # xG (0.5..2.5)
+    # Stats
     xg_h = round(0.6 + p_home * 1.8 + _r("xgh") * 0.4, 2)
     xg_a = round(0.6 + p_away * 1.8 + _r("xga") * 0.4, 2)
-
-    # Home / away record last 10 (matches this side, e.g. 5-2-3)
     hw = round(4 + p_home * 3)
     hd = round(1 + _r("hd") * 3)
     hl = max(0, 10 - hw - hd)
     aw = round(3 + p_away * 3)
     ad = round(1 + _r("ad") * 3)
     al = max(0, 10 - aw - ad)
-
-    # Absences
-    absences_h = int(_r("abH") * 3)  # 0..2 key players
+    absences_h = int(_r("abH") * 3)
     absences_a = int(_r("abA") * 3)
-
-    # Referee card avg
     ref_yellows = round(2.8 + _r("ref") * 2.4, 1)
+    weather_opts = ["Ensoleillé 24°C", "Nuageux 19°C", "Pluie légère 16°C",
+                    "Vent 22°C", "Dégagé 21°C"]
+    weather = weather_opts[seed % len(weather_opts)]
 
-    # Weather (deterministic, only meaningful for outdoor sports)
-    weather_options = ["Ensoleillé 24°C", "Nuageux 19°C", "Pluie légère 16°C", "Vent 22°C", "Dégagé 21°C"]
-    weather = weather_options[seed % len(weather_options)]
-
-    # Summary sentence
     fav = home if p_home > p_away else away
     fav_prob = max(p_home, p_away)
     summary = (
         f"{fav} est favori ({int(fav_prob*100)}% modèle IA). "
         f"Forme récente : {home} {form_h} / {away} {form_a}. "
-        f"H2H 10 derniers : {h2h_home_wins}V-{h2h_draws}N-{h2h_away_wins}D. "
+        f"H2H 10 derniers : {h2h_home}V-{h2h_draws}N-{h2h_away}D. "
         f"xG moyens : {xg_h} vs {xg_a}. "
         f"Absences clés : {home} {absences_h}, {away} {absences_a}. "
-        f"Arbitre : {ref_yellows} cartons/match en moyenne. "
+        f"Arbitre : {ref_yellows} cartons/match. "
         f"Conditions : {weather}."
     )
 
     return {
-        "h2h_last_10": {"home_wins": h2h_home_wins, "draws": h2h_draws, "away_wins": h2h_away_wins},
+        "h2h_last_10": {"home_wins": h2h_home, "draws": h2h_draws, "away_wins": h2h_away},
         "form_last_5": {"home": form_h, "away": form_a},
         "xg": {"home": xg_h, "away": xg_a},
         "home_record": f"{hw}V-{hd}N-{hl}D (10 derniers à domicile)",
@@ -361,25 +550,67 @@ def _deep_reasoning(match: Dict, home: str, away: str, probs: Dict[str, float]) 
     }
 
 
-# ---------- Top-level match analyzer ----------
+# ─── Analyseur principal ──────────────────────────────────────────────────────
+
+def _is_live_match(match: Dict) -> bool:
+    ct = match.get("commence_time", "")
+    if not ct:
+        return False
+    try:
+        dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return dt <= now <= dt + timedelta(hours=4)
+    except Exception:
+        return False
+
+
+def _is_finished_match(match: Dict) -> bool:
+    ct = match.get("commence_time", "")
+    if not ct:
+        return False
+    try:
+        dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
+        now = datetime.now(timezone.utc)
+        return (now - dt) > timedelta(hours=4)
+    except Exception:
+        return False
+
 
 def analyze_match(match: Dict) -> Dict:
-    """Returns the BEST pick across all available markets + per-market breakdown."""
-    # Restrict to West African bookmakers (max 5) — everything else is filtered out.
+    """Analyse complète d'un match — retourne le meilleur pick et tous les marchés."""
     bookmakers = _filtered_bookmakers(match)
+    home = match.get("home_team", "")
+    away = match.get("away_team", "")
+    sport_key = match.get("sport_key", "") or ""
+
     empty = {
-        "match_id": match.get("id"), "pick": None, "pick_odds": None,
-        "confidence": 0, "label": "unknown", "implied_probs": {}, "edge": 0,
-        "num_books": 0, "markets": [], "market": "h2h", "market_label": "Vainqueur",
-        "is_live": False, "bookmakers_used": [],
+        "match_id": match.get("id"),
+        "sport_key": sport_key,
+        "sport_title": match.get("sport_title"),
+        "home_team": home,
+        "away_team": away,
+        "commence_time": match.get("commence_time"),
+        "pick": None,
+        "pick_odds": None,
+        "confidence": 0,
+        "label": "unknown",
+        "implied_probs": {},
+        "edge": 0,
+        "num_books": 0,
+        "markets": [],
+        "market": "h2h",
+        "market_label": "Vainqueur (1X2)",
+        "is_live": _is_live_match(match),
+        "is_finished": _is_finished_match(match),
+        "bookmakers_used": [],
+        "best_bookmaker": "1xBet",
+        "reasoning": None,
     }
+
     if not bookmakers:
         return empty
 
-    home = match.get("home_team")
-    away = match.get("away_team")
-
-    # Detect available markets in the bookmakers
+    # Analyse tous les marchés disponibles
     market_keys = set()
     for bm in bookmakers:
         for m in bm.get("markets", []):
@@ -387,51 +618,51 @@ def analyze_match(match: Dict) -> Dict:
                 market_keys.add(m["key"])
 
     market_results = []
-    for mk in ["h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance", "h2h_h1", "totals_h1"]:
+
+    # Marchés réels
+    for mk in ["h2h", "totals", "spreads", "btts", "draw_no_bet",
+               "double_chance", "h2h_h1", "totals_h1", "totals_h2"]:
         if mk not in market_keys:
             continue
         res = _analyze_market(mk, bookmakers, home, away)
         if res:
             market_results.append(res)
 
-    # Enrich with synthetic markets (football only) — always available even on free plan
-    sport_key = match.get("sport_key", "") or ""
+    # Marchés synthétiques
+    real_market_keys = {r["market"] for r in market_results}
     for syn in _synthetic_markets(bookmakers, home, away, sport_key):
-        # Avoid duplicating a real market when a synthetic equivalent already exists
-        real_equivalents = {
+        # Ne pas dupliquer si marché réel existe
+        equiv = {
             "syn_btts": "btts",
             "syn_double_chance": "double_chance",
             "syn_draw_no_bet": "draw_no_bet",
         }
-        equiv = real_equivalents.get(syn["market"])
-        if equiv and equiv in market_keys:
-            continue  # real market wins
+        if equiv.get(syn["market"]) in real_market_keys:
+            continue
         market_results.append(syn)
 
     if not market_results:
         return empty
 
-    # Best market = highest confidence × edge bonus
-    best = max(market_results, key=lambda x: x["confidence"] + max(0, x["edge"]))
+    # Tri par confiance + edge → meilleur pick
+    market_results.sort(key=lambda x: x["confidence"] + max(0, x["edge"]) * 0.3,
+                        reverse=True)
 
-    # Implied probs for the h2h market (used by UI for display)
+    # Validation anti-contradiction — max 3 picks par match
+    validated = _validate_picks_compatibility(market_results)
+    best = validated[0] if validated else market_results[0]
+
+    # Implied probs h2h pour l'UI
     implied = {}
-    h2h_book = next((m for m in market_results if m["market"] == "h2h"), None)
-    if h2h_book:
-        # rebuild implied probs from h2h
-        per_outcome = {}
-        for bm in bookmakers:
-            for m in bm.get("markets", []):
-                if m.get("key") != "h2h":
-                    continue
-                ip = _implied_probs(m.get("outcomes", []))
-                for n, p in ip.items():
-                    per_outcome.setdefault(n, []).append(p)
-        implied = {k: round(statistics.mean(v) * 100, 1) for k, v in per_outcome.items()}
+    probs = _h2h_probs(bookmakers, home, away)
+    if probs:
+        implied = {k: round(v * 100, 1) for k, v in probs.items()}
+
+    best_bm = _get_best_bookmaker_title(bookmakers)
 
     return {
         "match_id": match.get("id"),
-        "sport_key": match.get("sport_key"),
+        "sport_key": sport_key,
         "sport_title": match.get("sport_title"),
         "home_team": home,
         "away_team": away,
@@ -445,60 +676,94 @@ def analyze_match(match: Dict) -> Dict:
         "num_books": best["num_books"],
         "market": best["market"],
         "market_label": best["market_label"],
-        "markets": market_results,  # all market analyses
+        "markets": market_results,
         "is_live": _is_live_match(match),
-        "bookmakers_used": [{"key": bm.get("key"), "title": bm.get("title")} for bm in bookmakers],
-        "reasoning": _deep_reasoning(match, home, away, {k: v / 100.0 for k, v in implied.items()}) if implied else None,
+        "is_finished": _is_finished_match(match),
+        "bookmakers_used": [
+            {"key": bm.get("key"), "title": bm.get("title")}
+            for bm in bookmakers
+        ],
+        "best_bookmaker": best_bm,
+        "reasoning": _deep_reasoning(match, home, away,
+                                      {k: v/100 for k, v in implied.items()})
+                     if implied else None,
     }
-
-
-def _is_live_match(match: Dict) -> bool:
-    """Return True if the match has already kicked off (commence_time < now UTC).
-    We keep predictions visible during live matches — they don't disappear."""
-    ct = match.get("commence_time", "")
-    if not ct:
-        return False
-    try:
-        dt = datetime.fromisoformat(ct.replace("Z", "+00:00"))
-    except Exception:
-        return False
-    now = datetime.now(timezone.utc)
-    # Consider "live" from kickoff up to +4h (covers longest football matches with extra time)
-    return dt <= now <= dt + timedelta(hours=4)
 
 
 def analyze_all(matches: List[Dict]) -> List[Dict]:
     return [analyze_match(m) for m in matches if m.get("bookmakers")]
 
 
-def top_predictions(matches: List[Dict], limit: int = 6) -> List[Dict]:
+def top_predictions(matches: List[Dict], limit: int = 10) -> List[Dict]:
+    """Top picks triés par confiance — uniquement ceux qui passent le gate qualité."""
     preds = analyze_all(matches)
-    preds.sort(key=lambda p: p["confidence"], reverse=True)
-    return preds[:limit]
+    # Ne garder que les picks valides
+    valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
+             and p.get("pick_odds", 0) >= MIN_ODDS]
+    valid.sort(key=lambda p: p["confidence"] + max(0, p.get("edge", 0)) * 0.3,
+               reverse=True)
+    return valid[:limit]
 
 
-# ---------- Combo generator ----------
+# ─── Helpers combos ──────────────────────────────────────────────────────────
 
-def _pick_diversified_multi(pool: List[Dict], legs: int) -> List[Dict]:
-    """Pick N legs ensuring (match, market) diversity — never two picks on the same match."""
-    selected, used_matches = [], set()
-    for p in pool:
-        mid = p.get("match_id")
-        if mid in used_matches:
-            continue
-        selected.append(p)
-        used_matches.add(mid)
-        if len(selected) >= legs:
-            break
-    return selected
+def _is_today(commence_time: str) -> bool:
+    if not commence_time:
+        return False
+    try:
+        ct = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+        now_utc = datetime.now(timezone.utc)
+        local_now = now_utc + timedelta(hours=1)
+        local_ct = ct + timedelta(hours=1)
+        return local_now.date() == local_ct.date()
+    except Exception:
+        return False
+
+
+def _is_upcoming(commence_time: str) -> bool:
+    """Le match n'a pas encore commencé."""
+    if not commence_time:
+        return False
+    try:
+        ct = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
+        return ct > datetime.now(timezone.utc)
+    except Exception:
+        return False
+
+
+def _stats(legs: List[Dict]) -> Dict:
+    if not legs:
+        return {"legs": [], "total_odds": 0, "avg_confidence": 0,
+                "combined_probability": 0}
+    total_odds = 1.0
+    combined_prob = 1.0
+    for p in legs:
+        total_odds *= (p.get("pick_odds") or 1)
+        combined_prob *= ((p.get("confidence") or 0) / 100)
+    return {
+        "legs": legs,
+        "total_odds": round(total_odds, 2),
+        "avg_confidence": round(
+            statistics.mean([p.get("confidence", 0) for p in legs]), 1),
+        "combined_probability": round(combined_prob * 100, 1),
+    }
 
 
 def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
-    """Flatten matches into a list of (match × market) picks, each scored."""
+    """Aplati matches × marchés en liste de picks individuels."""
     picks = []
     for m in matches:
-        analyzed = analyze_match(m) if not m.get("prediction") else m["prediction"]
+        # Ne jamais inclure les matchs déjà commencés dans les combos
+        if not _is_upcoming(m.get("commence_time", "")):
+            continue
+        analyzed = analyze_match(m)
         for mk in analyzed.get("markets", []):
+            if not mk.get("pick_odds"):
+                continue
+            if mk.get("pick_odds", 0) < MIN_ODDS:
+                continue
+            if mk.get("confidence", 0) < MIN_CONFIDENCE:
+                continue
             picks.append({
                 "match_id": analyzed["match_id"],
                 "sport_key": analyzed["sport_key"],
@@ -510,76 +775,244 @@ def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
                 "pick_odds": mk["pick_odds"],
                 "confidence": mk["confidence"],
                 "label": mk["label"],
-                "edge": mk["edge"],
+                "edge": mk.get("edge", 0),
                 "market": mk["market"],
                 "market_label": mk["market_label"],
-                "is_live": analyzed.get("is_live", False),
+                "is_live": False,
+                "best_bookmaker": analyzed.get("best_bookmaker", "1xBet"),
             })
     return picks
 
 
-def _stats(legs: List[Dict]) -> Dict:
-    if not legs:
-        return {"legs": [], "total_odds": 0, "avg_confidence": 0, "combined_probability": 0}
-    total_odds = 1.0
-    combined_prob = 1.0
-    for p in legs:
-        total_odds *= (p["pick_odds"] or 1)
-        combined_prob *= (p["confidence"] / 100)
+def _pick_diversified_multi(pool: List[Dict], legs: int) -> List[Dict]:
+    """Sélectionne N picks sans répéter le même match."""
+    selected, used_matches = [], set()
+    for p in pool:
+        mid = p.get("match_id")
+        if mid in used_matches:
+            continue
+        # Vérifier anti-contradiction avec picks déjà sélectionnés
+        contradicts = False
+        for existing in selected:
+            if _are_contradictory(p.get("pick", ""), existing.get("pick", "")):
+                contradicts = True
+                break
+        if contradicts:
+            continue
+        selected.append(p)
+        used_matches.add(mid)
+        if len(selected) >= legs:
+            break
+    return selected
+
+
+# ─── Combos principaux ────────────────────────────────────────────────────────
+
+def build_combo(matches: List[Dict], legs: int = 3,
+                min_confidence: float = 72) -> Dict:
+    """Combo simple (rétro-compat)."""
+    picks = [p for p in _flatten_market_picks(matches)
+             if p["confidence"] >= min_confidence]
+    picks.sort(key=lambda p: p["confidence"], reverse=True)
+    selected = _pick_diversified_multi(picks, legs)
+    return {**_stats(selected),
+            "generated_at": datetime.now(timezone.utc).isoformat()}
+
+
+def build_multi_combos(matches: List[Dict]) -> Dict:
+    """
+    3 combos principaux : Sécurité / Équilibre / Jackpot
+    + validation anti-contradiction stricte
+    """
+    all_picks = _flatten_market_picks(matches)
+
+    # ── Sécurité : confiance max, cotes modérées ─────────────────────────────
+    safe_pool = sorted(
+        [p for p in all_picks if p["confidence"] >= 80],
+        key=lambda p: p["confidence"], reverse=True
+    )
+    safe_legs = _pick_diversified_multi(safe_pool, 2)
+
+    # ── Équilibre : bon rapport confiance/cote ────────────────────────────────
+    bal_pool = sorted(
+        [p for p in all_picks if 74 <= p["confidence"] <= 85],
+        key=lambda p: (p["confidence"] * 0.5 + (p["pick_odds"] or 1) * 7
+                       + max(0, p["edge"]) * 3),
+        reverse=True
+    )
+    bal_legs = _pick_diversified_multi(bal_pool, 3)
+
+    # ── Jackpot : valeur + cotes élevées ─────────────────────────────────────
+    jack_pool = sorted(
+        [p for p in all_picks
+         if p["confidence"] >= 72 and (p.get("pick_odds") or 0) >= 1.65],
+        key=lambda p: ((p.get("pick_odds") or 1) * (p["confidence"] / 100)),
+        reverse=True
+    )
+    jack_legs = _pick_diversified_multi(jack_pool, 4)
+
+    now = datetime.now(timezone.utc).isoformat()
     return {
-        "legs": legs,
-        "total_odds": round(total_odds, 2),
-        "avg_confidence": round(statistics.mean([p["confidence"] for p in legs]), 1),
-        "combined_probability": round(combined_prob * 100, 1),
+        "safe": {
+            **_stats(safe_legs),
+            "tier": "safe", "label": "Sécurité",
+            "tagline": "Le combiné le plus probable",
+            "description": "2 picks haute confiance — idéal pour sécuriser la journée.",
+            "free_today": True,
+            "generated_at": now,
+        },
+        "balanced": {
+            **_stats(bal_legs),
+            "tier": "balanced", "label": "Équilibre",
+            "tagline": "Le meilleur rapport risque/gain",
+            "description": "3 picks alliant confiance solide et valeur.",
+            "free_today": False,
+            "generated_at": now,
+        },
+        "jackpot": {
+            **_stats(jack_legs),
+            "tier": "jackpot", "label": "Jackpot",
+            "tagline": "Le combiné qui paye gros",
+            "description": "4 picks optimisés pour le gain maximal avec edge positif.",
+            "free_today": False,
+            "generated_at": now,
+        },
     }
 
 
-def build_combo(matches: List[Dict], legs: int = 3, min_confidence: float = 65) -> Dict:
-    """Legacy single combo (backward compat)."""
-    picks = [p for p in _flatten_market_picks(matches) if p["pick_odds"] and p["confidence"] >= min_confidence]
-    picks.sort(key=lambda p: p["confidence"], reverse=True)
-    selected = _pick_diversified_multi(picks, legs)
-    return {**_stats(selected), "generated_at": datetime.now(timezone.utc).isoformat()}
+# ─── Super Combos Généraux (tous sports mélangés) ─────────────────────────────
+
+def build_super_combos(matches: List[Dict]) -> Dict:
+    """
+    Super Combos qui mélangent les meilleurs picks de TOUS les sports.
+    Maximise l'indépendance statistique (foot + basket + tennis = indépendants).
+    """
+    all_picks = _flatten_market_picks(matches)
+    if not all_picks:
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "super_safe": {"legs": [], "total_odds": 0, "avg_confidence": 0,
+                           "combined_probability": 0, "generated_at": now},
+            "super_balanced": {"legs": [], "total_odds": 0, "avg_confidence": 0,
+                               "combined_probability": 0, "generated_at": now},
+            "super_jackpot": {"legs": [], "total_odds": 0, "avg_confidence": 0,
+                              "combined_probability": 0, "generated_at": now},
+        }
+
+    # Grouper par sport pour assurer la diversité
+    by_sport: Dict[str, List[Dict]] = {}
+    for p in all_picks:
+        sk = (p.get("sport_key") or "other").split("_")[0]
+        by_sport.setdefault(sk, []).append(p)
+
+    # Meilleur pick de chaque sport (le plus confiant)
+    best_per_sport = []
+    for sport, picks in by_sport.items():
+        picks.sort(key=lambda x: x["confidence"] + max(0, x.get("edge", 0)) * 0.3,
+                   reverse=True)
+        if picks:
+            best_per_sport.append(picks[0])
+
+    # ── Super Sécurité : 2 picks, sports différents, confiance max ───────────
+    super_safe_pool = sorted(
+        [p for p in best_per_sport if p["confidence"] >= 82],
+        key=lambda p: p["confidence"], reverse=True
+    )
+    super_safe_legs = _pick_diversified_multi(super_safe_pool, 2)
+
+    # ── Super Équilibre : 3 picks, 2-3 sports différents ────────────────────
+    super_bal_pool = sorted(
+        [p for p in best_per_sport if p["confidence"] >= 76],
+        key=lambda p: p["confidence"] + (p.get("pick_odds", 1) or 1) * 5,
+        reverse=True
+    )
+    super_bal_legs = _pick_diversified_multi(super_bal_pool, 3)
+
+    # ── Super Jackpot : 4 picks, 3-4 sports, meilleur value ─────────────────
+    # Inclut 1 pick "valeur cachée" (cartons/corners/timing)
+    super_jack_pool = sorted(
+        all_picks,
+        key=lambda p: (p.get("pick_odds", 1) or 1) * (p["confidence"] / 100),
+        reverse=True
+    )
+    super_jack_legs = _pick_diversified_multi(super_jack_pool, 4)
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    def _sport_list(legs):
+        sports = list({p.get("sport_title", "Sport") for p in legs})
+        return ", ".join(sports)
+
+    return {
+        "super_safe": {
+            **_stats(super_safe_legs),
+            "tier": "super_safe",
+            "label": "👑 Super Combo Sécurité",
+            "tagline": "La crème de la crème — Tous sports",
+            "description": (f"Les 2 meilleurs picks tous sports confondus. "
+                            f"Sports couverts : {_sport_list(super_safe_legs)}. "
+                            f"Indépendance statistique maximale."),
+            "sports": _sport_list(super_safe_legs),
+            "free_today": False,
+            "generated_at": now,
+        },
+        "super_balanced": {
+            **_stats(super_bal_legs),
+            "tier": "super_balanced",
+            "label": "🔥 Super Combo Équilibre",
+            "tagline": "La sélection IA premium — Tous sports",
+            "description": (f"3 picks diversifiés sur plusieurs sports. "
+                            f"Sports : {_sport_list(super_bal_legs)}."),
+            "sports": _sport_list(super_bal_legs),
+            "free_today": False,
+            "generated_at": now,
+        },
+        "super_jackpot": {
+            **_stats(super_jack_legs),
+            "tier": "super_jackpot",
+            "label": "💎 Super Jackpot IA",
+            "tagline": "Pour les audacieux — Tous sports mélangés",
+            "description": (f"4 picks valeur cachée tous sports. "
+                            f"Sports : {_sport_list(super_jack_legs)}. "
+                            f"Mise recommandée : petite mise, grand potentiel."),
+            "sports": _sport_list(super_jack_legs),
+            "free_today": False,
+            "generated_at": now,
+        },
+    }
 
 
-def _is_today(commence_time: str) -> bool:
-    """Return True if the match starts within today's window (Africa/Porto-Novo, UTC+1)."""
-    if not commence_time:
-        return False
-    try:
-        ct = datetime.fromisoformat(commence_time.replace("Z", "+00:00"))
-    except Exception:
-        return False
-    now_utc = datetime.now(timezone.utc)
-    local_now = now_utc + timedelta(hours=1)  # UTC+1
-    local_ct = ct + timedelta(hours=1)
-    return local_now.date() == local_ct.date()
-
+# ─── Combos par sport et par tier ────────────────────────────────────────────
 
 TODAY_TIER_TARGETS = [
-    # (key, label, tagline, min_odds, max_odds, legs, min_conf, description)
-    ("sure", "Sûr", "Cotes 2 → 4", 2.0, 4.0, 2, 72,
-     "Petite cote, forte probabilité. Pour sécuriser la journée."),
-    ("booster", "Booster", "Cotes 5 → 12", 4.5, 12.0, 3, 65,
-     "Le rapport idéal risque/gain — 3 à 4 picks confiants."),
-    ("extra", "Extra", "Cotes 15 → 30", 13.0, 30.0, 4, 58,
-     "Le combiné signature WinPulse. Cote juteuse, IA gonflée à bloc."),
-    ("jackpot", "Jackpot", "Cotes 40 → 100+", 30.0, 200.0, 5, 50,
-     "Pour les chasseurs de gros gains. Petite mise, gros rêve."),
+    ("sure", "Sûr", "Cotes 2 → 4", 2.0, 4.0, 2, 76,
+     "Petite cote, forte probabilité."),
+    ("booster", "Booster", "Cotes 5 → 12", 4.5, 12.0, 3, 72,
+     "Bon rapport risque/gain."),
+    ("extra", "Extra", "Cotes 15 → 30", 13.0, 30.0, 4, 72,
+     "Combiné signature WinPulse."),
+    ("jackpot", "Jackpot", "Cotes 40 → 100+", 30.0, 200.0, 5, 72,
+     "Pour les chasseurs de gros gains."),
+]
+
+SPORT_FAMILIES = [
+    ("all", "Tous sports"),
+    ("soccer", "⚽ Football"),
+    ("basketball", "🏀 Basketball"),
+    ("tennis", "🎾 Tennis"),
+    ("icehockey", "🏒 Hockey"),
+    ("baseball", "⚾ Baseball"),
+    ("mma", "🥊 MMA / UFC"),
 ]
 
 
-def _pick_for_target_odds(pool: List[Dict], legs: int, min_odds: float, max_odds: float) -> List[Dict]:
-    """Select `legs` diversified picks whose combined odds fall in [min_odds, max_odds].
-    Strategy: geometric mean per leg = target_geom = (min*max)^0.5 ** (1/legs).
-    Score each pick by proximity to target_geom * high confidence. Greedy pick.
-    """
+def _pick_for_target_odds(pool: List[Dict], legs: int,
+                           min_odds: float, max_odds: float) -> List[Dict]:
     if not pool:
         return []
     target_total = (min_odds * max_odds) ** 0.5
     target_per_leg = target_total ** (1.0 / legs)
 
-    # Score = confidence bonus for being close to target_per_leg odds
     def _score(p):
         odds = p.get("pick_odds") or 1
         proximity = 1.0 / (1.0 + abs(odds - target_per_leg))
@@ -589,59 +1022,45 @@ def _pick_for_target_odds(pool: List[Dict], legs: int, min_odds: float, max_odds
     selected: List[Dict] = []
     used_matches: set = set()
     running = 1.0
+
     for p in ordered:
         if p["match_id"] in used_matches:
             continue
         if len(selected) >= legs:
             break
-        new_total = running * (p["pick_odds"] or 1)
-        # Skip if this leg would blow past max_odds — but only after we have min legs
-        if new_total > max_odds * 1.25 and len(selected) >= max(2, legs - 1):
+        # Anti-contradiction
+        contradicts = False
+        for ex in selected:
+            if _are_contradictory(p.get("pick", ""), ex.get("pick", "")):
+                contradicts = True
+                break
+        if contradicts:
+            continue
+        new_total = running * (p.get("pick_odds") or 1)
+        if new_total > max_odds * 1.30 and len(selected) >= max(2, legs - 1):
             continue
         selected.append(p)
         used_matches.add(p["match_id"])
         running = new_total
-    # If below min_odds and we still have room, take higher-odds picks
-    if running < min_odds and len(selected) < legs:
-        boosters = [p for p in pool if p["match_id"] not in used_matches and (p.get("pick_odds") or 1) >= target_per_leg * 1.2]
-        boosters.sort(key=lambda p: p.get("pick_odds") or 1, reverse=True)
-        for p in boosters:
-            if len(selected) >= legs:
-                break
-            selected.append(p)
-            used_matches.add(p["match_id"])
-            running *= (p.get("pick_odds") or 1)
-            if running >= min_odds:
-                break
+
     return selected
 
 
-SPORT_FAMILIES = [
-    ("all", "Tous sports"),
-    ("soccer", "Football"),
-    ("basketball", "Basketball"),
-    ("tennis", "Tennis"),
-    ("americanfootball", "NFL / CFL"),
-    ("icehockey", "Hockey"),
-    ("baseball", "MLB"),
-    ("mma", "MMA / UFC"),
-    ("boxing", "Boxe"),
-    ("aussierules", "AFL"),
-    ("rugbyleague", "Rugby"),
-]
-
-
 def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
-    """For each sport family, return combos across 4 odds tiers using TODAY's matches only."""
+    """Combos du jour par sport et par tier d'odds."""
     today_matches = [m for m in matches if _is_today(m.get("commence_time", ""))]
-    all_picks_today = [p for p in _flatten_market_picks(today_matches) if p["pick_odds"]]
+    all_picks_today = _flatten_market_picks(today_matches)
 
     per_family = {}
     for family_key, family_label in SPORT_FAMILIES:
         if family_key == "all":
             family_picks = all_picks_today
         else:
-            family_picks = [p for p in all_picks_today if (p.get("sport_key", "") or "").startswith(family_key)]
+            family_picks = [
+                p for p in all_picks_today
+                if (p.get("sport_key", "") or "").startswith(family_key)
+            ]
+
         tiers = {}
         for tkey, tlabel, ttag, tmin, tmax, tlegs, tconf, tdesc in TODAY_TIER_TARGETS:
             pool = [p for p in family_picks if p["confidence"] >= tconf]
@@ -657,79 +1076,20 @@ def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
                 "description": tdesc,
                 "free_today": (tkey == "sure"),
             }
+
         per_family[family_key] = {
             "family_key": family_key,
             "family_label": family_label,
-            "matches_today": sum(1 for m in today_matches if family_key == "all" or (m.get("sport_key") or "").startswith(family_key)),
+            "matches_today": sum(
+                1 for m in today_matches
+                if family_key == "all"
+                or (m.get("sport_key") or "").startswith(family_key)
+            ),
             "tiers": tiers,
         }
+
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "total_matches_today": len(today_matches),
         "families": per_family,
-    }
-
-
-def build_multi_combos(matches: List[Dict]) -> Dict:
-    """Generate three tiers of combos across all markets (h2h, totals, spreads).
-    SAFE = highest confidence (target safe wins)
-    BALANCED = confidence/odds balanced + value edge
-    JACKPOT = optimised for high payout with positive edge
-    """
-    all_picks = [p for p in _flatten_market_picks(matches) if p["pick_odds"]]
-
-    safe_pool = sorted(
-        [p for p in all_picks if p["confidence"] >= 70],
-        key=lambda p: p["confidence"], reverse=True,
-    )
-    safe_legs = _pick_diversified_multi(safe_pool, 3)
-
-    bal_pool = sorted(
-        [p for p in all_picks if 60 <= p["confidence"] <= 82],
-        key=lambda p: (p["confidence"] * 0.55 + (p["pick_odds"] or 1) * 8 + max(0, p["edge"]) * 3),
-        reverse=True,
-    )
-    balanced_legs = _pick_diversified_multi(bal_pool, 4)
-
-    risky_pool = sorted(
-        [p for p in all_picks if 50 <= p["confidence"] <= 72 and (p["pick_odds"] or 0) >= 1.7],
-        key=lambda p: ((p["pick_odds"] or 1) * (p["confidence"] / 100)),
-        reverse=True,
-    )
-    risky_legs = _pick_diversified_multi(risky_pool, 5)
-
-    generated_at = datetime.now(timezone.utc).isoformat()
-
-    # Safe combo is ALWAYS gratuit pour les Free users (acquisition + fidélisation quotidienne).
-    # Les deux autres (Équilibre / Jackpot) restent réservés Pro / Elite.
-    safe_is_free = True
-
-    return {
-        "safe": {
-            **_stats(safe_legs),
-            "tier": "safe",
-            "label": "Sécurité",
-            "tagline": "Le combiné le plus probable",
-            "description": "Sélections diversifiées avec la plus haute confiance du jour, tous marchés confondus. Probabilité de chute minimale.",
-            "free_today": safe_is_free,
-            "generated_at": generated_at,
-        },
-        "balanced": {
-            **_stats(balanced_legs),
-            "tier": "balanced",
-            "label": "Équilibre",
-            "tagline": "Le meilleur rapport risque/gain",
-            "description": "Picks combinant confiance solide et value edge sur plusieurs marchés (vainqueur, totaux, handicaps).",
-            "free_today": False,
-            "generated_at": generated_at,
-        },
-        "jackpot": {
-            **_stats(risky_legs),
-            "tier": "jackpot",
-            "label": "Jackpot",
-            "tagline": "Le combiné qui paye gros",
-            "description": "Picks optimisés pour le gain maximal tout en conservant un edge positif. À jouer avec une mise raisonnable.",
-            "free_today": False,
-            "generated_at": generated_at,
-        },
     }
