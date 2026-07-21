@@ -75,6 +75,7 @@ async def register(payload: RegisterPayload):
         "id": user_id,
         "email": payload.email.lower(),
         "name": payload.name or payload.email.split("@")[0],
+        "full_name": payload.name or payload.email.split("@")[0],
         "password_hash": hash_password(payload.password),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "subscription": "free",
@@ -82,8 +83,9 @@ async def register(payload: RegisterPayload):
     await db.users.insert_one(user_doc)
     token = create_access_token(user_id, payload.email.lower())
     return {
-        "token": token,
-        "user": {"id": user_id, "email": user_doc["email"], "name": user_doc["name"]},
+        "access_token": token,
+        "user": {"id": user_id, "email": user_doc["email"], "name": user_doc["name"],
+                  "full_name": user_doc["full_name"]},
     }
 
 
@@ -95,8 +97,9 @@ async def login(payload: LoginPayload):
 
     token = create_access_token(user["id"], user["email"])
     return {
-        "token": token,
-        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", "")},
+        "access_token": token,
+        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", ""),
+                  "full_name": user.get("full_name", user.get("name", ""))},
     }
 
 
@@ -177,6 +180,19 @@ async def get_scores():
 @app.post("/api/admin/refresh")
 async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
     """Force le rafraichissement du cache (consomme des credits API)."""
+    result = await refresh_matches_worker(db)
+    return result
+
+
+@app.get("/api/admin/refresh-simple")
+async def admin_refresh_simple(key: str = ""):
+    """
+    Rafraichissement simple via lien navigateur, protege par une cle secrete.
+    Usage : https://TON-BACKEND/api/admin/refresh-simple?key=TA_CLE_SECRETE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
     result = await refresh_matches_worker(db)
     return result
 
