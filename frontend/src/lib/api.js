@@ -19,7 +19,7 @@ api.interceptors.response.use(
       localStorage.removeItem("pronostix_user");
       if (window.location.pathname.startsWith("/app")) {
         window.location.href = "/login";
-      }
+      } 
     }
     return Promise.reject(err);
   }
