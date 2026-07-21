@@ -116,23 +116,56 @@ async def me(payload: dict = Depends(get_current_user_payload)):
 
 # ─── Matches & predictions ──────────────────────────────────────────────────
 
+def _merge_match_prediction(match: dict, prediction: dict) -> dict:
+    """Fusionne un match brut avec sa prediction, format attendu par le frontend."""
+    merged = dict(match)
+    merged["prediction"] = prediction
+    return merged
+
+
 @app.get("/api/matches")
 async def get_matches():
+    """Retourne un tableau direct de matchs, chacun avec sa prediction integree."""
     matches = await fetch_all_matches(db)
-    return {"count": len(matches), "matches": matches}
+    predictions = analyze_all(matches)
+    pred_by_id = {p.get("match_id"): p for p in predictions}
+    merged = [
+        _merge_match_prediction(m, pred_by_id.get(m.get("id"), {}))
+        for m in matches
+    ]
+    return merged
 
 
 @app.get("/api/predictions")
 async def get_predictions():
     matches = await fetch_all_matches(db)
     predictions = analyze_all(matches)
-    return {"count": len(predictions), "predictions": predictions}
+    return predictions
 
 
 @app.get("/api/predictions/top")
 async def get_top_predictions(limit: int = 10):
     matches = await fetch_all_matches(db)
-    return {"predictions": top_predictions(matches, limit=limit)}
+    return top_predictions(matches, limit=limit)
+
+
+@app.get("/api/data/status")
+async def get_data_status():
+    """Statut du cache de donnees, utilise pour l'indicateur de connexion."""
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    if not cached:
+        return {"odds_updated_at": None, "count": 0}
+    return {
+        "odds_updated_at": cached.get("updated_at"),
+        "count": cached.get("count", 0),
+    }
+
+
+@app.post("/api/data/refresh")
+async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
+    """Force le rafraichissement du cache (authentifie)."""
+    result = await refresh_matches_worker(db)
+    return result
 
 
 @app.get("/api/matches/{match_id}/analysis")
@@ -172,7 +205,7 @@ async def get_today_combos():
 @app.get("/api/scores")
 async def get_scores():
     scores = await fetch_all_scores(db)
-    return {"count": len(scores), "scores": scores}
+    return scores
 
 
 # ─── Admin ────────────────────────────────────────────────────────────────
