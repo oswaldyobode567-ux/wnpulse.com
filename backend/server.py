@@ -210,11 +210,28 @@ async def get_scores():
 
 # ─── Admin ────────────────────────────────────────────────────────────────
 
-@app.post("/api/admin/refresh")
-async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Force le rafraichissement du cache (consomme des credits API)."""
-    result = await refresh_matches_worker(db)
-    return result
+@app.post("/api/auth/login")
+async def login(payload: LoginPayload):
+    user = await db.users.find_one({"email": payload.email.lower()})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+
+    if user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"is_admin": True, "subscription": "elite"}},
+        )
+        user["is_admin"] = True
+        user["subscription"] = "elite"
+
+    token = create_access_token(user["id"], user["email"])
+    return {
+        "access_token": token,
+        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", ""),
+                  "full_name": user.get("full_name", user.get("name", "")),
+                  "subscription": user.get("subscription", "free"),
+                  "is_admin": user.get("is_admin", False)},
+    }
 
 
 @app.get("/api/admin/refresh-simple")
