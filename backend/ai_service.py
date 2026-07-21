@@ -1,17 +1,18 @@
-"""Claude Sonnet 4.5 service via Emergent LLM key.
+"""Service d'analyse IA — appel direct API Anthropic (sans dependance Emergent).
 
-Usage is intentionally minimal to preserve credit:
-- Only called for match-detail page (on demand)
-- Cached per (match_id, date)
+Usage minimal pour preserver le credit :
+- Appele uniquement sur la page de detail d'un match
+- Repli automatique (fallback) si ANTHROPIC_API_KEY absente ou erreur
 """
 import os
 import json
 from datetime import datetime, timezone
-from typing import Dict, Optional
+from typing import Dict
 
-from emergentintegrations.llm.chat import LlmChat, UserMessage
+import httpx
 
-EMERGENT_LLM_KEY = os.environ.get("EMERGENT_LLM_KEY", "")
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 
 def _build_prompt(match: Dict, prediction: Dict) -> str:
@@ -24,58 +25,71 @@ def _build_prompt(match: Dict, prediction: Dict) -> str:
                     "outcomes": [(o["name"], o["price"]) for o in m["outcomes"]],
                 })
 
-    return f"""Tu es un analyste sportif expert. Analyse ce match en français, de façon claire et factuelle.
+    return f"""Tu es un analyste sportif expert. Analyse ce match en francais, de facon claire et factuelle.
 
 Match: {match.get('home_team')} vs {match.get('away_team')}
-Compétition: {match.get('sport_title')}
+Competition: {match.get('sport_title')}
 Date: {match.get('commence_time')}
 
 Cotes des bookmakers: {json.dumps(odds_summary, ensure_ascii=False)}
 
-Probabilités consensus (vig retiré): {json.dumps(prediction.get('implied_probs', {}), ensure_ascii=False)}
+Probabilites consensus (vig retire): {json.dumps(prediction.get('implied_probs', {}), ensure_ascii=False)}
 Pronostic algorithmique: {prediction.get('pick')} @ {prediction.get('pick_odds')}
 Score de confiance: {prediction.get('confidence')}% ({prediction.get('label')})
 Value edge: {prediction.get('edge')}%
 
-Réponds en JSON STRICT avec exactement ces clés :
+Reponds en JSON STRICT avec exactement ces cles :
 {{
   "verdict": "1 phrase de recommandation finale",
-  "key_factors": ["3 à 4 facteurs clés courts (forme, H2H, contexte)"],
+  "key_factors": ["3 a 4 facteurs cles courts (forme, H2H, contexte)"],
   "risk_alert": "1 phrase d'avertissement sur le risque principal",
-  "alternative_bet": "1 marché alternatif intéressant (Over/Under, Both Teams To Score, etc.)"
+  "alternative_bet": "1 marche alternatif interessant (Over/Under, Both Teams To Score, etc.)"
 }}
 
-Sois concis, professionnel, et factuel. Pas de baratin."""
+Sois concis, professionnel, et factuel. Pas de baratin. Reponds uniquement le JSON, sans texte autour."""
 
 
 async def generate_analysis(match: Dict, prediction: Dict) -> Dict:
-    if not EMERGENT_LLM_KEY:
+    if not ANTHROPIC_API_KEY:
         return _fallback_analysis(prediction)
 
     try:
-        session_id = f"match-{match.get('id')}-{datetime.now(timezone.utc).date()}"
-        chat = LlmChat(
-            api_key=EMERGENT_LLM_KEY,
-            session_id=session_id,
-            system_message="Tu es un analyste sportif expert qui répond UNIQUEMENT en JSON valide.",
-        ).with_model("anthropic", "claude-sonnet-4-5-20250929").with_max_tokens(600)
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                ANTHROPIC_URL,
+                headers={
+                    "x-api-key": ANTHROPIC_API_KEY,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": "claude-sonnet-4-5-20250929",
+                    "max_tokens": 600,
+                    "messages": [
+                        {"role": "user", "content": _build_prompt(match, prediction)}
+                    ],
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
 
-        msg = UserMessage(text=_build_prompt(match, prediction))
-        response = await chat.send_message(msg)
+        text = "".join(
+            block.get("text", "") for block in data.get("content", [])
+            if block.get("type") == "text"
+        ).strip()
 
-        # Extract JSON
-        text = response.strip()
         if text.startswith("```"):
             text = text.split("```")[1]
             if text.startswith("json"):
                 text = text[4:]
             text = text.strip()
-        data = json.loads(text)
+
+        parsed = json.loads(text)
         return {
-            "verdict": data.get("verdict", ""),
-            "key_factors": data.get("key_factors", []),
-            "risk_alert": data.get("risk_alert", ""),
-            "alternative_bet": data.get("alternative_bet", ""),
+            "verdict": parsed.get("verdict", ""),
+            "key_factors": parsed.get("key_factors", []),
+            "risk_alert": parsed.get("risk_alert", ""),
+            "alternative_bet": parsed.get("alternative_bet", ""),
             "source": "ai",
         }
     except Exception as e:
@@ -83,32 +97,32 @@ async def generate_analysis(match: Dict, prediction: Dict) -> Dict:
 
 
 def _fallback_analysis(prediction: Dict) -> Dict:
-    pick = prediction.get("pick") or "Indéterminé"
+    pick = prediction.get("pick") or "Indetermine"
     conf = prediction.get("confidence", 0)
     edge = prediction.get("edge", 0)
     label = prediction.get("label", "value")
 
     label_text = {
-        "safe": "Pari relativement sûr selon le marché",
-        "value": "Pari à valeur intéressante",
-        "risky": "Pari à risque élevé",
-    }.get(label, "Pari à analyser")
+        "safe": "Pari relativement sur selon le marche",
+        "value": "Pari a valeur interessante",
+        "risky": "Pari a risque eleve",
+    }.get(label, "Pari a analyser")
 
     return {
-        "verdict": f"Le consensus marché ({prediction.get('num_books', 0)} bookmakers) place {pick} en favori avec {conf}% de confiance. {label_text}.",
+        "verdict": f"Le consensus marche ({prediction.get('num_books', 0)} bookmakers) place {pick} en favori avec {conf}% de confiance. {label_text}.",
         "key_factors": [
-            f"Probabilité implicite consensus: {prediction.get('implied_probs', {}).get(pick, 0)}%",
+            f"Probabilite implicite consensus: {prediction.get('implied_probs', {}).get(pick, 0)}%",
             f"Cote optimale disponible: {prediction.get('pick_odds')}",
-            f"Edge value vs marché: {edge:+.2f}%",
-            f"Nombre de bookmakers analysés: {prediction.get('num_books', 0)}",
+            f"Edge value vs marche: {edge:+.2f}%",
+            f"Nombre de bookmakers analyses: {prediction.get('num_books', 0)}",
         ],
         "risk_alert": (
-            "Edge négatif : le marché est efficient, pas de value claire."
+            "Edge negatif : le marche est efficient, pas de value claire."
             if edge < 0 else
-            "Confiance modérée — gérer la mise selon Kelly fractionné."
+            "Confiance moderee - gerer la mise selon Kelly fractionne."
             if conf < 65 else
-            "Risque résiduel toujours présent — ne jamais miser plus que la perte acceptable."
+            "Risque residuel toujours present - ne jamais miser plus que la perte acceptable."
         ),
-        "alternative_bet": "Considérer un Double Chance ou un handicap asiatique pour réduire le risque.",
+        "alternative_bet": "Considerer un Double Chance ou un handicap asiatique pour reduire le risque.",
         "source": "engine",
     }
