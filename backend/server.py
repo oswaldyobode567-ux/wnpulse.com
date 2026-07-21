@@ -1,7 +1,36 @@
+"""
+WinPulse API — server.py (v7.2 reconstruit)
+Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
+"""
 import os
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
+import uuid
+from datetime import datetime, timezone
+from typing import Optional, List
 
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from motor.motor_asyncio import AsyncIOMotorClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+from auth import (
+    hash_password, verify_password, create_access_token,
+    get_current_user_payload, get_optional_user_payload,
+)
+from odds_service import fetch_all_matches, refresh_matches_worker, fetch_all_scores
+from prediction_engine import (
+    analyze_all, top_predictions, build_multi_combos,
+    build_super_combos, build_today_combos_by_sport,
+)
+from ai_service import generate_analysis
+
+# ─── DB setup ─────────────────────────────────────────────────────────────
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "winpulse")
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
 
 app.add_middleware(
@@ -11,10 +40,165 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-@app.get("/api/")
-async def root():
-    return {"app": "WinPulse", "status": "ok", "version": "7.1"}
 
-@app.get("/api/health")
-async def health():
-    return {"status": "healthy"}
+@app.get("/api/")
+async def racine():
+    return {"application": "WinPulse", "statut": "OK", "version": "7.2"}
+
+
+@app.get("/api/sante")
+async def sante():
+    return {"statut": "en bonne sante"}
+
+
+# ─── Auth models ──────────────────────────────────────────────────────────
+
+class RegisterPayload(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = None
+
+
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str
+
+
+@app.post("/api/auth/register")
+async def register(payload: RegisterPayload):
+    existing = await db.users.find_one({"email": payload.email.lower()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email deja utilise")
+
+    user_id = str(uuid.uuid4())
+    user_doc = {
+        "id": user_id,
+        "email": payload.email.lower(),
+        "name": payload.name or payload.email.split("@")[0],
+        "password_hash": hash_password(payload.password),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "subscription": "free",
+    }
+    await db.users.insert_one(user_doc)
+    token = create_access_token(user_id, payload.email.lower())
+    return {
+        "token": token,
+        "user": {"id": user_id, "email": user_doc["email"], "name": user_doc["name"]},
+    }
+
+
+@app.post("/api/auth/login")
+async def login(payload: LoginPayload):
+    user = await db.users.find_one({"email": payload.email.lower()})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+
+    token = create_access_token(user["id"], user["email"])
+    return {
+        "token": token,
+        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", "")},
+    }
+
+
+@app.get("/api/auth/me")
+async def me(payload: dict = Depends(get_current_user_payload)):
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    return {
+        "id": user["id"], "email": user["email"],
+        "name": user.get("name", ""), "subscription": user.get("subscription", "free"),
+    }
+
+
+# ─── Matches & predictions ──────────────────────────────────────────────────
+
+@app.get("/api/matches")
+async def get_matches():
+    matches = await fetch_all_matches(db)
+    return {"count": len(matches), "matches": matches}
+
+
+@app.get("/api/predictions")
+async def get_predictions():
+    matches = await fetch_all_matches(db)
+    predictions = analyze_all(matches)
+    return {"count": len(predictions), "predictions": predictions}
+
+
+@app.get("/api/predictions/top")
+async def get_top_predictions(limit: int = 10):
+    matches = await fetch_all_matches(db)
+    return {"predictions": top_predictions(matches, limit=limit)}
+
+
+@app.get("/api/matches/{match_id}/analysis")
+async def get_match_analysis(match_id: str):
+    matches = await fetch_all_matches(db)
+    match = next((m for m in matches if m.get("id") == match_id), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Match introuvable")
+    predictions = analyze_all([match])
+    prediction = predictions[0] if predictions else {}
+    ai_analysis = await generate_analysis(match, prediction)
+    return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
+
+
+# ─── Combos ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/combos")
+async def get_combos():
+    matches = await fetch_all_matches(db)
+    return build_multi_combos(matches)
+
+
+@app.get("/api/combos/super")
+async def get_super_combos():
+    matches = await fetch_all_matches(db)
+    return build_super_combos(matches)
+
+
+@app.get("/api/combos/today")
+async def get_today_combos():
+    matches = await fetch_all_matches(db)
+    return build_today_combos_by_sport(matches)
+
+
+# ─── Scores ───────────────────────────────────────────────────────────────
+
+@app.get("/api/scores")
+async def get_scores():
+    scores = await fetch_all_scores(db)
+    return {"count": len(scores), "scores": scores}
+
+
+# ─── Admin ────────────────────────────────────────────────────────────────
+
+@app.post("/api/admin/refresh")
+async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
+    """Force le rafraichissement du cache (consomme des credits API)."""
+    result = await refresh_matches_worker(db)
+    return result
+
+
+# ─── Worker planifie (06h00 et 13h00 WAT = UTC+1) ───────────────────────────
+
+scheduler = AsyncIOScheduler(timezone="UTC")
+
+
+@app.on_event("startup")
+async def startup_event():
+    # 06h00 WAT = 05h00 UTC / 13h00 WAT = 12h00 UTC
+    scheduler.add_job(lambda: refresh_matches_worker(db), "cron", hour=5, minute=0)
+    scheduler.add_job(lambda: refresh_matches_worker(db), "cron", hour=12, minute=0)
+    scheduler.start()
+
+    # Premier fetch si cache vide (ne consomme des credits que si absent)
+    existing = await db.odds_cache.find_one({"_id": "all_matches"})
+    if not existing:
+        await refresh_matches_worker(db)
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
