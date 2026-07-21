@@ -1,5 +1,5 @@
 """
-WinPulse API — server.py (v7.2 reconstruit)
+WinPulse API — server.py (v7.3 complet)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
@@ -30,6 +30,13 @@ DB_NAME = os.environ.get("DB_NAME", "winpulse")
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
+# Emails auto-promus admin + abonnement Elite a chaque connexion
+ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+}
+
 # ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
 
@@ -43,7 +50,7 @@ app.add_middleware(
 
 @app.get("/api/")
 async def racine():
-    return {"application": "WinPulse", "statut": "OK", "version": "7.2"}
+    return {"application": "WinPulse", "statut": "OK", "version": "7.3"}
 
 
 @app.get("/api/sante")
@@ -70,6 +77,7 @@ async def register(payload: RegisterPayload):
     if existing:
         raise HTTPException(status_code=400, detail="Email deja utilise")
 
+    is_admin = payload.email.lower() in ADMIN_EMAILS
     user_id = str(uuid.uuid4())
     user_doc = {
         "id": user_id,
@@ -78,14 +86,18 @@ async def register(payload: RegisterPayload):
         "full_name": payload.name or payload.email.split("@")[0],
         "password_hash": hash_password(payload.password),
         "created_at": datetime.now(timezone.utc).isoformat(),
-        "subscription": "free",
+        "subscription": "elite" if is_admin else "free",
+        "is_admin": is_admin,
     }
     await db.users.insert_one(user_doc)
     token = create_access_token(user_id, payload.email.lower())
     return {
         "access_token": token,
-        "user": {"id": user_id, "email": user_doc["email"], "name": user_doc["name"],
-                  "full_name": user_doc["full_name"]},
+        "user": {
+            "id": user_id, "email": user_doc["email"], "name": user_doc["name"],
+            "full_name": user_doc["full_name"], "subscription": user_doc["subscription"],
+            "is_admin": user_doc["is_admin"],
+        },
     }
 
 
@@ -95,11 +107,23 @@ async def login(payload: LoginPayload):
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
 
+    if user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"is_admin": True, "subscription": "elite"}},
+        )
+        user["is_admin"] = True
+        user["subscription"] = "elite"
+
     token = create_access_token(user["id"], user["email"])
     return {
         "access_token": token,
-        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", ""),
-                  "full_name": user.get("full_name", user.get("name", ""))},
+        "user": {
+            "id": user["id"], "email": user["email"], "name": user.get("name", ""),
+            "full_name": user.get("full_name", user.get("name", "")),
+            "subscription": user.get("subscription", "free"),
+            "is_admin": user.get("is_admin", False),
+        },
     }
 
 
@@ -110,7 +134,9 @@ async def me(payload: dict = Depends(get_current_user_payload)):
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
     return {
         "id": user["id"], "email": user["email"],
-        "name": user.get("name", ""), "subscription": user.get("subscription", "free"),
+        "name": user.get("name", ""), "full_name": user.get("full_name", user.get("name", "")),
+        "subscription": user.get("subscription", "free"),
+        "is_admin": user.get("is_admin", False),
     }
 
 
@@ -149,6 +175,18 @@ async def get_top_predictions(limit: int = 10):
     return top_predictions(matches, limit=limit)
 
 
+@app.get("/api/matches/{match_id}/analysis")
+async def get_match_analysis(match_id: str):
+    matches = await fetch_all_matches(db)
+    match = next((m for m in matches if m.get("id") == match_id), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Match introuvable")
+    predictions = analyze_all([match])
+    prediction = predictions[0] if predictions else {}
+    ai_analysis = await generate_analysis(match, prediction)
+    return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
+
+
 @app.get("/api/data/status")
 async def get_data_status():
     """Statut du cache de donnees, utilise pour l'indicateur de connexion."""
@@ -166,18 +204,6 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
     """Force le rafraichissement du cache (authentifie)."""
     result = await refresh_matches_worker(db)
     return result
-
-
-@app.get("/api/matches/{match_id}/analysis")
-async def get_match_analysis(match_id: str):
-    matches = await fetch_all_matches(db)
-    match = next((m for m in matches if m.get("id") == match_id), None)
-    if not match:
-        raise HTTPException(status_code=404, detail="Match introuvable")
-    predictions = analyze_all([match])
-    prediction = predictions[0] if predictions else {}
-    ai_analysis = await generate_analysis(match, prediction)
-    return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
 
 
 # ─── Combos ─────────────────────────────────────────────────────────────────
@@ -210,28 +236,11 @@ async def get_scores():
 
 # ─── Admin ────────────────────────────────────────────────────────────────
 
-@app.post("/api/auth/login")
-async def login(payload: LoginPayload):
-    user = await db.users.find_one({"email": payload.email.lower()})
-    if not user or not verify_password(payload.password, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
-
-    if user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
-        await db.users.update_one(
-            {"id": user["id"]},
-            {"$set": {"is_admin": True, "subscription": "elite"}},
-        )
-        user["is_admin"] = True
-        user["subscription"] = "elite"
-
-    token = create_access_token(user["id"], user["email"])
-    return {
-        "access_token": token,
-        "user": {"id": user["id"], "email": user["email"], "name": user.get("name", ""),
-                  "full_name": user.get("full_name", user.get("name", "")),
-                  "subscription": user.get("subscription", "free"),
-                  "is_admin": user.get("is_admin", False)},
-    }
+@app.post("/api/admin/refresh")
+async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
+    """Force le rafraichissement du cache (consomme des credits API)."""
+    result = await refresh_matches_worker(db)
+    return result
 
 
 @app.get("/api/admin/refresh-simple")
