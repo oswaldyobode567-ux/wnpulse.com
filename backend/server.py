@@ -265,6 +265,7 @@ SUBSCRIPTION_PLANS = [
     {
         "id": "starter",
         "name": "Starter",
+        "price": 4900,
         "price_fcfa": 4900,
         "period": "mois",
         "features": ["1 pick/jour", "Accès Dashboard"],
@@ -272,6 +273,7 @@ SUBSCRIPTION_PLANS = [
     {
         "id": "pro",
         "name": "Pro",
+        "price": 9900,
         "price_fcfa": 9900,
         "period": "mois",
         "features": ["Tous les picks", "Combos", "Analyse complète", "Super Combos"],
@@ -280,6 +282,7 @@ SUBSCRIPTION_PLANS = [
     {
         "id": "elite",
         "name": "Elite",
+        "price": 19900,
         "price_fcfa": 19900,
         "period": "mois",
         "features": ["Tout Pro", "VIP WhatsApp direct", "Garantie", "Priorité support"],
