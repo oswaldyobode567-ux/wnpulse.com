@@ -96,6 +96,7 @@ async def register(payload: RegisterPayload):
         "user": {
             "id": user_id, "email": user_doc["email"], "name": user_doc["name"],
             "full_name": user_doc["full_name"], "subscription": user_doc["subscription"],
+            "subscription_tier": user_doc["subscription"],
             "is_admin": user_doc["is_admin"],
         },
     }
@@ -122,6 +123,7 @@ async def login(payload: LoginPayload):
             "id": user["id"], "email": user["email"], "name": user.get("name", ""),
             "full_name": user.get("full_name", user.get("name", "")),
             "subscription": user.get("subscription", "free"),
+            "subscription_tier": user.get("subscription", "free"),
             "is_admin": user.get("is_admin", False),
         },
     }
@@ -136,6 +138,7 @@ async def me(payload: dict = Depends(get_current_user_payload)):
         "id": user["id"], "email": user["email"],
         "name": user.get("name", ""), "full_name": user.get("full_name", user.get("name", "")),
         "subscription": user.get("subscription", "free"),
+        "subscription_tier": user.get("subscription", "free"),
         "is_admin": user.get("is_admin", False),
     }
 
@@ -170,9 +173,29 @@ async def get_predictions():
 
 
 @app.get("/api/predictions/top")
-async def get_top_predictions(limit: int = 10):
+async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
     matches = await fetch_all_matches(db)
-    return top_predictions(matches, limit=limit)
+    preds = top_predictions(matches, limit=limit)
+
+    is_paid = False
+    if payload:
+        user = await db.users.find_one({"id": payload.get("sub")})
+        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+            is_paid = True
+
+    if not is_paid:
+        for i, p in enumerate(preds):
+            if i == 0:
+                p["locked"] = False
+            else:
+                p["locked"] = True
+                p["pick"] = None
+                p["pick_odds"] = None
+    else:
+        for p in preds:
+            p["locked"] = False
+
+    return preds
 
 
 @app.get("/api/matches/{match_id}/analysis")
