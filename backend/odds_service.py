@@ -6,6 +6,11 @@ CORRECTIONS v7.1 :
 - Filtre matchs amicaux automatique
 - Inclut matchs live et terminés (24h) — ne disparaissent plus
 - Fetch scores GRATUIT (0 crédit) pour les scores live
+
+CORRECTIONS v7.4 :
+- Integration odds-api.io comme source secondaire de cotes (ligues mineures)
+- Integration BSD Sports Addon comme enrichissement (predictions ML CatBoost)
+  fusionnees dans le reasoning des matchs, sans remplacer le moteur maison
 """
 import os
 import random
@@ -17,6 +22,33 @@ import httpx
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+
+# ─── Nouvelles sources secondaires ───────────────────────────────────────────
+ODDS_API_IO_KEY = os.environ.get("ODDS_API_IO_KEY", "").strip()
+ODDS_API_IO_BASE = "https://api.odds-api.io/v3"
+
+BSD_API_KEY = os.environ.get("BSD_API_KEY", "").strip()
+BSD_API_BASE = "https://sports.bzzoiro.com/api"
+
+# Ligues mineures d'ete a completer via odds-api.io en secours (slugs confirmes
+# depuis /v3/leagues?sport=football)
+ODDS_API_IO_LEAGUES = [
+    "norway-eliteserien",
+    "sweden-allsvenskan",
+    "finland-veikkausliiga",
+    "denmark-superligaen",
+    "brazil-brasileiro-serie-b",
+]
+
+# Mapping des noms de marches odds-api.io -> noms internes (a confirmer/ajuster
+# une fois un exemple reel de reponse /v3/odds obtenu)
+ODDS_API_IO_MARKET_MAP = {
+    "ML": "h2h",
+    "Moneyline": "h2h",
+    "Totals": "totals",
+    "Both Teams To Score": "btts",
+    "Draw No Bet": "draw_no_bet",
+}
 
 # CRITIQUE : Cache 6 heures — ne jamais fetch plus souvent
 CACHE_TTL_MINUTES = 360  # 6 heures
@@ -288,7 +320,7 @@ def get_all_mock_matches() -> List[Dict]:
     return out
 
 
-# ─── Real API ─────────────────────────────────────────────────────────────────
+# ─── Real API : The Odds API (source principale) ─────────────────────────────
 
 async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str = "eu") -> List[Dict]:
     """Fetch odds pour un sport donné. Retourne [] si erreur."""
@@ -330,6 +362,219 @@ async def _check_sport_active(sport_key: str) -> bool:
             return any(s.get("key") == sport_key and s.get("active") for s in sports)
     except Exception:
         return False
+
+
+# ─── Source secondaire : odds-api.io (ligues mineures) ───────────────────────
+#
+# NOTE IMPORTANTE : le schema exact de /v3/odds (structure des bookmakers et
+# marches) n'a pas encore ete verifie avec un exemple reel de reponse. Ce code
+# est ecrit de facon defensive (plusieurs noms de champs essayes, try/except
+# partout) pour ne jamais casser le site si le format ne correspond pas
+# exactement. Si aucun match n'apparait via cette source, il faudra ajuster
+# le mapping des champs ci-dessous avec un exemple reel de /v3/odds.
+
+def _first_present(d: Dict, keys: List[str], default=None):
+    """Retourne la premiere cle presente parmi plusieurs noms possibles."""
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return default
+
+
+async def _fetch_odds_api_io_events(league_slug: str) -> List[Dict]:
+    """Recupere les evenements a venir pour une ligue donnee via odds-api.io."""
+    if not ODDS_API_IO_KEY:
+        return []
+    url = f"{ODDS_API_IO_BASE}/events"
+    params = {
+        "apiKey": ODDS_API_IO_KEY,
+        "sport": "football",
+        "league": league_slug,
+        "status": "pending",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params=params)
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
+    """Recupere les cotes pour un evenement donne via odds-api.io."""
+    if not ODDS_API_IO_KEY:
+        return None
+    url = f"{ODDS_API_IO_BASE}/odds"
+    params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params=params)
+            if r.status_code != 200:
+                return None
+            return r.json()
+    except Exception:
+        return None
+
+
+def _convert_odds_api_io_event(event: Dict, odds_data) -> Optional[Dict]:
+    """
+    Convertit un evenement odds-api.io au format interne (meme structure que
+    The Odds API : id/sport_key/sport_title/commence_time/home_team/away_team/
+    bookmakers[{key,title,markets[{key,outcomes[{name,price,point}]}]}]).
+    Retourne None si les champs essentiels sont introuvables — evite de
+    polluer le cache avec des matchs incomplets.
+    """
+    try:
+        event_id = _first_present(event, ["id", "eventId", "event_id"])
+        home = _first_present(event, ["homeTeam", "home_team", "home"])
+        away = _first_present(event, ["awayTeam", "away_team", "away"])
+        commence = _first_present(event, ["commenceTime", "commence_time", "startTime", "date"])
+        league_name = _first_present(event, ["league", "leagueName", "competition"], "")
+
+        if not (event_id and home and away and commence):
+            return None
+
+        bookmakers_raw = []
+        if isinstance(odds_data, dict):
+            bookmakers_raw = _first_present(odds_data, ["bookmakers", "books"], [])
+        elif isinstance(odds_data, list):
+            bookmakers_raw = odds_data
+
+        bookmakers = []
+        for bm in bookmakers_raw or []:
+            bm_name = _first_present(bm, ["name", "bookmaker", "title"], "Unknown")
+            markets_raw = _first_present(bm, ["markets", "odds"], [])
+            markets = []
+            for mk in markets_raw or []:
+                raw_key = _first_present(mk, ["market", "key", "name"], "")
+                internal_key = ODDS_API_IO_MARKET_MAP.get(raw_key, None)
+                if not internal_key:
+                    continue
+                outcomes_raw = _first_present(mk, ["outcomes", "selections"], [])
+                outcomes = []
+                for o in outcomes_raw or []:
+                    name = _first_present(o, ["name", "selection", "label"])
+                    price = _first_present(o, ["price", "odds", "value"])
+                    point = _first_present(o, ["point", "line"])
+                    if name and price:
+                        entry = {"name": name, "price": float(price)}
+                        if point is not None:
+                            entry["point"] = float(point)
+                        outcomes.append(entry)
+                if outcomes:
+                    markets.append({"key": internal_key, "outcomes": outcomes})
+            if markets:
+                bookmakers.append({
+                    "key": str(bm_name).lower().replace(" ", ""),
+                    "title": str(bm_name),
+                    "markets": markets,
+                })
+
+        if not bookmakers:
+            return None
+
+        return {
+            "id": f"oaio-{event_id}",
+            "sport_key": "soccer_minor_leagues",
+            "sport_title": league_name or "Football",
+            "commence_time": commence,
+            "home_team": home,
+            "away_team": away,
+            "bookmakers": bookmakers,
+        }
+    except Exception:
+        return None
+
+
+async def _fetch_odds_api_io_matches() -> List[Dict]:
+    """
+    Fetch complet odds-api.io pour les ligues mineures configurees.
+    Defensif : toute erreur individuelle est ignoree, ne bloque jamais
+    le fetch principal The Odds API.
+    """
+    if not ODDS_API_IO_KEY:
+        return []
+
+    out: List[Dict] = []
+    for league_slug in ODDS_API_IO_LEAGUES:
+        try:
+            events = await _fetch_odds_api_io_events(league_slug)
+            for evt in events[:20]:
+                event_id = _first_present(evt, ["id", "eventId", "event_id"])
+                if not event_id:
+                    continue
+                odds_data = await _fetch_odds_api_io_odds(event_id)
+                converted = _convert_odds_api_io_event(evt, odds_data)
+                if converted:
+                    out.append(converted)
+        except Exception:
+            continue
+    return out
+
+
+# ─── Enrichissement : BSD Sports Addon (predictions ML) ──────────────────────
+
+async def _fetch_bsd_predictions() -> List[Dict]:
+    """
+    Recupere les predictions ML (CatBoost) de BSD pour les matchs a venir.
+    Retourne [] silencieusement en cas d'erreur ou de cle absente — cette
+    source est un enrichissement optionnel, jamais un point de blocage.
+    """
+    if not BSD_API_KEY:
+        return []
+    url = f"{BSD_API_BASE}/predictions/"
+    headers = {"Authorization": f"Token {BSD_API_KEY}"}
+    params = {"upcoming": "true"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, headers=headers, params=params)
+            if r.status_code != 200:
+                return []
+            data = r.json()
+            results = data.get("results", data) if isinstance(data, dict) else data
+            return results if isinstance(results, list) else []
+    except Exception:
+        return []
+
+
+def _normalize_team_name(name: str) -> str:
+    return "".join(c.lower() for c in (name or "") if c.isalnum())
+
+
+def _attach_bsd_enrichment(matches: List[Dict], bsd_predictions: List[Dict]) -> List[Dict]:
+    """
+    Associe les predictions BSD aux matchs existants par correspondance de
+    noms d'equipes (normalises), et ajoute un champ "bsd_enrichment" sans
+    toucher au reste de la structure. Le moteur maison (prediction_engine.py)
+    reste la seule source du pick officiel — BSD vient juste enrichir le
+    contexte affiche.
+    """
+    if not bsd_predictions:
+        return matches
+
+    bsd_by_teams = {}
+    for pred in bsd_predictions:
+        try:
+            home = _first_present(pred, ["home_team", "homeTeam"], {})
+            away = _first_present(pred, ["away_team", "awayTeam"], {})
+            home_name = home.get("name") if isinstance(home, dict) else home
+            away_name = away.get("name") if isinstance(away, dict) else away
+            if not (home_name and away_name):
+                continue
+            key = (_normalize_team_name(home_name), _normalize_team_name(away_name))
+            bsd_by_teams[key] = pred
+        except Exception:
+            continue
+
+    for m in matches:
+        key = (_normalize_team_name(m.get("home_team", "")), _normalize_team_name(m.get("away_team", "")))
+        if key in bsd_by_teams:
+            m["bsd_enrichment"] = bsd_by_teams[key]
+
+    return matches
 
 
 def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
@@ -402,6 +647,14 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         except Exception:
             continue
 
+    # ─── Source secondaire : odds-api.io pour ligues mineures ────────────────
+    try:
+        secondary_matches = await _fetch_odds_api_io_matches()
+        if secondary_matches:
+            matches = _merge_events(matches, secondary_matches)
+    except Exception:
+        pass
+
     # Fallback si aucun match réel
     if not matches:
         matches = get_all_mock_matches()
@@ -434,6 +687,14 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
             continue
 
         filtered.append(m)
+
+    # ─── Enrichissement BSD (predictions ML) ─────────────────────────────────
+    try:
+        bsd_predictions = await _fetch_bsd_predictions()
+        if bsd_predictions:
+            filtered = _attach_bsd_enrichment(filtered, bsd_predictions)
+    except Exception:
+        pass
 
     # ─── Tri : LIVE → À venir → Terminés ────────────────────────────────────
     def _sort_key(m):
