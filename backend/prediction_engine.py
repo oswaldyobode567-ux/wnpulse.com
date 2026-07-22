@@ -1,7 +1,9 @@
 """
-WinPulse Prediction Engine v7.3
+WinPulse Prediction Engine v7.4
 - Seuils assouplis pour garantir des picks visibles au quotidien
-- Nouveau : picks combinés (2 marchés compatibles fusionnés, cote multipliée)
+- Filtre "edge minimum" retiré du gate de qualité (bookmakers pro = edge quasi nul,
+  bloquait presque tous les picks). Le vrai filtre de qualité reste MIN_CONFIDENCE.
+- Picks combinés (2 marchés compatibles fusionnés, cote multipliée)
   ex: "Victoire Juventus & Plus de 2.5 buts" @ cote combinée
 - Anti-contradiction système complet
 - Organisation par championnat
@@ -23,8 +25,8 @@ BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"
 # ─── Seuils qualité — ASSOUPLIS pour garantir des picks quotidiens ───────────
 MIN_ODDS = 1.25          # Cote minimum d'un pick simple
 MAX_ODDS = 8.00          # Cote maximum pour picks principaux
-MIN_CONFIDENCE = 60.0    # Confiance minimum pour publier
-MIN_EDGE = 1.0           # Edge minimum en %
+MIN_CONFIDENCE = 60.0    # Confiance minimum pour publier (seul vrai filtre de qualité)
+MIN_EDGE = 1.0           # Conserve pour affichage/tri uniquement, plus utilise comme gate
 MIN_BOOKMAKERS = 1       # Minimum de bookmakers pour valider un pick (assoupli)
 MAX_PICKS_PER_DAY = 15
 MAX_PICKS_PER_MATCH = 3
@@ -247,9 +249,11 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
 
     best_odd_prob = 1.0 / pick_odds
     edge = (pick_prob - best_odd_prob) * 100
-
-    if edge < min_edge:
-        return None
+    # NOTE: le filtre "if edge < min_edge: return None" a ete retire.
+    # Avec des bookmakers professionnels (Pinnacle, Betfair...), l'edge est
+    # quasi toujours proche de 0 meme sur des picks tres fiables (consensus fort),
+    # ce qui bloquait presque tous les picks. On garde edge uniquement pour
+    # l'affichage et le tri (confidence + edge*0.3).
 
     var_penalty = min(variance_avg * 100, 20)
     confidence = max(0, min(100, pick_prob * 100 - var_penalty + max(0, edge) * 0.5))
@@ -308,8 +312,7 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
         if odds < MIN_ODDS or odds > MAX_ODDS:
             return None
         edge = (prob - 1/odds) * 100
-        if edge < MIN_EDGE:
-            return None
+        # Filtre edge retire ici aussi, pour la meme raison que _analyze_market.
         conf = max(0, min(100, prob * 100 - 3))
         if conf < MIN_CONFIDENCE:
             return None
@@ -464,7 +467,7 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
     return out
 
 
-# ─── Picks combinés (nouveau) ────────────────────────────────────────────────
+# ─── Picks combinés ────────────────────────────────────────────────────────
 
 def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
     """
