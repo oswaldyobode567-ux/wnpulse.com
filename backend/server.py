@@ -206,6 +206,50 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
     return result
 
 
+# ─── Abonnement ───────────────────────────────────────────────────────────
+
+SUBSCRIPTION_PLANS = [
+    {
+        "id": "starter",
+        "name": "Starter",
+        "price_fcfa": 4900,
+        "period": "mois",
+        "features": ["1 pick/jour", "Accès Dashboard"],
+    },
+    {
+        "id": "pro",
+        "name": "Pro",
+        "price_fcfa": 9900,
+        "period": "mois",
+        "features": ["Tous les picks", "Combos", "Analyse complète", "Super Combos"],
+        "highlighted": True,
+    },
+    {
+        "id": "elite",
+        "name": "Elite",
+        "price_fcfa": 19900,
+        "period": "mois",
+        "features": ["Tout Pro", "VIP WhatsApp direct", "Garantie", "Priorité support"],
+    },
+]
+
+
+@app.get("/api/subscription/plans")
+async def get_subscription_plans():
+    return SUBSCRIPTION_PLANS
+
+
+@app.get("/api/subscription/status")
+async def get_subscription_status(payload: dict = Depends(get_current_user_payload)):
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    return {
+        "subscription": user.get("subscription", "free"),
+        "is_admin": user.get("is_admin", False),
+    }
+
+
 # ─── Combos ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/combos")
