@@ -266,8 +266,16 @@ async def get_super_combos():
 
 @app.get("/api/combos/today")
 async def get_today_combos():
-    matches = await fetch_all_matches(db)
-    return build_today_combos_by_sport(matches)
+    try:
+        matches = await fetch_all_matches(db)
+        return build_today_combos_by_sport(matches)
+    except Exception as e:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_matches_today": 0,
+            "families": {},
+            "error": str(e),
+        }
 
 
 # ─── Scores ───────────────────────────────────────────────────────────────
