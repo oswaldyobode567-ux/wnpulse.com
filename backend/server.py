@@ -1,5 +1,5 @@
 """
-WinPulse API — server.py (v7.3 complet)
+WinPulse API — server.py (v7.4)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
@@ -50,7 +50,7 @@ app.add_middleware(
 
 @app.get("/api/")
 async def racine():
-    return {"application": "WinPulse", "statut": "OK", "version": "7.3"}
+    return {"application": "WinPulse", "statut": "OK", "version": "7.4"}
 
 
 @app.get("/api/sante")
@@ -200,10 +200,29 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
 
 @app.get("/api/matches/{match_id}/analysis")
 async def get_match_analysis(match_id: str):
+    """
+    Recherche le match par son id parmi TOUS les matchs en cache (pas seulement
+    ceux retenus par analyze_all), pour eviter les faux "introuvable" quand le
+    match n'a pas de pick valide ou que le cache a legerement change entre deux
+    appels. Recherche aussi sur match_id en secours.
+    """
     matches = await fetch_all_matches(db)
-    match = next((m for m in matches if m.get("id") == match_id), None)
+
+    match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
+
     if not match:
-        raise HTTPException(status_code=404, detail="Match introuvable")
+        # Repli : certains ids peuvent etre stockes sous une autre cle
+        match = next(
+            (m for m in matches if str(m.get("match_id", "")) == str(match_id)),
+            None,
+        )
+
+    if not match:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
+        )
+
     predictions = analyze_all([match])
     prediction = predictions[0] if predictions else {}
     ai_analysis = await generate_analysis(match, prediction)
@@ -227,6 +246,17 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
     """Force le rafraichissement du cache (authentifie)."""
     result = await refresh_matches_worker(db)
     return result
+
+
+@app.get("/api/data/source-audit")
+async def get_data_source_audit():
+    """Alias attendu par le frontend — infos sur la source/fraicheur des donnees."""
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    return {
+        "updated_at": cached.get("updated_at") if cached else None,
+        "count": cached.get("count", 0) if cached else 0,
+        "sources": ["The Odds API"],
+    }
 
 
 # ─── Abonnement ───────────────────────────────────────────────────────────
@@ -299,6 +329,58 @@ async def get_today_combos():
             "families": {},
             "error": str(e),
         }
+
+
+# ─── Alias de routes attendues par le frontend (memes donnees, autres noms) ──
+
+@app.get("/api/predictions/today-combos")
+async def get_predictions_today_combos_alias():
+    """Alias de /api/combos/today, nom attendu par le frontend."""
+    return await get_today_combos()
+
+
+@app.get("/api/predictions/combos")
+async def get_predictions_combos_alias():
+    """Alias de /api/combos, nom attendu par le frontend."""
+    return await get_combos()
+
+
+@app.get("/api/builder/matches")
+async def get_builder_matches():
+    """
+    Matchs + predictions pour l'ecran Combo Builder. Meme donnee que
+    /api/matches mais nom de route attendu par le frontend.
+    """
+    matches = await fetch_all_matches(db)
+    predictions = analyze_all(matches)
+    pred_by_id = {p.get("match_id"): p for p in predictions}
+    merged = [
+        _merge_match_prediction(m, pred_by_id.get(m.get("id"), {}))
+        for m in matches
+    ]
+    return merged
+
+
+@app.get("/api/builder/my-combos")
+async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload)):
+    """
+    Combos personnalises sauvegardes par l'utilisateur. Pas encore de
+    persistance dediee cote base — retourne une liste vide propre plutot
+    qu'un 404, en attendant l'implementation complete.
+    """
+    saved = await db.user_combos.find({"user_id": payload["sub"]}).to_list(length=100)
+    for s in saved:
+        s.pop("_id", None)
+    return saved
+
+
+@app.get("/api/predictions/history")
+async def get_predictions_history():
+    """
+    Historique des picks passes (track record). Pas encore de suivi
+    persistant en base — retourne une liste vide propre plutot qu'un 404.
+    """
+    return []
 
 
 # ─── Scores ───────────────────────────────────────────────────────────────
