@@ -416,15 +416,16 @@ async def get_single_match(match_id: str):
 @app.get("/api/value-bets")
 async def get_value_bets():
     """
-    Picks a forte valeur (confiance elevee + cote correcte). Reutilise
-    top_predictions avec un seuil de confiance plus exigeant.
+    Picks a forte valeur (confiance elevee + cote correcte). Seuils alignes
+    sur MIN_CONFIDENCE du moteur (60) pour ne pas etre plus stricte que
+    /api/predictions/top et se retrouver vide alors que des picks existent.
     """
     matches = await fetch_all_matches(db)
     preds = top_predictions(matches, limit=30)
     value_bets = [
         p for p in preds
-        if p.get("pick") and p.get("confidence", 0) >= 68
-        and p.get("pick_odds", 0) >= 1.4
+        if p.get("pick") and p.get("confidence", 0) >= 60
+        and p.get("pick_odds", 0) >= 1.2
     ]
     return value_bets
 
