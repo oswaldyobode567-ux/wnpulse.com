@@ -303,6 +303,164 @@ async def get_subscription_status(payload: dict = Depends(get_current_user_paylo
     }
 
 
+# ─── Paiement manuel MoMo + validation admin ─────────────────────────────
+
+MOMO_NUMBER = "0161321256"
+MOMO_RECIPIENT_NAME = "KOUKPAKI VIANNEY"
+PAYMENT_WHATSAPP_NUMBER = "+33767971752"
+
+
+class UpgradeRequestPayload(BaseModel):
+    plan_id: str
+
+
+def _generate_reference() -> str:
+    return f"PE-{uuid.uuid4().hex[:8].upper()}"
+
+
+@app.post("/api/subscription/request-upgrade")
+async def request_subscription_upgrade(
+    payload_in: UpgradeRequestPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """
+    Cree une demande de mise a niveau en attente et retourne les instructions
+    de paiement MoMo, avec un message WhatsApp pre-rempli a envoyer pour
+    confirmation manuelle par l'admin.
+    """
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.plan_id), None)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan inconnu")
+
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    reference = _generate_reference()
+    request_doc = {
+        "reference": reference,
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "amount_fcfa": plan["price_fcfa"],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.subscription_requests.insert_one(request_doc)
+
+    whatsapp_message = (
+        f"Bonjour WinPulse !\n"
+        f"Je viens d'effectuer le paiement pour activer mon plan *{plan['name']}*.\n\n"
+        f"• Référence : *{reference}*\n"
+        f"• Montant : *{plan['price_fcfa']:,} FCFA*".replace(",", " ") + "\n"
+        f"• Numéro MTN MoMo utilisé : *[TON NUMERO]*\n"
+        f"• Destinataire payé : *{MOMO_RECIPIENT_NAME}*\n"
+        f"• Nom : *[TON NOM]*\n"
+        f"• Email du compte : *{user['email']}*\n\n"
+        f"Voici la capture du SMS de confirmation MTN. Merci d'activer mon accès 🚀"
+    )
+    whatsapp_link = (
+        f"https://wa.me/{PAYMENT_WHATSAPP_NUMBER.replace('+', '')}"
+        f"?text={whatsapp_message}"
+    )
+
+    return {
+        "reference": reference,
+        "plan": plan,
+        "payment_instructions": {
+            "momo_number": MOMO_NUMBER,
+            "momo_recipient_name": MOMO_RECIPIENT_NAME,
+            "amount_fcfa": plan["price_fcfa"],
+            "steps": [
+                f"Compose *165# sur ton telephone MTN (ou l'app MoMo).",
+                f"Envoie {plan['price_fcfa']:,} FCFA".replace(",", " ")
+                + f" au {MOMO_NUMBER} ({MOMO_RECIPIENT_NAME}).",
+                "Garde le SMS de confirmation MTN.",
+                "Envoie la confirmation sur WhatsApp avec le bouton ci-dessous.",
+                "Ton acces est active des reception et verification du paiement.",
+            ],
+        },
+        "whatsapp_number": PAYMENT_WHATSAPP_NUMBER,
+        "whatsapp_message": whatsapp_message,
+        "whatsapp_link": whatsapp_link,
+    }
+
+
+@app.post("/api/subscription/upgrade")
+async def request_subscription_upgrade_alias(
+    payload_in: UpgradeRequestPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """Alias de /api/subscription/request-upgrade, nom possible cote frontend."""
+    return await request_subscription_upgrade(payload_in, payload)
+
+
+async def _require_admin(payload: dict) -> dict:
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Acces reserve aux administrateurs")
+    return user
+
+
+@app.get("/api/admin/subscription-requests")
+async def admin_list_subscription_requests(
+    status_filter: str = "pending",
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    query = {} if status_filter == "all" else {"status": status_filter}
+    requests = await db.subscription_requests.find(query).sort("created_at", -1).to_list(length=200)
+    for r in requests:
+        r.pop("_id", None)
+    return requests
+
+
+@app.post("/api/admin/subscription-requests/{reference}/approve")
+async def admin_approve_subscription_request(
+    reference: str,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    req = await db.subscription_requests.find_one({"reference": reference})
+    if not req:
+        raise HTTPException(status_code=404, detail="Demande introuvable")
+    if req["status"] == "approved":
+        return {"ok": True, "detail": "Deja approuvee"}
+
+    await db.users.update_one(
+        {"id": req["user_id"]},
+        {"$set": {"subscription": req["plan_id"]}},
+    )
+    await db.subscription_requests.update_one(
+        {"reference": reference},
+        {"$set": {
+            "status": "approved",
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"ok": True, "detail": f"Abonnement {req['plan_id']} active pour {req['user_email']}"}
+
+
+@app.post("/api/admin/subscription-requests/{reference}/reject")
+async def admin_reject_subscription_request(
+    reference: str,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    req = await db.subscription_requests.find_one({"reference": reference})
+    if not req:
+        raise HTTPException(status_code=404, detail="Demande introuvable")
+    await db.subscription_requests.update_one(
+        {"reference": reference},
+        {"$set": {
+            "status": "rejected",
+            "rejected_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"ok": True, "detail": "Demande rejetee"}
+
+
 # ─── Combos ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/combos")
