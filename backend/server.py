@@ -383,6 +383,82 @@ async def get_predictions_history():
     return []
 
 
+# ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
+
+@app.get("/api/matches/{match_id}")
+async def get_single_match(match_id: str):
+    """
+    Le frontend appelle /api/matches/{id} directement (pas /analysis) pour
+    la fiche detail d'un pick. Meme logique de recherche que /analysis.
+    """
+    matches = await fetch_all_matches(db)
+
+    match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
+    if not match:
+        match = next(
+            (m for m in matches if str(m.get("match_id", "")) == str(match_id)),
+            None,
+        )
+
+    if not match:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
+        )
+
+    predictions = analyze_all([match])
+    prediction = predictions[0] if predictions else {}
+    return _merge_match_prediction(match, prediction)
+
+
+# ─── Value bets ───────────────────────────────────────────────────────────
+
+@app.get("/api/value-bets")
+async def get_value_bets():
+    """
+    Picks a forte valeur (confiance elevee + cote correcte). Reutilise
+    top_predictions avec un seuil de confiance plus exigeant.
+    """
+    matches = await fetch_all_matches(db)
+    preds = top_predictions(matches, limit=30)
+    value_bets = [
+        p for p in preds
+        if p.get("pick") and p.get("confidence", 0) >= 68
+        and p.get("pick_odds", 0) >= 1.4
+    ]
+    return value_bets
+
+
+# ─── Plans (alias) ────────────────────────────────────────────────────────
+
+@app.get("/api/plans")
+async def get_plans_alias():
+    """Alias de /api/subscription/plans, nom attendu par le frontend."""
+    return SUBSCRIPTION_PLANS
+
+
+# ─── Parrainage ───────────────────────────────────────────────────────────
+
+@app.get("/api/referral/me")
+async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
+    """
+    Statut de parrainage de l'utilisateur. Pas encore de systeme de
+    parrainage complet en base — retourne une structure vide coherente
+    plutot qu'un 404 qui casse le routing frontend.
+    """
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    code = user.get("referral_code") or user["id"][:8].upper()
+    return {
+        "referral_code": code,
+        "referral_link": f"https://www.wnpulse.com/inscription?ref={code}",
+        "total_referred": 0,
+        "rewards_earned_fcfa": 0,
+        "referred_users": [],
+    }
+
+
 # ─── Scores ───────────────────────────────────────────────────────────────
 
 @app.get("/api/scores")
