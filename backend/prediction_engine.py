@@ -1,15 +1,13 @@
 """
-WinPulse Prediction Engine v7.2
-CORRECTIONS :
-- Minimum cote 1.40 (jamais en dessous)
-- Minimum confiance 72% pour publier
+WinPulse Prediction Engine v7.3
+- Seuils assouplis pour garantir des picks visibles au quotidien
+- Nouveau : picks combinés (2 marchés compatibles fusionnés, cote multipliée)
+  ex: "Victoire Juventus & Plus de 2.5 buts" @ cote combinée
 - Anti-contradiction système complet
 - Organisation par championnat
 - Super combos généraux (tous sports mélangés)
-- Détection valeur cachée (10 patterns)
 - Labels français pour tous les marchés
-- Bookmaker prioritaire : 1xBet
-- Fallback bookmakers si <2 disponibles en Afrique de l'Ouest
+- Bookmaker prioritaire : 1xBet, fallback sur tous bookmakers disponibles
 """
 from typing import Dict, List, Optional, Tuple
 import statistics
@@ -20,18 +18,20 @@ import hashlib
 WEST_AFRICA_BOOKMAKERS = {
     "onexbet", "1xbet", "betway", "melbet", "pmu", "sportybet"
 }
-
-# Priorité d'affichage — 1xBet toujours en premier
 BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"]
 
-# ─── Seuils qualité — RÈGLES ABSOLUES ────────────────────────────────────────
-MIN_ODDS = 1.40          # Jamais en dessous
-MAX_ODDS = 5.00          # Jamais au dessus pour picks principaux
-MIN_CONFIDENCE = 72.0    # Confiance minimum pour publier
-MIN_EDGE = 3.0           # Edge minimum en %
-MIN_BOOKMAKERS = 2       # Minimum de bookmakers pour valider un pick
-MAX_PICKS_PER_DAY = 10   # Maximum picks publiés par jour
-MAX_PICKS_PER_MATCH = 3  # Maximum picks par match
+# ─── Seuils qualité — ASSOUPLIS pour garantir des picks quotidiens ───────────
+MIN_ODDS = 1.25          # Cote minimum d'un pick simple
+MAX_ODDS = 8.00          # Cote maximum pour picks principaux
+MIN_CONFIDENCE = 60.0    # Confiance minimum pour publier
+MIN_EDGE = 1.0           # Edge minimum en %
+MIN_BOOKMAKERS = 1       # Minimum de bookmakers pour valider un pick (assoupli)
+MAX_PICKS_PER_DAY = 15
+MAX_PICKS_PER_MATCH = 3
+
+# Cible pour les picks combinés (quand la cote simple est trop basse)
+COMBO_TARGET_MIN_ODDS = 1.60   # En dessous de ça, on tente de combiner
+COMBO_MIN_CONFIDENCE = 55.0    # Seuil légèrement plus souple pour le 2ème pick du combo
 
 
 def _bookmaker_allowed(bm: Dict) -> bool:
@@ -47,11 +47,11 @@ def _bookmaker_allowed(bm: Dict) -> bool:
 
 def _filtered_bookmakers(match: Dict) -> List[Dict]:
     """Filtre les bookmakers Afrique de l'Ouest, priorité 1xBet.
-    Fallback sur tous les bookmakers disponibles si moins de MIN_BOOKMAKERS trouvés."""
+    Fallback sur tous les bookmakers disponibles si aucun trouve."""
     all_bms = match.get("bookmakers", []) or []
     wa_only = [bm for bm in all_bms if _bookmaker_allowed(bm)]
 
-    if len(wa_only) >= MIN_BOOKMAKERS:
+    if wa_only:
         def _priority(bm):
             key = (bm.get("key") or "").lower()
             try:
@@ -59,19 +59,23 @@ def _filtered_bookmakers(match: Dict) -> List[Dict]:
             except ValueError:
                 return 99
         wa_only.sort(key=_priority)
-        return wa_only[:5]
+        wa_only_sorted = wa_only
+    else:
+        wa_only_sorted = []
 
-    # Fallback : pas assez de bookmakers Afrique de l'Ouest, utiliser tous les disponibles
     all_bms_sorted = sorted(all_bms, key=lambda bm: (
         BOOKMAKER_PRIORITY.index((bm.get("key") or "").lower())
         if (bm.get("key") or "").lower() in BOOKMAKER_PRIORITY
         else 99
     ))
-    return all_bms_sorted[:5]
+
+    # Toujours utiliser tous les bookmakers disponibles (max 6) pour maximiser
+    # les donnees de marche, en gardant les bookmakers WA en tete de liste
+    combined = wa_only_sorted + [b for b in all_bms_sorted if b not in wa_only_sorted]
+    return combined[:6]
 
 
 def _get_best_bookmaker_title(bookmakers: List[Dict]) -> str:
-    """Retourne le nom du meilleur bookmaker disponible (priorité 1xBet)."""
     if not bookmakers:
         return "1xBet"
     return bookmakers[0].get("title") or "1xBet"
@@ -109,6 +113,7 @@ MARKET_LABELS_FR = {
     "syn_nba_spread": "Handicap NBA (IA)",
     "syn_hockey_over": "Plus de buts Hockey (IA)",
     "syn_tennis_under_sets": "Victoire en 2 sets (IA)",
+    "combo": "Combiné (IA)",
 }
 
 
@@ -118,7 +123,6 @@ def _label_for_market(market_key: str) -> str:
 
 def _outcome_label_fr(market_key: str, outcome_name: str,
                        point: Optional[float] = None) -> str:
-    """Traduit les outcomes en français clair."""
     if market_key in ("h2h", "h2h_h1"):
         if outcome_name == "Draw":
             return "Match nul"
@@ -161,7 +165,6 @@ FORBIDDEN_COMBINATIONS = [
 
 
 def _are_contradictory(pick_a: str, pick_b: str) -> bool:
-    """Vérifie si deux picks sont contradictoires."""
     a = (pick_a or "").lower()
     b = (pick_b or "").lower()
     for kw_a, kw_b in FORBIDDEN_COMBINATIONS:
@@ -173,7 +176,6 @@ def _are_contradictory(pick_a: str, pick_b: str) -> bool:
 
 
 def _validate_picks_compatibility(picks: List[Dict]) -> List[Dict]:
-    """Filtre les picks pour ne garder que des combinaisons non-contradictoires."""
     if len(picks) <= 1:
         return picks
     valid = [picks[0]]
@@ -199,8 +201,12 @@ def _implied_probs(outcomes: List[Dict]) -> Dict[str, float]:
 
 
 def _analyze_market(market_key: str, bookmakers: List[Dict],
-                     home: str, away: str) -> Optional[Dict]:
+                     home: str, away: str,
+                     min_conf: float = None, min_edge: float = None) -> Optional[Dict]:
     """Analyse un marché et retourne le meilleur pick."""
+    min_conf = MIN_CONFIDENCE if min_conf is None else min_conf
+    min_edge = MIN_EDGE if min_edge is None else min_edge
+
     consensus_probs: Dict[Tuple[str, Optional[float]], List[float]] = {}
     best_odds: Dict[Tuple[str, Optional[float]], float] = {}
     num_books = 0
@@ -242,16 +248,16 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
     best_odd_prob = 1.0 / pick_odds
     edge = (pick_prob - best_odd_prob) * 100
 
-    if edge < MIN_EDGE:
+    if edge < min_edge:
         return None
 
     var_penalty = min(variance_avg * 100, 20)
     confidence = max(0, min(100, pick_prob * 100 - var_penalty + max(0, edge) * 0.5))
 
-    if confidence < MIN_CONFIDENCE:
+    if confidence < min_conf:
         return None
 
-    label = "safe" if confidence >= 82 else ("value" if confidence >= 75 else "risky")
+    label = "safe" if confidence >= 80 else ("value" if confidence >= 70 else "risky")
 
     return {
         "market": market_key,
@@ -315,7 +321,7 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
             "pick_point": None,
             "pick_odds": odds,
             "confidence": round(conf, 1),
-            "label": "safe" if conf >= 82 else ("value" if conf >= 75 else "risky"),
+            "label": "safe" if conf >= 80 else ("value" if conf >= 70 else "risky"),
             "edge": round(edge, 2),
             "num_books": 0,
             "synthetic": True,
@@ -342,49 +348,49 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
                 out.append(mk)
 
         p_btts = min(0.85, 0.35 + 4 * p_home * p_away)
-        if p_btts >= 0.60:
+        if p_btts >= 0.55:
             mk = _mk("syn_btts", "yes", "Oui — Les 2 équipes marquent", p_btts)
             if mk:
                 out.append(mk)
-        elif p_btts < 0.40:
+        elif p_btts < 0.45:
             mk = _mk("syn_btts", "no", "Non — Au moins 1 équipe ne marque pas", 1-p_btts)
             if mk:
                 out.append(mk)
 
         p_over25 = min(0.80, 0.30 + 2.5 * (1 - p_draw) * (p_home + p_away) / 1.6)
-        if p_over25 >= 0.60:
+        if p_over25 >= 0.55:
             mk = _mk("syn_over_25", "over", "Plus de 2.5 buts", p_over25)
             if mk:
                 out.append(mk)
-        elif p_over25 <= 0.38:
+        elif p_over25 <= 0.42:
             mk = _mk("syn_over_25", "under", "Moins de 2.5 buts", 1-p_over25)
             if mk:
                 out.append(mk)
 
         p_over15 = min(0.92, 0.72 + 0.2 * (max(p_home, p_away) - 0.4))
-        if p_over15 >= 0.75:
+        if p_over15 >= 0.70:
             mk = _mk("syn_over_15", "over", "Plus de 1.5 buts", p_over15)
             if mk:
                 out.append(mk)
 
         p_h1 = min(0.80, 0.45 + 0.3 * (1 - p_draw))
-        if p_h1 >= 0.65:
+        if p_h1 >= 0.60:
             mk = _mk("syn_over_05_h1", "over", "But en 1ère mi-temps", p_h1)
             if mk:
                 out.append(mk)
 
         p_u15_h2 = min(0.75, 0.40 + 0.25 * p_draw)
-        if p_u15_h2 >= 0.55:
+        if p_u15_h2 >= 0.50:
             mk = _mk("syn_under_15_h2", "under", "Moins de 1.5 buts en 2ème mi-temps", p_u15_h2)
             if mk:
                 out.append(mk)
 
-        if p_home >= 0.55:
+        if p_home >= 0.50:
             p_cs = min(0.55, p_home * 0.55)
             mk = _mk("syn_clean_sheet_home", "home_cs", f"{home} sans encaisser", p_cs, 1.08)
             if mk:
                 out.append(mk)
-        if p_away >= 0.55:
+        if p_away >= 0.50:
             p_cs = min(0.55, p_away * 0.55)
             mk = _mk("syn_clean_sheet_away", "away_cs", f"{away} sans encaisser", p_cs, 1.08)
             if mk:
@@ -393,11 +399,11 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
         tightness = 1 - abs(p_home - p_away)
         p_cards_35 = 0.35 + tightness * 0.35
         p_cards_45 = 0.20 + tightness * 0.25
-        if p_cards_35 >= 0.60:
+        if p_cards_35 >= 0.55:
             mk = _mk("syn_cards_over_35", "over", "Plus de 3.5 cartons jaunes", p_cards_35, 1.06)
             if mk:
                 out.append(mk)
-        if p_cards_45 >= 0.55:
+        if p_cards_45 >= 0.50:
             mk = _mk("syn_cards_over_45", "over", "Plus de 4.5 cartons jaunes", p_cards_45, 1.08)
             if mk:
                 out.append(mk)
@@ -405,21 +411,21 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
         attack = 1 - p_draw
         p_c95 = 0.45 + attack * 0.35
         p_c105 = 0.30 + attack * 0.30
-        if p_c95 >= 0.65:
+        if p_c95 >= 0.60:
             mk = _mk("syn_corners_over_95", "over", "Plus de 9.5 corners", p_c95, 1.06)
             if mk:
                 out.append(mk)
-        if p_c105 >= 0.55:
+        if p_c105 >= 0.50:
             mk = _mk("syn_corners_over_105", "over", "Plus de 10.5 corners", p_c105, 1.08)
             if mk:
                 out.append(mk)
 
-        if p_home > p_away and p_home >= 0.45:
+        if p_home > p_away and p_home >= 0.42:
             p_fts = min(0.72, p_home * 0.85 + 0.1)
             mk = _mk("syn_first_to_score_home", "home", f"{home} marque en premier", p_fts)
             if mk:
                 out.append(mk)
-        elif p_away > p_home and p_away >= 0.45:
+        elif p_away > p_home and p_away >= 0.42:
             p_fts = min(0.72, p_away * 0.85 + 0.1)
             mk = _mk("syn_first_to_score_away", "away", f"{away} marque en premier", p_fts)
             if mk:
@@ -430,12 +436,11 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
         mk = _mk("syn_nba_over", "over", "Plus de points (match ouvert)", p_over)
         if mk:
             out.append(mk)
-
-        if p_home > p_away + 0.15:
+        if p_home > p_away + 0.10:
             mk = _mk("syn_nba_spread", "home", f"{home} favori (-points)", p_home * 0.85)
             if mk:
                 out.append(mk)
-        elif p_away > p_home + 0.15:
+        elif p_away > p_home + 0.10:
             mk = _mk("syn_nba_spread", "away", f"{away} favori (-points)", p_away * 0.85)
             if mk:
                 out.append(mk)
@@ -448,7 +453,7 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
 
     elif sport_key.startswith("tennis"):
         fav_prob = max(p_home, p_away)
-        if fav_prob >= 0.65:
+        if fav_prob >= 0.60:
             p_u25 = min(0.78, fav_prob * 0.82)
             fav_name = max(probs, key=probs.get) if probs else home
             mk = _mk("syn_tennis_under_sets", "under",
@@ -459,11 +464,61 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
     return out
 
 
+# ─── Picks combinés (nouveau) ────────────────────────────────────────────────
+
+def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
+    """
+    Quand le meilleur pick simple a une cote trop basse (< COMBO_TARGET_MIN_ODDS),
+    tente de le combiner avec un 2eme marche compatible du meme match pour
+    obtenir une cote plus interessante. Ex: "Victoire Juventus & Plus de 2.5 buts".
+    """
+    if not market_results:
+        return None
+
+    ranked = sorted(market_results, key=lambda x: x["confidence"], reverse=True)
+    primary = ranked[0]
+
+    if primary["pick_odds"] >= COMBO_TARGET_MIN_ODDS:
+        return None  # cote deja suffisante, pas besoin de combiner
+
+    for secondary in ranked[1:]:
+        if secondary["market"] == primary["market"]:
+            continue
+        if secondary["confidence"] < COMBO_MIN_CONFIDENCE:
+            continue
+        if _are_contradictory(primary["pick"], secondary["pick"]):
+            continue
+
+        combined_odds = round(primary["pick_odds"] * secondary["pick_odds"], 2)
+        if combined_odds < COMBO_TARGET_MIN_ODDS or combined_odds > MAX_ODDS * 1.5:
+            continue
+
+        combined_conf = round((primary["confidence"] * secondary["confidence"]) / 100, 1)
+        if combined_conf < 45:
+            continue
+
+        return {
+            "market": "combo",
+            "market_label": "Combiné (IA)",
+            "pick": f"{primary['pick']} & {secondary['pick']}",
+            "pick_raw": f"{primary.get('pick_raw','')}+{secondary.get('pick_raw','')}",
+            "pick_point": None,
+            "pick_odds": combined_odds,
+            "confidence": combined_conf,
+            "label": "safe" if combined_conf >= 70 else ("value" if combined_conf >= 55 else "risky"),
+            "edge": round((primary.get("edge", 0) + secondary.get("edge", 0)) / 2, 2),
+            "num_books": min(primary.get("num_books", 0), secondary.get("num_books", 0)),
+            "is_combo": True,
+            "combo_legs": [primary["pick"], secondary["pick"]],
+        }
+
+    return None
+
+
 # ─── Deep reasoning ──────────────────────────────────────────────────────────
 
 def _deep_reasoning(match: Dict, home: str, away: str,
                      probs: Dict[str, float]) -> Dict:
-    """Génère une analyse détaillée déterministe basée sur l'ID du match."""
     seed_src = f"{match.get('id','')}|{home}|{away}"
 
     def _r(k):
@@ -557,7 +612,7 @@ def _is_finished_match(match: Dict) -> bool:
 
 
 def analyze_match(match: Dict) -> Dict:
-    """Analyse complète d'un match — retourne le meilleur pick et tous les marchés."""
+    """Analyse complète d'un match — retourne le meilleur pick (simple ou combiné)."""
     bookmakers = _filtered_bookmakers(match)
     home = match.get("home_team", "")
     away = match.get("away_team", "")
@@ -597,7 +652,6 @@ def analyze_match(match: Dict) -> Dict:
                 market_keys.add(m["key"])
 
     market_results = []
-
     for mk in ["h2h", "totals", "spreads", "btts", "draw_no_bet",
                "double_chance", "h2h_h1", "totals_h1", "totals_h2"]:
         if mk not in market_keys:
@@ -626,6 +680,13 @@ def analyze_match(match: Dict) -> Dict:
     validated = _validate_picks_compatibility(market_results)
     best = validated[0] if validated else market_results[0]
 
+    # Tentative de pick combine si la cote simple est trop basse
+    combo = _build_combined_pick(validated if validated else market_results)
+    if combo:
+        best = combo
+        if combo not in market_results:
+            market_results.insert(0, combo)
+
     implied = {}
     probs = _h2h_probs(bookmakers, home, away)
     if probs:
@@ -645,10 +706,11 @@ def analyze_match(match: Dict) -> Dict:
         "confidence": best["confidence"],
         "label": best["label"],
         "implied_probs": implied,
-        "edge": best["edge"],
-        "num_books": best["num_books"],
+        "edge": best.get("edge", 0),
+        "num_books": best.get("num_books", 0),
         "market": best["market"],
         "market_label": best["market_label"],
+        "is_combo": best.get("is_combo", False),
         "markets": market_results,
         "is_live": _is_live_match(match),
         "is_finished": _is_finished_match(match),
@@ -668,10 +730,9 @@ def analyze_all(matches: List[Dict]) -> List[Dict]:
 
 
 def top_predictions(matches: List[Dict], limit: int = 10) -> List[Dict]:
-    """Top picks triés par confiance — uniquement ceux qui passent le gate qualité."""
     preds = analyze_all(matches)
     valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
-             and p.get("pick_odds", 0) >= MIN_ODDS]
+             and p.get("pick_odds", 0) >= 1.0]
     valid.sort(key=lambda p: p["confidence"] + max(0, p.get("edge", 0)) * 0.3,
                reverse=True)
     return valid[:limit]
@@ -693,7 +754,6 @@ def _is_today(commence_time: str) -> bool:
 
 
 def _is_upcoming(commence_time: str) -> bool:
-    """Le match n'a pas encore commencé."""
     if not commence_time:
         return False
     try:
@@ -722,7 +782,6 @@ def _stats(legs: List[Dict]) -> Dict:
 
 
 def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
-    """Aplati matches × marchés en liste de picks individuels."""
     picks = []
     for m in matches:
         if not _is_upcoming(m.get("commence_time", "")):
@@ -731,7 +790,7 @@ def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
         for mk in analyzed.get("markets", []):
             if not mk.get("pick_odds"):
                 continue
-            if mk.get("pick_odds", 0) < MIN_ODDS:
+            if mk.get("pick_odds", 0) < 1.0:
                 continue
             if mk.get("confidence", 0) < MIN_CONFIDENCE:
                 continue
@@ -756,7 +815,6 @@ def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
 
 
 def _pick_diversified_multi(pool: List[Dict], legs: int) -> List[Dict]:
-    """Sélectionne N picks sans répéter le même match."""
     selected, used_matches = [], set()
     for p in pool:
         mid = p.get("match_id")
@@ -779,8 +837,8 @@ def _pick_diversified_multi(pool: List[Dict], legs: int) -> List[Dict]:
 # ─── Combos principaux ────────────────────────────────────────────────────────
 
 def build_combo(matches: List[Dict], legs: int = 3,
-                min_confidence: float = 72) -> Dict:
-    """Combo simple (rétro-compat)."""
+                min_confidence: float = None) -> Dict:
+    min_confidence = MIN_CONFIDENCE if min_confidence is None else min_confidence
     picks = [p for p in _flatten_market_picks(matches)
              if p["confidence"] >= min_confidence]
     picks.sort(key=lambda p: p["confidence"], reverse=True)
@@ -790,17 +848,16 @@ def build_combo(matches: List[Dict], legs: int = 3,
 
 
 def build_multi_combos(matches: List[Dict]) -> Dict:
-    """3 combos principaux : Sécurité / Équilibre / Jackpot"""
     all_picks = _flatten_market_picks(matches)
 
     safe_pool = sorted(
-        [p for p in all_picks if p["confidence"] >= 80],
+        [p for p in all_picks if p["confidence"] >= 72],
         key=lambda p: p["confidence"], reverse=True
     )
     safe_legs = _pick_diversified_multi(safe_pool, 2)
 
     bal_pool = sorted(
-        [p for p in all_picks if 74 <= p["confidence"] <= 85],
+        [p for p in all_picks if 62 <= p["confidence"] <= 80],
         key=lambda p: (p["confidence"] * 0.5 + (p["pick_odds"] or 1) * 7
                        + max(0, p["edge"]) * 3),
         reverse=True
@@ -809,7 +866,7 @@ def build_multi_combos(matches: List[Dict]) -> Dict:
 
     jack_pool = sorted(
         [p for p in all_picks
-         if p["confidence"] >= 72 and (p.get("pick_odds") or 0) >= 1.65],
+         if p["confidence"] >= MIN_CONFIDENCE and (p.get("pick_odds") or 0) >= 1.4],
         key=lambda p: ((p.get("pick_odds") or 1) * (p["confidence"] / 100)),
         reverse=True
     )
@@ -847,7 +904,6 @@ def build_multi_combos(matches: List[Dict]) -> Dict:
 # ─── Super Combos Généraux (tous sports mélangés) ─────────────────────────────
 
 def build_super_combos(matches: List[Dict]) -> Dict:
-    """Super Combos qui mélangent les meilleurs picks de TOUS les sports."""
     all_picks = _flatten_market_picks(matches)
     if not all_picks:
         now = datetime.now(timezone.utc).isoformat()
@@ -873,13 +929,13 @@ def build_super_combos(matches: List[Dict]) -> Dict:
             best_per_sport.append(picks[0])
 
     super_safe_pool = sorted(
-        [p for p in best_per_sport if p["confidence"] >= 82],
+        [p for p in best_per_sport if p["confidence"] >= 72],
         key=lambda p: p["confidence"], reverse=True
     )
     super_safe_legs = _pick_diversified_multi(super_safe_pool, 2)
 
     super_bal_pool = sorted(
-        [p for p in best_per_sport if p["confidence"] >= 76],
+        [p for p in best_per_sport if p["confidence"] >= 65],
         key=lambda p: p["confidence"] + (p.get("pick_odds", 1) or 1) * 5,
         reverse=True
     )
@@ -940,13 +996,13 @@ def build_super_combos(matches: List[Dict]) -> Dict:
 # ─── Combos par sport et par tier ────────────────────────────────────────────
 
 TODAY_TIER_TARGETS = [
-    ("sure", "Sûr", "Cotes 2 → 4", 2.0, 4.0, 2, 76,
+    ("sure", "Sûr", "Cotes 1.5 → 3", 1.5, 3.0, 2, 65,
      "Petite cote, forte probabilité."),
-    ("booster", "Booster", "Cotes 5 → 12", 4.5, 12.0, 3, 72,
+    ("booster", "Booster", "Cotes 3 → 8", 3.0, 8.0, 3, 60,
      "Bon rapport risque/gain."),
-    ("extra", "Extra", "Cotes 15 → 30", 13.0, 30.0, 4, 72,
+    ("extra", "Extra", "Cotes 8 → 20", 8.0, 20.0, 4, 60,
      "Combiné signature WinPulse."),
-    ("jackpot", "Jackpot", "Cotes 40 → 100+", 30.0, 200.0, 5, 72,
+    ("jackpot", "Jackpot", "Cotes 20 → 100+", 20.0, 200.0, 5, 60,
      "Pour les chasseurs de gros gains."),
 ]
 
@@ -1001,7 +1057,6 @@ def _pick_for_target_odds(pool: List[Dict], legs: int,
 
 
 def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
-    """Combos du jour par sport et par tier d'odds."""
     today_matches = [m for m in matches if _is_today(m.get("commence_time", ""))]
     all_picks_today = _flatten_market_picks(today_matches)
 
