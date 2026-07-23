@@ -995,16 +995,30 @@ async def fetch_all_scores(db) -> List[Dict]:
 
     scores: List[Dict] = []
     active_sports = [
-        "soccer_fifa_world_cup",
-        "soccer_epl",
+        # Football — competitions realistes en cours en juillet
         "soccer_uefa_champs_league",
+        "soccer_uefa_europa_league",
+        "soccer_uefa_europa_conference_league",
+        "soccer_africa_caf_champions_league",
         "soccer_africa_africa_cup_of_nations",
         "soccer_world_wc_qualification_africa",
-        "basketball_nba",
-        "tennis_atp_wimbledon",
-        "tennis_wta_wimbledon",
+        "soccer_world_wc_qualification_concacaf",
+        "soccer_conmebol_copa_libertadores",
+        "soccer_norway_eliteserien",
+        "soccer_sweden_allsvenskan",
+        "soccer_finland_veikkausliiga",
+        "soccer_denmark_superliga",
+        "soccer_usa_mls",
+        "soccer_brazil_campeonato",
+        "soccer_brazil_serie_b",
+        "soccer_japan_j_league",
+        # Basketball — NBA hors saison en juillet, Summer League active
+        "basketball_nba_summer_league",
+        # Baseball — seul sport majeur US actif en juillet
         "baseball_mlb",
+        # Hockey — NHL hors saison, garde par securite si reprise anticipee
         "icehockey_nhl",
+        # MMA — actif toute l'annee
         "mma_mixed_martial_arts",
     ]
 
