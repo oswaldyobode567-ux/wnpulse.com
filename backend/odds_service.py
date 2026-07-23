@@ -47,6 +47,22 @@ ODDS_API_IO_LEAGUES = [
     "international-clubs-uefa-conference-league-qualification",
 ]
 
+# Hockey — sport distinct, gere separement (voir ODDS_API_IO_HOCKEY_LEAGUES)
+ODDS_API_IO_HOCKEY_LEAGUES = [
+    "sweden-shl",
+    "usa-nhl",
+    "russia-khl",
+]
+
+# Basketball — sport distinct. Pas d'Euroleague masculine active en juillet
+# (intersaison), mais qualifications FIBA Afrique confirmees actives et
+# pertinentes pour l'audience ouest-africaine.
+ODDS_API_IO_BASKETBALL_LEAGUES = [
+    "international-fiba-world-cup-african-qualifiers-group-e",
+    "international-fiba-world-cup-african-qualifiers-group-f",
+    "international-eurocup-group-a",
+]
+
 # Mapping des noms de marches odds-api.io -> noms internes (a confirmer/ajuster
 # une fois un exemple reel de reponse /v3/odds obtenu)
 ODDS_API_IO_MARKET_MAP = {
@@ -380,14 +396,14 @@ async def _check_sport_active(sport_key: str) -> bool:
 # exactement. Si aucun match n'apparait via cette source, il faudra ajuster
 # le mapping des champs ci-dessous avec un exemple reel de /v3/odds.
 
-async def _fetch_odds_api_io_events(league_slug: str) -> List[Dict]:
+async def _fetch_odds_api_io_events(league_slug: str, sport: str = "football") -> List[Dict]:
     """Recupere les evenements a venir pour une ligue donnee via odds-api.io."""
     if not ODDS_API_IO_KEY:
         return []
     url = f"{ODDS_API_IO_BASE}/events"
     params = {
         "apiKey": ODDS_API_IO_KEY,
-        "sport": "football",
+        "sport": sport,
         "league": league_slug,
         "status": "pending",
     }
@@ -437,7 +453,7 @@ _OAIO_MARKET_NAME_MAP = {
 }
 
 
-def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict]) -> Optional[Dict]:
+def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict], sport: str = "football") -> Optional[Dict]:
     """
     Convertit un evenement odds-api.io (structure reelle confirmee) au format
     interne (id/sport_key/sport_title/commence_time/home_team/away_team/
@@ -542,7 +558,7 @@ def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict]) -> Option
 
         return {
             "id": f"oaio-{event_id}",
-            "sport_key": "soccer_minor_leagues",
+            "sport_key": {"ice-hockey": "icehockey_minor_leagues", "basketball": "basketball_minor_leagues"}.get(sport, "soccer_minor_leagues"),
             "sport_title": league_name,
             "commence_time": commence,
             "home_team": home,
@@ -576,7 +592,9 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
     if not ODDS_API_IO_KEY:
         return []
 
-    MAX_TOTAL_ODDS_CALLS = 80  # marge de securite sous le quota de 100/h
+    MAX_TOTAL_ODDS_CALLS = 55  # marge de securite sous le quota de 100/h (football)
+    HOCKEY_BUDGET = 15
+    BASKETBALL_BUDGET = 12
     today = datetime.now(timezone.utc).date()
 
     def _event_sort_key(evt):
@@ -587,40 +605,87 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
         except Exception:
             return (1, datetime.max.replace(tzinfo=timezone.utc))
 
-    # ─── Passe 1 : recuperer les events de chaque ligue (peu couteux) ────────
+    def _is_today(evt):
+        try:
+            ed = datetime.fromisoformat(evt["date"].replace("Z", "+00:00"))
+            return ed.date() == today
+        except Exception:
+            return False
+
+    out: List[Dict] = []
+    calls_used = 0
+
+    # ─── Hockey : budget dedie, traite en premier ────────────────────────────
+    hockey_calls = 0
+    for league_slug in ODDS_API_IO_HOCKEY_LEAGUES:
+        if hockey_calls >= HOCKEY_BUDGET:
+            break
+        try:
+            events = await _fetch_odds_api_io_events(league_slug, sport="ice-hockey")
+            events_sorted = sorted(events, key=_event_sort_key)
+            per_league = max(2, HOCKEY_BUDGET // len(ODDS_API_IO_HOCKEY_LEAGUES))
+            for evt in events_sorted[:per_league]:
+                if hockey_calls >= HOCKEY_BUDGET:
+                    break
+                event_id = evt.get("id")
+                if not event_id:
+                    continue
+                odds_data = await _fetch_odds_api_io_odds(event_id)
+                hockey_calls += 1
+                converted = _convert_odds_api_io_event(evt, odds_data, sport="ice-hockey")
+                if converted:
+                    out.append(converted)
+        except Exception:
+            continue
+    calls_used += hockey_calls
+
+    # ─── Basketball : budget dedie ────────────────────────────────────────────
+    basketball_calls = 0
+    for league_slug in ODDS_API_IO_BASKETBALL_LEAGUES:
+        if basketball_calls >= BASKETBALL_BUDGET:
+            break
+        try:
+            events = await _fetch_odds_api_io_events(league_slug, sport="basketball")
+            events_sorted = sorted(events, key=_event_sort_key)
+            per_league = max(2, BASKETBALL_BUDGET // len(ODDS_API_IO_BASKETBALL_LEAGUES))
+            for evt in events_sorted[:per_league]:
+                if basketball_calls >= BASKETBALL_BUDGET:
+                    break
+                event_id = evt.get("id")
+                if not event_id:
+                    continue
+                odds_data = await _fetch_odds_api_io_odds(event_id)
+                basketball_calls += 1
+                converted = _convert_odds_api_io_event(evt, odds_data, sport="basketball")
+                if converted:
+                    out.append(converted)
+        except Exception:
+            continue
+    calls_used += basketball_calls
+
+    # ─── Passe 1 : recuperer les events football de chaque ligue ─────────────
     events_by_league: Dict[str, List[Dict]] = {}
     today_counts: Dict[str, int] = {}
 
     for league_slug in ODDS_API_IO_LEAGUES:
         try:
-            events = await _fetch_odds_api_io_events(league_slug)
+            events = await _fetch_odds_api_io_events(league_slug, sport="football")
             events_sorted = sorted(events, key=_event_sort_key)
             events_by_league[league_slug] = events_sorted
-
-            def _is_today(evt):
-                try:
-                    ed = datetime.fromisoformat(evt["date"].replace("Z", "+00:00"))
-                    return ed.date() == today
-                except Exception:
-                    return False
-
             today_counts[league_slug] = sum(1 for e in events_sorted if _is_today(e))
         except Exception:
             events_by_league[league_slug] = []
             today_counts[league_slug] = 0
 
-    # ─── Passe 2 : repartir le budget proportionnellement a la demande ───────
+    # ─── Passe 2 : repartir le budget restant proportionnellement ────────────
+    remaining_budget = MAX_TOTAL_ODDS_CALLS - calls_used
     total_today = sum(today_counts.values()) or 1
     budgets: Dict[str, int] = {}
     for league_slug in ODDS_API_IO_LEAGUES:
         share = today_counts[league_slug] / total_today
-        # Minimum 3 par ligue (meme faible demande), proportionnel au-dela
-        budgets[league_slug] = max(3, round(MAX_TOTAL_ODDS_CALLS * share))
+        budgets[league_slug] = max(3, round(remaining_budget * share))
 
-    # ─── Passe 3 : fetch des cotes selon le budget alloue ─────────────────────
-    out: List[Dict] = []
-    calls_used = 0
-
+    # ─── Passe 3 : fetch des cotes football selon le budget alloue ───────────
     for league_slug in ODDS_API_IO_LEAGUES:
         league_budget = budgets[league_slug]
         for evt in events_by_league.get(league_slug, [])[:league_budget]:
@@ -632,7 +697,7 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
             try:
                 odds_data = await _fetch_odds_api_io_odds(event_id)
                 calls_used += 1
-                converted = _convert_odds_api_io_event(evt, odds_data)
+                converted = _convert_odds_api_io_event(evt, odds_data, sport="football")
                 if converted:
                     out.append(converted)
             except Exception:
@@ -641,7 +706,8 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
             break
 
     logger.warning(
-        f"odds-api.io : budgets={budgets} | {calls_used} appel(s) /odds utilises, "
+        f"odds-api.io : hockey={hockey_calls} basketball={basketball_calls} | "
+        f"football_budgets={budgets} | {calls_used} appel(s) /odds au total, "
         f"{len(out)} match(s) convertis"
     )
     return out
@@ -817,7 +883,9 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
         # 3. Minimum 2 bookmakers — exemption pour odds-api.io dont le plan
         # actuel limite a 1 seul bookmaker autorise (Bet365)
-        is_secondary_source = m.get("sport_key") == "soccer_minor_leagues"
+        is_secondary_source = m.get("sport_key") in (
+            "soccer_minor_leagues", "icehockey_minor_leagues", "basketball_minor_leagues"
+        )
         min_books_required = 1 if is_secondary_source else 2
         if len(m.get("bookmakers", [])) < min_books_required:
             continue
