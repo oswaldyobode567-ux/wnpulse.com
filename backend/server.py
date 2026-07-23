@@ -5,7 +5,7 @@ Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 import os
 import uuid
 from datetime import datetime, timezone
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Depends, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
