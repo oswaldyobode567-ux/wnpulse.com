@@ -740,8 +740,11 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         except Exception:
             pass
 
-        # 3. Minimum 2 bookmakers
-        if len(m.get("bookmakers", [])) < 2:
+        # 3. Minimum 2 bookmakers — exemption pour odds-api.io dont le plan
+        # actuel limite a 1 seul bookmaker autorise (Bet365)
+        is_secondary_source = m.get("sport_key") == "soccer_minor_leagues"
+        min_books_required = 1 if is_secondary_source else 2
+        if len(m.get("bookmakers", [])) < min_books_required:
             continue
 
         filtered.append(m)
