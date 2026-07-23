@@ -19,7 +19,6 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true, testId: "nav-dashboard" },
   { to: "/app/live", label: "Live", icon: Radio, testId: "nav-live", badge: "Live" },
@@ -33,23 +32,19 @@ const NAV = [
   { to: "/app/parrainage", label: "Parrainage", icon: Gift, testId: "nav-referral" },
   { to: "/app/abonnement", label: "Abonnement", icon: CreditCard, testId: "nav-subscription" },
 ];
-
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-
   const tierLabel = {
     free: { label: "Free", cls: "bg-slate-100 text-slate-700" },
     pro: { label: "Pro", cls: "bg-orange-100 text-orange-700" },
     elite: { label: "Elite", cls: "bg-rose-100 text-rose-700" },
   }[user?.subscription_tier || "free"];
-
   const navItems = [...NAV];
   if (user?.is_admin) {
     navItems.push({ to: "/app/admin", label: "Admin", icon: ShieldCheck, testId: "nav-admin" });
   }
-
   return (
     <div className="min-h-screen bg-neutral-50">
       <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 bg-slate-950 text-slate-100 flex-col" data-testid="app-sidebar">
@@ -62,7 +57,6 @@ export default function AppLayout({ children }) {
             <div className="text-[10px] uppercase tracking-[0.18em] text-orange-400/70 mt-1">Ton pouls de gagnant</div>
           </div>
         </div>
-
         <nav className="flex-1 px-3 py-6 space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
@@ -82,8 +76,7 @@ export default function AppLayout({ children }) {
                 )}
               >
                 <Icon className={cn("h-4 w-4", active && "text-orange-400")} strokeWidth={2} />
-                <span className="flex-1">{item.label}</span>
-                {item.badge && (
+                <span className="flex-1">{item.label}</span>    {item.badge && (
                   <span className="text-[9px] font-bold uppercase tracking-wider bg-orange-500 text-white px-1.5 py-0.5 rounded">
                     {item.badge}
                   </span>
@@ -92,7 +85,6 @@ export default function AppLayout({ children }) {
             );
           })}
         </nav>
-
         <div className="p-4 border-t border-slate-800/80">
           <div className="rounded-xl bg-slate-900/80 p-3 border border-slate-800">
             <div className="flex items-center justify-between mb-2">
@@ -107,8 +99,7 @@ export default function AppLayout({ children }) {
             <Button
               data-testid="logout-button"
               size="sm"
-              variant="ghost"
-              className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
+              variant="ghost"              className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
               onClick={() => { logout(); navigate("/"); }}
             >
               <LogOut className="h-3.5 w-3.5 mr-2" />
@@ -117,7 +108,6 @@ export default function AppLayout({ children }) {
           </div>
         </div>
       </aside>
-
       <header className="lg:hidden sticky top-0 z-40 bg-white/85 backdrop-blur-xl border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="h-8 w-8 rounded-lg wp-gradient-warm grid place-items-center text-white">
@@ -125,9 +115,19 @@ export default function AppLayout({ children }) {
           </div>
           <span className="font-heading font-extrabold">WinPulse</span>
         </div>
-        <Badge className={cn("text-[10px] font-bold", tierLabel.cls)}>{tierLabel.label}</Badge>
+        <div className="flex items-center gap-2">
+          <Badge className={cn("text-[10px] font-bold", tierLabel.cls)}>{tierLabel.label}</Badge>
+          <Button
+            data-testid="logout-button-mobile"
+            size="icon"
+            variant="ghost"
+            className="h-8 w-8 text-slate-500 hover:text-rose-600 hover:bg-rose-50"
+            onClick={() => { logout(); navigate("/"); }}
+          >
+            <LogOut className="h-4 w-4" />
+          </Button>
+        </div>
       </header>
-
       <nav className={cn("lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-neutral-200 grid", user?.is_admin ? "grid-cols-6" : "grid-cols-5")}>
         {navItems.map((item) => {
           const Icon = item.icon;
@@ -150,7 +150,6 @@ export default function AppLayout({ children }) {
           );
         })}
       </nav>
-
       <main className="lg:pl-64 pb-24 lg:pb-0 min-h-screen flex flex-col">
         <div className="flex-1">{children}</div>
         <footer className="border-t border-neutral-200 bg-white py-5 px-4">
