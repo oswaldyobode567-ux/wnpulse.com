@@ -18,6 +18,7 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
+import httpx
 import logging
 logger = logging.getLogger("winpulse.odds_service")
 
