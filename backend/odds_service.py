@@ -378,14 +378,6 @@ async def _check_sport_active(sport_key: str) -> bool:
 # exactement. Si aucun match n'apparait via cette source, il faudra ajuster
 # le mapping des champs ci-dessous avec un exemple reel de /v3/odds.
 
-def _first_present(d: Dict, keys: List[str], default=None):
-    """Retourne la premiere cle presente parmi plusieurs noms possibles."""
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return default
-
-
 async def _fetch_odds_api_io_events(league_slug: str) -> List[Dict]:
     """Recupere les evenements a venir pour une ligue donnee via odds-api.io."""
     if not ODDS_API_IO_KEY:
@@ -409,11 +401,15 @@ async def _fetch_odds_api_io_events(league_slug: str) -> List[Dict]:
 
 
 async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
-    """Recupere les cotes pour un evenement donne via odds-api.io."""
+    """
+    Recupere les cotes pour un evenement donne via odds-api.io.
+    NOTE : le plan actuel limite a 1 bookmaker autorise (Bet365) — confirme
+    en test reel le 23/07/2026 ("Access denied... Allowed: Bet365").
+    """
     if not ODDS_API_IO_KEY:
         return None
     url = f"{ODDS_API_IO_BASE}/odds"
-    params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id}
+    params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id, "bookmakers": "Bet365"}
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params=params)
@@ -424,53 +420,110 @@ async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
         return None
 
 
-def _convert_odds_api_io_event(event: Dict, odds_data) -> Optional[Dict]:
+# Mapping des noms de marches odds-api.io (confirmes par exemple reel du
+# 23/07/2026) -> cles internes utilisees par prediction_engine.py
+_OAIO_MARKET_NAME_MAP = {
+    "ML": "h2h",
+    "Draw No Bet": "draw_no_bet",
+    "Totals": "totals",
+    "Goals Over/Under": "totals",
+    "Both Teams To Score": "btts",
+}
+
+
+def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict]) -> Optional[Dict]:
     """
-    Convertit un evenement odds-api.io au format interne (meme structure que
-    The Odds API : id/sport_key/sport_title/commence_time/home_team/away_team/
+    Convertit un evenement odds-api.io (structure reelle confirmee) au format
+    interne (id/sport_key/sport_title/commence_time/home_team/away_team/
     bookmakers[{key,title,markets[{key,outcomes[{name,price,point}]}]}]).
-    Retourne None si les champs essentiels sont introuvables — evite de
-    polluer le cache avec des matchs incomplets.
+
+    Structure source reelle :
+    {
+      "id": 72179162, "home": "Qarabag FK", "away": "PFC CSKA Sofia",
+      "date": "2026-07-23T16:00:00Z",
+      "league": {"name": "...", "slug": "..."},
+      "bookmakers": {
+        "Bet365": [
+          {"name": "ML", "odds": [{"home": "1.420", "draw": "4.333", "away": "6.000"}]},
+          {"name": "Totals", "odds": [{"hdp": 2.5, "over": "1.800", "under": "2.000"}]},
+          {"name": "Both Teams To Score", "odds": [{"yes": "2.100", "no": "1.666"}]},
+          {"name": "Draw No Bet", "odds": [{"home": "1.166", "away": "4.500"}]},
+          ...
+        ]
+      }
+    }
     """
     try:
-        event_id = _first_present(event, ["id", "eventId", "event_id"])
-        home = _first_present(event, ["homeTeam", "home_team", "home"])
-        away = _first_present(event, ["awayTeam", "away_team", "away"])
-        commence = _first_present(event, ["commenceTime", "commence_time", "startTime", "date"])
-        league_name = _first_present(event, ["league", "leagueName", "competition"], "")
+        event_id = event.get("id")
+        home = event.get("home")
+        away = event.get("away")
+        commence = event.get("date")
+        league_name = (event.get("league") or {}).get("name", "Football")
 
         if not (event_id and home and away and commence):
             return None
+        if not odds_data:
+            return None
 
-        bookmakers_raw = []
-        if isinstance(odds_data, dict):
-            bookmakers_raw = _first_present(odds_data, ["bookmakers", "books"], [])
-        elif isinstance(odds_data, list):
-            bookmakers_raw = odds_data
+        bookmakers_raw = odds_data.get("bookmakers", {})
+        if not isinstance(bookmakers_raw, dict):
+            return None
 
         bookmakers = []
-        for bm in bookmakers_raw or []:
-            bm_name = _first_present(bm, ["name", "bookmaker", "title"], "Unknown")
-            markets_raw = _first_present(bm, ["markets", "odds"], [])
+        for bm_name, bm_markets in bookmakers_raw.items():
+            if not isinstance(bm_markets, list):
+                continue
             markets = []
-            for mk in markets_raw or []:
-                raw_key = _first_present(mk, ["market", "key", "name"], "")
-                internal_key = ODDS_API_IO_MARKET_MAP.get(raw_key, None)
+            for mk in bm_markets:
+                raw_name = mk.get("name", "")
+                internal_key = _OAIO_MARKET_NAME_MAP.get(raw_name)
                 if not internal_key:
                     continue
-                outcomes_raw = _first_present(mk, ["outcomes", "selections"], [])
+                odds_list = mk.get("odds", [])
+                if not odds_list:
+                    continue
+                row = odds_list[0]  # ligne principale (hdp/point par defaut)
                 outcomes = []
-                for o in outcomes_raw or []:
-                    name = _first_present(o, ["name", "selection", "label"])
-                    price = _first_present(o, ["price", "odds", "value"])
-                    point = _first_present(o, ["point", "line"])
-                    if name and price:
-                        entry = {"name": name, "price": float(price)}
+
+                if internal_key == "h2h":
+                    if row.get("home"):
+                        outcomes.append({"name": home, "price": float(row["home"])})
+                    if row.get("away"):
+                        outcomes.append({"name": away, "price": float(row["away"])})
+                    if row.get("draw"):
+                        outcomes.append({"name": "Draw", "price": float(row["draw"])})
+
+                elif internal_key == "draw_no_bet":
+                    if row.get("home"):
+                        outcomes.append({"name": home, "price": float(row["home"])})
+                    if row.get("away"):
+                        outcomes.append({"name": away, "price": float(row["away"])})
+
+                elif internal_key == "totals":
+                    point = row.get("hdp")
+                    if row.get("over"):
+                        entry = {"name": "Over", "price": float(row["over"])}
                         if point is not None:
                             entry["point"] = float(point)
                         outcomes.append(entry)
+                    if row.get("under"):
+                        entry = {"name": "Under", "price": float(row["under"])}
+                        if point is not None:
+                            entry["point"] = float(point)
+                        outcomes.append(entry)
+
+                elif internal_key == "btts":
+                    if row.get("yes"):
+                        outcomes.append({"name": "Yes", "price": float(row["yes"])})
+                    if row.get("no"):
+                        outcomes.append({"name": "No", "price": float(row["no"])})
+
                 if outcomes:
-                    markets.append({"key": internal_key, "outcomes": outcomes})
+                    # Eviter les doublons de marche (ex: Totals + Goals Over/Under
+                    # mappent tous deux vers "totals" — on garde le premier trouve)
+                    if not any(m["key"] == internal_key for m in markets):
+                        markets.append({"key": internal_key, "outcomes": outcomes})
+
             if markets:
                 bookmakers.append({
                     "key": str(bm_name).lower().replace(" ", ""),
@@ -484,7 +537,7 @@ def _convert_odds_api_io_event(event: Dict, odds_data) -> Optional[Dict]:
         return {
             "id": f"oaio-{event_id}",
             "sport_key": "soccer_minor_leagues",
-            "sport_title": league_name or "Football",
+            "sport_title": league_name,
             "commence_time": commence,
             "home_team": home,
             "away_team": away,
@@ -508,7 +561,7 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
         try:
             events = await _fetch_odds_api_io_events(league_slug)
             for evt in events[:20]:
-                event_id = _first_present(evt, ["id", "eventId", "event_id"])
+                event_id = evt.get("id")
                 if not event_id:
                     continue
                 odds_data = await _fetch_odds_api_io_odds(event_id)
