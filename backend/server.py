@@ -638,6 +638,36 @@ async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
     return result
 
 
+@app.get("/api/admin/activate-admin-simple")
+async def admin_activate_admin_simple(email: str = "", key: str = ""):
+    """
+    Active is_admin=true et subscription=elite pour un compte donne, en direct.
+    Contourne la logique d'auto-promotion a la connexion (utile si un compte
+    existait deja avant la configuration de ADMIN_EMAILS).
+    Usage : https://TON-BACKEND/api/admin/activate-admin-simple?email=X&key=TA_CLE_SECRETE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    email_norm = email.lower().strip()
+    user = await db.users.find_one({"email": email_norm})
+    if not user:
+        raise HTTPException(status_code=404, detail=f"Aucun compte pour {email_norm}")
+
+    await db.users.update_one(
+        {"email": email_norm},
+        {"$set": {"is_admin": True, "subscription": "elite"}},
+    )
+    updated = await db.users.find_one({"email": email_norm})
+    return {
+        "ok": True,
+        "email": updated.get("email"),
+        "is_admin": updated.get("is_admin"),
+        "subscription": updated.get("subscription"),
+    }
+
+
 @app.get("/api/admin/whoami-simple")
 async def admin_whoami_simple(email: str = "", key: str = ""):
     """
