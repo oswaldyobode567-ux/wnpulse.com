@@ -31,13 +31,18 @@ BSD_API_KEY = os.environ.get("BSD_API_KEY", "").strip()
 BSD_API_BASE = "https://sports.bzzoiro.com/api"
 
 # Ligues mineures d'ete a completer via odds-api.io en secours (slugs confirmes
-# depuis /v3/leagues?sport=football)
+# depuis /v3/leagues?sport=football). Inclut les qualifications UEFA qui ne
+# sont actuellement PAS disponibles sur The Odds API (verifie le 23/07/2026 :
+# aucune competition UEFA dans /v4/sports actif), mais bien presentes ici.
 ODDS_API_IO_LEAGUES = [
     "norway-eliteserien",
     "sweden-allsvenskan",
     "finland-veikkausliiga",
     "denmark-superligaen",
     "brazil-brasileiro-serie-b",
+    "international-clubs-uefa-champions-league-qualification",
+    "international-clubs-uefa-europa-league-qualification",
+    "international-clubs-uefa-conference-league-qualification",
 ]
 
 # Mapping des noms de marches odds-api.io -> noms internes (a confirmer/ajuster
