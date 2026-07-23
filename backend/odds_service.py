@@ -560,7 +560,10 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
     for league_slug in ODDS_API_IO_LEAGUES:
         try:
             events = await _fetch_odds_api_io_events(league_slug)
-            for evt in events[:20]:
+            # Limite stricte : max 5 matchs par ligue pour rester sous le
+            # quota de 100 requetes/heure du plan gratuit odds-api.io
+            # (8 ligues x 5 matchs x 1 appel odds = 40 requetes/refresh)
+            for evt in events[:5]:
                 event_id = evt.get("id")
                 if not event_id:
                     continue
