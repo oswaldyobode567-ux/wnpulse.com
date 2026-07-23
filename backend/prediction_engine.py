@@ -472,8 +472,17 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
 def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
     """
     Quand le meilleur pick simple a une cote trop basse (< COMBO_TARGET_MIN_ODDS),
-    tente de le combiner avec un 2eme marche compatible du meme match pour
-    obtenir une cote plus interessante. Ex: "Victoire Juventus & Plus de 2.5 buts".
+    tente de le combiner avec le MEILLEUR 2eme marche compatible du meme match
+    (celui qui maximise la confiance combinee, pas le premier trouve) pour
+    obtenir une cote plus interessante sans sacrifier excessivement la fiabilite.
+    Ex: "Victoire Juventus & Plus de 2.5 buts".
+
+    Ne combine QUE si :
+    - le pick principal est deja raisonnablement fiable (>= 62% seul)
+    - la meilleure combinaison possible reste au-dessus d'un plancher de
+      confiance correct (>= 52%)
+    Sinon, retourne None et le pick simple est garde tel quel — pas de
+    combinaison forcee qui degraderait un bon pick en "risque".
     """
     if not market_results:
         return None
@@ -483,6 +492,12 @@ def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
 
     if primary["pick_odds"] >= COMBO_TARGET_MIN_ODDS:
         return None  # cote deja suffisante, pas besoin de combiner
+
+    if primary["confidence"] < 62:
+        return None  # pick principal pas assez solide pour justifier une combinaison
+
+    best_candidate = None
+    best_combined_conf = 0.0
 
     for secondary in ranked[1:]:
         if secondary["market"] == primary["market"]:
@@ -497,25 +512,34 @@ def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
             continue
 
         combined_conf = round((primary["confidence"] * secondary["confidence"]) / 100, 1)
-        if combined_conf < 45:
-            continue
+        if combined_conf > best_combined_conf:
+            best_combined_conf = combined_conf
+            best_candidate = (secondary, combined_odds, combined_conf)
 
-        return {
-            "market": "combo",
-            "market_label": "Combiné (IA)",
-            "pick": f"{primary['pick']} & {secondary['pick']}",
-            "pick_raw": f"{primary.get('pick_raw','')}+{secondary.get('pick_raw','')}",
-            "pick_point": None,
-            "pick_odds": combined_odds,
-            "confidence": combined_conf,
-            "label": "safe" if combined_conf >= 70 else ("value" if combined_conf >= 55 else "risky"),
-            "edge": round((primary.get("edge", 0) + secondary.get("edge", 0)) / 2, 2),
-            "num_books": min(primary.get("num_books", 0), secondary.get("num_books", 0)),
-            "is_combo": True,
-            "combo_legs": [primary["pick"], secondary["pick"]],
-        }
+    if not best_candidate or best_combined_conf < 52:
+        return None  # aucune combinaison assez fiable — on garde le pick simple
 
-    return None
+    secondary, combined_odds, combined_conf = best_candidate
+
+    return {
+        "market": "combo",
+        "market_label": "Combiné (IA)",
+        "pick": f"{primary['pick']} & {secondary['pick']}",
+        "pick_raw": f"{primary.get('pick_raw','')}+{secondary.get('pick_raw','')}",
+        "pick_point": None,
+        "pick_odds": combined_odds,
+        "confidence": combined_conf,
+        # Seuils de label adaptes : une confiance combinee (produit de 2
+        # probabilites) est naturellement plus basse qu'un pick simple, meme
+        # pour une tres bonne combinaison — les seuils sont donc plus bas
+        # que pour un pick simple (safe >=62, value >=50) pour refleter ca
+        # honnetement sans afficher "risque" a tort.
+        "label": "safe" if combined_conf >= 62 else ("value" if combined_conf >= 50 else "risky"),
+        "edge": round((primary.get("edge", 0) + secondary.get("edge", 0)) / 2, 2),
+        "num_books": min(primary.get("num_books", 0), secondary.get("num_books", 0)),
+        "is_combo": True,
+        "combo_legs": [primary["pick"], secondary["pick"]],
+    }
 
 
 # ─── Deep reasoning ──────────────────────────────────────────────────────────
