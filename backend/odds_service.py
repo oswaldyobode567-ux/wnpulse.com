@@ -18,7 +18,8 @@ import hashlib
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
-import httpx
+import logging
+logger = logging.getLogger("winpulse.odds_service")
 
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
@@ -393,10 +394,12 @@ async def _fetch_odds_api_io_events(league_slug: str) -> List[Dict]:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params=params)
             if r.status_code != 200:
+                logger.warning(f"odds-api.io events [{league_slug}] -> HTTP {r.status_code}: {r.text[:200]}")
                 return []
             data = r.json()
             return data if isinstance(data, list) else []
-    except Exception:
+    except Exception as e:
+        logger.warning(f"odds-api.io events [{league_slug}] -> exception: {e}")
         return []
 
 
@@ -414,9 +417,11 @@ async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params=params)
             if r.status_code != 200:
+                logger.warning(f"odds-api.io odds [eventId={event_id}] -> HTTP {r.status_code}: {r.text[:200]}")
                 return None
             return r.json()
-    except Exception:
+    except Exception as e:
+        logger.warning(f"odds-api.io odds [eventId={event_id}] -> exception: {e}")
         return None
 
 
@@ -711,10 +716,11 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     # ─── Source secondaire : odds-api.io pour ligues mineures ────────────────
     try:
         secondary_matches = await _fetch_odds_api_io_matches()
+        logger.warning(f"odds-api.io : {len(secondary_matches)} match(s) recupere(s) au total")
         if secondary_matches:
             matches = _merge_events(matches, secondary_matches)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"odds-api.io : echec global -> {e}")
 
     # Fallback si aucun match réel
     if not matches:
