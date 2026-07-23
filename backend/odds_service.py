@@ -562,23 +562,60 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
     if not ODDS_API_IO_KEY:
         return []
 
+async def _fetch_odds_api_io_matches() -> List[Dict]:
+    """
+    Fetch complet odds-api.io pour les ligues mineures configurees.
+    Priorise les matchs du jour et repartit intelligemment le budget de
+    requetes (~90/heure max, quota du plan gratuit = 100/heure) entre les
+    ligues plutot qu'une limite fixe basse identique pour toutes.
+    Defensif : toute erreur individuelle est ignoree, ne bloque jamais
+    le fetch principal The Odds API.
+    """
+    if not ODDS_API_IO_KEY:
+        return []
+
+    MAX_TOTAL_ODDS_CALLS = 85  # marge de securite sous le quota de 100/h
+    calls_used = 0
+
     out: List[Dict] = []
+    today = datetime.now(timezone.utc).date()
+
     for league_slug in ODDS_API_IO_LEAGUES:
+        if calls_used >= MAX_TOTAL_ODDS_CALLS:
+            break
         try:
             events = await _fetch_odds_api_io_events(league_slug)
-            # Limite stricte : max 5 matchs par ligue pour rester sous le
-            # quota de 100 requetes/heure du plan gratuit odds-api.io
-            # (8 ligues x 5 matchs x 1 appel odds = 40 requetes/refresh)
-            for evt in events[:5]:
+
+            # Priorite aux matchs d'aujourd'hui, puis les plus proches dans le temps
+            def _event_sort_key(evt):
+                try:
+                    ed = datetime.fromisoformat(evt["date"].replace("Z", "+00:00"))
+                    is_today = 0 if ed.date() == today else 1
+                    return (is_today, ed)
+                except Exception:
+                    return (1, datetime.max.replace(tzinfo=timezone.utc))
+
+            events_sorted = sorted(events, key=_event_sort_key)
+
+            # Repartition equitable du budget restant entre les ligues encore a traiter
+            remaining_leagues = len(ODDS_API_IO_LEAGUES) - ODDS_API_IO_LEAGUES.index(league_slug)
+            per_league_budget = max(5, (MAX_TOTAL_ODDS_CALLS - calls_used) // max(remaining_leagues, 1))
+
+            for evt in events_sorted[:per_league_budget]:
+                if calls_used >= MAX_TOTAL_ODDS_CALLS:
+                    break
                 event_id = evt.get("id")
                 if not event_id:
                     continue
                 odds_data = await _fetch_odds_api_io_odds(event_id)
+                calls_used += 1
                 converted = _convert_odds_api_io_event(evt, odds_data)
                 if converted:
                     out.append(converted)
         except Exception:
             continue
+
+    logger.warning(f"odds-api.io : {calls_used} appel(s) /odds utilises, {len(out)} match(s) convertis")
     return out
 
 
