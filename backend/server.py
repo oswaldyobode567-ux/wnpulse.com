@@ -406,6 +406,104 @@ async def _require_admin(payload: dict) -> dict:
     return user
 
 
+@app.get("/api/admin/stats")
+async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
+    """Statistiques globales pour le tableau de bord admin."""
+    await _require_admin(payload)
+
+    total_users = await db.users.count_documents({})
+    free_users = await db.users.count_documents({"subscription": "free"})
+    paid_users = total_users - free_users
+    pending_payments = await db.subscription_requests.count_documents({"status": "pending"})
+    approved_payments = await db.subscription_requests.count_documents({"status": "approved"})
+
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    matches_count = cached.get("count", 0) if cached else 0
+
+    return {
+        "total_users": total_users,
+        "free_users": free_users,
+        "paid_users": paid_users,
+        "pending_payments": pending_payments,
+        "approved_payments": approved_payments,
+        "matches_in_cache": matches_count,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
+    """Liste de tous les utilisateurs, pour le panneau admin."""
+    await _require_admin(payload)
+    users = await db.users.find({}).sort("created_at", -1).to_list(length=500)
+    result = []
+    for u in users:
+        result.append({
+            "id": u.get("id"),
+            "email": u.get("email"),
+            "name": u.get("name", ""),
+            "subscription": u.get("subscription", "free"),
+            "is_admin": u.get("is_admin", False),
+            "created_at": u.get("created_at"),
+        })
+    return result
+
+
+# Statuts en francais attendus par le frontend, mappes vers les valeurs internes
+_PAYMENT_STATUS_MAP_FR_TO_EN = {
+    "en attente": "pending",
+    "approuve": "approved",
+    "approuvee": "approved",
+    "rejete": "rejected",
+    "rejetee": "rejected",
+    "tout": "all",
+    "tous": "all",
+}
+
+
+@app.get("/api/admin/payments")
+async def admin_get_payments(
+    status_filter: str = "en attente",
+    payload: dict = Depends(get_current_user_payload),
+):
+    """
+    Liste des demandes de paiement/abonnement, avec filtre de statut en
+    francais (nom de parametre et valeurs attendues par le frontend).
+    """
+    await _require_admin(payload)
+    internal_status = _PAYMENT_STATUS_MAP_FR_TO_EN.get(
+        status_filter.lower().strip(), status_filter
+    )
+    query = {} if internal_status == "all" else {"status": internal_status}
+    requests = await db.subscription_requests.find(query).sort("created_at", -1).to_list(length=200)
+    for r in requests:
+        r.pop("_id", None)
+    return requests
+
+
+@app.get("/api/admin/whatsapp-blast")
+async def admin_whatsapp_blast(payload: dict = Depends(get_current_user_payload)):
+    """
+    Donnees pour l'envoi groupe WhatsApp aux utilisateurs (liste de contacts
+    a contacter). L'envoi effectif necessite une integration WhatsApp
+    Business API non encore configuree — cette route fournit pour l'instant
+    la liste des utilisateurs payants a contacter manuellement, plutot
+    qu'un 404 qui casse la page admin.
+    """
+    await _require_admin(payload)
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=500)
+    contacts = [
+        {"email": u.get("email"), "name": u.get("name", ""), "subscription": u.get("subscription")}
+        for u in paid_users
+    ]
+    return {
+        "ready": False,
+        "detail": "Integration WhatsApp Business API pas encore configuree. Liste des contacts payants ci-dessous.",
+        "contacts": contacts,
+        "total": len(contacts),
+    }
+
+
 @app.get("/api/admin/subscription-requests")
 async def admin_list_subscription_requests(
     status_filter: str = "pending",
