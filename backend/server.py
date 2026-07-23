@@ -633,13 +633,8 @@ async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload
     return saved
 
 
-@app.get("/api/predictions/history")
-async def get_predictions_history():
-    """
-    Historique des picks passes (track record). Pas encore de suivi
-    persistant en base — retourne une liste vide propre plutot qu'un 404.
-    """
-    return []
+# NOTE : la route /api/predictions/history reelle (avec historique persiste)
+# est definie plus bas, apres l'implementation du suivi des predictions.
 
 
 # ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
@@ -717,6 +712,93 @@ async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
         "rewards_earned_fcfa": 0,
         "referred_users": [],
     }
+
+
+@app.get("/api/predictions/history")
+async def get_predictions_history(limit: int = 100, payload: Optional[dict] = Depends(get_optional_user_payload)):
+    """
+    Historique reel des picks publies avec leur resultat (gagne/perdu/en attente).
+    Alimente par _save_predictions_to_history() a chaque refresh et reconcilie
+    avec les scores reels par _reconcile_predictions_with_scores().
+    """
+    history = await db.predictions_history.find({}).sort("created_at", -1).to_list(length=limit)
+    for h in history:
+        h.pop("_id", None)
+    return history
+
+
+@app.get("/api/admin/accuracy-stats")
+async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payload)):
+    """
+    Statistiques REELLES de reussite, calculees uniquement sur les picks
+    dont le resultat a ete confirme (won/lost) — jamais sur des picks
+    encore en attente. Casse par tranche de confiance pour verifier si le
+    moteur est bien calibre (ex: les picks a 75% de confiance gagnent-ils
+    vraiment ~75% du temps ?).
+    """
+    await _require_admin(payload)
+
+    resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}}
+    ).to_list(length=5000)
+
+    if not resolved:
+        return {
+            "total_resolved": 0,
+            "detail": "Aucun pick avec resultat confirme pour le moment. "
+                      "Les statistiques deviendront fiables au fur et a mesure "
+                      "que les matchs se terminent et sont reconcilies.",
+            "brackets": [],
+        }
+
+    def _bracket(conf):
+        if conf >= 80:
+            return "80-100%"
+        if conf >= 70:
+            return "70-79%"
+        if conf >= 60:
+            return "60-69%"
+        return "< 60%"
+
+    brackets: Dict[str, Dict] = {}
+    for p in resolved:
+        b = _bracket(p.get("confidence", 0))
+        brackets.setdefault(b, {"total": 0, "won": 0})
+        brackets[b]["total"] += 1
+        if p.get("result") == "won":
+            brackets[b]["won"] += 1
+
+    bracket_stats = []
+    for b, d in sorted(brackets.items()):
+        win_rate = round((d["won"] / d["total"]) * 100, 1) if d["total"] else 0
+        bracket_stats.append({
+            "bracket": b, "total": d["total"], "won": d["won"],
+            "win_rate_percent": win_rate,
+        })
+
+    total_won = sum(1 for p in resolved if p.get("result") == "won")
+    global_win_rate = round((total_won / len(resolved)) * 100, 1)
+
+    return {
+        "total_resolved": len(resolved),
+        "total_won": total_won,
+        "global_win_rate_percent": global_win_rate,
+        "brackets": bracket_stats,
+    }
+
+
+@app.get("/api/admin/reconcile-results-simple")
+async def admin_reconcile_results_simple(key: str = ""):
+    """
+    Force la reconciliation manuelle des picks avec les scores reels.
+    Usage : https://TON-BACKEND/api/admin/reconcile-results-simple?key=TA_CLE
+    Normalement execute automatiquement par le worker planifie.
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await _reconcile_predictions_with_scores()
+    return result
 
 
 # ─── Scores ───────────────────────────────────────────────────────────────
@@ -800,8 +882,142 @@ async def admin_refresh_simple(key: str = ""):
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
-    result = await refresh_matches_worker(db)
+    result = await _full_refresh_and_track()
     return result
+
+
+# ─── Suivi reel des predictions (backtest continu) ──────────────────────────
+
+def _pick_signature(match_id: str, pick: str) -> str:
+    """Identifiant unique pour eviter de dupliquer le meme pick en historique."""
+    import hashlib
+    return hashlib.md5(f"{match_id}::{pick}".encode()).hexdigest()
+
+
+async def _save_predictions_to_history(matches: List[Dict]):
+    """
+    Sauvegarde chaque pick publie (confiance suffisante) dans l'historique,
+    UNE SEULE FOIS par match+pick — pour ensuite mesurer la vraie performance
+    dans le temps, sans jamais modifier un pick deja enregistre (integrite
+    de la mesure : on n'ajuste jamais un pick apres coup).
+    """
+    try:
+        predictions = analyze_all(matches)
+        for p in predictions:
+            if not p.get("pick") or not p.get("match_id"):
+                continue
+            sig = _pick_signature(p["match_id"], p["pick"])
+            existing = await db.predictions_history.find_one({"signature": sig})
+            if existing:
+                continue  # deja enregistre, on ne touche pas (integrite de la mesure)
+
+            await db.predictions_history.insert_one({
+                "signature": sig,
+                "match_id": p["match_id"],
+                "home_team": p.get("home_team"),
+                "away_team": p.get("away_team"),
+                "sport_title": p.get("sport_title"),
+                "commence_time": p.get("commence_time"),
+                "pick": p["pick"],
+                "market": p.get("market"),
+                "pick_odds": p.get("pick_odds"),
+                "confidence": p.get("confidence"),
+                "is_combo": p.get("is_combo", False),
+                "result": "pending",  # pending -> won / lost apres reconciliation
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+    except Exception:
+        pass
+
+
+async def _reconcile_predictions_with_scores() -> Dict:
+    """
+    Compare les picks "pending" avec les scores reels des matchs termines,
+    et met a jour leur resultat (won/lost). Ne touche jamais un pick deja
+    reconcilie — integrite de la mesure.
+    """
+    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=1000)
+    if not pending:
+        return {"ok": True, "checked": 0, "updated": 0}
+
+    scores = await fetch_all_scores(db)
+    scores_by_match = {s.get("id"): s for s in scores if s.get("id")}
+
+    updated = 0
+    for pred in pending:
+        score_entry = scores_by_match.get(pred["match_id"])
+        if not score_entry or not score_entry.get("completed"):
+            continue
+
+        try:
+            score_data = score_entry.get("scores") or []
+            home_score = away_score = None
+            for s in score_data:
+                if s.get("name") == pred.get("home_team"):
+                    home_score = int(s.get("score", 0))
+                elif s.get("name") == pred.get("away_team"):
+                    away_score = int(s.get("score", 0))
+
+            if home_score is None or away_score is None:
+                continue
+
+            result = _evaluate_pick_result(pred, home_score, away_score)
+            if result:
+                await db.predictions_history.update_one(
+                    {"signature": pred["signature"]},
+                    {"$set": {
+                        "result": result,
+                        "final_score": f"{home_score}-{away_score}",
+                        "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                updated += 1
+        except Exception:
+            continue
+
+    return {"ok": True, "checked": len(pending), "updated": updated}
+
+
+def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
+    """
+    Determine si un pick simple (marche h2h/totals/btts) a gagne ou perdu,
+    a partir du score final. Retourne None si le marche n'est pas encore
+    supporte par cette evaluation automatique (ex: combo, corners, cartons)
+    — ces cas restent "pending" et necessitent une verification manuelle
+    plutot qu'un resultat devine a tort.
+    """
+    pick = (pred.get("pick") or "").lower()
+    market = pred.get("market", "")
+    home = (pred.get("home_team") or "")
+    away = (pred.get("away_team") or "")
+    total_goals = home_score + away_score
+
+    if market == "h2h":
+        if pick == home.lower():
+            return "won" if home_score > away_score else "lost"
+        if pick == away.lower():
+            return "won" if away_score > home_score else "lost"
+        if "nul" in pick or pick == "draw":
+            return "won" if home_score == away_score else "lost"
+
+    if market == "totals" or "plus de" in pick or "moins de" in pick:
+        point = pred.get("pick_point")
+        if point is not None:
+            if "plus de" in pick:
+                return "won" if total_goals > point else "lost"
+            if "moins de" in pick:
+                return "won" if total_goals < point else "lost"
+
+    if market == "btts":
+        both_scored = home_score > 0 and away_score > 0
+        if "oui" in pick:
+            return "won" if both_scored else "lost"
+        if "non" in pick:
+            return "won" if not both_scored else "lost"
+
+    # Marches non couverts automatiquement (combo, corners, cartons, mi-temps...)
+    # restent "pending" — pas de fausse estimation.
+    return None
 
 
 # ─── Worker planifie (06h00 et 13h00 WAT = UTC+1) ───────────────────────────
@@ -809,17 +1025,29 @@ async def admin_refresh_simple(key: str = ""):
 scheduler = AsyncIOScheduler(timezone="UTC")
 
 
+async def _full_refresh_and_track():
+    """Refresh les donnees, sauvegarde les nouveaux picks, reconcilie les anciens."""
+    matches = await refresh_matches_worker(db)
+    all_matches = await fetch_all_matches(db)
+    await _save_predictions_to_history(all_matches)
+    await _reconcile_predictions_with_scores()
+    return matches
+
+
 @app.on_event("startup")
 async def startup_event():
     # 06h00 WAT = 05h00 UTC / 13h00 WAT = 12h00 UTC
-    scheduler.add_job(lambda: refresh_matches_worker(db), "cron", hour=5, minute=0)
-    scheduler.add_job(lambda: refresh_matches_worker(db), "cron", hour=12, minute=0)
+    scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour=5, minute=0)
+    scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour=12, minute=0)
+    # Reconciliation supplementaire toutes les 2h pour capter les matchs
+    # termines entre deux refresh complets, sans consommer de credit odds
+    scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
     scheduler.start()
 
     # Premier fetch si cache vide (ne consomme des credits que si absent)
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
     if not existing:
-        await refresh_matches_worker(db)
+        await _full_refresh_and_track()
 
 
 @app.on_event("shutdown")
