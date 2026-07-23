@@ -638,6 +638,31 @@ async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
     return result
 
 
+@app.get("/api/admin/whoami-simple")
+async def admin_whoami_simple(email: str = "", key: str = ""):
+    """
+    Diagnostic simple par lien navigateur, sans besoin de console/token.
+    Usage : https://TON-BACKEND/api/admin/whoami-simple?email=X&key=TA_CLE_SECRETE
+    Montre l'etat exact d'un compte en base (is_admin, subscription, etc.)
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    user = await db.users.find_one({"email": email.lower().strip()})
+    if not user:
+        return {"found": False, "email_recherche": email.lower().strip()}
+
+    return {
+        "found": True,
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "is_admin": user.get("is_admin", False),
+        "subscription": user.get("subscription", "free"),
+        "created_at": user.get("created_at"),
+    }
+
+
 @app.get("/api/admin/refresh-simple")
 async def admin_refresh_simple(key: str = ""):
     """
