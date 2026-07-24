@@ -18,6 +18,20 @@ const STATUS_CLS = {
   rejected: "bg-rose-50 text-rose-700 border-rose-200",
 };
 
+// Petits helpers défensifs : le backend a déjà eu un historique de noms de
+// champs incohérents (ex: price vs price_fcfa). On tente plusieurs clés
+// possibles et on retombe sur 0 plutôt que de planter le composant.
+function safeNumber(...candidates) {
+  for (const c of candidates) {
+    if (typeof c === "number" && !Number.isNaN(c)) return c;
+  }
+  return 0;
+}
+
+function formatFcfa(...candidates) {
+  return safeNumber(...candidates).toLocaleString();
+}
+
 export default function AdminPage() {
   const [stats, setStats] = useState(null);
   const [payments, setPayments] = useState([]);
@@ -172,10 +186,16 @@ export default function AdminPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8" data-testid="admin-stats">
-            <Kpi icon={Users} label="Utilisateurs" value={stats.users.total} sub={`${stats.users.pro} Pro · ${stats.users.elite} Elite`} accent="orange" />
-            <Kpi icon={Clock} label="Paiements en attente" value={stats.payments.pending} accent="amber" />
-            <Kpi icon={CheckCircle2} label="Paiements validés" value={stats.payments.confirmed} accent="emerald" />
-            <Kpi icon={Wallet} label="Chiffre d'affaires" value={`${stats.revenue_xof.toLocaleString()} FCFA`} accent="rose" mono />
+            <Kpi icon={Users} label="Utilisateurs" value={safeNumber(stats.users?.total)} sub={`${safeNumber(stats.users?.pro)} Pro · ${safeNumber(stats.users?.elite)} Elite`} accent="orange" />
+            <Kpi icon={Clock} label="Paiements en attente" value={safeNumber(stats.payments?.pending)} accent="amber" />
+            <Kpi icon={CheckCircle2} label="Paiements validés" value={safeNumber(stats.payments?.confirmed)} accent="emerald" />
+            <Kpi
+              icon={Wallet}
+              label="Chiffre d'affaires"
+              value={`${formatFcfa(stats.revenue_xof, stats.revenue_fcfa, stats.revenue, stats.total_revenue_xof, stats.total_revenue)} FCFA`}
+              accent="rose"
+              mono
+            />
           </div>
         )}
 
@@ -218,8 +238,10 @@ export default function AdminPage() {
                         {p.payer_name || "?"} · {p.user_email} · 📱 {p.phone} · {dayjs(p.created_at).format("DD MMM HH:mm")}
                       </div>
                     </div>
-                    <div className="font-bold text-slate-900 font-mono">{p.amount_xof.toLocaleString()} FCFA</div>
-                    <Badge variant="outline" className="font-semibold">{p.tier.toUpperCase()}</Badge>
+                    <div className="font-bold text-slate-900 font-mono">
+                      {formatFcfa(p.amount_xof, p.amount_fcfa, p.amount)} FCFA
+                    </div>
+                    <Badge variant="outline" className="font-semibold">{(p.tier || "").toUpperCase()}</Badge>
                     {p.status === "pending" && (
                       <div className="flex gap-2">
                         <Button
@@ -262,7 +284,7 @@ export default function AdminPage() {
                       <div className="text-xs text-slate-500 truncate">{u.email}</div>
                     </div>
                     <Badge variant="outline" className="font-semibold">{(u.subscription_tier || "free").toUpperCase()}</Badge>
-                    <div className="text-xs text-slate-400 hidden sm:block">{dayjs(u.created_at).format("DD MMM YYYY")}</div>
+                    <div className="text-xs text-slate-400 hidden sm:block">{u.created_at ? dayjs(u.created_at).format("DD MMM YYYY") : "—"}</div>
                   </div>
                 ))}
               </div>
