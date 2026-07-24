@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 
 const STATUS_CLS = {
   pending: "bg-amber-50 text-amber-700 border-amber-200",
-  confirmed: "bg-emerald-50 text-emerald-700 border-emerald-200",
+  approved: "bg-emerald-50 text-emerald-700 border-emerald-200",
   rejected: "bg-rose-50 text-rose-700 border-rose-200",
 };
 
@@ -58,7 +58,7 @@ export default function AdminPage() {
     try {
       const [s, p, u] = await Promise.all([
         api.get("/admin/stats"),
-        api.get(`/admin/payments${statusFilter ? `?status_filter=${statusFilter}` : ""}`),
+        api.get(`/admin/subscription-requests${statusFilter ? `?status_filter=${statusFilter}` : ""}`),
         api.get("/admin/users"),
       ]);
       setStats(s.data);
@@ -76,7 +76,7 @@ export default function AdminPage() {
   const confirmPayment = async (ref) => {
     setActionLoading(ref);
     try {
-      await api.post(`/admin/payments/${ref}/confirm`);
+      await api.post(`/admin/subscription-requests/${ref}/approve`);
       toast.success("Paiement confirmé · utilisateur upgradé");
       await loadAll();
     } catch (e) {
@@ -89,7 +89,7 @@ export default function AdminPage() {
   const rejectPayment = async (ref) => {
     setActionLoading(ref);
     try {
-      await api.post(`/admin/payments/${ref}/reject`);
+      await api.post(`/admin/subscription-requests/${ref}/reject`);
       toast.success("Paiement rejeté");
       await loadAll();
     } catch (e) {
@@ -186,13 +186,13 @@ export default function AdminPage() {
           </div>
         ) : (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8" data-testid="admin-stats">
-            <Kpi icon={Users} label="Utilisateurs" value={safeNumber(stats.users?.total)} sub={`${safeNumber(stats.users?.pro)} Pro · ${safeNumber(stats.users?.elite)} Elite`} accent="orange" />
-            <Kpi icon={Clock} label="Paiements en attente" value={safeNumber(stats.payments?.pending)} accent="amber" />
-            <Kpi icon={CheckCircle2} label="Paiements validés" value={safeNumber(stats.payments?.confirmed)} accent="emerald" />
+            <Kpi icon={Users} label="Utilisateurs" value={safeNumber(stats.total_users)} sub={`${safeNumber(stats.paid_users)} payants · ${safeNumber(stats.free_users)} gratuits`} accent="orange" />
+            <Kpi icon={Clock} label="Paiements en attente" value={safeNumber(stats.pending_payments)} accent="amber" />
+            <Kpi icon={CheckCircle2} label="Paiements validés" value={safeNumber(stats.approved_payments)} accent="emerald" />
             <Kpi
               icon={Wallet}
-              label="Chiffre d'affaires"
-              value={`${formatFcfa(stats.revenue_xof, stats.revenue_fcfa, stats.revenue, stats.total_revenue_xof, stats.total_revenue)} FCFA`}
+              label="Matchs en cache"
+              value={safeNumber(stats.matches_in_cache)}
               accent="rose"
               mono
             />
@@ -219,7 +219,7 @@ export default function AdminPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="pending">En attente</SelectItem>
-                    <SelectItem value="confirmed">Confirmés</SelectItem>
+                    <SelectItem value="approved">Confirmés</SelectItem>
                     <SelectItem value="rejected">Rejetés</SelectItem>
                   </SelectContent>
                 </Select>
@@ -235,13 +235,13 @@ export default function AdminPage() {
                         <Badge className={cn("border", STATUS_CLS[p.status])}>{p.status}</Badge>
                       </div>
                       <div className="text-xs text-slate-500">
-                        {p.payer_name || "?"} · {p.user_email} · 📱 {p.phone} · {dayjs(p.created_at).format("DD MMM HH:mm")}
+                        {p.user_email} · {p.created_at ? dayjs(p.created_at).format("DD MMM HH:mm") : "—"}
                       </div>
                     </div>
                     <div className="font-bold text-slate-900 font-mono">
-                      {formatFcfa(p.amount_xof, p.amount_fcfa, p.amount)} FCFA
+                      {formatFcfa(p.amount_fcfa, p.amount_xof, p.amount)} FCFA
                     </div>
-                    <Badge variant="outline" className="font-semibold">{(p.tier || "").toUpperCase()}</Badge>
+                    <Badge variant="outline" className="font-semibold">{(p.plan_name || p.plan_id || "").toUpperCase()}</Badge>
                     {p.status === "pending" && (
                       <div className="flex gap-2">
                         <Button
@@ -280,10 +280,10 @@ export default function AdminPage() {
                 {users.map((u) => (
                   <div key={u.id} className="px-5 py-3 flex items-center justify-between gap-4" data-testid={`user-row-${u.id}`}>
                     <div className="min-w-0 flex-1">
-                      <div className="font-semibold text-sm text-slate-900 truncate">{u.full_name} {u.is_admin && <Badge className="ml-1 bg-orange-100 text-orange-700">admin</Badge>}</div>
+                      <div className="font-semibold text-sm text-slate-900 truncate">{u.name} {u.is_admin && <Badge className="ml-1 bg-orange-100 text-orange-700">admin</Badge>}</div>
                       <div className="text-xs text-slate-500 truncate">{u.email}</div>
                     </div>
-                    <Badge variant="outline" className="font-semibold">{(u.subscription_tier || "free").toUpperCase()}</Badge>
+                    <Badge variant="outline" className="font-semibold">{(u.subscription || "free").toUpperCase()}</Badge>
                     <div className="text-xs text-slate-400 hidden sm:block">{u.created_at ? dayjs(u.created_at).format("DD MMM YYYY") : "—"}</div>
                   </div>
                 ))}
