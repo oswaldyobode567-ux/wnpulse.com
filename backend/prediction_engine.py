@@ -1022,6 +1022,74 @@ def build_super_combos(matches: List[Dict]) -> Dict:
 
 # ─── Combos par sport et par tier ────────────────────────────────────────────
 
+def build_ultra_safe_combo(matches: List[Dict], min_legs: int = 2, max_legs: int = 3) -> Dict:
+    """
+    Niveau Ultra-Safe : combine 2 a 3 MATCHS DIFFERENTS (pas 2 marches du
+    meme match), chacun avec un pick individuel a tres haute confiance.
+
+    Regles strictes :
+    - Seuil de confiance eleve (85%, avec repli progressif si pas assez
+      de picks disponibles, jusqu'a 78% minimum absolu)
+    - Exclut les picks "combo" (2 marches fusionnes dans un match) — on
+      veut des favoris nets individuels, pas des probabilites jointes
+    - Un seul pick par match, diversifie sur plusieurs matchs
+    - Le "faux sentiment de securite totale" est explicitement rejete :
+      la description retournee rappelle toujours qu'aucun pari sportif
+      n'est garanti, quel que soit le niveau de confiance affiche.
+    """
+    all_picks = _flatten_market_picks(matches)
+
+    # Exclut les picks combo (deja une combinaison de 2 marches en soi)
+    single_picks = [p for p in all_picks if p.get("market") != "combo"]
+
+    # Repli progressif de seuil si pas assez de picks tres fiables disponibles
+    legs = []
+    used_threshold = None
+    for threshold in [85, 82, 80, 78]:
+        pool = sorted(
+            [p for p in single_picks if p["confidence"] >= threshold],
+            key=lambda p: p["confidence"], reverse=True
+        )
+        candidate_legs = _pick_diversified_multi(pool, max_legs)
+        if len(candidate_legs) >= min_legs:
+            legs = candidate_legs
+            used_threshold = threshold
+            break
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    if len(legs) < min_legs:
+        return {
+            **_stats([]),
+            "tier": "ultra_safe",
+            "label": "🛡️ Ultra-Safe",
+            "tagline": "Pas assez de matchs tres fiables disponibles aujourd'hui",
+            "description": (
+                "Aucun combine Ultra-Safe genere pour le moment : pas assez "
+                "de picks a tres haute confiance disponibles sur les matchs "
+                "actuels. Reviens plus tard ou consulte les autres niveaux."
+            ),
+            "confidence_threshold_used": None,
+            "generated_at": now,
+        }
+
+    return {
+        **_stats(legs),
+        "tier": "ultra_safe",
+        "label": "🛡️ Ultra-Safe",
+        "tagline": f"{len(legs)} matchs, favoris nets uniquement (seuil {used_threshold}%+)",
+        "description": (
+            f"Combine de {len(legs)} matchs differents, chacun avec un favori "
+            f"tres net (confiance {used_threshold}%+ selon le consensus des "
+            f"bookmakers). IMPORTANT : meme un favori tres net peut perdre — "
+            f"aucun pari sportif n'est garanti a 100%. Ce niveau reduit le "
+            f"risque, il ne l'elimine pas."
+        ),
+        "confidence_threshold_used": used_threshold,
+        "generated_at": now,
+    }
+
+
 TODAY_TIER_TARGETS = [
     ("sure", "Sûr", "Cotes 1.5 → 3", 1.5, 3.0, 2, 65,
      "Petite cote, forte probabilité."),
@@ -1087,6 +1155,10 @@ def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
     today_matches = [m for m in matches if _is_today(m.get("commence_time", ""))]
     all_picks_today = _flatten_market_picks(today_matches)
 
+    # Ultra-Safe est calcule sur les MEMES matchs du jour que le reste de
+    # cet onglet — pas sur une fenetre de 7 jours comme avant.
+    ultra_safe = build_ultra_safe_combo(today_matches)
+
     per_family = {}
     for family_key, family_label in SPORT_FAMILIES:
         if family_key == "all":
@@ -1127,5 +1199,6 @@ def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "total_matches_today": len(today_matches),
+        "ultra_safe": ultra_safe,
         "families": per_family,
     }
