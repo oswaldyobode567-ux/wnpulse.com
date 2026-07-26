@@ -20,7 +20,8 @@ from auth import (
 from odds_service import fetch_all_matches, refresh_matches_worker, fetch_all_scores
 from prediction_engine import (
     analyze_all, top_predictions, build_multi_combos,
-    build_super_combos, build_today_combos_by_sport,
+    build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
+    _is_today as _is_today_match,
 )
 from ai_service import generate_analysis
 
@@ -574,6 +575,19 @@ async def get_combos():
 async def get_super_combos():
     matches = await fetch_all_matches(db)
     return build_super_combos(matches)
+
+
+@app.get("/api/combos/ultra-safe")
+async def get_ultra_safe_combo():
+    """
+    Combine de 2-3 matchs DU JOUR a tres haute confiance (favoris nets
+    uniquement) — memes matchs que l'onglet "Aujourd'hui", pas une fenetre
+    de 7 jours. Voir build_ultra_safe_combo() pour les regles exactes et
+    l'avertissement obligatoire inclus dans la reponse.
+    """
+    matches = await fetch_all_matches(db)
+    today_matches = [m for m in matches if _is_today_match(m.get("commence_time", ""))]
+    return build_ultra_safe_combo(today_matches)
 
 
 @app.get("/api/combos/today")
