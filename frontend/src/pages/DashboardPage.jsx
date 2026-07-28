@@ -5,7 +5,7 @@ import MatchCard from "@/components/MatchCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   Trophy, Flame, ChevronRight, Activity, Lock,
   Sparkles, Radio, Send, CheckCircle2, XCircle,
@@ -16,7 +16,6 @@ import { useAuth } from "@/contexts/AuthContext";
 import { useRealtimeMatches } from "@/services/realtimeService";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { toast } from "sonner";
-
 const SPORT_TABS = [
   { key: "all",        label: "Tous",       icon: "🌍" },
   { key: "soccer",     label: "Football",   icon: "⚽" },
@@ -26,7 +25,6 @@ const SPORT_TABS = [
   { key: "baseball",   label: "Baseball",   icon: "⚾" },
   { key: "mma",        label: "MMA",        icon: "🥊" },
 ];
-
 const BET_FILTERS = [
   { key: "all",           label: "Tous les marchés" },
   { key: "victoire",      label: "🏆 Victoire" },
@@ -38,7 +36,6 @@ const BET_FILTERS = [
   { key: "corners",       label: "📐 Corners" },
   { key: "mi_temps",      label: "⏱ Mi-temps" },
 ];
-
 function matchesBetFilter(pick = "", filterKey) {
   if (filterKey === "all") return true;
   const p = pick.toLowerCase();
@@ -54,22 +51,19 @@ function matchesBetFilter(pick = "", filterKey) {
     default:              return true;
   }
 }
-
 const LEAGUE_PRIORITY = [
   "FIFA World Cup","Coupe du Monde","Champions League","UEFA Champions League",
   "Premier League","La Liga","Bundesliga","Ligue 1","Serie A",
   "Europa League","CAF Champions League","Africa Cup",
   "NBA","EuroLeague","ATP","WTA","NHL","MLB",
 ];
-
 function groupByLeague(matches) {
   const groups = {};
   for (const m of matches) {
     const league = m.sport_title || "Autre";
     if (!groups[league]) groups[league] = [];
     groups[league].push(m);
-  }
-  return Object.entries(groups).sort(([a],[b]) => {
+  } return Object.entries(groups).sort(([a],[b]) => {
     const ia = LEAGUE_PRIORITY.findIndex(p => a.includes(p));
     const ib = LEAGUE_PRIORITY.findIndex(p => b.includes(p));
     if (ia === -1 && ib === -1) return a.localeCompare(b);
@@ -78,22 +72,34 @@ function groupByLeague(matches) {
     return ia - ib;
   });
 }
-
 export default function DashboardPage() {
   const { user } = useAuth();
   const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
   const [validated,   setValidated]  = useState([]);
-  const [sport,       setSport]      = useState("all");
-  const [betFilter,   setBetFilter]  = useState("all");
+  // Filtres synchronises dans l'URL (?sport=...&bet=...) plutot qu'en simple
+  // useState local — sans ca, un clic sur "Retour" depuis la fiche d'un match
+  // ramenait l'utilisateur sur cette page mais avec les filtres reinitialises
+  // a "Tous", donnant l'impression de repartir du debut.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const sport = searchParams.get("sport") || "all";
+  const betFilter = searchParams.get("bet") || "all";
+  const setSport = (val) => setSearchParams(prev => {
+    const p = new URLSearchParams(prev);
+    val === "all" ? p.delete("sport") : p.set("sport", val);
+    return p;
+  });
+  const setBetFilter = (val) => setSearchParams(prev => {
+    const p = new URLSearchParams(prev);
+    val === "all" ? p.delete("bet") : p.set("bet", val);
+    return p;
+  });
   const [showAll,     setShowAll]    = useState(false);
   const [payState,    setPayState]   = useState({ isOpen: false, tier: "pro" });
   const [refreshing,  setRefreshing] = useState(false);
-
   const isFree  = !user?.subscription_tier || user.subscription_tier === "free";
   const isAdmin = Boolean(user?.is_admin);
-
   useEffect(() => {
     let ok = true;
     api.get("/predictions/top")
@@ -104,7 +110,6 @@ export default function DashboardPage() {
       .catch(() => {});
     return () => { ok = false; };
   }, [lastUpdate]);
-
   const shareWA = useCallback((p, e) => {
     e.preventDefault(); e.stopPropagation();
     const text = [
@@ -129,7 +134,6 @@ export default function DashboardPage() {
     setRefreshing(false);
     toast.success("Données mises à jour");
   }, [refresh]);
-
   const filtered = useMemo(() => {
     let list = matches;
     if (sport !== "all")
@@ -138,7 +142,6 @@ export default function DashboardPage() {
       list = list.filter(m => matchesBetFilter((m.prediction?.pick || ""), betFilter));
     return list;
   }, [matches, sport, betFilter]);
-
   const sportCounts = useMemo(() => {
     const c = {};
     matches.forEach(m => {
@@ -149,15 +152,12 @@ export default function DashboardPage() {
     });
     return c;
   }, [matches]);
-
   const leagueGroups  = useMemo(() => groupByLeague(filtered), [filtered]);
   const visibleGroups = showAll ? leagueGroups : leagueGroups.slice(0, 6);
   const liveCount     = matches.filter(m => m.prediction?.is_live || m.is_live).length;
-
   return (
     <AppLayout>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-
         {/* Hero */}
         <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-slate-900 via-slate-900 to-orange-950 text-white p-6 sm:p-8">
           <div className="absolute -top-20 -right-20 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl pointer-events-none" />
@@ -174,13 +174,7 @@ export default function DashboardPage() {
                   ? "1 pick gratuit disponible · Passe Pro pour tout débloquer"
                   : `${(user?.subscription_tier||"pro").toUpperCase()} actif · Tous les picks disponibles`}
               </p>
-            </div>
-            <div className="flex items-center gap-3 flex-wrap">
-              <div className="bg-white/10 rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
-                <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Réussite IA</div>
-                <div className="font-heading text-2xl font-black text-orange-300">90%</div>
-              </div>
-              <div className="bg-white/10 rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
+            </div> <div className="bg-white/10 rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
                 <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Picks</div>
                 <div className="font-heading text-2xl font-black text-white">{topPicks.length}</div>
               </div>
@@ -203,7 +197,6 @@ export default function DashboardPage() {
             </div>
           </div>
         </Card>
-
         {/* Top picks */}
         <section>
           <div className="flex items-center justify-between mb-3">
@@ -239,8 +232,7 @@ export default function DashboardPage() {
                         {p.is_live && (
                           <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2 py-0.5 text-[10px] font-black uppercase animate-pulse">
                             <Radio className="h-2.5 w-2.5" /> LIVE
-                          </span>
-                        )}
+                          </span>)}
                         {locked ? (
                           <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 text-xs font-bold">
                             <Lock className="h-3 w-3" /> PRO
@@ -305,10 +297,8 @@ export default function DashboardPage() {
             </div>
           )}
         </section>
-
         {/* Picks validés */}
         <ValidatedSection picks={validated} />
-
         {/* CTA Free */}
         {isFree && (
           <Card className="border-orange-200 bg-gradient-to-r from-orange-50 to-rose-50 p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
@@ -329,7 +319,6 @@ export default function DashboardPage() {
             </Button>
           </Card>
         )}
-
         {/* Matchs par championnat */}
         <section>
           <div className="flex items-center justify-between mb-4">
@@ -339,7 +328,6 @@ export default function DashboardPage() {
               <span className="text-xs font-normal text-slate-500">({filtered.length})</span>
             </h2>
           </div>
-
           {/* Onglets sport */}
           <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-thin">
             {SPORT_TABS.map(tab => (
@@ -349,8 +337,7 @@ export default function DashboardPage() {
                 className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all
                   ${sport === tab.key
                     ? "bg-orange-600 text-white border-orange-600"
-                    : "bg-white text-slate-600 border-slate-200 hover:border-orange-300 hover:text-orange-600"}`}
-              >
+                    : "bg-white text-slate-600 border-slate-200 hover:border-orange-300 hover:text-orange-600"}`}        >
                 <span>{tab.icon}</span>
                 <span>{tab.label}</span>
                 {tab.key !== "all" && sportCounts[tab.key] > 0 && (
@@ -362,7 +349,6 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-
           {/* Filtres type pari */}
           <div className="flex gap-2 overflow-x-auto pb-2 mb-5 scrollbar-thin">
             {BET_FILTERS.map(f => (
@@ -378,7 +364,6 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-
           {/* Groupes */}
           {loading ? (
             <div className="space-y-6">
@@ -400,8 +385,7 @@ export default function DashboardPage() {
                 Réinitialiser les filtres
               </Button>
             </Card>
-          ) : (
-            <div className="space-y-8">
+          ) : (  <div className="space-y-8">
               {visibleGroups.map(([league, lMatches]) => (
                 <LeagueSection
                   key={league}
@@ -425,7 +409,6 @@ export default function DashboardPage() {
           )}
         </section>
       </div>
-
       <PaymentModal
         isOpen={payState.isOpen}
         onClose={() => setPayState(s => ({ ...s, isOpen: false }))}
@@ -434,7 +417,6 @@ export default function DashboardPage() {
     </AppLayout>
   );
 }
-
 function getLeagueEmoji(name = "") {
   const n = name.toLowerCase();
   if (n.includes("nba") || n.includes("basketball") || n.includes("euroleague")) return "🏀";
@@ -444,13 +426,11 @@ function getLeagueEmoji(name = "") {
   if (n.includes("mma") || n.includes("ufc")) return "🥊";
   return "⚽";
 }
-
 function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade }) {
   const [expanded, setExpanded] = useState(true);
   const liveCount = matches.filter(m => m.prediction?.is_live || m.is_live).length;
   return (
-    <div>
-      <button onClick={() => setExpanded(e => !e)} className="w-full flex items-center gap-2 mb-3 group">
+    <div><button onClick={() => setExpanded(e => !e)} className="w-full flex items-center gap-2 mb-3 group">
         <span className="text-lg">{getLeagueEmoji(league)}</span>
         <h3 className="font-heading font-bold text-slate-900 text-sm group-hover:text-orange-600 transition-colors">{league}</h3>
         {liveCount > 0 && (
@@ -473,7 +453,6 @@ function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade })
     </div>
   );
 }
-
 function ValidatedSection({ picks }) {
   const today = dayjs().format("YYYY-MM-DD");
   const weekStart = dayjs().startOf("week").format("YYYY-MM-DD");
@@ -495,7 +474,6 @@ function ValidatedSection({ picks }) {
     </section>
   );
 }
-
 function ValidatedBlock({ title, picks, stats }) {
   return (
     <Card className="p-4 bg-white border-neutral-200">
@@ -507,8 +485,7 @@ function ValidatedBlock({ title, picks, stats }) {
           <span className="flex items-center gap-0.5 text-amber-600 font-bold"><Clock className="h-3 w-3"/>{stats.pending}</span>
           {stats.total>0 && <span className="font-bold text-slate-700 ml-1">{Math.round((stats.wins/stats.total)*100)}% win</span>}
         </div>
-      </div>
-      {picks.length===0 ? (
+      </div> {picks.length===0 ? (
         <div className="text-xs text-slate-400 py-4 text-center">Aucun pick pour cette période.</div>
       ) : (
         <div className="space-y-1.5 max-h-64 overflow-y-auto">
