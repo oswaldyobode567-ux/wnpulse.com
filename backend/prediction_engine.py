@@ -756,6 +756,42 @@ def analyze_all(matches: List[Dict]) -> List[Dict]:
     return [analyze_match(m) for m in matches if m.get("bookmakers")]
 
 
+def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30) -> List[Dict]:
+    """
+    Detecte les VRAIS value bets : picks ou l'edge (probabilite consensus
+    moins probabilite implicite de la meilleure cote) est POSITIF et
+    significatif. Contrairement a /predictions/top qui classe par confiance,
+    ici seul un edge >= min_edge qualifie un pick — un pick a 90% de
+    confiance mais edge negatif n'est PAS un value bet, juste un favori net
+    dont la cote ne compense pas le risque.
+    """
+    out = []
+    for m in matches:
+        analyzed = analyze_match(m)
+        for mk in analyzed.get("markets", []):
+            edge = mk.get("edge", 0)
+            if edge < min_edge:
+                continue
+            if not mk.get("pick_odds"):
+                continue
+            implied_prob = round(100 / mk["pick_odds"], 1)
+            our_prob = round(implied_prob + edge, 1)
+            out.append({
+                "sport_title": analyzed.get("sport_title"),
+                "home_team": analyzed.get("home_team"),
+                "away_team": analyzed.get("away_team"),
+                "commence_time": analyzed.get("commence_time"),
+                "market_label": mk.get("market_label"),
+                "pick": mk.get("pick"),
+                "pick_odds": mk["pick_odds"],
+                "our_prob": our_prob,
+                "implied_prob": implied_prob,
+                "edge": round(edge, 1),
+            })
+    out.sort(key=lambda b: b["edge"], reverse=True)
+    return out[:limit]
+
+
 def top_predictions(matches: List[Dict], limit: int = 10) -> List[Dict]:
     preds = analyze_all(matches)
     valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
