@@ -265,45 +265,35 @@ async def get_data_source_audit():
 
 SUBSCRIPTION_PLANS = [
     {
-        "id": "free",
-        "name": "Gratuit",
-        "price": 0,
-        "price_fcfa": 0,
-        "price_xof": 0,
-        "duration_days": 0,
-        "period": "",
-        "features": ["1 pick/jour", "Accès Dashboard limité"],
-    },
-    {
-        "id": "starter",
-        "name": "Starter",
+        "id": "pro",
+        "name": "Pro",
         "price": 4900,
         "price_fcfa": 4900,
         "price_xof": 4900,
         "duration_days": 30,
         "period": "mois",
-        "features": ["1 pick/jour", "Accès Dashboard"],
-    },
-    {
-        "id": "pro",
-        "name": "Pro",
-        "price": 9900,
-        "price_fcfa": 9900,
-        "price_xof": 9900,
-        "duration_days": 30,
-        "period": "mois",
-        "features": ["Tous les picks", "Combos", "Analyse complète", "Super Combos"],
+        "features": [
+            "Tous les pronostics du jour (7 sports)",
+            "3 combinés (Sécurité / Équilibre / Jackpot)",
+            "Analyse IA Claude Sonnet",
+            "Value bets & track record détaillé",
+        ],
         "highlighted": True,
     },
     {
         "id": "elite",
         "name": "Elite",
-        "price": 19900,
-        "price_fcfa": 19900,
-        "price_xof": 19900,
+        "price": 14900,
+        "price_fcfa": 14900,
+        "price_xof": 14900,
         "duration_days": 30,
         "period": "mois",
-        "features": ["Tout Pro", "VIP WhatsApp direct", "Garantie", "Priorité support"],
+        "features": [
+            "Tout du plan Pro",
+            "Picks VIP envoyés en avant-première",
+            "Stratégie bankroll personnalisée",
+            "Support prioritaire WhatsApp",
+        ],
     },
 ]
 
@@ -326,9 +316,50 @@ async def get_subscription_status(payload: dict = Depends(get_current_user_paylo
 
 # ─── Paiement manuel MoMo + validation admin ─────────────────────────────
 
-MOMO_NUMBER = "0161321256"
-MOMO_RECIPIENT_NAME = "KOUKPAKI VIANNEY"
-PAYMENT_WHATSAPP_NUMBER = "+33767971752"
+MOMO_NUMBER = "+229 01 66 28 06 03"
+MOMO_RECIPIENT_NAME = "KOUKPAKI VIANEY"
+PAYMENT_WHATSAPP_NUMBER = "+33 7 67 97 17 52"
+
+
+class CheckoutPayload(BaseModel):
+    tier: str
+    phone: str
+    payer_name: str
+
+
+@app.post("/api/subscription/checkout")
+async def subscription_checkout(
+    payload_in: CheckoutPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """
+    Route reellement appelee par PaymentModal.jsx (contrat exact : tier,
+    phone, payer_name). Cree une demande de paiement en attente, avec le
+    numero MoMo et le nom du payeur pour verification manuelle par l'admin.
+    """
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.tier.lower()), None)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan inconnu")
+
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    reference = _generate_reference()
+    await db.subscription_requests.insert_one({
+        "reference": reference,
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "amount_fcfa": plan["price_fcfa"],
+        "payer_phone": payload_in.phone.strip(),
+        "payer_name": payload_in.payer_name.strip(),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {"reference": reference, "plan": plan}
 
 
 class UpgradeRequestPayload(BaseModel):
@@ -382,7 +413,7 @@ async def request_subscription_upgrade(
         f"Voici la capture du SMS de confirmation MTN. Merci d'activer mon accès 🚀"
     )
     whatsapp_link = (
-        f"https://wa.me/{PAYMENT_WHATSAPP_NUMBER.replace('+', '')}"
+        f"https://wa.me/{PAYMENT_WHATSAPP_NUMBER.replace('+', '').replace(' ', '')}"
         f"?text={whatsapp_message}"
     )
 
