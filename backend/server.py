@@ -26,6 +26,55 @@ from prediction_engine import (
 )
 from ai_service import generate_analysis
 
+# ─── Systeme d'expiration d'abonnement ───────────────────────────────────────
+
+def _compute_expiry(days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
+
+
+async def _check_and_downgrade_if_expired(user: dict) -> dict:
+    """
+    Verification paresseuse (a chaque lecture d'un compte) : si la date
+    d'expiration est passee et que l'abonnement n'est pas deja "free",
+    retrograde immediatement en base et retourne le compte a jour.
+    Complementaire au balayage quotidien du scheduler (celui-ci couvre les
+    comptes qui ne se reconnectent pas avant plusieurs jours).
+    """
+    expires_at = user.get("subscription_expires_at")
+    if not expires_at or user.get("subscription", "free") == "free":
+        return user
+
+    try:
+        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return user
+
+    if datetime.now(timezone.utc) >= exp_dt:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"subscription": "free", "subscription_expires_at": None}},
+        )
+        user["subscription"] = "free"
+        user["subscription_expires_at"] = None
+
+    return user
+
+
+async def _sweep_expired_subscriptions() -> Dict:
+    """Balayage quotidien : retrograde tous les abonnements expires en base."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = await db.users.update_many(
+        {
+            "subscription": {"$ne": "free"},
+            "subscription_expires_at": {"$ne": None, "$lt": now_iso},
+        },
+        {"$set": {"subscription": "free", "subscription_expires_at": None}},
+    )
+    return {"ok": True, "downgraded": result.modified_count}
+
+
 # ─── DB setup ─────────────────────────────────────────────────────────────
 MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
 DB_NAME = os.environ.get("DB_NAME", "winpulse")
@@ -66,6 +115,7 @@ class RegisterPayload(BaseModel):
     email: EmailStr
     password: str
     name: Optional[str] = None
+    referral_code: Optional[str] = None
 
 
 class LoginPayload(BaseModel):
@@ -81,6 +131,14 @@ async def register(payload: RegisterPayload):
 
     is_admin = payload.email.lower() in ADMIN_EMAILS
     user_id = str(uuid.uuid4())
+
+    # Rattache le nouveau compte a son parrain si un code valide est fourni
+    referred_by = None
+    if payload.referral_code:
+        referrer = await db.users.find_one({"referral_code": payload.referral_code.strip().upper()})
+        if referrer:
+            referred_by = referrer["id"]
+
     user_doc = {
         "id": user_id,
         "email": payload.email.lower(),
@@ -90,6 +148,9 @@ async def register(payload: RegisterPayload):
         "created_at": datetime.now(timezone.utc).isoformat(),
         "subscription": "elite" if is_admin else "free",
         "is_admin": is_admin,
+        "referral_code": user_id[:8].upper(),
+        "referred_by": referred_by,
+        "referral_reward_claimed": False,
     }
     await db.users.insert_one(user_doc)
     token = create_access_token(user_id, payload.email.lower())
@@ -118,6 +179,8 @@ async def login(payload: LoginPayload):
         user["is_admin"] = True
         user["subscription"] = "elite"
 
+    user = await _check_and_downgrade_if_expired(user)
+
     token = create_access_token(user["id"], user["email"])
     return {
         "access_token": token,
@@ -136,11 +199,13 @@ async def me(payload: dict = Depends(get_current_user_payload)):
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user = await _check_and_downgrade_if_expired(user)
     return {
         "id": user["id"], "email": user["email"],
         "name": user.get("name", ""), "full_name": user.get("full_name", user.get("name", "")),
         "subscription": user.get("subscription", "free"),
         "subscription_tier": user.get("subscription", "free"),
+        "subscription_expires_at": user.get("subscription_expires_at"),
         "is_admin": user.get("is_admin", False),
     }
 
@@ -308,8 +373,10 @@ async def get_subscription_status(payload: dict = Depends(get_current_user_paylo
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user = await _check_and_downgrade_if_expired(user)
     return {
         "subscription": user.get("subscription", "free"),
+        "subscription_expires_at": user.get("subscription_expires_at"),
         "is_admin": user.get("is_admin", False),
     }
 
@@ -578,9 +645,15 @@ async def admin_approve_subscription_request(
     if req["status"] == "approved":
         return {"ok": True, "detail": "Deja approuvee"}
 
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == req["plan_id"]), None)
+    duration_days = plan["duration_days"] if plan else 30
+
     await db.users.update_one(
         {"id": req["user_id"]},
-        {"$set": {"subscription": req["plan_id"]}},
+        {"$set": {
+            "subscription": req["plan_id"],
+            "subscription_expires_at": _compute_expiry(duration_days),
+        }},
     )
     await db.subscription_requests.update_one(
         {"reference": reference},
@@ -589,7 +662,7 @@ async def admin_approve_subscription_request(
             "approved_at": datetime.now(timezone.utc).isoformat(),
         }},
     )
-    return {"ok": True, "detail": f"Abonnement {req['plan_id']} active pour {req['user_email']}"}
+    return {"ok": True, "detail": f"Abonnement {req['plan_id']} active pour {req['user_email']} ({duration_days} jours)"}
 
 
 @app.post("/api/admin/subscription-requests/{reference}/reject")
@@ -756,24 +829,80 @@ async def get_plans_alias():
 
 # ─── Parrainage ───────────────────────────────────────────────────────────
 
+REFERRAL_THRESHOLD = 3
+REFERRAL_REWARD_DAYS = 7
+
+
 @app.get("/api/referral/me")
 async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
     """
-    Statut de parrainage de l'utilisateur. Pas encore de systeme de
-    parrainage complet en base — retourne une structure vide coherente
-    plutot qu'un 404 qui casse le routing frontend.
+    Statut reel de parrainage : compte les comptes effectivement inscrits
+    avec le code de ce user (champ referred_by), et l'etat d'eligibilite/
+    reclamation de la recompense.
     """
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
     code = user.get("referral_code") or user["id"][:8].upper()
+    # Migration douce : si un vieux compte n'a pas encore de referral_code stocke
+    if not user.get("referral_code"):
+        await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code}})
+
+    count = await db.users.count_documents({"referred_by": user["id"]})
+    claimed = user.get("referral_reward_claimed", False)
+    eligible = count >= REFERRAL_THRESHOLD and not claimed
+
+    share_url = f"https://www.wnpulse.com/register?ref={code}"
+    whatsapp_message = (
+        f"Salut ! Je viens de découvrir WinPulse, une IA qui décrypte les "
+        f"pronostics sportifs. Inscris-toi gratuitement avec mon code : {share_url}"
+    )
+
     return {
-        "referral_code": code,
-        "referral_link": f"https://www.wnpulse.com/inscription?ref={code}",
-        "total_referred": 0,
-        "rewards_earned_fcfa": 0,
-        "referred_users": [],
+        "code": code,
+        "share_url": share_url,
+        "whatsapp_share": f"https://wa.me/?text={whatsapp_message}",
+        "count": count,
+        "threshold": REFERRAL_THRESHOLD,
+        "reward_days": REFERRAL_REWARD_DAYS,
+        "eligible": eligible,
+        "claimed": claimed,
     }
+
+
+@app.post("/api/referral/claim")
+async def claim_referral_reward(payload: dict = Depends(get_current_user_payload)):
+    """
+    Reclame la recompense de parrainage (acces Pro) une fois le seuil
+    atteint. Ne peut etre reclamee qu'une seule fois par compte.
+
+    Fixe une date d'expiration reelle a REFERRAL_REWARD_DAYS jours — verifiee
+    automatiquement (a la connexion, sur /api/auth/me, et par balayage
+    quotidien) pour retrograder le compte en "free" une fois expire.
+    """
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    if user.get("referral_reward_claimed"):
+        raise HTTPException(status_code=400, detail="Récompense déjà réclamée")
+
+    count = await db.users.count_documents({"referred_by": user["id"]})
+    if count < REFERRAL_THRESHOLD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Il te faut encore {REFERRAL_THRESHOLD - count} filleul(s) pour réclamer",
+        )
+
+    update_fields = {"referral_reward_claimed": True}
+    if user.get("subscription", "free") == "free":
+        update_fields["subscription"] = "pro"
+        update_fields["subscription_expires_at"] = _compute_expiry(REFERRAL_REWARD_DAYS)
+
+    await db.users.update_one({"id": user["id"]}, {"$set": update_fields})
+
+    return {"ok": True, "message": f"{REFERRAL_REWARD_DAYS} jours Pro activés ! 🎉"}
 
 
 TRACK_RECORD_BASE_BANKROLL = 100000  # FCFA, hypothese de depart pour la simulation
@@ -983,6 +1112,20 @@ async def admin_reconcile_results_simple(key: str = ""):
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
     result = await _reconcile_predictions_with_scores()
+    return result
+
+
+@app.get("/api/admin/sweep-expired-simple")
+async def admin_sweep_expired_simple(key: str = ""):
+    """
+    Force le balayage manuel des abonnements expires (retrograde en "free").
+    Usage : https://TON-BACKEND/api/admin/sweep-expired-simple?key=TA_CLE
+    Normalement execute automatiquement chaque heure par le worker planifie.
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await _sweep_expired_subscriptions()
     return result
 
 
@@ -1227,6 +1370,8 @@ async def startup_event():
     # Reconciliation supplementaire toutes les 2h pour capter les matchs
     # termines entre deux refresh complets, sans consommer de credit odds
     scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
+    # Balayage horaire des abonnements expires (retrograde en "free")
+    scheduler.add_job(lambda: _sweep_expired_subscriptions(), "cron", minute=30)
     scheduler.start()
 
     # Premier fetch si cache vide (ne consomme des credits que si absent)
