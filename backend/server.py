@@ -20,7 +20,7 @@ from auth import (
 )
 from odds_service import fetch_all_matches, refresh_matches_worker, fetch_all_scores
 from prediction_engine import (
-    analyze_all, top_predictions, build_multi_combos,
+    analyze_all, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
     _is_today as _is_today_match,
 )
@@ -805,18 +805,13 @@ async def get_single_match(match_id: str):
 @app.get("/api/value-bets")
 async def get_value_bets():
     """
-    Picks a forte valeur (confiance elevee + cote correcte). Seuils alignes
-    sur MIN_CONFIDENCE du moteur (60) pour ne pas etre plus stricte que
-    /api/predictions/top et se retrouver vide alors que des picks existent.
+    Vrais value bets : edge positif (notre probabilite > probabilite
+    implicite du bookmaker), pas juste des picks a haute confiance.
+    Format attendu par le frontend : {"count": N, "bets": [...]}.
     """
     matches = await fetch_all_matches(db)
-    preds = top_predictions(matches, limit=30)
-    value_bets = [
-        p for p in preds
-        if p.get("pick") and p.get("confidence", 0) >= 60
-        and p.get("pick_odds", 0) >= 1.2
-    ]
-    return value_bets
+    bets = find_value_bets(matches, min_edge=3.0, limit=30)
+    return {"count": len(bets), "bets": bets}
 
 
 # ─── Plans (alias) ────────────────────────────────────────────────────────
