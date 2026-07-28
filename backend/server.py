@@ -4,7 +4,8 @@ Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
 import uuid
-from datetime import datetime, timezone
+import statistics
+from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -741,6 +742,129 @@ async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
         "total_referred": 0,
         "rewards_earned_fcfa": 0,
         "referred_users": [],
+    }
+
+
+TRACK_RECORD_BASE_BANKROLL = 100000  # FCFA, hypothese de depart pour la simulation
+TRACK_RECORD_STAKE_XOF = 1000  # FCFA, mise fixe par pick pour la simulation
+
+
+def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+    if not dt_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+@app.get("/api/track-record")
+async def get_track_record_public(page: int = 1, per_page: int = 20):
+    """
+    Page publique "Nos resultats. Sans triche." — stats reelles, graphique
+    de bankroll simule, et tableau paginé de tous les picks resolus
+    (gagnes/perdus), calcules a partir de db.predictions_history.
+
+    IMPORTANT — transparence sur les hypotheses de calcul :
+    - Mise fixe simulee de 1000 FCFA par pick (TRACK_RECORD_STAKE_XOF)
+    - Bankroll de depart simulee de 100 000 FCFA (TRACK_RECORD_BASE_BANKROLL)
+    - Seuls les picks avec un resultat CONFIRME (won/lost) sont comptes —
+      jamais les picks encore "pending", pour ne pas fausser les chiffres
+    - Ces statistiques ne seront representatives qu'apres accumulation de
+      suffisamment de picks resolus dans le temps (systeme de suivi recent)
+    """
+    resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}}
+    ).to_list(length=5000)
+
+    # Tri chronologique croissant (pour le graphique de bankroll)
+    resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+
+    total = len(resolved)
+    wins = sum(1 for r in resolved if r.get("result") == "won")
+    win_rate = round((wins / total) * 100, 1) if total else 0
+    odds_list = [r["pick_odds"] for r in resolved if r.get("pick_odds")]
+    avg_odds = round(statistics.mean(odds_list), 2) if odds_list else 0
+
+    # ─── Simulation de bankroll (mise fixe) ──────────────────────────────────
+    balance = TRACK_RECORD_BASE_BANKROLL
+    daily_balance: Dict[str, float] = {}
+    for r in resolved:
+        stake = TRACK_RECORD_STAKE_XOF
+        odds = r.get("pick_odds") or 1
+        profit = stake * (odds - 1) if r.get("result") == "won" else -stake
+        balance += profit
+        dt = _parse_iso(r.get("reconciled_at") or r.get("created_at"))
+        day_key = dt.strftime("%Y-%m-%d") if dt else "inconnu"
+        daily_balance[day_key] = balance
+
+    chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())]
+    chart = chart[-60:]  # 60 derniers jours avec activite
+
+    # ─── Serie en cours (picks gagnants consecutifs les plus recents) ────────
+    streak = 0
+    for r in reversed(resolved):
+        if r.get("result") == "won":
+            streak += 1
+        else:
+            break
+
+    # ─── ROI sur 30 jours (en unites de mise, independant du montant) ────────
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    recent = [
+        r for r in resolved
+        if (_parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+    ]
+    profit_units_30d = 0.0
+    for r in recent:
+        odds = r.get("pick_odds") or 1
+        profit_units_30d += (odds - 1) if r.get("result") == "won" else -1
+    roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
+
+    stats = {
+        "win_rate": win_rate,
+        "wins": wins,
+        "total": total,
+        "roi_percent": roi_percent,
+        "profit_units_30d": round(profit_units_30d, 2),
+        "current_streak": streak,
+        "avg_odds": avg_odds,
+        "base": TRACK_RECORD_BASE_BANKROLL,
+        "balance_now": round(balance),
+        "stake_xof": TRACK_RECORD_STAKE_XOF,
+    }
+
+    # ─── Tableau des resultats, plus recent en premier, pagine ────────────────
+    results_desc = list(reversed(resolved))
+    start = max(0, (page - 1) * per_page)
+    page_items = results_desc[start:start + per_page]
+
+    results = []
+    for r in page_items:
+        odds = r.get("pick_odds") or 1
+        profit_xof = round(TRACK_RECORD_STAKE_XOF * (odds - 1)) if r.get("result") == "won" else -TRACK_RECORD_STAKE_XOF
+        results.append({
+            "id": r.get("signature"),
+            "date": r.get("reconciled_at") or r.get("created_at"),
+            "league": r.get("sport_title", ""),
+            "match": f"{r.get('home_team', '')} vs {r.get('away_team', '')}",
+            "pick": r.get("pick", ""),
+            "odds": odds,
+            "status": r.get("result"),
+            "profit_xof": profit_xof,
+        })
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    return {
+        "stats": stats,
+        "chart": chart,
+        "results": results,
+        "page": page,
+        "total_pages": total_pages,
     }
 
 
