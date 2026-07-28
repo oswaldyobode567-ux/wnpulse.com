@@ -740,32 +740,154 @@ async def get_predictions_combos_alias():
 
 
 @app.get("/api/builder/matches")
-async def get_builder_matches():
+async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
     """
-    Matchs + predictions pour l'ecran Combo Builder. Meme donnee que
-    /api/matches mais nom de route attendu par le frontend.
+    Matchs avec TOUS leurs marches analyses (pas juste le meilleur pick),
+    pour que l'utilisateur construise son propre combine. Format attendu :
+    {"matches": [{match_id, sport_title, home_team, away_team,
+    commence_time, picks: [{market, market_label, pick, pick_odds,
+    confidence, label, edge, synthetic, locked}, ...]}]}.
+
+    Comptes gratuits : seul le meilleur pick par match est deverrouille,
+    le reste a locked=true et pick_odds=null (coherent avec le reste du
+    site : /api/predictions/top applique la meme regle).
     """
     matches = await fetch_all_matches(db)
-    predictions = analyze_all(matches)
-    pred_by_id = {p.get("match_id"): p for p in predictions}
-    merged = [
-        _merge_match_prediction(m, pred_by_id.get(m.get("id"), {}))
-        for m in matches
-    ]
-    return merged
+
+    if sport and sport != "all":
+        matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
+
+    is_paid = False
+    if payload:
+        user = await db.users.find_one({"id": payload.get("sub")})
+        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+            is_paid = True
+
+    result = []
+    for m in matches:
+        analyzed = analyze_match(m)
+        raw_picks = analyzed.get("markets", [])
+        if not raw_picks:
+            continue
+
+        picks = []
+        for i, mk in enumerate(raw_picks):
+            locked = (not is_paid) and i > 0
+            picks.append({
+                "market": mk.get("market"),
+                "market_label": mk.get("market_label"),
+                "pick": mk.get("pick"),
+                "pick_odds": None if locked else mk.get("pick_odds"),
+                "confidence": mk.get("confidence"),
+                "label": mk.get("label"),
+                "edge": mk.get("edge", 0),
+                "synthetic": mk.get("synthetic", False),
+                "locked": locked,
+            })
+
+        result.append({
+            "match_id": analyzed.get("match_id"),
+            "sport_key": analyzed.get("sport_key"),
+            "sport_title": analyzed.get("sport_title"),
+            "home_team": analyzed.get("home_team"),
+            "away_team": analyzed.get("away_team"),
+            "commence_time": analyzed.get("commence_time"),
+            "picks": picks,
+        })
+
+    return {"matches": result}
+
+
+@app.get("/api/builder/stats/{match_id}")
+async def get_builder_match_stats(match_id: str):
+    """
+    Statistiques detaillees d'un match pour le panneau deplie du Combo
+    Builder : probabilites 1X2 et pourcentages BTTS/over/clean-sheet,
+    derivees des marches deja calcules par analyze_match.
+    """
+    matches = await fetch_all_matches(db)
+    match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Match introuvable")
+
+    analyzed = analyze_match(match)
+    implied = analyzed.get("implied_probs", {})
+    home = analyzed.get("home_team", "")
+    away = analyzed.get("away_team", "")
+
+    probs = {
+        "home_win": implied.get(home, 0),
+        "draw": implied.get("Draw", 0),
+        "away_win": implied.get(away, 0),
+    }
+
+    def _pct_for(market_key: str, pick_contains: str) -> float:
+        for mk in analyzed.get("markets", []):
+            if mk.get("market") == market_key and pick_contains.lower() in (mk.get("pick") or "").lower():
+                odds = mk.get("pick_odds")
+                return round(100 / odds, 1) if odds else 0
+        return 0
+
+    expectations = {
+        "btts_yes_pct": _pct_for("syn_btts", "oui") or _pct_for("btts", "oui"),
+        "over_2_5_pct": _pct_for("syn_over_25", "plus de"),
+        "over_1_5_pct": _pct_for("syn_over_15", "plus de"),
+        "clean_sheet_home_pct": _pct_for("syn_clean_sheet_home", home),
+        "clean_sheet_away_pct": _pct_for("syn_clean_sheet_away", away),
+    }
+
+    return {"probs": probs, "expectations": expectations}
+
+
+class SaveComboPayload(BaseModel):
+    name: Optional[str] = ""
+    legs: List[Dict]
+
+
+@app.post("/api/builder/save")
+async def save_builder_combo(
+    payload_in: SaveComboPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """Sauvegarde un combo construit manuellement par l'utilisateur."""
+    if not payload_in.legs:
+        raise HTTPException(status_code=400, detail="Aucun pick selectionne")
+
+    total_odds = 1.0
+    for leg in payload_in.legs:
+        total_odds *= leg.get("pick_odds") or 1
+
+    combo_id = str(uuid.uuid4())
+    combo_doc = {
+        "id": combo_id,
+        "user_id": payload["sub"],
+        "name": payload_in.name or f"Combo {len(payload_in.legs)} picks",
+        "legs": payload_in.legs,
+        "total_odds": round(total_odds, 2),
+        "num_legs": len(payload_in.legs),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.user_combos.insert_one(combo_doc)
+
+    return {"ok": True, "id": combo_id, "total_odds": combo_doc["total_odds"]}
 
 
 @app.get("/api/builder/my-combos")
 async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload)):
-    """
-    Combos personnalises sauvegardes par l'utilisateur. Pas encore de
-    persistance dediee cote base — retourne une liste vide propre plutot
-    qu'un 404, en attendant l'implementation complete.
-    """
-    saved = await db.user_combos.find({"user_id": payload["sub"]}).to_list(length=100)
+    """Combos personnalises sauvegardes par l'utilisateur."""
+    saved = await db.user_combos.find({"user_id": payload["sub"]}).sort("created_at", -1).to_list(length=100)
     for s in saved:
         s.pop("_id", None)
-    return saved
+    return {"combos": saved}
+
+
+@app.delete("/api/builder/my-combos/{combo_id}")
+async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_current_user_payload)):
+    """Supprime un combo sauvegarde, uniquement s'il appartient a l'utilisateur."""
+    result = await db.user_combos.delete_one({"id": combo_id, "user_id": payload["sub"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Combo introuvable")
+    return {"ok": True}
 
 
 # NOTE : la route /api/predictions/history reelle (avec historique persiste)
