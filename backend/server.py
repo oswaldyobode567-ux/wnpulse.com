@@ -18,7 +18,10 @@ from auth import (
     hash_password, verify_password, create_access_token,
     get_current_user_payload, get_optional_user_payload,
 )
-from odds_service import fetch_all_matches, refresh_matches_worker, fetch_all_scores
+from odds_service import (
+    fetch_all_matches, refresh_matches_worker, fetch_all_scores,
+    fetch_odds_api_io_scores_map,
+)
 from prediction_engine import (
     analyze_all, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
@@ -1380,6 +1383,13 @@ async def _reconcile_predictions_with_scores() -> Dict:
     Compare les picks "pending" avec les scores reels des matchs termines,
     et met a jour leur resultat (won/lost). Ne touche jamais un pick deja
     reconcilie — integrite de la mesure.
+
+    Deux sources de scores :
+    - The Odds API (fetch_all_scores) pour les match_id "classiques"
+    - odds-api.io (fetch_odds_api_io_scores_map) pour les match_id
+      prefixes "oaio-" (qualifications UEFA, ligues mineures, hockey,
+      basketball) — sans ca, ces picks restaient indefiniment "pending"
+      car The Odds API n'a aucune connaissance de ces matchs.
     """
     pending = await db.predictions_history.find({"result": "pending"}).to_list(length=1000)
     if not pending:
@@ -1388,23 +1398,33 @@ async def _reconcile_predictions_with_scores() -> Dict:
     scores = await fetch_all_scores(db)
     scores_by_match = {s.get("id"): s for s in scores if s.get("id")}
 
+    oaio_scores_map = await fetch_odds_api_io_scores_map()
+
     updated = 0
     for pred in pending:
-        score_entry = scores_by_match.get(pred["match_id"])
-        if not score_entry or not score_entry.get("completed"):
-            continue
+        match_id = pred.get("match_id", "")
 
         try:
-            score_data = score_entry.get("scores") or []
-            home_score = away_score = None
-            for s in score_data:
-                if s.get("name") == pred.get("home_team"):
-                    home_score = int(s.get("score", 0))
-                elif s.get("name") == pred.get("away_team"):
-                    away_score = int(s.get("score", 0))
-
-            if home_score is None or away_score is None:
-                continue
+            if match_id.startswith("oaio-"):
+                numeric_id = match_id[len("oaio-"):]
+                entry = oaio_scores_map.get(numeric_id)
+                if not entry:
+                    continue
+                home_score = entry["home_score"]
+                away_score = entry["away_score"]
+            else:
+                score_entry = scores_by_match.get(match_id)
+                if not score_entry or not score_entry.get("completed"):
+                    continue
+                score_data = score_entry.get("scores") or []
+                home_score = away_score = None
+                for s in score_data:
+                    if s.get("name") == pred.get("home_team"):
+                        home_score = int(s.get("score", 0))
+                    elif s.get("name") == pred.get("away_team"):
+                        away_score = int(s.get("score", 0))
+                if home_score is None or away_score is None:
+                    continue
 
             result = _evaluate_pick_result(pred, home_score, away_score)
             if result:
