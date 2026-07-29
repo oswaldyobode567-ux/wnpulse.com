@@ -3,6 +3,7 @@ WinPulse API — server.py (v7.4)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
+import httpx
 import uuid
 import statistics
 from datetime import datetime, timezone, timedelta
@@ -76,6 +77,78 @@ async def _sweep_expired_subscriptions() -> Dict:
         {"$set": {"subscription": "free", "subscription_expires_at": None}},
     )
     return {"ok": True, "downgraded": result.modified_count}
+
+
+# ─── Envoi d'email (Resend) ──────────────────────────────────────────────
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "WinPulse <contact@wnpulse.com>")
+
+
+async def _send_email(to: str, subject: str, html: str) -> bool:
+    """
+    Envoie un email via l'API Resend. Ne leve jamais d'exception — un echec
+    d'envoi ne doit jamais faire echouer l'inscription ou l'activation d'un
+    abonnement, qui restent la priorite. Retourne True/False pour log.
+    """
+    if not RESEND_API_KEY:
+        return False
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html},
+            )
+            return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def _email_layout(title: str, body_html: str) -> str:
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
+      <div style="background: linear-gradient(135deg, #ea580c, #f43f5e); border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+        <span style="color: white; font-size: 22px; font-weight: 800;">⚡ WinPulse</span>
+      </div>
+      <h2 style="color: #0f172a;">{title}</h2>
+      {body_html}
+      <p style="margin-top: 32px; font-size: 12px; color: #94a3b8; text-align: center;">
+        WinPulse SARL · Cotonou, Bénin · wnpulse.com
+      </p>
+    </div>
+    """
+
+
+async def send_welcome_email(to: str, name: str):
+    html = _email_layout(
+        f"Bienvenue {name} ! 🎯",
+        """
+        <p>Ton compte WinPulse est créé. Tu as accès à 1 pronostic gratuit chaque jour.</p>
+        <p>Passe Pro ou Elite pour débloquer l'analyse complète, les combinés et le détecteur de value bets.</p>
+        <p><a href="https://www.wnpulse.com/app" style="color: #ea580c; font-weight: bold;">Voir mes pronostics →</a></p>
+        """,
+    )
+    await _send_email(to, "Bienvenue sur WinPulse 🎯", html)
+
+
+async def send_subscription_activated_email(to: str, plan_name: str, expires_at: Optional[str]):
+    expiry_line = ""
+    if expires_at:
+        try:
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            expiry_line = f"<p>Valable jusqu'au <strong>{exp_dt.strftime('%d/%m/%Y')}</strong>.</p>"
+        except Exception:
+            pass
+    html = _email_layout(
+        f"Ton plan {plan_name} est actif ! 🚀",
+        f"""
+        <p>Ton paiement a été vérifié et ton abonnement <strong>{plan_name}</strong> est maintenant actif.</p>
+        {expiry_line}
+        <p><a href="https://www.wnpulse.com/app" style="color: #ea580c; font-weight: bold;">Voir tous mes pronostics →</a></p>
+        """,
+    )
+    await _send_email(to, f"Ton plan {plan_name} est actif 🚀", html)
 
 
 # ─── DB setup ─────────────────────────────────────────────────────────────
@@ -156,6 +229,7 @@ async def register(payload: RegisterPayload):
         "referral_reward_claimed": False,
     }
     await db.users.insert_one(user_doc)
+    await send_welcome_email(user_doc["email"], user_doc["name"])
     token = create_access_token(user_id, payload.email.lower())
     return {
         "access_token": token,
@@ -650,12 +724,13 @@ async def admin_approve_subscription_request(
 
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == req["plan_id"]), None)
     duration_days = plan["duration_days"] if plan else 30
+    expires_at = _compute_expiry(duration_days)
 
     await db.users.update_one(
         {"id": req["user_id"]},
         {"$set": {
             "subscription": req["plan_id"],
-            "subscription_expires_at": _compute_expiry(duration_days),
+            "subscription_expires_at": expires_at,
         }},
     )
     await db.subscription_requests.update_one(
@@ -664,6 +739,9 @@ async def admin_approve_subscription_request(
             "status": "approved",
             "approved_at": datetime.now(timezone.utc).isoformat(),
         }},
+    )
+    await send_subscription_activated_email(
+        req["user_email"], plan["name"] if plan else req["plan_id"], expires_at
     )
     return {"ok": True, "detail": f"Abonnement {req['plan_id']} active pour {req['user_email']} ({duration_days} jours)"}
 
@@ -1294,6 +1372,27 @@ async def admin_activate_admin_simple(email: str = "", key: str = ""):
         "is_admin": updated.get("is_admin"),
         "subscription": updated.get("subscription"),
     }
+
+
+@app.get("/api/admin/test-email-simple")
+async def admin_test_email_simple(to: str = "", key: str = ""):
+    """
+    Envoie un email de test pour verifier que l'integration Resend
+    fonctionne, sans passer par une vraie inscription.
+    Usage : https://TON-BACKEND/api/admin/test-email-simple?to=TON_EMAIL&key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not to:
+        raise HTTPException(status_code=400, detail="Parametre 'to' requis")
+
+    sent = await _send_email(
+        to,
+        "Test WinPulse ✅",
+        _email_layout("Email de test", "<p>Si tu vois ceci, l'integration Resend fonctionne correctement.</p>"),
+    )
+    return {"ok": sent, "resend_configured": bool(RESEND_API_KEY)}
 
 
 @app.get("/api/admin/whoami-simple")
