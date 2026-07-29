@@ -23,7 +23,7 @@ from odds_service import (
     fetch_odds_api_io_scores_map,
 )
 from prediction_engine import (
-    analyze_all, top_predictions, build_multi_combos, find_value_bets,
+    analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
     _is_today as _is_today_match,
 )
