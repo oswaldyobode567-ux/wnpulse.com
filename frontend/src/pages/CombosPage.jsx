@@ -11,7 +11,6 @@ import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
 import PaymentModal from "@/components/payment/PaymentModal";
-
 const TIERS = [
   {
     key: "safe",
@@ -38,7 +37,6 @@ const TIERS = [
     mise: 500,
   },
 ];
-
 const ACCENT_CLS = {
   emerald: {
     badge: "bg-emerald-50 text-emerald-700 border-emerald-200",
@@ -59,14 +57,12 @@ const ACCENT_CLS = {
     cardBg: "bg-gradient-to-br from-rose-500 via-rose-600 to-pink-700",
   },
 };
-
 export default function CombosPage() {
   const { user } = useAuth();
   const [combos, setCombos] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTier, setActiveTier] = useState("balanced");
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
-
   const fetchCombos = async () => {
     setLoading(true);
     try {
@@ -76,23 +72,19 @@ export default function CombosPage() {
       setLoading(false);
     }
   };
-
   useEffect(() => { fetchCombos(); }, []);
-
   const isPaid = user?.subscription_tier && user.subscription_tier !== "free";
   const activeCombo = combos?.[activeTier];
   const isComboUnlocked = isPaid || activeCombo?.unlocked_for_free;
   // If a combo is free today, auto-switch to it for Free users for max conversion
   const freeComboKey = combos ? Object.keys(combos).find(k => combos[k]?.unlocked_for_free) : null;
-
   return (
     <AppLayout>
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         <div className="flex items-start justify-between gap-4 mb-8">
           <div>
             <div className="text-xs uppercase tracking-[0.18em] text-orange-600 font-bold mb-1">
-              Combinés du jour
-            </div>
+              Combinés du jour     </div>
             <h1 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
               3 combinés. 3 niveaux de risque. <span className="bg-gradient-to-r from-orange-600 to-rose-500 bg-clip-text text-transparent">À toi de choisir.</span>
             </h1>
@@ -112,7 +104,6 @@ export default function CombosPage() {
             Actualiser
           </Button>
         </div>
-
         {/* Tier selector */}
         <div className="grid grid-cols-3 gap-2 sm:gap-4 mb-6">
           {TIERS.map((t) => {
@@ -139,8 +130,7 @@ export default function CombosPage() {
                 )}
                 <div className={cn("h-9 w-9 rounded-xl grid place-items-center mb-3", acc.icon)}>
                   <Icon className="h-5 w-5" strokeWidth={2.2} />
-                </div>
-                <div className="font-heading font-bold text-base sm:text-lg text-slate-900">{t.label}</div>
+                </div>     <div className="font-heading font-bold text-base sm:text-lg text-slate-900">{t.label}</div>
                 {c && (
                   <div className="mt-1.5 flex items-center gap-2 text-xs text-slate-500">
                     <span>{c.legs?.length || 0} picks</span>
@@ -152,7 +142,6 @@ export default function CombosPage() {
             );
           })}
         </div>
-
         {!isPaid && freeComboKey && (
           <Card className="mb-6 p-4 border-2 border-emerald-200 bg-gradient-to-r from-emerald-50 to-lime-50 flex items-center gap-3" data-testid="free-combo-banner">
             <div className="h-11 w-11 rounded-xl bg-emerald-500 grid place-items-center text-white flex-shrink-0 shadow-lg shadow-emerald-500/30">
@@ -172,7 +161,6 @@ export default function CombosPage() {
             </Button>
           </Card>
         )}
-
         {!isPaid && !freeComboKey && (
           <Card className="mb-6 p-4 bg-orange-50 border-orange-200 flex items-center gap-3">
             <Lock className="h-5 w-5 text-orange-600 flex-shrink-0" />
@@ -184,7 +172,6 @@ export default function CombosPage() {
             </Button>
           </Card>
         )}
-
         {/* Combo display */}
         {loading ? (
           <Skeleton className="h-96" />
@@ -195,8 +182,7 @@ export default function CombosPage() {
         ) : (
           <div className="grid lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2 space-y-3" data-testid={`combo-legs-${activeTier}`}>
-              <div className="px-1 mb-2">
-                <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">{activeCombo.tagline}</div>
+              <div className="px-1 mb-2">       <div className="text-xs uppercase tracking-wider text-slate-500 font-bold">{activeCombo.tagline}</div>
                 <div className="text-sm text-slate-700 mt-1">{activeCombo.description}</div>
               </div>
               {activeCombo.legs.map((p, i) => (
@@ -210,7 +196,7 @@ export default function CombosPage() {
                         <div className="text-xs text-slate-500 mb-1 flex items-center gap-1.5 flex-wrap">
                           <span>{p.sport_title}</span>
                           <span>·</span>
-                          <span>{dayjs(p.commence_time).format("HH:mm")}</span>
+                          <span>{dayjs(p.commence_time).format("DD/MM HH:mm")}</span>
                           {p.market_label && (
                             <span className="inline-flex items-center rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-1.5 py-0 text-[10px] font-bold uppercase tracking-wide">
                               {p.market_label}
@@ -231,7 +217,6 @@ export default function CombosPage() {
                 </Card>
               ))}
             </div>
-
             <div className="lg:col-span-1">
               <Card className={cn("text-white border-0 p-6 sticky top-6 shadow-2xl wp-noise relative overflow-hidden", ACCENT_CLS[TIERS.find(t => t.key === activeTier).accent].cardBg)} data-testid={`bet-slip-${activeTier}`}>
                 <div className="relative z-10">
@@ -242,8 +227,7 @@ export default function CombosPage() {
                     <Row label="Sélections" value={activeCombo.legs.length} />
                     <Row label="Confiance moy." value={`${activeCombo.avg_confidence}%`} />
                     <Row label="Prob. combinée" value={`${activeCombo.combined_probability}%`} />
-                  </div>
-                  <div className="pt-4 border-t border-white/20">
+                  </div>     <div className="pt-4 border-t border-white/20">
                     <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold mb-1">Cote totale</div>
                     <div className="font-heading text-5xl font-black tracking-tighter">{activeCombo.total_odds}</div>
                     <div className="mt-4 p-3 rounded-lg bg-black/20 border border-white/10 text-xs">
@@ -269,7 +253,6 @@ export default function CombosPage() {
     </AppLayout>
   );
 }
-
 function Row({ label, value }) {
   return (
     <div className="flex items-center justify-between text-sm">
