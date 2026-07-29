@@ -978,6 +978,51 @@ async def fetch_scores_for_sport(sport_key: str, days_from: int = 1) -> List[Dic
         return []
 
 
+async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
+    """
+    Recupere le statut/score actuel de tous les matchs odds-api.io suivis
+    (foot + hockey + basketball), pour la reconciliation des predictions.
+    Retourne un dict {id_numerique_str: {"status":..., "home_score":...,
+    "away_score":...}}. Un match est considere termine si son statut n'est
+    pas "pending" ni "live" (valeur exacte du statut "termine" non confirmee
+    avec un exemple reel — traite tout statut autre que pending/live comme
+    final, par prudence plutot que de bloquer la reconciliation).
+    """
+    if not ODDS_API_IO_KEY:
+        return {}
+
+    scores_map: Dict[str, Dict] = {}
+    all_leagues = [
+        (lg, "football") for lg in ODDS_API_IO_LEAGUES
+    ] + [
+        (lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES
+    ] + [
+        (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
+    ]
+
+    for league_slug, sport in all_leagues:
+        try:
+            events = await _fetch_odds_api_io_events(league_slug, sport=sport)
+            for evt in events:
+                status = evt.get("status", "")
+                if status in ("pending", "live", ""):
+                    continue
+                scores = evt.get("scores") or {}
+                home_score = scores.get("home")
+                away_score = scores.get("away")
+                if home_score is None or away_score is None:
+                    continue
+                scores_map[str(evt.get("id"))] = {
+                    "status": status,
+                    "home_score": home_score,
+                    "away_score": away_score,
+                }
+        except Exception:
+            continue
+
+    return scores_map
+
+
 async def fetch_all_scores(db) -> List[Dict]:
     """Scores avec cache 60 secondes. Endpoint GRATUIT."""
     cached = await db.scores_cache.find_one({"_id": "all_scores"})
