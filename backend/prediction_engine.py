@@ -1061,36 +1061,82 @@ def build_super_combos(matches: List[Dict]) -> Dict:
 def build_ultra_safe_combo(matches: List[Dict], min_legs: int = 2, max_legs: int = 3) -> Dict:
     """
     Niveau Ultra-Safe : combine 2 a 3 MATCHS DIFFERENTS (pas 2 marches du
-    meme match), chacun avec un pick individuel a tres haute confiance.
+    meme match), avec un vrai objectif de cote combinee (>= 1.5), pas
+    seulement la confiance la plus haute. Avant, le tri par pure confiance
+    pouvait selectionner des favoris a cote 1.02-1.08, donnant un combine
+    a cote ridicule (~1.10) ou souvent vide si le seuil de confiance etait
+    trop strict alors que des dizaines de matchs se jouaient.
 
-    Regles strictes :
-    - Seuil de confiance eleve (85%, avec repli progressif si pas assez
-      de picks disponibles, jusqu'a 78% minimum absolu)
+    Regles :
+    - Seuil de confiance avec repli progressif (80% -> 75% -> 70% minimum
+      absolu) — suffisamment eleve pour rester "surs", mais pas au point
+      d'exclure presque tous les picks disponibles
+    - Parmi les picks au-dessus du seuil, priorise ceux dont la cote est
+      la plus proche d'un objectif individuel (pour atteindre ~1.5-3.5 de
+      cote totale sur l'ensemble du combine), au lieu de prendre les 2-3
+      cotes les plus faibles par pure confiance
     - Exclut les picks "combo" (2 marches fusionnes dans un match) — on
       veut des favoris nets individuels, pas des probabilites jointes
     - Un seul pick par match, diversifie sur plusieurs matchs
-    - Le "faux sentiment de securite totale" est explicitement rejete :
-      la description retournee rappelle toujours qu'aucun pari sportif
-      n'est garanti, quel que soit le niveau de confiance affiche.
+    - Rappel de risque toujours inclus : aucun pari sportif n'est garanti,
+      quel que soit le niveau de confiance affiche.
     """
-    all_picks = _flatten_market_picks(matches)
+    MIN_TOTAL_ODDS = 1.5
+    TARGET_TOTAL_ODDS = 2.5  # objectif "audacieux" mais raisonnable
 
-    # Exclut les picks combo (deja une combinaison de 2 marches en soi)
+    all_picks = _flatten_market_picks(matches)
     single_picks = [p for p in all_picks if p.get("market") != "combo"]
 
-    # Repli progressif de seuil si pas assez de picks tres fiables disponibles
-    legs = []
+    legs: List[Dict] = []
     used_threshold = None
-    for threshold in [85, 82, 80, 78]:
-        pool = sorted(
-            [p for p in single_picks if p["confidence"] >= threshold],
-            key=lambda p: p["confidence"], reverse=True
-        )
-        candidate_legs = _pick_diversified_multi(pool, max_legs)
-        if len(candidate_legs) >= min_legs:
+
+    for threshold in [80, 75, 70]:
+        pool = [p for p in single_picks if p["confidence"] >= threshold]
+        if len(pool) < min_legs:
+            continue
+
+        # Vise une cote individuelle moyenne qui, une fois combinee sur
+        # max_legs picks, approche TARGET_TOTAL_ODDS (racine n-ieme)
+        target_per_leg = TARGET_TOTAL_ODDS ** (1.0 / max_legs)
+
+        def _score(p):
+            odds = p.get("pick_odds") or 1
+            proximity = 1.0 / (1.0 + abs(odds - target_per_leg))
+            return proximity * (0.4 + p["confidence"] / 200)
+
+        ordered = sorted(pool, key=_score, reverse=True)
+        candidate_legs = _pick_diversified_multi(ordered, max_legs)
+
+        if len(candidate_legs) < min_legs:
+            continue
+
+        total_odds = 1.0
+        for leg in candidate_legs:
+            total_odds *= leg.get("pick_odds") or 1
+
+        # Si la cote totale n'atteint pas le minimum avec max_legs picks,
+        # tente d'ajouter un leg de plus (jusqu'a max_legs+1, plafonne a 4)
+        # en choisissant parmi les picks restants celui qui rapproche le
+        # plus la cote totale de MIN_TOTAL_ODDS sans creer de contradiction.
+        if total_odds < MIN_TOTAL_ODDS and len(candidate_legs) < min(max_legs + 1, 4):
+            used_match_ids = {l["match_id"] for l in candidate_legs}
+            remaining = [p for p in ordered if p["match_id"] not in used_match_ids]
+            for extra in remaining:
+                if any(_are_contradictory(extra["pick"], l["pick"]) for l in candidate_legs):
+                    continue
+                candidate_legs.append(extra)
+                total_odds *= extra.get("pick_odds") or 1
+                break
+
+        if total_odds >= MIN_TOTAL_ODDS:
             legs = candidate_legs
             used_threshold = threshold
             break
+        elif not legs:
+            # Garde le meilleur essai trouve meme si sous le seuil de cote,
+            # au cas ou aucun seuil de confiance ne permette d'atteindre 1.5
+            legs = candidate_legs
+            used_threshold = threshold
 
     now = datetime.now(timezone.utc).isoformat()
 
@@ -1099,27 +1145,36 @@ def build_ultra_safe_combo(matches: List[Dict], min_legs: int = 2, max_legs: int
             **_stats([]),
             "tier": "ultra_safe",
             "label": "🛡️ Ultra-Safe",
-            "tagline": "Pas assez de matchs tres fiables disponibles aujourd'hui",
+            "tagline": "Pas assez de matchs fiables disponibles aujourd'hui",
             "description": (
                 "Aucun combine Ultra-Safe genere pour le moment : pas assez "
-                "de picks a tres haute confiance disponibles sur les matchs "
-                "actuels. Reviens plus tard ou consulte les autres niveaux."
+                "de picks fiables disponibles sur les matchs actuels. "
+                "Reviens plus tard ou consulte les autres niveaux."
             ),
             "confidence_threshold_used": None,
             "generated_at": now,
         }
 
+    final_odds = 1.0
+    for leg in legs:
+        final_odds *= leg.get("pick_odds") or 1
+    odds_note = (
+        "objectif de cote atteint" if final_odds >= MIN_TOTAL_ODDS
+        else "cote limitee par le nombre de favoris nets disponibles aujourd'hui"
+    )
+
     return {
         **_stats(legs),
         "tier": "ultra_safe",
         "label": "🛡️ Ultra-Safe",
-        "tagline": f"{len(legs)} matchs, favoris nets uniquement (seuil {used_threshold}%+)",
+        "tagline": f"{len(legs)} matchs, cote {round(final_odds, 2)} ({odds_note})",
         "description": (
-            f"Combine de {len(legs)} matchs differents, chacun avec un favori "
-            f"tres net (confiance {used_threshold}%+ selon le consensus des "
-            f"bookmakers). IMPORTANT : meme un favori tres net peut perdre — "
-            f"aucun pari sportif n'est garanti a 100%. Ce niveau reduit le "
-            f"risque, il ne l'elimine pas."
+            f"Combine de {len(legs)} matchs differents, favoris fiables "
+            f"(confiance {used_threshold}%+) selectionnes pour viser une "
+            f"cote combinee interessante plutot que les picks les plus surs "
+            f"mais les moins payants. IMPORTANT : meme un favori net peut "
+            f"perdre — aucun pari sportif n'est garanti a 100%. Ce niveau "
+            f"reduit le risque, il ne l'elimine pas."
         ),
         "confidence_threshold_used": used_threshold,
         "generated_at": now,
