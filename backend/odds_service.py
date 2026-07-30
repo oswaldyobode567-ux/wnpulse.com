@@ -592,7 +592,7 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
     if not ODDS_API_IO_KEY:
         return []
 
-    MAX_TOTAL_ODDS_CALLS = 55  # marge de securite sous le quota de 100/h (football)
+    MAX_TOTAL_ODDS_CALLS = 65  # marge de securite sous le quota de 100/h (football)
     HOCKEY_BUDGET = 15
     BASKETBALL_BUDGET = 12
     today = datetime.now(timezone.utc).date()
