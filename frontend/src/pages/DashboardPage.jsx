@@ -78,10 +78,6 @@ export default function DashboardPage() {
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
   const [validated,   setValidated]  = useState([]);
-  // Filtres synchronises dans l'URL (?sport=...&bet=...) plutot qu'en simple
-  // useState local — sans ca, un clic sur "Retour" depuis la fiche d'un match
-  // ramenait l'utilisateur sur cette page mais avec les filtres reinitialises
-  // a "Tous", donnant l'impression de repartir du debut.
   const [searchParams, setSearchParams] = useSearchParams();
   const sport = searchParams.get("sport") || "all";
   const betFilter = searchParams.get("bet") || "all";
@@ -154,8 +150,7 @@ export default function DashboardPage() {
   }, [matches]);
   const leagueGroups  = useMemo(() => groupByLeague(filtered), [filtered]);
   const visibleGroups = showAll ? leagueGroups : leagueGroups.slice(0, 6);
-  const liveCount     = matches.filter(m => m.prediction?.is_live || m.is_live).length;
-  return (
+  const liveCount     = matches.filter(m => m.prediction?.is_live || m.is_live).length;return (
     <AppLayout>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
         {/* Hero */}
@@ -195,7 +190,6 @@ export default function DashboardPage() {
                 <RefreshCw className={`h-5 w-5 ${refreshing ? "animate-spin" : ""}`} />
               </button>
             </div>
-          </div>
         </Card>
         {/* Top picks */}
         <section>
@@ -328,7 +322,6 @@ export default function DashboardPage() {
               <span className="text-xs font-normal text-slate-500">({filtered.length})</span>
             </h2>
           </div>
-          {/* Onglets sport */}
           <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-thin">
             {SPORT_TABS.map(tab => (
               <button
@@ -349,7 +342,6 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-          {/* Filtres type pari */}
           <div className="flex gap-2 overflow-x-auto pb-2 mb-5 scrollbar-thin">
             {BET_FILTERS.map(f => (
               <button
@@ -364,7 +356,6 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-          {/* Groupes */}
           {loading ? (
             <div className="space-y-6">
               {[1,2,3].map(i => (
