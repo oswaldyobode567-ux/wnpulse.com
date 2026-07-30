@@ -958,7 +958,7 @@ async def refresh_matches_worker(db) -> Dict:
     }
 
 
-async def fetch_scores_for_sport(sport_key: str, days_from: int = 1) -> List[Dict]:
+async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dict]:
     """Fetch scores live/terminés. Endpoint GRATUIT (0 crédit)."""
     if not ODDS_API_KEY:
         return []
@@ -1056,6 +1056,7 @@ async def fetch_all_scores(db) -> List[Dict]:
         "soccer_usa_mls",
         "soccer_brazil_campeonato",
         "soccer_brazil_serie_b",
+        "soccer_argentina_primera_division",
         "soccer_japan_j_league",
         # Basketball — NBA hors saison en juillet, Summer League active
         "basketball_nba_summer_league",
