@@ -1299,6 +1299,55 @@ async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payl
     }
 
 
+@app.get("/api/admin/diagnose-pending-simple")
+async def admin_diagnose_pending_simple(key: str = ""):
+    """
+    Diagnostic : montre combien de picks 'pending' auraient du etre
+    reconcilies (match deja passe depuis plus de 3h), separes par source
+    (odds-api.io vs The Odds API classique), avec quelques exemples.
+    Usage : https://TON-BACKEND/api/admin/diagnose-pending-simple?key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=2000)
+    now = datetime.now(timezone.utc)
+
+    should_be_finished = []
+    for p in pending:
+        try:
+            ct = datetime.fromisoformat(p["commence_time"].replace("Z", "+00:00"))
+            if (now - ct).total_seconds() > 3 * 3600:
+                should_be_finished.append(p)
+        except Exception:
+            continue
+
+    oaio_stuck = [p for p in should_be_finished if p["match_id"].startswith("oaio-")]
+    classic_stuck = [p for p in should_be_finished if not p["match_id"].startswith("oaio-")]
+
+    def _sample(lst, n=5):
+        return [
+            {
+                "match_id": p["match_id"],
+                "home_team": p["home_team"],
+                "away_team": p["away_team"],
+                "sport_title": p.get("sport_title"),
+                "commence_time": p["commence_time"],
+            }
+            for p in lst[:n]
+        ]
+
+    return {
+        "total_pending": len(pending),
+        "should_be_finished_total": len(should_be_finished),
+        "oaio_stuck_count": len(oaio_stuck),
+        "classic_stuck_count": len(classic_stuck),
+        "oaio_stuck_samples": _sample(oaio_stuck),
+        "classic_stuck_samples": _sample(classic_stuck),
+    }
+
+
 @app.get("/api/admin/reconcile-results-simple")
 async def admin_reconcile_results_simple(key: str = ""):
     """
