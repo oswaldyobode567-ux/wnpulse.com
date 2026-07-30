@@ -1600,9 +1600,12 @@ async def _full_refresh_and_track():
 
 @app.on_event("startup")
 async def startup_event():
-    # 06h00 WAT = 05h00 UTC / 13h00 WAT = 12h00 UTC
-    scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour=5, minute=0)
-    scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour=12, minute=0)
+    # Refresh complet automatique toutes les 4h (00h, 04h, 08h, 12h, 16h, 20h UTC)
+    # — plus besoin de forcer manuellement, toutes les sources (The Odds API,
+    # odds-api.io, BSD) se synchronisent ensemble a chaque cycle. Frequence
+    # choisie comme compromis : suffisamment frequent pour rester a jour sans
+    # exploser la consommation de credits The Odds API (facture au volume).
+    scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour="*/4", minute=0)
     # Reconciliation supplementaire toutes les 2h pour capter les matchs
     # termines entre deux refresh complets, sans consommer de credit odds
     scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
