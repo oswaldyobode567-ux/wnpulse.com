@@ -1593,12 +1593,16 @@ async def _reconcile_predictions_with_scores() -> Dict:
 
 def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
     """
-    Determine si un pick simple (marche h2h/totals/btts) a gagne ou perdu,
-    a partir du score final. Retourne None si le marche n'est pas encore
-    supporte par cette evaluation automatique (ex: combo, corners, cartons)
-    — ces cas restent "pending" et necessitent une verification manuelle
-    plutot qu'un resultat devine a tort.
+    Determine si un pick a gagne ou perdu, a partir du score final. Couvre
+    uniquement ce qui est deductible du score (buts) : h2h, totals/over-under,
+    btts, double chance, remboursement si nul, clean sheets. Retourne None
+    pour tout le reste (corners, cartons, mi-temps, combos) — ces marches
+    necessiteraient une source de donnees que nous n'avons pas (nombre reel
+    de corners/cartons), et resteront "pending" indefiniment plutot que
+    d'inventer un resultat.
     """
+    import re
+
     pick = (pred.get("pick") or "").lower()
     market = pred.get("market", "")
     home = (pred.get("home_team") or "")
@@ -1613,20 +1617,48 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
         if "nul" in pick or pick == "draw":
             return "won" if home_score == away_score else "lost"
 
-    if market == "totals" or "plus de" in pick or "moins de" in pick:
-        point = pred.get("pick_point")
-        if point is not None:
+    if market in ("totals", "syn_over_25", "syn_over_15") or "plus de" in pick or "moins de" in pick:
+        # Extrait le seuil numerique directement du texte (ex: "2.5" dans
+        # "Plus de 2.5 buts"), car pick_point n'est pas fiable/transmis.
+        match_num = re.search(r"(\d+(?:\.\d+)?)", pick)
+        if match_num:
+            threshold = float(match_num.group(1))
             if "plus de" in pick:
-                return "won" if total_goals > point else "lost"
+                return "won" if total_goals > threshold else "lost"
             if "moins de" in pick:
-                return "won" if total_goals < point else "lost"
+                return "won" if total_goals < threshold else "lost"
 
-    if market == "btts":
+    if market in ("btts", "syn_btts"):
         both_scored = home_score > 0 and away_score > 0
         if "oui" in pick:
             return "won" if both_scored else "lost"
         if "non" in pick:
             return "won" if not both_scored else "lost"
+
+    if market in ("double_chance", "syn_double_chance"):
+        if "victoire domicile ou nul" in pick or "1x" in pick:
+            return "won" if home_score >= away_score else "lost"
+        if "nul ou victoire extérieure" in pick or "x2" in pick:
+            return "won" if away_score >= home_score else "lost"
+        if "victoire domicile ou extérieure" in pick or pick.strip() == "12" or " 12 " in f" {pick} ":
+            return "won" if home_score != away_score else "lost"
+
+    if market in ("draw_no_bet", "syn_draw_no_bet"):
+        # En cas de match nul, la mise est remboursee — ni gagne ni perdu.
+        # On laisse "pending" plutot que d'inventer un resultat force, car
+        # notre systeme ne gere pas de statut "rembourse" separe.
+        if home_score == away_score:
+            return None
+        if home.lower() in pick:
+            return "won" if home_score > away_score else "lost"
+        if away.lower() in pick:
+            return "won" if away_score > home_score else "lost"
+
+    if market in ("syn_clean_sheet_home",):
+        return "won" if away_score == 0 else "lost"
+
+    if market in ("syn_clean_sheet_away",):
+        return "won" if home_score == 0 else "lost"
 
     # Marches non couverts automatiquement (combo, corners, cartons, mi-temps...)
     # restent "pending" — pas de fausse estimation.
