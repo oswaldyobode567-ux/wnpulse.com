@@ -1327,6 +1327,9 @@ async def admin_diagnose_pending_simple(key: str = ""):
     classic_stuck = [p for p in should_be_finished if not p["match_id"].startswith("oaio-")]
 
     def _sample(lst, n=5):
+        # Trie du plus recent au plus ancien pour voir les vrais blocages
+        # actuels, pas seulement les tres vieux matchs deja perdus
+        sorted_lst = sorted(lst, key=lambda p: p["commence_time"], reverse=True)
         return [
             {
                 "match_id": p["match_id"],
@@ -1335,7 +1338,7 @@ async def admin_diagnose_pending_simple(key: str = ""):
                 "sport_title": p.get("sport_title"),
                 "commence_time": p["commence_time"],
             }
-            for p in lst[:n]
+            for p in sorted_lst[:n]
         ]
 
     return {
