@@ -1058,6 +1058,8 @@ async def fetch_all_scores(db) -> List[Dict]:
         "soccer_brazil_serie_b",
         "soccer_argentina_primera_division",
         "soccer_japan_j_league",
+        "soccer_china_superleague",
+        "soccer_mexico_ligamx",
         # Basketball — NBA hors saison en juillet, Summer League active
         "basketball_nba_summer_league",
         # Baseball — seul sport majeur US actif en juillet
