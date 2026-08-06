@@ -297,15 +297,32 @@ def _merge_match_prediction(match: dict, prediction: dict) -> dict:
 
 
 @app.get("/api/matches")
-async def get_matches():
-    """Retourne un tableau direct de matchs, chacun avec sa prediction integree."""
+async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    """
+    Retourne un tableau de matchs avec leur prediction integree. Verrouille
+    le pick pour les comptes gratuits (seul le tout premier match du
+    tableau reste visible), coherent avec /api/predictions/top et
+    /api/builder/matches — cette route n'avait jamais eu cette verification,
+    ce qui laissait passer les picks complets a tous, gratuit ou payant.
+    """
     matches = await fetch_all_matches(db)
     predictions = analyze_all(matches)
     pred_by_id = {p.get("match_id"): p for p in predictions}
-    merged = [
-        _merge_match_prediction(m, pred_by_id.get(m.get("id"), {}))
-        for m in matches
-    ]
+    is_paid = False
+    if payload:
+        user = await db.users.find_one({"id": payload.get("sub")})
+        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+            is_paid = True
+    merged = []
+    for i, m in enumerate(matches):
+        pred = dict(pred_by_id.get(m.get("id"), {}))
+        if not is_paid and i > 0:
+            pred["locked"] = True
+            pred["pick"] = None
+            pred["pick_odds"] = None
+        else:
+            pred["locked"] = False
+        merged.append(_merge_match_prediction(m, pred))
     return merged
 
 
