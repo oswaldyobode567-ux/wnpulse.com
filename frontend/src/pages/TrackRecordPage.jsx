@@ -8,19 +8,16 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Activity, Trophy, TrendingUp, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap } from "lucide-react";
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Area, AreaChart } from "recharts";
 import dayjs from "dayjs";
-
 export default function TrackRecordPage() {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
-
   useEffect(() => {
     setLoading(true);
     api.get(`/track-record?page=${page}&per_page=20`)
       .then((r) => setData(r.data))
       .finally(() => setLoading(false));
   }, [page]);
-
   return (
     <div className="min-h-screen bg-neutral-50">
       <header className="sticky top-0 z-50 bg-white/85 backdrop-blur-xl border-b border-neutral-200">
@@ -37,7 +34,6 @@ export default function TrackRecordPage() {
           </div>
         </div>
       </header>
-
       <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
         {/* Epic hero */}
         <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-900 via-slate-900 to-orange-900 text-white p-8 sm:p-12 mb-10 ring-1 ring-white/10">
@@ -59,7 +55,6 @@ export default function TrackRecordPage() {
             </p>
           </div>
         </div>
-
         {loading || !data ? (
           <div className="space-y-6">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4">{[1,2,3,4].map(i => <Skeleton key={i} className="h-28" />)}</div>
@@ -67,13 +62,25 @@ export default function TrackRecordPage() {
           </div>
         ) : (
           <>
+            {data.stats.current_streak >= 3 && (
+              <div className="mb-6 rounded-2xl bg-gradient-to-r from-orange-500 to-rose-500 p-5 text-white flex items-center gap-4 shadow-lg shadow-orange-500/20" data-testid="streak-banner">
+                <div className="text-4xl">🔥</div>
+                <div>
+                  <div className="font-heading text-2xl font-black">
+                    {data.stats.current_streak} victoires d'affilée !
+                  </div>
+                  <div className="text-sm text-white/90">
+                    Notre série en cours — vérifiable dans le tableau ci-dessous
+                  </div>
+                </div>
+              </div>
+            )}
             <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8" data-testid="kpis">
               <Kpi icon={Target} label="Taux de réussite" value={`${data.stats.win_rate}%`} sub={`${data.stats.wins}/${data.stats.total} picks`} accent="emerald" />
               <Kpi icon={TrendingUp} label="ROI 30 jours" value={`${data.stats.roi_percent >= 0 ? "+" : ""}${data.stats.roi_percent}%`} sub={`${data.stats.profit_units_30d} unités`} accent={data.stats.roi_percent >= 0 ? "emerald" : "rose"} />
               <Kpi icon={Flame} label="Série en cours" value={`${data.stats.current_streak}`} sub="picks gagnants" accent="orange" />
               <Kpi icon={Trophy} label="Cote moyenne" value={data.stats.avg_odds} sub="par pick" accent="amber" mono />
             </div>
-
             <Card className="bg-white border-neutral-200 p-5 mb-8" data-testid="roi-chart">
               <div className="flex items-center justify-between mb-3">
                 <h2 className="font-heading font-bold text-slate-900">Évolution de la bankroll · 60 jours</h2>
@@ -98,7 +105,6 @@ export default function TrackRecordPage() {
                 </AreaChart>
               </ResponsiveContainer>
             </Card>
-
             <Card className="bg-white border-neutral-200 overflow-hidden">
               <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
                 <h2 className="font-heading font-bold text-slate-900 flex items-center gap-2"><Activity className="h-5 w-5 text-orange-600" /> Tous les résultats</h2>
@@ -143,14 +149,12 @@ export default function TrackRecordPage() {
                 <div className="flex gap-2">
                   <Button size="sm" variant="outline" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>
                     <ChevronLeft className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={page >= data.total_pages} onClick={() => setPage(p => p + 1)}>
+                  </Button>    <Button size="sm" variant="outline" disabled={page >= data.total_pages} onClick={() => setPage(p => p + 1)}>
                     <ChevR className="h-3.5 w-3.5" />
                   </Button>
                 </div>
               </div>
             </Card>
-
             <div className="mt-10 text-center">
               <h3 className="font-heading text-2xl font-extrabold text-slate-900 mb-2">Convaincu ?</h3>
               <p className="text-slate-600 mb-4">Rejoins les abonnés Pro pour avoir tous nos picks chaque jour.</p>
@@ -162,7 +166,6 @@ export default function TrackRecordPage() {
     </div>
   );
 }
-
 function Kpi({ icon: Icon, label, value, sub, accent, mono }) {
   const cls = { emerald: "bg-emerald-50 text-emerald-700 border-emerald-200", rose: "bg-rose-50 text-rose-700 border-rose-200", orange: "bg-orange-50 text-orange-700 border-orange-200", amber: "bg-amber-50 text-amber-700 border-amber-200" }[accent];
   return (
