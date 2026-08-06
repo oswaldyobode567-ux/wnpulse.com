@@ -1,9 +1,17 @@
+html, body {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
+#root {
+  overflow-x: hidden;
+  max-width: 100vw;
+}
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
 @import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-
 body {
   margin: 0;
   font-family: 'IBM Plex Sans', system-ui, sans-serif;
@@ -12,16 +20,13 @@ body {
   background-color: #fafafa;
   color: #0f172a;
 }
-
 h1, h2, h3, h4, h5, .font-heading {
   font-family: 'Manrope', system-ui, sans-serif;
   letter-spacing: -0.02em;
 }
-
 .font-mono, code, pre {
   font-family: 'JetBrains Mono', monospace;
 }
-
 /* shadcn tokens (light, WinPulse warm vibrant) */
 @layer base {
   :root {
@@ -52,7 +57,6 @@ h1, h2, h3, h4, h5, .font-heading {
   * { @apply border-border; }
   body { @apply bg-background text-foreground; }
 }
-
 /* WinPulse signature gradients */
 .wp-gradient-hero {
   background:
@@ -60,15 +64,12 @@ h1, h2, h3, h4, h5, .font-heading {
     radial-gradient(circle at 0% 70%, rgba(234, 88, 12, 0.16), transparent 55%),
     radial-gradient(circle at 100% 100%, rgba(132, 204, 22, 0.10), transparent 50%);
 }
-
 .wp-gradient-warm {
   background: linear-gradient(135deg, #ea580c 0%, #f43f5e 100%);
 }
-
 .wp-gradient-warm-soft {
   background: linear-gradient(135deg, rgba(234,88,12,0.08) 0%, rgba(244,63,94,0.06) 100%);
 }
-
 .wp-noise::before {
   content: "";
   position: absolute;
@@ -78,23 +79,19 @@ h1, h2, h3, h4, h5, .font-heading {
   mix-blend-mode: overlay;
   border-radius: inherit;
 }
-
 .scrollbar-thin::-webkit-scrollbar { height: 8px; width: 8px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-
 /* Pulse animation for the live indicators */
 @keyframes wp-pulse {
   0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6); }
   50% { transform: scale(1.2); opacity: 0.85; box-shadow: 0 0 0 8px rgba(244, 63, 94, 0); }
 }
 .live-dot { animation: wp-pulse 1.6s ease-in-out infinite; }
-
 /* Soft bounce for top picks */
 @keyframes wp-rise {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
 .wp-rise { animation: wp-rise 0.45s ease-out both; }
-
 [data-debug-wrapper="true"] { display: contents !important; }
