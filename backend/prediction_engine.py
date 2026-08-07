@@ -23,7 +23,7 @@ WEST_AFRICA_BOOKMAKERS = {
 BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"]
 
 # ─── Seuils qualité — ASSOUPLIS pour garantir des picks quotidiens ───────────
-MIN_ODDS = 1.25          # Cote minimum d'un pick simple
+MIN_ODDS = 1.40          # Cote minimum d'un pick simple (remonte de 1.25 pour eviter les picks a faible valeur meme surs)
 MAX_ODDS = 8.00          # Cote maximum pour picks principaux
 MIN_CONFIDENCE = 60.0    # Confiance minimum pour publier (seul vrai filtre de qualité)
 MIN_EDGE = 1.0           # Conserve pour affichage/tri uniquement, plus utilise comme gate
@@ -796,7 +796,10 @@ def top_predictions(matches: List[Dict], limit: int = 10) -> List[Dict]:
     preds = analyze_all(matches)
     valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
              and p.get("pick_odds", 0) >= 1.0]
-    valid.sort(key=lambda p: p["confidence"] + max(0, p.get("edge", 0)) * 0.3,
+    # Poids sur l'edge augmente (0.3 -> 0.8) : privilegie les picks a vraie
+    # valeur plutot que juste les plus "surs" en apparence, pour ameliorer
+    # le ROI reel plutot que seulement le taux de reussite affiche.
+    valid.sort(key=lambda p: p["confidence"] + max(0, p.get("edge", 0)) * 0.8,
                reverse=True)
     return valid[:limit]
 
