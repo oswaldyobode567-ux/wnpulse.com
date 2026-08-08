@@ -23,6 +23,7 @@ from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
     fetch_odds_api_io_scores_map,
 )
+from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
@@ -306,7 +307,8 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
     ce qui laissait passer les picks complets a tous, gratuit ou payant.
     """
     matches = await fetch_all_matches(db)
-    predictions = analyze_all(matches)
+    real_stats_map = await get_real_stats_map(db, matches)
+    predictions = analyze_all(matches, real_stats_map=real_stats_map)
     pred_by_id = {p.get("match_id"): p for p in predictions}
     is_paid = False
     if payload:
@@ -329,14 +331,16 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
 @app.get("/api/predictions")
 async def get_predictions():
     matches = await fetch_all_matches(db)
-    predictions = analyze_all(matches)
+    real_stats_map = await get_real_stats_map(db, matches)
+    predictions = analyze_all(matches, real_stats_map=real_stats_map)
     return predictions
 
 
 @app.get("/api/predictions/top")
 async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
     matches = await fetch_all_matches(db)
-    preds = top_predictions(matches, limit=limit)
+    real_stats_map = await get_real_stats_map(db, matches)
+    preds = top_predictions(matches, limit=limit, real_stats_map=real_stats_map)
 
     is_paid = False
     if payload:
@@ -384,7 +388,7 @@ async def get_match_analysis(match_id: str):
             detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
         )
 
-    predictions = analyze_all([match])
+    predictions = analyze_all([match], real_stats_map=await get_real_stats_map(db, [match]))
     prediction = predictions[0] if predictions else {}
     ai_analysis = await generate_analysis(match, prediction)
     return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
@@ -1032,7 +1036,7 @@ async def get_single_match(match_id: str):
             detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
         )
 
-    predictions = analyze_all([match])
+    predictions = analyze_all([match], real_stats_map=await get_real_stats_map(db, [match]))
     prediction = predictions[0] if predictions else {}
     return _merge_match_prediction(match, prediction)
 
@@ -1519,6 +1523,24 @@ async def admin_refresh_simple(key: str = ""):
     return result
 
 
+@app.get("/api/admin/refresh-real-stats-simple")
+async def admin_refresh_real_stats_simple(key: str = ""):
+    """
+    Force le rafraichissement du cache de vraies stats football-data.org
+    (forme + H2H reels), independamment du cycle complet. Utile pour tester
+    l'integration sans attendre le prochain refresh planifie de 4h.
+    Retourne aussi le nombre de matchs couverts, pour verifier que le token
+    FOOTBALL_DATA_TOKEN et le mapping des equipes fonctionnent.
+    Usage : https://TON-BACKEND/api/admin/refresh-real-stats-simple?key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    matches = await fetch_all_matches(db)
+    result = await refresh_real_stats_cache(db, matches)
+    return result
+
+
 # ─── Suivi reel des predictions (backtest continu) ──────────────────────────
 
 def _pick_signature(match_id: str, pick: str) -> str:
@@ -1711,6 +1733,13 @@ async def _full_refresh_and_track():
     """Refresh les donnees, sauvegarde les nouveaux picks, reconcilie les anciens."""
     matches = await refresh_matches_worker(db)
     all_matches = await fetch_all_matches(db)
+    # Vraies stats football-data.org (forme + H2H reels) pour les 12 grandes
+    # ligues couvertes par le plan gratuit — vient EN PLUS des cotes
+    # existantes (The Odds API, odds-api.io, BSD), ne les remplace jamais.
+    try:
+        await refresh_real_stats_cache(db, all_matches)
+    except Exception:
+        pass  # ne doit jamais bloquer le refresh principal des cotes
     await _save_predictions_to_history(all_matches)
     await _reconcile_predictions_with_scores()
     return matches
