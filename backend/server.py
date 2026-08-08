@@ -810,10 +810,27 @@ async def get_ultra_safe_combo():
 
 
 @app.get("/api/combos/today")
-async def get_today_combos():
+async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_payload)):
     try:
         matches = await fetch_all_matches(db)
-        return build_today_combos_by_sport(matches)
+        result = build_today_combos_by_sport(matches)
+        is_paid = False
+        if payload:
+            user = await db.users.find_one({"id": payload.get("sub")})
+            if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+                is_paid = True
+        # Verrouille les niveaux payants pour les comptes gratuits (le
+        # champ "free_today" existe deja, mais le frontend attend "locked"
+        # — sans ca, tout le monde voyait tous les niveaux, gratuit ou pas)
+        if not is_paid:
+            for family in result.get("families", {}).values():
+                for tier in family.get("tiers", {}).values():
+                    if not tier.get("free_today"):
+                        tier["locked"] = True
+                        tier["legs"] = []
+                    else:
+                        tier["locked"] = False
+        return result
     except Exception as e:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
