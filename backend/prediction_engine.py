@@ -261,7 +261,7 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
     if confidence < min_conf:
         return None
 
-    label = "safe" if confidence >= 80 else ("value" if confidence >= 70 else "risky")
+    label = "safe" if confidence >= 72 else ("value" if confidence >= 63 else "risky")
 
     return {
         "market": market_key,
@@ -324,7 +324,7 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
             "pick_point": None,
             "pick_odds": odds,
             "confidence": round(conf, 1),
-            "label": "safe" if conf >= 80 else ("value" if conf >= 70 else "risky"),
+            "label": "safe" if conf >= 72 else ("value" if conf >= 63 else "risky"),
             "edge": round(edge, 2),
             "num_books": 0,
             "synthetic": True,
