@@ -113,7 +113,9 @@ REAL_SPORT_KEYS = [
     "soccer_epl",
     "soccer_spain_la_liga",
     "soccer_germany_bundesliga",
+    "soccer_germany_bundesliga2",
     "soccer_france_ligue_one",
+    "soccer_france_ligue_two",
     "soccer_italy_serie_a",
     # Autres ligues européennes
     "soccer_netherlands_eredivisie",
