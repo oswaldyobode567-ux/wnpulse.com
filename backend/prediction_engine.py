@@ -23,7 +23,7 @@ WEST_AFRICA_BOOKMAKERS = {
 BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"]
 
 # ─── Seuils qualité — ASSOUPLIS pour garantir des picks quotidiens ───────────
-MIN_ODDS = 1.40          # Cote minimum d'un pick simple (remonte de 1.25 pour eviter les picks a faible valeur meme surs)
+MIN_ODDS = 1.15          # Cote minimum d'un pick simple
 MAX_ODDS = 8.00          # Cote maximum pour picks principaux
 MIN_CONFIDENCE = 60.0    # Confiance minimum pour publier (seul vrai filtre de qualité)
 MIN_EDGE = 1.0           # Conserve pour affichage/tri uniquement, plus utilise comme gate
@@ -701,7 +701,7 @@ def analyze_match(match: Dict) -> Dict:
     if not market_results:
         return empty
 
-    market_results.sort(key=lambda x: x["confidence"] + max(0, x["edge"]) * 0.3,
+    market_results.sort(key=lambda x: x["confidence"] + max(0, x["edge"]) * 0.8,
                         reverse=True)
 
     validated = _validate_picks_compatibility(market_results)
@@ -989,7 +989,7 @@ def build_super_combos(matches: List[Dict]) -> Dict:
 
     best_per_sport = []
     for sport, picks in by_sport.items():
-        picks.sort(key=lambda x: x["confidence"] + max(0, x.get("edge", 0)) * 0.3,
+        picks.sort(key=lambda x: x["confidence"] + max(0, x.get("edge", 0)) * 0.8,
                    reverse=True)
         if picks:
             best_per_sport.append(picks[0])
