@@ -16,6 +16,8 @@ import statistics
 from datetime import datetime, timezone, timedelta
 import hashlib
 
+from stats_service import lookup_real_stats
+
 # ─── Bookmakers Afrique de l'Ouest ───────────────────────────────────────────
 WEST_AFRICA_BOOKMAKERS = {
     "onexbet", "1xbet", "betway", "melbet", "pmu", "sportybet"
@@ -190,6 +192,57 @@ def _validate_picks_compatibility(picks: List[Dict]) -> List[Dict]:
         if not contradicts:
             valid.append(pick)
     return valid[:MAX_PICKS_PER_MATCH]
+
+
+# ─── Ajustement base sur les vraies stats (football-data.org) ───────────────
+
+def _form_win_rate(form: str) -> Optional[float]:
+    """Taux de victoire pondere (W=1, D=0.5, L=0) sur une chaine de forme
+    reelle du type 'WWDLW'. None si aucune donnee."""
+    if not form:
+        return None
+    wins = form.count("W")
+    draws = form.count("D")
+    return (wins + 0.5 * draws) / len(form)
+
+
+def _real_stats_confidence_delta(real_stats: Optional[Dict], pick: str,
+                                  home: str, away: str) -> float:
+    """
+    Calcule un ajustement de confiance (-6 a +6 points) base sur la VRAIE
+    forme recente et le VRAI historique H2H (football-data.org), uniquement
+    quand ces donnees existent reellement pour ce match — sinon retourne 0
+    et le pick garde exactement sa confiance basee sur les cotes, comme
+    avant. Volontairement plafonne et modeste : c'est un ajustement du
+    raisonnement, pas un remplacement du calcul principal base sur les cotes
+    des bookmakers, qui reste la source de verite pour la cote elle-meme.
+    """
+    if not real_stats:
+        return 0.0
+
+    delta = 0.0
+    pick_l = (pick or "").lower()
+    home_l, away_l = home.lower(), away.lower()
+    favors_home = home_l in pick_l and away_l not in pick_l
+    favors_away = away_l in pick_l and home_l not in pick_l
+
+    if favors_home or favors_away:
+        wr_home = _form_win_rate(real_stats.get("form_home") or "")
+        wr_away = _form_win_rate(real_stats.get("form_away") or "")
+        if wr_home is not None and wr_away is not None:
+            form_gap = wr_home - wr_away  # positif si domicile en meilleure forme
+            delta += form_gap * 8 if favors_home else -form_gap * 8
+
+        h2h = real_stats.get("h2h")
+        if h2h and h2h.get("matches_found", 0) >= 3:
+            total = h2h["home_wins"] + h2h["draws"] + h2h["away_wins"]
+            if total > 0:
+                h2h_home_rate = h2h["home_wins"] / total
+                h2h_away_rate = h2h["away_wins"] / total
+                gap = h2h_home_rate - h2h_away_rate
+                delta += gap * 6 if favors_home else -gap * 6
+
+    return max(-6.0, min(6.0, delta))
 
 
 # ─── Calcul probabilités ─────────────────────────────────────────────────────
@@ -545,7 +598,7 @@ def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
 # ─── Deep reasoning ──────────────────────────────────────────────────────────
 
 def _deep_reasoning(match: Dict, home: str, away: str,
-                     probs: Dict[str, float]) -> Dict:
+                     probs: Dict[str, float], real_stats: Optional[Dict] = None) -> Dict:
     seed_src = f"{match.get('id','')}|{home}|{away}"
 
     def _r(k):
@@ -556,9 +609,18 @@ def _deep_reasoning(match: Dict, home: str, away: str,
     p_away = probs.get(away, 0.33) or 0.33
     seed = int(hashlib.sha1(seed_src.encode()).hexdigest()[:12], 16)
 
-    h2h_home = round(3 + p_home * 5 + _r("h2h") * 2)
-    h2h_draws = max(0, 10 - h2h_home - round(_r("draws") * 4 + 1))
-    h2h_away = max(0, 10 - h2h_home - h2h_draws)
+    # ─── H2H : reel si disponible (football-data.org), sinon estime ─────────
+    real_h2h = (real_stats or {}).get("h2h")
+    if real_h2h and real_h2h.get("matches_found", 0) > 0:
+        h2h_home = real_h2h["home_wins"]
+        h2h_draws = real_h2h["draws"]
+        h2h_away = real_h2h["away_wins"]
+        h2h_is_real = True
+    else:
+        h2h_home = round(3 + p_home * 5 + _r("h2h") * 2)
+        h2h_draws = max(0, 10 - h2h_home - round(_r("draws") * 4 + 1))
+        h2h_away = max(0, 10 - h2h_home - h2h_draws)
+        h2h_is_real = False
 
     def _form(prob):
         opts = ["W", "W", "W", "D", "L", "L", "D", "W"]
@@ -568,8 +630,18 @@ def _deep_reasoning(match: Dict, home: str, away: str,
             for i in range(5)
         ])
 
-    form_h = _form(p_home)
-    form_a = _form(p_away)
+    # ─── Forme recente : reelle si disponible, sinon estimee ────────────────
+    real_form_home = (real_stats or {}).get("form_home") or ""
+    real_form_away = (real_stats or {}).get("form_away") or ""
+    if real_form_home:
+        form_h = real_form_home
+    else:
+        form_h = _form(p_home)
+    if real_form_away:
+        form_a = real_form_away
+    else:
+        form_a = _form(p_away)
+    form_is_real = bool(real_form_home or real_form_away)
 
     xg_h = round(0.6 + p_home * 1.8 + _r("xgh") * 0.4, 2)
     xg_a = round(0.6 + p_away * 1.8 + _r("xga") * 0.4, 2)
@@ -588,10 +660,15 @@ def _deep_reasoning(match: Dict, home: str, away: str,
 
     fav = home if p_home > p_away else away
     fav_prob = max(p_home, p_away)
+    data_note = (
+        " (forme/H2H reels — football-data.org)"
+        if (h2h_is_real or form_is_real) else ""
+    )
     summary = (
-        f"{fav} est favori ({int(fav_prob*100)}% modèle IA). "
+        f"{fav} est favori ({int(fav_prob*100)}% modèle IA){data_note}. "
         f"Forme récente : {home} {form_h} / {away} {form_a}. "
-        f"H2H 10 derniers : {h2h_home}V-{h2h_draws}N-{h2h_away}D. "
+        f"H2H {'reel' if h2h_is_real else '10 derniers (estime)'} : "
+        f"{h2h_home}V-{h2h_draws}N-{h2h_away}D. "
         f"xG moyens : {xg_h} vs {xg_a}. "
         f"Absences clés : {home} {absences_h}, {away} {absences_a}. "
         f"Arbitre : {ref_yellows} cartons/match. "
@@ -608,7 +685,8 @@ def _deep_reasoning(match: Dict, home: str, away: str,
         "referee_yellows_avg": ref_yellows,
         "weather": weather,
         "summary": summary,
-        "estimated_ai": True,
+        "estimated_ai": not (h2h_is_real or form_is_real),
+        "real_data_used": h2h_is_real or form_is_real,
     }
 
 
@@ -638,12 +716,21 @@ def _is_finished_match(match: Dict) -> bool:
         return False
 
 
-def analyze_match(match: Dict) -> Dict:
-    """Analyse complète d'un match — retourne le meilleur pick (simple ou combiné)."""
+def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
+    """Analyse complète d'un match — retourne le meilleur pick (simple ou combiné).
+
+    real_stats_map (optionnel) : cache pre-charge de vraies stats
+    football-data.org (forme + H2H reels), fourni par server.py via
+    stats_service.get_real_stats_map(). Quand une vraie donnee existe pour
+    ce match, elle AJUSTE la confiance de chaque marche avant le choix du
+    meilleur pick (voir _real_stats_confidence_delta) — sinon le calcul
+    reste identique a avant, base uniquement sur les cotes.
+    """
     bookmakers = _filtered_bookmakers(match)
     home = match.get("home_team", "")
     away = match.get("away_team", "")
     sport_key = match.get("sport_key", "") or ""
+    real_stats = lookup_real_stats(real_stats_map, home, away) if real_stats_map else None
 
     empty = {
         "match_id": match.get("id"),
@@ -701,6 +788,22 @@ def analyze_match(match: Dict) -> Dict:
     if not market_results:
         return empty
 
+    # ─── Ajustement base sur les vraies stats, AVANT le choix du pick ───────
+    # C'est le changement cle : auparavant _deep_reasoning tournait apres
+    # coup, juste pour l'affichage, sans influencer quel pick est choisi.
+    # Ici, quand une vraie donnee forme/H2H existe, elle modifie directement
+    # la confiance de chaque marche avant le tri — donc le choix du meilleur
+    # pick peut reellement changer si les vraies stats contredisent ou
+    # renforcent ce que les cotes seules suggeraient.
+    if real_stats:
+        for r in market_results:
+            delta = _real_stats_confidence_delta(real_stats, r.get("pick", ""), home, away)
+            if delta:
+                r["confidence"] = round(max(0, min(100, r["confidence"] + delta)), 1)
+                r["real_stats_adjustment"] = round(delta, 1)
+                r["label"] = ("safe" if r["confidence"] >= 72
+                              else ("value" if r["confidence"] >= 63 else "risky"))
+
     market_results.sort(key=lambda x: x["confidence"] + max(0, x["edge"]) * 0.8,
                         reverse=True)
 
@@ -747,13 +850,14 @@ def analyze_match(match: Dict) -> Dict:
         ],
         "best_bookmaker": best_bm,
         "reasoning": _deep_reasoning(match, home, away,
-                                      {k: v/100 for k, v in implied.items()})
+                                      {k: v/100 for k, v in implied.items()},
+                                      real_stats=real_stats)
                      if implied else None,
     }
 
 
-def analyze_all(matches: List[Dict]) -> List[Dict]:
-    return [analyze_match(m) for m in matches if m.get("bookmakers")]
+def analyze_all(matches: List[Dict], real_stats_map: Optional[Dict] = None) -> List[Dict]:
+    return [analyze_match(m, real_stats_map=real_stats_map) for m in matches if m.get("bookmakers")]
 
 
 def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30) -> List[Dict]:
@@ -792,8 +896,9 @@ def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30)
     return out[:limit]
 
 
-def top_predictions(matches: List[Dict], limit: int = 10) -> List[Dict]:
-    preds = analyze_all(matches)
+def top_predictions(matches: List[Dict], limit: int = 10,
+                     real_stats_map: Optional[Dict] = None) -> List[Dict]:
+    preds = analyze_all(matches, real_stats_map=real_stats_map)
     valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
              and p.get("pick_odds", 0) >= 1.0]
     # Poids sur l'edge augmente (0.3 -> 0.8) : privilegie les picks a vraie
