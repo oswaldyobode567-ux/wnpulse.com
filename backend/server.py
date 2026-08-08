@@ -823,17 +823,28 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
             user = await db.users.find_one({"id": payload.get("sub")})
             if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
                 is_paid = True
-        # Verrouille les niveaux payants pour les comptes gratuits (le
-        # champ "free_today" existe deja, mais le frontend attend "locked"
-        # — sans ca, tout le monde voyait tous les niveaux, gratuit ou pas)
+        # Comptes gratuits : Booster/Extra/Jackpot restent entierement caches
+        # (comme avant), et seul "Sur" applique un verrouillage par pick
+        # individuel (1er pick visible, le reste verrouille) — pour laisser
+        # entrevoir la valeur sans jamais donner l'integralite du "Sur"
+        # gratuitement, ce qui inciterait moins a l'abonnement.
         if not is_paid:
             for family in result.get("families", {}).values():
-                for tier in family.get("tiers", {}).values():
-                    if not tier.get("free_today"):
+                for tkey, tier in family.get("tiers", {}).items():
+                    if tkey == "sure":
+                        legs = tier.get("legs", [])
+                        for i, leg in enumerate(legs):
+                            if i == 0:
+                                leg["locked"] = False
+                            else:
+                                leg["locked"] = True
+                                leg["pick"] = None
+                                leg["pick_odds"] = None
+                                leg["market_label"] = None
+                        tier["locked"] = len(legs) > 1
+                    else:
                         tier["locked"] = True
                         tier["legs"] = []
-                    else:
-                        tier["locked"] = False
         return result
     except Exception as e:
         return {
