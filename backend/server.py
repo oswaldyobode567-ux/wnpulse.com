@@ -872,49 +872,51 @@ async def get_predictions_combos_alias():
 @app.get("/api/builder/matches")
 async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
     """
-    Matchs avec TOUS leurs marches analyses (pas juste le meilleur pick),
-    pour que l'utilisateur construise son propre combine. Format attendu :
-    {"matches": [{match_id, sport_title, home_team, away_team,
-    commence_time, picks: [{market, market_label, pick, pick_odds,
-    confidence, label, edge, synthetic, locked}, ...]}]}.
-
-    Comptes gratuits : seul le meilleur pick par match est deverrouille,
-    le reste a locked=true et pick_odds=null (coherent avec le reste du
-    site : /api/predictions/top applique la meme regle).
+    Comptes gratuits : seul le PREMIER pick des 2 PREMIERS MATCHS est
+    deverrouille (1 pick par match, sur 2 matchs differents au total).
+    Tous les autres picks, sur ces 2 matchs et sur tous les matchs
+    suivants, sont entierement verrouilles (marche, pick et cote caches).
     """
     matches = await fetch_all_matches(db)
-
     if sport and sport != "all":
         matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
-
     is_paid = False
     if payload:
         user = await db.users.find_one({"id": payload.get("sub")})
         if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
             is_paid = True
-
+    FREE_UNLOCKED_MATCHES = 2  # nombre de matchs avec 1 pick gratuit visible
     result = []
+    unlocked_matches_count = 0
     for m in matches:
         analyzed = analyze_match(m)
         raw_picks = analyzed.get("markets", [])
         if not raw_picks:
             continue
-
+        this_match_gets_free_pick = (not is_paid) and (unlocked_matches_count < FREE_UNLOCKED_MATCHES)
+        if this_match_gets_free_pick:
+            unlocked_matches_count += 1
         picks = []
         for i, mk in enumerate(raw_picks):
-            locked = (not is_paid) and i > 0
+            # Seul le tout premier marche du match est deverrouille, et
+            # uniquement si ce match fait partie des matchs gratuits
+            if is_paid:
+                locked = False
+            elif this_match_gets_free_pick and i == 0:
+                locked = False
+            else:
+                locked = True
             picks.append({
-                "market": mk.get("market"),
-                "market_label": mk.get("market_label"),
-                "pick": mk.get("pick"),
+                "market": None if locked else mk.get("market"),
+                "market_label": "Marché verrouillé" if locked else mk.get("market_label"),
+                "pick": None if locked else mk.get("pick"),
                 "pick_odds": None if locked else mk.get("pick_odds"),
-                "confidence": mk.get("confidence"),
-                "label": mk.get("label"),
-                "edge": mk.get("edge", 0),
+                "confidence": None if locked else mk.get("confidence"),
+                "label": None if locked else mk.get("label"),
+                "edge": None if locked else mk.get("edge", 0),
                 "synthetic": mk.get("synthetic", False),
                 "locked": locked,
             })
-
         result.append({
             "match_id": analyzed.get("match_id"),
             "sport_key": analyzed.get("sport_key"),
@@ -924,7 +926,6 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
             "commence_time": analyzed.get("commence_time"),
             "picks": picks,
         })
-
     return {"matches": result}
 
 
