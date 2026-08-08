@@ -847,9 +847,9 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
 # ─── Alias de routes attendues par le frontend (memes donnees, autres noms) ──
 
 @app.get("/api/predictions/today-combos")
-async def get_predictions_today_combos_alias():
+async def get_predictions_today_combos_alias(payload: Optional[dict] = Depends(get_optional_user_payload)):
     """Alias de /api/combos/today, nom attendu par le frontend."""
-    return await get_today_combos()
+    return await get_today_combos(payload)
 
 
 @app.get("/api/predictions/combos")
