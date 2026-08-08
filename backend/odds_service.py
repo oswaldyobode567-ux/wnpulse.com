@@ -42,6 +42,7 @@ ODDS_API_IO_LEAGUES = [
     "finland-veikkausliiga",
     "denmark-superligaen",
     "brazil-brasileiro-serie-b",
+    "italy-coppa-italia",
     "international-clubs-uefa-champions-league-qualification",
     "international-clubs-uefa-europa-league-qualification",
     "international-clubs-uefa-conference-league-qualification",
