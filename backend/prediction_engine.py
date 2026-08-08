@@ -327,6 +327,7 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
         "label": label,
         "edge": round(edge, 2),
         "num_books": num_books,
+        "source": "bookmaker",  # cote reelle, edge exploitable
     }
 
 
@@ -364,8 +365,13 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
         odds = round(1 / max(prob * margin, 0.01), 2)
         if odds < MIN_ODDS or odds > MAX_ODDS:
             return None
-        edge = (prob - 1/odds) * 100
-        # Filtre edge retire ici aussi, pour la meme raison que _analyze_market.
+        # IMPORTANT : cette cote est FABRIQUEE a partir de "prob" elle-meme
+        # (via 1/(prob*margin)) — ce n'est jamais une vraie cote de bookmaker.
+        # Calculer un "edge" en comparant cette cote a la meme "prob" revient
+        # a comparer le modele a lui-meme : le resultat est mathematiquement
+        # toujours proche de -(marge), quel que soit le match, et NE REFLETE
+        # AUCUNE vraie opportunite de marche. On le met donc a 0 (non
+        # applicable) plutot que d'afficher un faux edge trompeur.
         conf = max(0, min(100, prob * 100 - 3))
         if conf < MIN_CONFIDENCE:
             return None
@@ -378,9 +384,10 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
             "pick_odds": odds,
             "confidence": round(conf, 1),
             "label": "safe" if conf >= 72 else ("value" if conf >= 63 else "risky"),
-            "edge": round(edge, 2),
+            "edge": 0,  # non applicable — cote estimee, pas une vraie cote de marche
             "num_books": 0,
             "synthetic": True,
+            "source": "estime_ia",  # a distinguer de "bookmaker" (cote reelle)
         }
 
     if sport_key.startswith("soccer"):
@@ -592,6 +599,7 @@ def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
         "num_books": min(primary.get("num_books", 0), secondary.get("num_books", 0)),
         "is_combo": True,
         "combo_legs": [primary["pick"], secondary["pick"]],
+        "source": "bookmaker",  # construit uniquement a partir de 2 marches reels
     }
 
 
@@ -804,14 +812,30 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
                 r["label"] = ("safe" if r["confidence"] >= 72
                               else ("value" if r["confidence"] >= 63 else "risky"))
 
-    market_results.sort(key=lambda x: x["confidence"] + max(0, x["edge"]) * 0.8,
-                        reverse=True)
+    # ─── Tri : marches REELS toujours prioritaires sur les marches estimes ──
+    # Avant, un marche synthetique (cote fabriquee, edge non applicable)
+    # pouvait devancer un vrai marche de bookmaker si sa confiance affichee
+    # etait plus haute — c'est ce qui produisait des picks a cote fictive
+    # (ex: "Plus de 2.5 buts @ 1.19" invente) choisis comme pick principal
+    # alors qu'un vrai marche jouable existait pour ce match. Desormais, les
+    # marches "bookmaker" (cote reelle, edge exploitable) passent toujours
+    # avant les marches "estime_ia", quelle que soit leur confiance relative.
+    def _source_priority(x):
+        return 0 if x.get("source") == "bookmaker" else 1
+
+    market_results.sort(
+        key=lambda x: (_source_priority(x), -(x["confidence"] + max(0, x["edge"]) * 0.8))
+    )
 
     validated = _validate_picks_compatibility(market_results)
     best = validated[0] if validated else market_results[0]
 
-    # Tentative de pick combine si la cote simple est trop basse
-    combo = _build_combined_pick(validated if validated else market_results)
+    # Tentative de pick combine — uniquement a partir de marches REELS, pour
+    # ne jamais combiner une cote fabriquee (estime_ia) avec une vraie cote
+    # de bookmaker, ce qui produirait une cote combinee sans aucun sens.
+    real_only = [r for r in (validated if validated else market_results)
+                 if r.get("source") == "bookmaker"]
+    combo = _build_combined_pick(real_only) if real_only else None
     if combo:
         best = combo
         if combo not in market_results:
@@ -873,6 +897,12 @@ def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30)
     for m in matches:
         analyzed = analyze_match(m)
         for mk in analyzed.get("markets", []):
+            # Exclusion stricte des marches estimes (source="estime_ia") : leur
+            # cote est fabriquee a partir du modele lui-meme, donc leur edge
+            # ne reflete jamais une vraie opportunite de marche — seuls les
+            # marches "bookmaker" (cote reelle) peuvent etre un vrai value bet.
+            if mk.get("source") != "bookmaker":
+                continue
             edge = mk.get("edge", 0)
             if edge < min_edge:
                 continue
