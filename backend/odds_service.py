@@ -7,14 +7,24 @@ CORRECTIONS v7.1 :
 - Inclut matchs live et terminés (24h) — ne disparaissent plus
 - Fetch scores GRATUIT (0 crédit) pour les scores live
 
-CORRECTIONS v7.4 :
+CORRECTIONS v8.2 :
 - Integration odds-api.io comme source secondaire de cotes (ligues mineures)
 - Integration BSD Sports Addon comme enrichissement (predictions ML CatBoost)
+- Parallélisation des fetchs et des scores
+- Cache utilisateur strictement MongoDB, jamais de fetch réseau
+- TTL dynamique selon la proximité du prochain match
+- Fusion multi-source robuste par équipes + horaire
+- Normalisation équipes/bookmakers et qualité pondérée
+- Suppression du doublon odds-api.io
   fusionnees dans le reasoning des matchs, sans remplacer le moteur maison
 """
 import os
 import random
 import hashlib
+import asyncio
+import math
+import unicodedata
+import re
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 
@@ -74,8 +84,43 @@ ODDS_API_IO_MARKET_MAP = {
     "Draw No Bet": "draw_no_bet",
 }
 
-# CRITIQUE : Cache 6 heures — ne jamais fetch plus souvent
-CACHE_TTL_MINUTES = 360  # 6 heures
+# Cache dynamique. Les requetes utilisateur ne declenchent jamais de fetch reseau.
+CACHE_TTL_LONG_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_LONG_MINUTES", "360"))
+CACHE_TTL_DAY_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_DAY_MINUTES", "120"))
+CACHE_TTL_SOON_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_SOON_MINUTES", "30"))
+CACHE_TTL_NEAR_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_NEAR_MINUTES", "5"))
+STALE_CACHE_MAX_HOURS = int(os.environ.get("ODDS_STALE_CACHE_MAX_HOURS", "24"))
+BOOKMAKER_WEIGHTS = {"pinnacle":1.00,"bet365":0.95,"1xbet":0.90,"betway":0.88,"sportybet":0.86,"melbet":0.84,"pmu":0.82}
+
+def _normalize_bookmaker_key(name: str) -> str:
+    value = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+def _cache_ttl_for_matches(matches: List[Dict]) -> int:
+    now=datetime.now(timezone.utc); nearest=None
+    for m in matches or []:
+        try:
+            ct=datetime.fromisoformat(str(m.get("commence_time","")).replace("Z","+00:00"))
+            if ct.tzinfo is None: ct=ct.replace(tzinfo=timezone.utc)
+            if ct>=now and (nearest is None or ct<nearest): nearest=ct
+        except Exception: continue
+    if nearest is None: return CACHE_TTL_LONG_MINUTES
+    hours=(nearest-now).total_seconds()/3600
+    if hours<1: return CACHE_TTL_NEAR_MINUTES
+    if hours<6: return CACHE_TTL_SOON_MINUTES
+    if hours<24: return CACHE_TTL_DAY_MINUTES
+    return CACHE_TTL_LONG_MINUTES
+
+def _bookmaker_quality(name: str) -> float:
+    return BOOKMAKER_WEIGHTS.get(_normalize_bookmaker_key(name), 0.75)
+
+def _annotate_bookmakers(matches: List[Dict]) -> List[Dict]:
+    for match in matches:
+        for bm in match.get("bookmakers", []):
+            title=bm.get("title") or bm.get("key") or ""
+            bm["key"]=_normalize_bookmaker_key(bm.get("key") or title)
+            bm["quality_weight"]=_bookmaker_quality(title)
+    return matches
 
 # Mots-clés identifiant les matchs amicaux à filtrer
 FRIENDLY_KEYWORDS = [
@@ -575,15 +620,6 @@ def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict], sport: st
 async def _fetch_odds_api_io_matches() -> List[Dict]:
     """
     Fetch complet odds-api.io pour les ligues mineures configurees.
-    Defensif : toute erreur individuelle est ignoree, ne bloque jamais
-    le fetch principal The Odds API.
-    """
-    if not ODDS_API_IO_KEY:
-        return []
-
-async def _fetch_odds_api_io_matches() -> List[Dict]:
-    """
-    Fetch complet odds-api.io pour les ligues mineures configurees.
     Repartit le budget de requetes (~85/heure, marge sous le quota 100/h)
     PROPORTIONNELLEMENT au nombre reel de matchs du jour par ligue — une
     ligue avec 40 matchs aujourd'hui (ex: Conference League Qualification)
@@ -741,8 +777,18 @@ async def _fetch_bsd_predictions() -> List[Dict]:
         return []
 
 
+def _first_present(obj: Dict, keys: List[str], default=None):
+    for key in keys:
+        if isinstance(obj, dict) and obj.get(key) is not None:
+            return obj.get(key)
+    return default
+
+TEAM_ALIASES={"psg":"parissaintgermain","parissg":"parissaintgermain","parissaintgermainfc":"parissaintgermain","manutd":"manchesterunited","manchesterunitedfc":"manchesterunited","mancity":"mancity","inter":"intermilan","internazionale":"intermilan","barca":"barcelona","fcbarcelona":"barcelona"}
+
 def _normalize_team_name(name: str) -> str:
-    return "".join(c.lower() for c in (name or "") if c.isalnum())
+    value=unicodedata.normalize("NFKD",str(name or "")).encode("ascii","ignore").decode().lower()
+    value=re.sub(r"[^a-z0-9]+","",value)
+    return TEAM_ALIASES.get(value,value)
 
 
 def _attach_bsd_enrichment(matches: List[Dict], bsd_predictions: List[Dict]) -> List[Dict]:
@@ -778,52 +824,53 @@ def _attach_bsd_enrichment(matches: List[Dict], bsd_predictions: List[Dict]) -> 
     return matches
 
 
+def _event_identity(event: Dict):
+    return (_normalize_team_name(event.get("home_team","")), _normalize_team_name(event.get("away_team","")))
+
+def _event_time(event: Dict):
+    try:
+        return datetime.fromisoformat(str(event.get("commence_time","")).replace("Z","+00:00")).astimezone(timezone.utc)
+    except Exception: return None
+
+def _same_event(a: Dict,b: Dict)->bool:
+    if a.get("id") and b.get("id") and str(a["id"])==str(b["id"]): return True
+    if _event_identity(a)!=_event_identity(b): return False
+    ta,tb=_event_time(a),_event_time(b)
+    return True if ta is None or tb is None else abs((ta-tb).total_seconds())<=21600
+
+def _merge_market_list(target_markets: List[Dict], incoming_markets: List[Dict]):
+    existing={m.get("key"):m for m in target_markets}
+    for market in incoming_markets:
+        key=market.get("key")
+        if not key: continue
+        if key not in existing:
+            target_markets.append(market); existing[key]=market; continue
+        target=existing[key].setdefault("outcomes",[])
+        seen={(str(o.get("name")),str(o.get("point"))) for o in target}
+        for outcome in market.get("outcomes",[]):
+            marker=(str(outcome.get("name")),str(outcome.get("point")))
+            if marker not in seen: target.append(outcome); seen.add(marker)
+
 def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
-    """Merge bookmakers/markets entre deux listes d'événements."""
-    if not events_b:
-        return events_a
-    by_id = {e["id"]: e for e in events_a}
-    for evt in events_b:
-        existing = by_id.get(evt["id"])
-        if not existing:
-            by_id[evt["id"]] = evt
-            continue
-        existing_books = {bm["key"]: bm for bm in existing.get("bookmakers", [])}
-        for bm in evt.get("bookmakers", []):
-            if bm["key"] in existing_books:
-                existing_mks = {m["key"]: m for m in existing_books[bm["key"]].get("markets", [])}
-                for m in bm.get("markets", []):
-                    if m["key"] not in existing_mks:
-                        existing_books[bm["key"]].setdefault("markets", []).append(m)
-            else:
-                existing.setdefault("bookmakers", []).append(bm)
-    return list(by_id.values())
+    merged=[dict(e) for e in events_a]
+    for e in merged: e["bookmakers"]=[dict(b) for b in e.get("bookmakers",[])]
+    for incoming in events_b:
+        existing=next((e for e in merged if _same_event(e,incoming)),None)
+        if existing is None: merged.append(incoming); continue
+        books={_normalize_bookmaker_key(b.get("key") or b.get("title")):b for b in existing.get("bookmakers",[])}
+        for bm in incoming.get("bookmakers",[]):
+            key=_normalize_bookmaker_key(bm.get("key") or bm.get("title")); bm["key"]=key; bm["quality_weight"]=_bookmaker_quality(bm.get("title") or key)
+            if key not in books: existing.setdefault("bookmakers",[]).append(bm); books[key]=bm
+            else: _merge_market_list(books[key].setdefault("markets",[]),bm.get("markets",[]))
+    return _annotate_bookmakers(merged)
 
 
 async def fetch_all_matches(db) -> List[Dict]:
-    """
-    RÈGLE D'OR : Cette fonction lit TOUJOURS depuis le cache MongoDB.
-    Le fetch API réel n'est déclenché QUE par le worker planifié (server.py startup).
-    Cela garantit 0 crédit gaspillé sur les requêtes utilisateur.
-    """
-    cache_key = "all_matches"
-    cached = await db.odds_cache.find_one({"_id": cache_key})
-
-    if cached:
-        updated = cached.get("updated_at")
-        if updated:
-            try:
-                updated_dt = datetime.fromisoformat(updated) if isinstance(updated, str) else updated
-                if updated_dt.tzinfo is None:
-                    updated_dt = updated_dt.replace(tzinfo=timezone.utc)
-                # Cache valide pendant 6 heures
-                if datetime.now(timezone.utc) - updated_dt < timedelta(minutes=CACHE_TTL_MINUTES):
-                    return cached.get("data", [])
-            except Exception:
-                pass
-
-    # Cache expiré ou absent → fetch réel
-    return await _force_fetch_and_cache(db)
+    """Lecture Mongo uniquement; aucun appel API depuis une requete utilisateur."""
+    cache=await db.odds_cache.find_one({"_id":"all_matches"})
+    if not cache: return []
+    data=cache.get("data",[])
+    return data if isinstance(data,list) else []
 
 
 async def _force_fetch_and_cache(db) -> List[Dict]:
@@ -840,13 +887,14 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
     matches: List[Dict] = []
 
-    for sk in REAL_SPORT_KEYS:
-        try:
-            markets = _get_markets_for_sport(sk)
-            events = await _fetch_real_sport(sk, markets=markets, regions="eu")
-            matches.extend(events)
-        except Exception:
-            continue
+    async def _fetch_one(sk):
+        try: return await _fetch_real_sport(sk, markets=_get_markets_for_sport(sk), regions="eu")
+        except Exception as exc:
+            logger.warning("The Odds API %s -> %s", sk, exc); return []
+
+    results=await asyncio.gather(*[_fetch_one(sk) for sk in REAL_SPORT_KEYS], return_exceptions=True)
+    for result in results:
+        if isinstance(result,list): matches.extend(result)
 
     # ─── Source secondaire : odds-api.io pour ligues mineures ────────────────
     try:
@@ -929,7 +977,7 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         diversified.append(m)
         per_comp[key] = per_comp.get(key, 0) + 1
 
-    final = diversified[:150]
+    final = _annotate_bookmakers(diversified[:150])
 
     await _save_to_cache(db, final)
     return final
@@ -1073,12 +1121,14 @@ async def fetch_all_scores(db) -> List[Dict]:
         "mma_mixed_martial_arts",
     ]
 
-    for sk in active_sports:
-        try:
-            s = await fetch_scores_for_sport(sk)
-            scores.extend(s)
-        except Exception:
-            continue
+    async def _scores_one(sk):
+        try: return await fetch_scores_for_sport(sk)
+        except Exception as exc:
+            logger.warning("scores %s -> %s", sk, exc); return []
+
+    results=await asyncio.gather(*[_scores_one(sk) for sk in active_sports], return_exceptions=True)
+    for result in results:
+        if isinstance(result,list): scores.extend(result)
 
     await db.scores_cache.update_one(
         {"_id": "all_scores"},
@@ -1086,6 +1136,18 @@ async def fetch_all_scores(db) -> List[Dict]:
         upsert=True,
     )
     return scores
+
+
+async def get_odds_cache_status(db) -> Dict:
+    cache=await db.odds_cache.find_one({"_id":"all_matches"})
+    if not cache: return {"cached":False,"count":0,"updated_at":None,"stale":True}
+    data=cache.get("data",[]); updated=cache.get("updated_at")
+    try:
+        dt=datetime.fromisoformat(str(updated).replace("Z","+00:00")); dt=dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        age=max(0,(datetime.now(timezone.utc)-dt).total_seconds())
+    except Exception: age=float("inf")
+    ttl=_cache_ttl_for_matches(data if isinstance(data,list) else [])
+    return {"cached":True,"count":len(data) if isinstance(data,list) else 0,"updated_at":updated,"age_seconds":int(age) if math.isfinite(age) else None,"ttl_minutes":ttl,"stale":age>ttl*60,"hard_stale":age>STALE_CACHE_MAX_HOURS*3600}
 
 
 async def get_match_by_id(db, match_id: str) -> Optional[Dict]:
