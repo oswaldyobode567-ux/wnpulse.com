@@ -1534,6 +1534,67 @@ async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payl
     }
 
 
+@app.get("/api/admin/clv-stats")
+async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload)):
+    """
+    Statistiques CLV (closing line value) — mesure la valeur reelle detectee
+    par le moteur, independamment du resultat final de chaque match. Un CLV
+    moyen positif et stable dans le temps est la preuve la plus fiable
+    reconnue dans l'industrie des paris qu'un systeme trouve une vraie
+    valeur, plus fiable que le seul taux de reussite. Actuellement limite
+    aux picks du marche h2h (1X2) — voir _update_closing_odds().
+    """
+    await _require_admin(payload)
+
+    with_clv = await db.predictions_history.find(
+        {"clv_percent": {"$exists": True}, "market": "h2h"}
+    ).to_list(length=5000)
+
+    if not with_clv:
+        return {
+            "total_tracked": 0,
+            "detail": "Aucun pick avec CLV calcule pour le moment. Le CLV "
+                      "n'est calcule qu'une fois le match demarre — reviens "
+                      "plus tard une fois des matchs h2h en cours.",
+            "avg_clv_percent": None,
+            "positive_clv_rate": None,
+        }
+
+    clv_values = [p["clv_percent"] for p in with_clv if p.get("clv_percent") is not None]
+    positive_count = sum(1 for v in clv_values if v > 0)
+
+    # CLV par version du moteur, pour ne pas melanger les generations —
+    # meme logique de prudence que pour la calibration de confiance.
+    by_version: Dict[str, List[float]] = {}
+    for p in with_clv:
+        v = p.get("model_version", "inconnu")
+        if p.get("clv_percent") is not None:
+            by_version.setdefault(v, []).append(p["clv_percent"])
+
+    version_breakdown = {
+        v: {
+            "count": len(vals),
+            "avg_clv_percent": round(statistics.mean(vals), 2),
+            "positive_clv_rate_percent": round(
+                (sum(1 for x in vals if x > 0) / len(vals)) * 100, 1
+            ),
+        }
+        for v, vals in by_version.items()
+    }
+
+    return {
+        "total_tracked": len(clv_values),
+        "avg_clv_percent": round(statistics.mean(clv_values), 2) if clv_values else None,
+        "positive_clv_rate_percent": round((positive_count / len(clv_values)) * 100, 1) if clv_values else None,
+        "by_model_version": version_breakdown,
+        "note": (
+            "CLV positif = notre cote au moment du pick etait meilleure que "
+            "la cote de cloture, signe de vraie valeur detectee avant que "
+            "le marche ne s'ajuste. Limite au marche h2h (1X2) pour l'instant."
+        ),
+    }
+
+
 @app.get("/api/admin/diagnose-pending-simple")
 async def admin_diagnose_pending_simple(key: str = ""):
     """
@@ -1739,6 +1800,22 @@ async def admin_refresh_real_stats_simple(key: str = ""):
     return result
 
 
+@app.get("/api/admin/update-closing-odds-simple")
+async def admin_update_closing_odds_simple(key: str = ""):
+    """
+    Force le calcul du CLV (closing line value) pour les picks h2h dont le
+    match a deja demarre, sans attendre le prochain cycle planifie de 4h.
+    Usage : https://TON-BACKEND/api/admin/update-closing-odds-simple?key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    matches = await fetch_all_matches(db)
+    result = await _update_closing_odds(matches)
+    return result
+
+
+
 # ─── Suivi reel des predictions (backtest continu) ──────────────────────────
 
 def _pick_signature(match_id: str, pick: str) -> str:
@@ -1786,6 +1863,105 @@ async def _save_predictions_to_history(matches: List[Dict]):
             })
     except Exception:
         pass
+
+
+def _find_current_h2h_odds(match: Dict, pick_text: str, home: str, away: str) -> Optional[float]:
+    """
+    Cherche la meilleure cote actuelle (parmi les bookmakers du match en
+    cache) pour le meme outcome 1X2 que le pick original. Utilise pour le
+    CLV tracking — uniquement les picks sur le marche h2h pour l'instant
+    (le plus simple a matcher de facon fiable ; les autres marches pourront
+    etre ajoutes plus tard sur le meme principe).
+    """
+    pick_l = (pick_text or "").lower()
+    if "nul" in pick_l or pick_l.strip() == "match nul":
+        target_name = "Draw"
+    elif home.lower() in pick_l:
+        target_name = home
+    elif away.lower() in pick_l:
+        target_name = away
+    else:
+        return None
+
+    best_odds = None
+    for bm in match.get("bookmakers", []) or []:
+        for mk in bm.get("markets", []) or []:
+            if mk.get("key") != "h2h":
+                continue
+            for outcome in mk.get("outcomes", []) or []:
+                if outcome.get("name") == target_name:
+                    price = outcome.get("price")
+                    if price and (best_odds is None or price > best_odds):
+                        best_odds = float(price)
+    return best_odds
+
+
+async def _update_closing_odds(matches: List[Dict]) -> Dict:
+    """
+    CLV tracking (closing line value) : pour chaque pick encore "pending"
+    dont le match a deja commence (donc la cote n'evoluera plus), fige la
+    derniere cote vue chez les bookmakers comme "cote de cloture" et calcule
+    l'ecart avec la cote au moment ou le pick a ete publie.
+
+    Pourquoi c'est une mesure utile et honnete : le CLV (closing line value)
+    est reconnu dans l'industrie des paris comme l'indicateur le plus
+    fiable de la vraie valeur d'un systeme de pronostics — plus fiable que
+    le seul taux de reussite, car il compare directement le jugement du
+    modele a celui du marche au moment ou ce dernier dispose du plus
+    d'informations (juste avant le coup d'envoi). Un CLV positif repete
+    dans le temps est la preuve la plus solide qu'un systeme detecte une
+    vraie valeur, independamment de la chance sur un match donne.
+
+    Limite actuelle assumee : uniquement les picks sur le marche "h2h"
+    (1X2) sont couverts pour l'instant — c'est le marche le plus simple a
+    matcher de facon fiable entre le pick original et les cotes actuelles.
+    Les autres marches (totals, btts, double chance...) restent hors CLV
+    tracking pour le moment, plutot que de risquer un matching approximatif
+    qui fausserait la mesure.
+    """
+    now = datetime.now(timezone.utc)
+    match_by_id = {m.get("id"): m for m in matches}
+
+    pending = await db.predictions_history.find({
+        "result": "pending",
+        "closing_odds": {"$exists": False},
+        "market": "h2h",
+    }).to_list(length=1000)
+
+    updated = 0
+    for pred in pending:
+        try:
+            ct = _parse_iso(pred.get("commence_time"))
+            if not ct or ct > now:
+                continue  # match pas encore commence, cote pas encore figee
+
+            match = match_by_id.get(pred.get("match_id"))
+            if not match:
+                continue
+
+            closing_odds = _find_current_h2h_odds(
+                match, pred.get("pick", ""),
+                pred.get("home_team", ""), pred.get("away_team", "")
+            )
+            if closing_odds is None:
+                continue
+
+            opening_odds = pred.get("pick_odds") or closing_odds
+            clv_percent = round(((closing_odds - opening_odds) / opening_odds) * 100, 2) if opening_odds else 0.0
+
+            await db.predictions_history.update_one(
+                {"signature": pred["signature"]},
+                {"$set": {
+                    "closing_odds": closing_odds,
+                    "clv_percent": clv_percent,
+                    "clv_computed_at": now.isoformat(),
+                }},
+            )
+            updated += 1
+        except Exception:
+            continue
+
+    return {"ok": True, "checked": len(pending), "updated": updated}
 
 
 async def _reconcile_predictions_with_scores() -> Dict:
@@ -1944,6 +2120,14 @@ async def _full_refresh_and_track():
     except Exception:
         pass  # ne doit jamais bloquer le refresh principal des cotes
     await _save_predictions_to_history(all_matches)
+    # CLV tracking : fige la cote de cloture des picks h2h dont le match a
+    # demarre, AVANT la reconciliation des resultats — l'ordre n'a pas
+    # d'importance fonctionnelle ici, mais autant capter le CLV le plus tot
+    # possible apres le coup d'envoi pour une mesure precise.
+    try:
+        await _update_closing_odds(all_matches)
+    except Exception:
+        pass  # ne doit jamais bloquer le refresh principal
     await _reconcile_predictions_with_scores()
     await _invalidate_prediction_cache()
     return matches
