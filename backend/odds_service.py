@@ -17,6 +17,15 @@ CORRECTIONS v8.2 :
 - Normalisation équipes/bookmakers et qualité pondérée
 - Suppression du doublon odds-api.io
   fusionnees dans le reasoning des matchs, sans remplacer le moteur maison
+
+CORRECTIF v8.2.1 :
+- fetch_all_matches() a retrouve un filet de securite : si le document de
+  cache MongoDB est totalement absent (jamais rempli, ou perdu suite a un
+  incident), un fetch immediat est declenche au lieu de renvoyer une liste
+  vide indefiniment jusqu'au prochain cycle planifie (jusqu'a 4h de site
+  vide sinon). Si le cache existe mais est simplement perime, le comportement
+  "lecture seule" original est conserve : on ne fetch jamais sur une requete
+  utilisateur dans ce cas, le refresh reste au worker planifie.
 """
 import os
 import random
@@ -84,7 +93,9 @@ ODDS_API_IO_MARKET_MAP = {
     "Draw No Bet": "draw_no_bet",
 }
 
-# Cache dynamique. Les requetes utilisateur ne declenchent jamais de fetch reseau.
+# Cache dynamique. Les requetes utilisateur ne declenchent jamais de fetch reseau
+# (sauf filet de securite si le document de cache est totalement absent, voir
+# fetch_all_matches ci-dessous).
 CACHE_TTL_LONG_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_LONG_MINUTES", "360"))
 CACHE_TTL_DAY_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_DAY_MINUTES", "120"))
 CACHE_TTL_SOON_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_SOON_MINUTES", "30"))
@@ -866,11 +877,27 @@ def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
 
 
 async def fetch_all_matches(db) -> List[Dict]:
-    """Lecture Mongo uniquement; aucun appel API depuis une requete utilisateur."""
-    cache=await db.odds_cache.find_one({"_id":"all_matches"})
-    if not cache: return []
-    data=cache.get("data",[])
-    return data if isinstance(data,list) else []
+    """
+    RÈGLE D'OR : cette fonction lit en priorite depuis le cache MongoDB, sans
+    jamais declencher de fetch reseau sur une requete utilisateur normale.
+
+    FILET DE SECURITE (correctif) : si le document de cache est totalement
+    absent — jamais rempli (course de demarrage), ou perdu suite a un
+    incident quelconque — un fetch immediat est declenche au lieu de
+    renvoyer silencieusement une liste vide jusqu'au prochain cycle planifie
+    (jusqu'a 4h de site sans aucun match sinon). Si le cache existe mais est
+    simplement perime, on continue de servir les donnees existantes sans
+    fetch : le rafraichissement reste la responsabilite du worker planifie.
+    """
+    cache = await db.odds_cache.find_one({"_id": "all_matches"})
+    if not cache:
+        try:
+            return await _force_fetch_and_cache(db)
+        except Exception as exc:
+            logger.warning(f"fetch_all_matches: filet de securite echoue -> {exc}")
+            return []
+    data = cache.get("data", [])
+    return data if isinstance(data, list) else []
 
 
 async def _force_fetch_and_cache(db) -> List[Dict]:
@@ -879,6 +906,7 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     1. Le worker planifié à 06h00 WAT
     2. Le bouton "Force refresh" en admin
     3. Premier démarrage si cache vide
+    4. Filet de securite dans fetch_all_matches si le cache est totalement absent
     """
     if not ODDS_API_KEY:
         matches = get_all_mock_matches()
