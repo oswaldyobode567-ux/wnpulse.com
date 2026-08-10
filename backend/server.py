@@ -330,9 +330,23 @@ async def _invalidate_prediction_cache():
 
 
 async def _compute_calibration_map() -> Dict[int, Dict]:
-    """Calibration empirique sans sur-ajuster les petits échantillons."""
+    """
+    Calibration empirique sans sur-ajuster les petits échantillons.
+
+    CORRECTIF : filtre desormais sur model_version="8.0" — avant, les picks
+    de generations anterieures du moteur (avant MIN_ODDS remonte a 1.40 et
+    avant la formule _wp_score actuelle) etaient melanges avec les picks
+    recents dans le meme calcul de calibration. Le champ "confidence" n'a
+    pas la meme signification d'une version a l'autre, ce qui produisait des
+    resultats incoherents (ex: la tranche 75-79% mesuree moins fiable que la
+    tranche 70-74%, l'inverse de ce qu'on attend d'un systeme bien calibre).
+    Consequence attendue de ce filtre : l'echantillon repart quasiment a
+    zero le temps que le moteur v8.0 accumule au moins 30 resultats par
+    tranche — c'est voulu, une calibration sur des donnees melangees n'aurait
+    aucune valeur predictive fiable.
+    """
     resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}},
+        {"result": {"$in": ["won", "lost"]}, "model_version": "8.0"},
         {"confidence": 1, "result": 1}
     ).to_list(length=10000)
     buckets: Dict[int, Dict[str, int]] = {}
