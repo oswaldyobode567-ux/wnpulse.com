@@ -1,4 +1,4 @@
-"""The Odds API client with MongoDB caching.
+The Odds API client with MongoDB caching.
 CORRECTIONS v7.1 :
 - Cache TTL = 6 heures (au lieu de 60 min) → préserve les crédits
 - Fetch 1x/jour à 06h00 WAT via worker (voir server.py)
