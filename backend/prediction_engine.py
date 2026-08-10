@@ -25,7 +25,7 @@ WEST_AFRICA_BOOKMAKERS = {
 BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"]
 
 # ─── Seuils qualité ───────────────────────────────────────────────────────────
-MIN_ODDS = 1.40          # Cote minimum d'un pick simple — remonte apres analyse du track record reel (ROI 30j -26.9%, presque tous les picks perdants etaient a cote 1.15-1.19 : peu de valeur meme avec un bon taux de reussite, un seul pick perdu efface plusieurs gains)
+MIN_ODDS = 1.15          # Redescendu a 1.15 sur demande explicite (volume/attractivite prioritaires sur le ROI mesure ; decision assumee malgre le ROI negatif observe sur cette plage dans le track record reel)
 MAX_ODDS = 8.00          # Cote maximum pour picks principaux
 MIN_CONFIDENCE = 60.0    # Seuil minimum de score pour publication
 MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
@@ -33,6 +33,24 @@ MIN_BOOKMAKERS = 1       # Minimum de bookmakers pour valider un pick
 MIN_BOOKMAKERS_STRONG = 2
 MODEL_VERSION = "8.0"
 CALIBRATION_MIN_SAMPLE = 30
+
+# ─── Seuils de label et ciblage de "bonnes cotes" ────────────────────────────
+# Recalibres pour donner davantage de picks "safe" a MIN_ODDS=1.15 (avant,
+# 75/65 etait pense pour une distribution de cotes plus hautes). Un pick
+# reste "safe" seulement si sa confiance est reellement elevee — ce n'est
+# pas un abaissement artificiel de l'exigence, juste un ajustement coherent
+# avec le nouveau MIN_ODDS.
+SAFE_THRESHOLD = 70.0
+VALUE_THRESHOLD = 60.0
+
+# Plage de cotes jugee "interessante" (ni symbolique ni exageree) : parmi
+# plusieurs marches surs pour le meme match, celui dont la cote tombe dans
+# cette fourchette est prefere au marche le plus sur mais le moins payant
+# (ex: favori ecrasant a 1.15) — objectif : moins de "petites cotes sans
+# interet" affichees comme pick principal quand une alternative fiable et
+# mieux payee existe pour le meme match.
+GOOD_ODDS_MIN = 1.50
+GOOD_ODDS_MAX = 4.00
 
 MAX_PICKS_PER_DAY = 15
 MAX_PICKS_PER_MATCH = 3
@@ -351,7 +369,7 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
     if confidence < min_conf:
         return None
 
-    label = "safe" if confidence >= 75 else ("value" if confidence >= 65 else "risky")
+    label = "safe" if confidence >= SAFE_THRESHOLD else ("value" if confidence >= VALUE_THRESHOLD else "risky")
 
     return {
         "market": market_key,
@@ -427,7 +445,7 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
             "model_probability": round(prob * 100.0, 1),
             "stability_score": 60.0,
             "wp_score": round(conf, 1),
-            "label": "safe" if conf >= 75 else ("value" if conf >= 65 else "risky"),
+            "label": "safe" if conf >= SAFE_THRESHOLD else ("value" if conf >= VALUE_THRESHOLD else "risky"),
             "edge": 0,  # non applicable — cote estimee, pas une vraie cote de marche
             "num_books": 0,
             "synthetic": True,
@@ -864,22 +882,35 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
             if delta:
                 r["confidence"] = round(max(0, min(100, r["confidence"] + delta)), 1)
                 r["real_stats_adjustment"] = round(delta, 1)
-                r["label"] = ("safe" if r["confidence"] >= 72
-                              else ("value" if r["confidence"] >= 63 else "risky"))
+                r["label"] = ("safe" if r["confidence"] >= SAFE_THRESHOLD
+                              else ("value" if r["confidence"] >= VALUE_THRESHOLD else "risky"))
 
-    # ─── Tri : marches REELS toujours prioritaires sur les marches estimes ──
-    # Avant, un marche synthetique (cote fabriquee, edge non applicable)
-    # pouvait devancer un vrai marche de bookmaker si sa confiance affichee
-    # etait plus haute — c'est ce qui produisait des picks a cote fictive
-    # (ex: "Plus de 2.5 buts @ 1.19" invente) choisis comme pick principal
-    # alors qu'un vrai marche jouable existait pour ce match. Desormais, les
-    # marches "bookmaker" (cote reelle, edge exploitable) passent toujours
-    # avant les marches "estime_ia", quelle que soit leur confiance relative.
+    # ─── Tri : marches REELS prioritaires, puis preference aux "bonnes cotes"
+    # parmi les marches deja surs ────────────────────────────────────────────
+    # 1) Les marches "bookmaker" (cote reelle) passent toujours avant les
+    #    marches "estime_ia", quelle que soit leur confiance relative — evite
+    #    de choisir une cote fabriquee quand un vrai marche existe.
+    # 2) A fiabilite egale (deux marches "safe" pour le meme match), on
+    #    prefere celui dont la cote tombe dans une fourchette interessante
+    #    (GOOD_ODDS_MIN-GOOD_ODDS_MAX) plutot que le favori ecrasant a cote
+    #    minuscule — c'est le "denicheur de bonnes cotes" demande : on ne
+    #    sacrifie jamais la fiabilite pour la cote (un marche "risky" avec
+    #    une bonne cote ne passe jamais avant un marche "safe"), mais entre
+    #    plusieurs marches deja fiables, celui qui paye mieux est privilegie.
     def _source_priority(x):
         return 0 if x.get("source") == "bookmaker" else 1
 
+    def _odds_band_bonus(x):
+        odds = x.get("pick_odds") or 1
+        if x["confidence"] >= SAFE_THRESHOLD and GOOD_ODDS_MIN <= odds <= GOOD_ODDS_MAX:
+            return 15.0
+        return 0.0
+
     market_results.sort(
-        key=lambda x: (_source_priority(x), -(x["confidence"] + max(0, x["edge"]) * 0.8))
+        key=lambda x: (
+            _source_priority(x),
+            -(x["confidence"] + max(0, x["edge"]) * 0.8 + _odds_band_bonus(x)),
+        )
     )
 
     validated = _validate_picks_compatibility(market_results)
@@ -990,11 +1021,22 @@ def top_predictions(matches: List[Dict], limit: int = 10,
     preds = analyze_all(matches, real_stats_map=real_stats_map)
     valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
              and p.get("pick_odds", 0) >= 1.0]
-    # Poids sur l'edge augmente (0.3 -> 0.8) : privilegie les picks a vraie
-    # valeur plutot que juste les plus "surs" en apparence, pour ameliorer
-    # le ROI reel plutot que seulement le taux de reussite affiche.
-    valid.sort(key=lambda p: p.get("wp_score", p["confidence"]) + max(0, p.get("edge", 0)) * 0.25,
-               reverse=True)
+
+    def _odds_band_bonus(p):
+        odds = p.get("pick_odds") or 1
+        conf = p.get("wp_score", p.get("confidence", 0))
+        if conf >= SAFE_THRESHOLD and GOOD_ODDS_MIN <= odds <= GOOD_ODDS_MAX:
+            return 10.0
+        return 0.0
+
+    # Meme logique que dans analyze_match : parmi les picks deja fiables
+    # (score >= SAFE_THRESHOLD), ceux avec une cote interessante remontent
+    # devant les favoris ecrasants a cote minuscule — sans jamais faire
+    # passer un pick moins fiable devant un pick plus fiable.
+    valid.sort(
+        key=lambda p: p.get("wp_score", p["confidence"]) + max(0, p.get("edge", 0)) * 0.25 + _odds_band_bonus(p),
+        reverse=True
+    )
     return valid[:limit]
 
 
