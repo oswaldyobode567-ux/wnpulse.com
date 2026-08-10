@@ -1,128 +1,284 @@
-"""Service d'analyse IA — appel direct API Anthropic (sans dependance Emergent).
-
-Usage minimal pour preserver le credit :
-- Appele uniquement sur la page de detail d'un match
-- Repli automatique (fallback) si ANTHROPIC_API_KEY absente ou erreur
 """
-import os
+WNPulse AI Analysis Service v8.3
+
+Architecture:
+1. Gemini API (if GEMINI_API_KEY is configured)
+2. Anthropic API (optional fallback)
+3. Local WNPulse analysis (always available)
+
+IMPORTANT:
+This module explains an existing prediction. It NEVER calculates or modifies
+the official WNPulse prediction, confidence, odds or score.
+"""
+
 import json
-from datetime import datetime, timezone
-from typing import Dict
+import os
+from typing import Any, Dict
 
 import httpx
 
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.environ.get(
+    "GEMINI_MODEL",
+    "gemini-2.5-flash",
+).strip()
+GEMINI_URL = os.environ.get(
+    "GEMINI_URL",
+    "https://generativelanguage.googleapis.com/v1beta/models",
+).rstrip("/")
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "").strip()
+ANTHROPIC_MODEL = os.environ.get(
+    "ANTHROPIC_MODEL",
+    "claude-sonnet-4-5-20250929",
+).strip()
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
+
+REQUEST_TIMEOUT = float(os.environ.get("AI_ANALYSIS_TIMEOUT_SECONDS", "25"))
+MAX_TOKENS = int(os.environ.get("AI_ANALYSIS_MAX_TOKENS", "600"))
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _build_prompt(match: Dict, prediction: Dict) -> str:
     odds_summary = []
-    for bm in match.get("bookmakers", [])[:3]:
-        for m in bm.get("markets", []):
-            if m.get("key") == "h2h":
+
+    for bookmaker in match.get("bookmakers", [])[:5]:
+        title = bookmaker.get("title") or bookmaker.get("key") or "Bookmaker"
+
+        for market in bookmaker.get("markets", []):
+            if market.get("key") != "h2h":
+                continue
+
+            outcomes = []
+            for outcome in market.get("outcomes", []):
+                name = outcome.get("name")
+                price = outcome.get("price")
+                if name is not None and price is not None:
+                    outcomes.append({"name": name, "price": price})
+
+            if outcomes:
                 odds_summary.append({
-                    "book": bm["title"],
-                    "outcomes": [(o["name"], o["price"]) for o in m["outcomes"]],
+                    "bookmaker": title,
+                    "outcomes": outcomes,
                 })
 
-    return f"""Tu es un analyste sportif expert. Analyse ce match en francais, de facon claire et factuelle.
+    return f"""
+Tu es l'analyste explicatif de WNPulse.
 
-Match: {match.get('home_team')} vs {match.get('away_team')}
-Competition: {match.get('sport_title')}
-Date: {match.get('commence_time')}
+Tu ne dois PAS recalculer ou modifier le pronostic.
+Le pronostic, la cote, la confiance et le WNPulse Score fournis ci-dessous
+sont définitifs et proviennent du moteur WNPulse.
 
-Cotes des bookmakers: {json.dumps(odds_summary, ensure_ascii=False)}
+Utilise UNIQUEMENT les données fournies.
+N'invente aucune forme récente, blessure, H2H, classement, statistique ou
+information externe.
 
-Probabilites consensus (vig retire): {json.dumps(prediction.get('implied_probs', {}), ensure_ascii=False)}
-Pronostic algorithmique: {prediction.get('pick')} @ {prediction.get('pick_odds')}
-Score de confiance: {prediction.get('confidence')}% ({prediction.get('label')})
-Value edge: {prediction.get('edge')}%
+Match : {match.get("home_team", "N/A")} vs {match.get("away_team", "N/A")}
+Compétition : {match.get("sport_title", "N/A")}
+Date : {match.get("commence_time", "N/A")}
 
-Reponds en JSON STRICT avec exactement ces cles :
+Cotes :
+{json.dumps(odds_summary, ensure_ascii=False)}
+
+Probabilités consensus :
+{json.dumps(prediction.get("implied_probs", {}) or {}, ensure_ascii=False)}
+
+Pick officiel WNPulse : {prediction.get("pick", "N/A")}
+Cote : {prediction.get("pick_odds", "N/A")}
+Confiance : {prediction.get("confidence", 0)}%
+WNPulse Score : {prediction.get("wp_score", prediction.get("effective_score", "N/A"))}
+Edge : {prediction.get("edge", 0)}%
+Nombre de bookmakers : {prediction.get("num_books", 0)}
+
+Retourne UNIQUEMENT un objet JSON avec exactement :
 {{
-  "verdict": "1 phrase de recommandation finale",
-  "key_factors": ["3 a 4 facteurs cles courts (forme, H2H, contexte)"],
-  "risk_alert": "1 phrase d'avertissement sur le risque principal",
-  "alternative_bet": "1 marche alternatif interessant (Over/Under, Both Teams To Score, etc.)"
+  "verdict": "une phrase courte",
+  "key_factors": ["3 facteurs maximum, uniquement issus des données"],
+  "risk_alert": "une phrase courte",
+  "alternative_bet": "une alternative seulement si elle est justifiée par les données, sinon aucune"
 }}
 
-Sois concis, professionnel, et factuel. Pas de baratin. Reponds uniquement le JSON, sans texte autour."""
+Ne promets jamais un gain.
+""".strip()
+
+
+def _extract_json(text: str) -> Dict:
+    text = (text or "").strip()
+
+    if text.startswith("```"):
+        parts = text.split("```")
+        if len(parts) >= 3:
+            text = parts[1].strip()
+            if text.lower().startswith("json"):
+                text = text[4:].strip()
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("JSON introuvable dans la réponse IA.")
+
+    parsed = json.loads(text[start:end + 1])
+    if not isinstance(parsed, dict):
+        raise ValueError("La réponse IA n'est pas un objet JSON.")
+    return parsed
+
+
+def _normalize(parsed: Dict, source: str) -> Dict:
+    factors = parsed.get("key_factors", [])
+    if isinstance(factors, str):
+        factors = [factors]
+    if not isinstance(factors, list):
+        factors = []
+
+    return {
+        "verdict": str(parsed.get("verdict", "")).strip(),
+        "key_factors": [
+            str(x).strip() for x in factors if str(x).strip()
+        ][:3],
+        "risk_alert": str(parsed.get("risk_alert", "")).strip(),
+        "alternative_bet": str(parsed.get("alternative_bet", "")).strip(),
+        "source": source,
+    }
+
+
+async def _generate_gemini(prompt: str) -> Dict:
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY absente")
+
+    url = f"{GEMINI_URL}/{GEMINI_MODEL}:generateContent"
+    params = {"key": GEMINI_API_KEY}
+
+    payload = {
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": prompt}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": MAX_TOKENS,
+            "responseMimeType": "application/json",
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        response = await client.post(url, params=params, json=payload)
+        response.raise_for_status()
+        data = response.json()
+
+    candidates = data.get("candidates", [])
+    if not candidates:
+        raise ValueError("Gemini n'a retourné aucun candidat.")
+
+    parts = (
+        candidates[0]
+        .get("content", {})
+        .get("parts", [])
+    )
+    text = "".join(
+        part.get("text", "")
+        for part in parts
+        if isinstance(part, dict)
+    ).strip()
+
+    return _normalize(_extract_json(text), "gemini")
+
+
+async def _generate_anthropic(prompt: str) -> Dict:
+    if not ANTHROPIC_API_KEY:
+        raise RuntimeError("ANTHROPIC_API_KEY absente")
+
+    payload = {
+        "model": ANTHROPIC_MODEL,
+        "max_tokens": MAX_TOKENS,
+        "messages": [{"role": "user", "content": prompt}],
+    }
+
+    async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        response = await client.post(
+            ANTHROPIC_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json=payload,
+        )
+        response.raise_for_status()
+        data = response.json()
+
+    text = "".join(
+        block.get("text", "")
+        for block in data.get("content", [])
+        if isinstance(block, dict) and block.get("type") == "text"
+    ).strip()
+
+    return _normalize(_extract_json(text), "anthropic")
 
 
 async def generate_analysis(match: Dict, prediction: Dict) -> Dict:
-    if not ANTHROPIC_API_KEY:
-        return _fallback_analysis(prediction)
+    """
+    Gemini -> Anthropic -> local fallback.
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            response = await client.post(
-                ANTHROPIC_URL,
-                headers={
-                    "x-api-key": ANTHROPIC_API_KEY,
-                    "anthropic-version": "2023-06-01",
-                    "content-type": "application/json",
-                },
-                json={
-                    "model": "claude-sonnet-4-5-20250929",
-                    "max_tokens": 600,
-                    "messages": [
-                        {"role": "user", "content": _build_prompt(match, prediction)}
-                    ],
-                },
-            )
-            response.raise_for_status()
-            data = response.json()
+    Aucun niveau ne modifie prediction.
+    """
+    prompt = _build_prompt(match, prediction)
 
-        text = "".join(
-            block.get("text", "") for block in data.get("content", [])
-            if block.get("type") == "text"
-        ).strip()
+    if GEMINI_API_KEY:
+        try:
+            return await _generate_gemini(prompt)
+        except Exception:
+            pass
 
-        if text.startswith("```"):
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-            text = text.strip()
+    if ANTHROPIC_API_KEY:
+        try:
+            return await _generate_anthropic(prompt)
+        except Exception:
+            pass
 
-        parsed = json.loads(text)
-        return {
-            "verdict": parsed.get("verdict", ""),
-            "key_factors": parsed.get("key_factors", []),
-            "risk_alert": parsed.get("risk_alert", ""),
-            "alternative_bet": parsed.get("alternative_bet", ""),
-            "source": "ai",
-        }
-    except Exception as e:
-        return {**_fallback_analysis(prediction), "error": str(e)}
+    return _fallback_analysis(prediction)
 
 
 def _fallback_analysis(prediction: Dict) -> Dict:
-    pick = prediction.get("pick") or "Indetermine"
-    conf = prediction.get("confidence", 0)
-    edge = prediction.get("edge", 0)
-    label = prediction.get("label", "value")
+    pick = prediction.get("pick") or "Indéterminé"
+    conf = _safe_float(prediction.get("confidence"))
+    edge = _safe_float(prediction.get("edge"))
+    books = prediction.get("num_books", 0)
+    odds = prediction.get("pick_odds", "N/A")
+    implied = prediction.get("implied_probs", {}) or {}
 
-    label_text = {
-        "safe": "Pari relativement sur selon le marche",
-        "value": "Pari a valeur interessante",
-        "risky": "Pari a risque eleve",
-    }.get(label, "Pari a analyser")
+    probability = _safe_float(implied.get(pick))
+
+    if conf >= 75:
+        label = "signal relativement fort"
+    elif conf >= 65:
+        label = "signal modéré"
+    else:
+        label = "signal prudent"
 
     return {
-        "verdict": f"Le consensus marche ({prediction.get('num_books', 0)} bookmakers) place {pick} en favori avec {conf}% de confiance. {label_text}.",
+        "verdict": (
+            f"{pick} est le choix officiel WNPulse avec {conf:.0f}% de "
+            f"confiance ; le moteur considère ce signal comme {label}."
+        ),
         "key_factors": [
-            f"Probabilite implicite consensus: {prediction.get('implied_probs', {}).get(pick, 0)}%",
-            f"Cote optimale disponible: {prediction.get('pick_odds')}",
-            f"Edge value vs marche: {edge:+.2f}%",
-            f"Nombre de bookmakers analyses: {prediction.get('num_books', 0)}",
+            f"Probabilité consensus : {probability:.1f}%",
+            f"Cote de référence : {odds}",
+            f"Edge : {edge:+.2f}% avec {books} bookmaker(s)",
         ],
         "risk_alert": (
-            "Edge negatif : le marche est efficient, pas de value claire."
-            if edge < 0 else
-            "Confiance moderee - gerer la mise selon Kelly fractionne."
-            if conf < 65 else
-            "Risque residuel toujours present - ne jamais miser plus que la perte acceptable."
+            "Le score WNPulse est un indicateur statistique et ne garantit "
+            "pas l'issue du match."
         ),
-        "alternative_bet": "Considerer un Double Chance ou un handicap asiatique pour reduire le risque.",
+        "alternative_bet": (
+            "Aucune alternative fiable avec les données disponibles."
+        ),
         "source": "engine",
     }
