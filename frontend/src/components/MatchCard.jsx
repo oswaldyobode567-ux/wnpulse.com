@@ -18,6 +18,46 @@ function RiskBadge({ label }) {
   return <span className="text-[10px] font-bold text-red-700 bg-red-100 border border-red-200 rounded-full px-1.5 py-0.5">🔴 RISQUÉ</span>;
 }
 
+// Version compacte du badge de fiabilite, pour les marches secondaires
+// (meme code couleur que RiskBadge mais sans texte, juste un point + cote
+// visible immediatement sans surcharger chaque ligne).
+function MiniRiskDot({ label }) {
+  const color = label === "safe" ? "bg-green-500" : label === "value" ? "bg-orange-400" : "bg-red-400";
+  return <span className={`inline-block h-1.5 w-1.5 rounded-full ${color} flex-shrink-0`} />;
+}
+
+// Affiche jusqu'a 2 marches secondaires (en plus du pick principal deja
+// affiche au-dessus), avec leur propre libelle, cote et niveau de fiabilite
+// — avant, seul un texte "+N autres marches analyses" signalait leur
+// existence sans jamais les montrer concretement.
+function SecondaryMarkets({ markets, primaryPick }) {
+  if (!markets || markets.length <= 1) return null;
+
+  const secondary = markets
+    .filter((m) => m.pick !== primaryPick)
+    .slice(0, 2);
+
+  if (secondary.length === 0) return null;
+
+  return (
+    <div className="pt-2 mt-1 border-t border-slate-100 space-y-1.5">
+      <div className="text-[9px] uppercase tracking-wider text-slate-400 font-bold">
+        Autres marchés analysés
+      </div>
+      {secondary.map((m, i) => (
+        <div key={i} className="flex items-center justify-between gap-2 text-[11px]">
+          <div className="flex items-center gap-1.5 min-w-0 flex-1">
+            <MiniRiskDot label={m.label} />
+            <span className="text-slate-500 truncate">{m.market_label}</span>
+            <span className="font-semibold text-slate-700 truncate">{m.pick}</span>
+          </div>
+          <span className="font-mono font-bold text-slate-800 flex-shrink-0">{m.pick_odds}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade }) {
   const pred       = match.prediction || {};
   const isLive     = pred.is_live     || match.is_live     || false;
@@ -137,11 +177,10 @@ export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade
                 </div>
               )}
 
-              {pred.markets && pred.markets.length>1 && (
-                <div className="text-[10px] text-slate-400 italic">
-                  + {pred.markets.length-1} autre{pred.markets.length>2?"s":""} marché{pred.markets.length>2?"s":""} analysé{pred.markets.length>2?"s":""}
-                </div>
-              )}
+              {/* Marches secondaires affiches concretement (pick + cote +
+                  niveau de fiabilite), au lieu du simple texte indicatif
+                  d'avant qui ne montrait rien. */}
+              <SecondaryMarkets markets={pred.markets} primaryPick={pred.pick} />
             </div>
           ) : (
             <div className="text-xs text-slate-400 italic py-2">Analyse en cours...</div>
