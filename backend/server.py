@@ -1,8 +1,10 @@
 """
-WinPulse API — server.py (v7.4)
+WinPulse API — server.py (v8.0)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
+import asyncio
+import time
 import httpx
 import uuid
 import statistics
@@ -168,17 +170,33 @@ ADMIN_EMAILS = {
 # ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
 
+# Cache applicatif court : évite de recalculer toutes les prédictions à chaque
+# requête. Le cache est invalidé après chaque refresh des données.
+PREDICTION_CACHE_TTL = int(os.environ.get("PREDICTION_CACHE_TTL", "300"))
+_prediction_cache = {"timestamp": 0.0, "matches": [], "predictions": [], "real_stats_map": {}}
+_prediction_cache_lock = asyncio.Lock()
+
+CORS_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get(
+        "CORS_ORIGINS",
+        "https://wnpulse.com,https://www.wnpulse.com,http://localhost:3000,http://localhost:5173"
+    ).split(",")
+    if origin.strip()
+]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True,
 )
 
 
 @app.get("/api/")
 async def racine():
-    return {"application": "WinPulse", "statut": "OK", "version": "7.4"}
+    return {"application": "WinPulse", "statut": "OK", "version": "8.0"}
 
 
 @app.get("/api/sante")
@@ -288,6 +306,93 @@ async def me(payload: dict = Depends(get_current_user_payload)):
     }
 
 
+# ─── Prediction cache + calibration empirique ───────────────────────────────
+
+async def _invalidate_prediction_cache():
+    async with _prediction_cache_lock:
+        _prediction_cache["timestamp"] = 0.0
+        _prediction_cache["matches"] = []
+        _prediction_cache["predictions"] = []
+        _prediction_cache["real_stats_map"] = {}
+
+
+async def _get_prediction_snapshot(force: bool = False) -> Dict:
+    now = time.monotonic()
+    async with _prediction_cache_lock:
+        if (not force and _prediction_cache["matches"] and
+                now - _prediction_cache["timestamp"] < PREDICTION_CACHE_TTL):
+            return _prediction_cache
+
+        matches = await fetch_all_matches(db)
+        real_stats_map = await get_real_stats_map(db, matches)
+        predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        _prediction_cache.update({
+            "timestamp": now,
+            "matches": matches,
+            "predictions": predictions,
+            "real_stats_map": real_stats_map,
+        })
+        return _prediction_cache
+
+
+async def _get_calibration_map() -> Dict[int, Dict]:
+    """Calibration empirique sans sur-ajuster les petits échantillons."""
+    resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}},
+        {"confidence": 1, "result": 1}
+    ).to_list(length=10000)
+    buckets: Dict[int, Dict[str, int]] = {}
+    for row in resolved:
+        try:
+            c = float(row.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
+        bucket = max(0, min(95, int(c // 5) * 5))
+        item = buckets.setdefault(bucket, {"wins": 0, "total": 0})
+        item["total"] += 1
+        if row.get("result") == "won":
+            item["wins"] += 1
+
+    out = {}
+    for bucket, item in buckets.items():
+        total = item["total"]
+        if total < 30:
+            continue
+        # Lissage léger vers la probabilité annoncée pour éviter les sauts
+        # artificiels quand un bucket contient encore peu de données.
+        prior = (bucket + 2.5) / 100.0
+        calibrated = (item["wins"] + prior * 20.0) / (total + 20.0)
+        out[bucket] = {
+            "probability": round(calibrated * 100.0, 1),
+            "wins": item["wins"],
+            "total": total,
+        }
+    return out
+
+
+def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) -> List[Dict]:
+    for p in predictions:
+        try:
+            c = float(p.get("confidence", 0))
+        except (TypeError, ValueError):
+            c = 0.0
+        bucket = max(0, min(95, int(c // 5) * 5))
+        cal = calibration.get(bucket)
+        if cal:
+            p["calibrated_probability"] = cal["probability"]
+            p["calibration_sample"] = cal["total"]
+            p["calibration_status"] = "empirique"
+            p["effective_score"] = round(
+                float(p.get("wp_score", c)) * 0.70 + cal["probability"] * 0.30, 1
+            )
+        else:
+            p["calibrated_probability"] = None
+            p["calibration_sample"] = 0
+            p["calibration_status"] = "insuffisant"
+            p["effective_score"] = round(float(p.get("wp_score", c)), 1)
+    return predictions
+
+
 # ─── Matches & predictions ──────────────────────────────────────────────────
 
 def _merge_match_prediction(match: dict, prediction: dict) -> dict:
@@ -306,9 +411,12 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
     /api/builder/matches — cette route n'avait jamais eu cette verification,
     ce qui laissait passer les picks complets a tous, gratuit ou payant.
     """
-    matches = await fetch_all_matches(db)
-    real_stats_map = await get_real_stats_map(db, matches)
-    predictions = analyze_all(matches, real_stats_map=real_stats_map)
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
+    predictions = _apply_calibration(
+        [dict(p) for p in snapshot["predictions"]],
+        await _get_calibration_map(),
+    )
     pred_by_id = {p.get("match_id"): p for p in predictions}
     is_paid = False
     if payload:
@@ -330,17 +438,41 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
 
 @app.get("/api/predictions")
 async def get_predictions():
-    matches = await fetch_all_matches(db)
-    real_stats_map = await get_real_stats_map(db, matches)
-    predictions = analyze_all(matches, real_stats_map=real_stats_map)
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
+    predictions = _apply_calibration(
+        [dict(p) for p in snapshot["predictions"]],
+        await _get_calibration_map(),
+    )
     return predictions
+
+
+@app.get("/api/predictions/model-status")
+async def get_prediction_model_status():
+    """Expose les métriques de calibration du moteur sans exposer les données privées."""
+    calibration = await _get_calibration_map()
+    resolved = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost"]}})
+    pending = await db.predictions_history.count_documents({"result": "pending"})
+    return {
+        "model_version": "8.0",
+        "cache_ttl_seconds": PREDICTION_CACHE_TTL,
+        "resolved_picks": resolved,
+        "pending_picks": pending,
+        "calibration_buckets": calibration,
+        "calibration_ready": bool(calibration),
+        "note": "La probabilité calibrée n'est affichée qu'après accumulation d'au moins 30 résultats dans une tranche de confiance.",
+    }
 
 
 @app.get("/api/predictions/top")
 async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    matches = await fetch_all_matches(db)
-    real_stats_map = await get_real_stats_map(db, matches)
-    preds = top_predictions(matches, limit=limit, real_stats_map=real_stats_map)
+    snapshot = await _get_prediction_snapshot()
+    calibration = await _get_calibration_map()
+    preds = _apply_calibration(
+        [dict(p) for p in snapshot["predictions"] if p.get("pick")], calibration
+    )
+    preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
+    preds = preds[:max(1, min(limit, 50))]
 
     is_paid = False
     if payload:
@@ -371,7 +503,8 @@ async def get_match_analysis(match_id: str):
     match n'a pas de pick valide ou que le cache a legerement change entre deux
     appels. Recherche aussi sur match_id en secours.
     """
-    matches = await fetch_all_matches(db)
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
 
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
 
@@ -388,8 +521,10 @@ async def get_match_analysis(match_id: str):
             detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
         )
 
-    predictions = analyze_all([match], real_stats_map=await get_real_stats_map(db, [match]))
-    prediction = predictions[0] if predictions else {}
+    prediction = next(
+        (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
+        {}
+    )
     ai_analysis = await generate_analysis(match, prediction)
     return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
 
@@ -410,6 +545,7 @@ async def get_data_status():
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
     """Force le rafraichissement du cache (authentifie)."""
     result = await refresh_matches_worker(db)
+    await _invalidate_prediction_cache()
     return result
 
 
@@ -1033,7 +1169,8 @@ async def get_single_match(match_id: str):
     Le frontend appelle /api/matches/{id} directement (pas /analysis) pour
     la fiche detail d'un pick. Meme logique de recherche que /analysis.
     """
-    matches = await fetch_all_matches(db)
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
 
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
     if not match:
@@ -1048,8 +1185,11 @@ async def get_single_match(match_id: str):
             detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
         )
 
-    predictions = analyze_all([match], real_stats_map=await get_real_stats_map(db, [match]))
-    prediction = predictions[0] if predictions else {}
+    prediction = next(
+        (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
+        {}
+    )
+    prediction = _apply_calibration([prediction], await _get_calibration_map())[0] if prediction else {}
     return _merge_match_prediction(match, prediction)
 
 
@@ -1062,7 +1202,8 @@ async def get_value_bets():
     implicite du bookmaker), pas juste des picks a haute confiance.
     Format attendu par le frontend : {"count": N, "bets": [...]}.
     """
-    matches = await fetch_all_matches(db)
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
     bets = find_value_bets(matches, min_edge=3.0, limit=30)
     return {"count": len(bets), "bets": bets}
 
@@ -1443,6 +1584,7 @@ async def get_scores():
 async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
     """Force le rafraichissement du cache (consomme des credits API)."""
     result = await refresh_matches_worker(db)
+    await _invalidate_prediction_cache()
     return result
 
 
@@ -1569,7 +1711,8 @@ async def _save_predictions_to_history(matches: List[Dict]):
     de la mesure : on n'ajuste jamais un pick apres coup).
     """
     try:
-        predictions = analyze_all(matches)
+        real_stats_map = await get_real_stats_map(db, matches)
+        predictions = analyze_all(matches, real_stats_map=real_stats_map)
         for p in predictions:
             if not p.get("pick") or not p.get("match_id"):
                 continue
@@ -1589,6 +1732,10 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "market": p.get("market"),
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
+                "model_probability": p.get("model_probability"),
+                "wp_score": p.get("wp_score"),
+                "stability_score": p.get("stability_score"),
+                "model_version": p.get("model_version", "8.0"),
                 "is_combo": p.get("is_combo", False),
                 "result": "pending",  # pending -> won / lost apres reconciliation
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -1754,6 +1901,7 @@ async def _full_refresh_and_track():
         pass  # ne doit jamais bloquer le refresh principal des cotes
     await _save_predictions_to_history(all_matches)
     await _reconcile_predictions_with_scores()
+    await _invalidate_prediction_cache()
     return matches
 
 
@@ -1780,4 +1928,4 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    scheduler.shutdown()
+    scheduler.shutdown(
