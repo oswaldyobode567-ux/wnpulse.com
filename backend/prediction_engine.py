@@ -1,5 +1,5 @@
 """
-WinPulse Prediction Engine v7.4
+WinPulse Prediction Engine v8.0
 - Seuils assouplis pour garantir des picks visibles au quotidien
 - Filtre "edge minimum" retiré du gate de qualité (bookmakers pro = edge quasi nul,
   bloquait presque tous les picks). Le vrai filtre de qualité reste MIN_CONFIDENCE.
@@ -27,9 +27,13 @@ BOOKMAKER_PRIORITY = ["1xbet", "onexbet", "betway", "melbet", "pmu", "sportybet"
 # ─── Seuils qualité — ASSOUPLIS pour garantir des picks quotidiens ───────────
 MIN_ODDS = 1.15          # Cote minimum d'un pick simple
 MAX_ODDS = 8.00          # Cote maximum pour picks principaux
-MIN_CONFIDENCE = 60.0    # Confiance minimum pour publier (seul vrai filtre de qualité)
-MIN_EDGE = 1.0           # Conserve pour affichage/tri uniquement, plus utilise comme gate
-MIN_BOOKMAKERS = 1       # Minimum de bookmakers pour valider un pick (assoupli)
+MIN_CONFIDENCE = 60.0    # Seuil minimum de score pour publication
+MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
+MIN_BOOKMAKERS = 1       # Minimum de bookmakers pour valider un pick
+MIN_BOOKMAKERS_STRONG = 2
+MODEL_VERSION = "8.0"
+CALIBRATION_MIN_SAMPLE = 30
+
 MAX_PICKS_PER_DAY = 15
 MAX_PICKS_PER_MATCH = 3
 
@@ -255,6 +259,39 @@ def _implied_probs(outcomes: List[Dict]) -> Dict[str, float]:
     return {k: v / total for k, v in raw.items()}
 
 
+def _clamp(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    return max(low, min(high, float(value)))
+
+
+def _stability_score(consensus_probs: Dict[Tuple[str, Optional[float]], List[float]],
+                     pick_key: Tuple[str, Optional[float]]) -> float:
+    """Mesure la stabilité inter-bookmakers de la probabilité retenue."""
+    values = consensus_probs.get(pick_key, [])
+    if not values:
+        return 0.0
+    if len(values) == 1:
+        return 50.0
+    stdev = statistics.pstdev(values)
+    # 0% d'écart -> 100 ; 10 points ou plus -> 0.
+    return _clamp(100.0 - (stdev * 100.0 * 10.0))
+
+
+def _wp_score(probability: float, stability: float, edge: float,
+              num_books: int, synthetic: bool = False) -> float:
+    """Score WNPulse v8 séparant probabilité, stabilité et value.
+
+    Ce score n'est PAS une probabilité de victoire. Il sert à classer les
+    picks. La probabilité brute reste exposée séparément dans model_probability.
+    """
+    prob_score = _clamp(probability * 100.0)
+    edge_score = _clamp(50.0 + edge * 5.0)  # 0% edge=50, +10%=100
+    book_score = _clamp(50.0 + max(0, num_books - 1) * 12.5)
+    score = (prob_score * 0.55) + (stability * 0.20) + (edge_score * 0.15) + (book_score * 0.10)
+    if synthetic:
+        score -= 7.0  # estimation IA : moins de certitude qu'un marché réellement coté
+    return round(_clamp(score), 1)
+
+
 def _analyze_market(market_key: str, bookmakers: List[Dict],
                      home: str, away: str,
                      min_conf: float = None, min_edge: float = None) -> Optional[Dict]:
@@ -308,13 +345,13 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
     # ce qui bloquait presque tous les picks. On garde edge uniquement pour
     # l'affichage et le tri (confidence + edge*0.3).
 
-    var_penalty = min(variance_avg * 100, 20)
-    confidence = max(0, min(100, pick_prob * 100 - var_penalty + max(0, edge) * 0.5))
+    stability = _stability_score(consensus_probs, pick_key)
+    confidence = _wp_score(pick_prob, stability, edge, num_books, synthetic=False)
 
     if confidence < min_conf:
         return None
 
-    label = "safe" if confidence >= 72 else ("value" if confidence >= 63 else "risky")
+    label = "safe" if confidence >= 75 else ("value" if confidence >= 65 else "risky")
 
     return {
         "market": market_key,
@@ -324,6 +361,9 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
         "pick_point": pick_point,
         "pick_odds": pick_odds,
         "confidence": round(confidence, 1),
+        "model_probability": round(pick_prob * 100.0, 1),
+        "stability_score": round(stability, 1),
+        "wp_score": round(confidence, 1),
         "label": label,
         "edge": round(edge, 2),
         "num_books": num_books,
@@ -372,7 +412,8 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
         # toujours proche de -(marge), quel que soit le match, et NE REFLETE
         # AUCUNE vraie opportunite de marche. On le met donc a 0 (non
         # applicable) plutot que d'afficher un faux edge trompeur.
-        conf = max(0, min(100, prob * 100 - 3))
+        # Estimation synthétique : on la pénalise volontairement.
+        conf = _wp_score(prob, 60.0, 0.0, 0, synthetic=True)
         if conf < MIN_CONFIDENCE:
             return None
         return {
@@ -383,7 +424,10 @@ def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
             "pick_point": None,
             "pick_odds": odds,
             "confidence": round(conf, 1),
-            "label": "safe" if conf >= 72 else ("value" if conf >= 63 else "risky"),
+            "model_probability": round(prob * 100.0, 1),
+            "stability_score": 60.0,
+            "wp_score": round(conf, 1),
+            "label": "safe" if conf >= 75 else ("value" if conf >= 65 else "risky"),
             "edge": 0,  # non applicable — cote estimee, pas une vraie cote de marche
             "num_books": 0,
             "synthetic": True,
@@ -571,7 +615,18 @@ def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
         if combined_odds < COMBO_TARGET_MIN_ODDS or combined_odds > MAX_ODDS * 1.5:
             continue
 
-        combined_conf = round((primary["confidence"] * secondary["confidence"]) / 100, 1)
+        # Probabilité naïve corrigée par corrélation : les marchés du même
+        # match sont souvent dépendants. On pénalise donc les combinaisons
+        # corrélées au lieu de multiplier aveuglément les confidences.
+        same_match = True
+        combined_prob = ((primary.get("model_probability", primary["confidence"]) / 100.0) *
+                         (secondary.get("model_probability", secondary["confidence"]) / 100.0))
+        correlation_penalty = 0.0
+        if same_match:
+            correlation_penalty = 0.15
+        if primary.get("market") == secondary.get("market"):
+            correlation_penalty += 0.10
+        combined_conf = round(_clamp((combined_prob * (1.0 - correlation_penalty)) * 100.0), 1)
         if combined_conf > best_combined_conf:
             best_combined_conf = combined_conf
             best_candidate = (secondary, combined_odds, combined_conf)
@@ -858,6 +913,10 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "pick": best["pick"],
         "pick_odds": best["pick_odds"],
         "confidence": best["confidence"],
+        "model_probability": best.get("model_probability", best["confidence"]),
+        "stability_score": best.get("stability_score", 0),
+        "wp_score": best.get("wp_score", best["confidence"]),
+        "model_version": MODEL_VERSION,
         "label": best["label"],
         "implied_probs": implied,
         "edge": best.get("edge", 0),
@@ -934,7 +993,7 @@ def top_predictions(matches: List[Dict], limit: int = 10,
     # Poids sur l'edge augmente (0.3 -> 0.8) : privilegie les picks a vraie
     # valeur plutot que juste les plus "surs" en apparence, pour ameliorer
     # le ROI reel plutot que seulement le taux de reussite affiche.
-    valid.sort(key=lambda p: p["confidence"] + max(0, p.get("edge", 0)) * 0.8,
+    valid.sort(key=lambda p: p.get("wp_score", p["confidence"]) + max(0, p.get("edge", 0)) * 0.25,
                reverse=True)
     return valid[:limit]
 
@@ -970,15 +1029,31 @@ def _stats(legs: List[Dict]) -> Dict:
                 "combined_probability": 0}
     total_odds = 1.0
     combined_prob = 1.0
+    correlation_penalty = 0.0
+    seen_matches = set()
+    seen_markets = set()
     for p in legs:
         total_odds *= (p.get("pick_odds") or 1)
-        combined_prob *= ((p.get("confidence") or 0) / 100)
+        combined_prob *= ((p.get("model_probability", p.get("confidence", 0)) or 0) / 100)
+        mid = p.get("match_id")
+        market = p.get("market")
+        if mid in seen_matches:
+            correlation_penalty += 0.15
+        if market in seen_markets:
+            correlation_penalty += 0.05
+        if mid:
+            seen_matches.add(mid)
+        if market:
+            seen_markets.add(market)
+    combined_prob *= max(0.35, 1.0 - min(correlation_penalty, 0.50))
     return {
         "legs": legs,
         "total_odds": round(total_odds, 2),
         "avg_confidence": round(
             statistics.mean([p.get("confidence", 0) for p in legs]), 1),
         "combined_probability": round(combined_prob * 100, 1),
+        "correlation_penalty": round(correlation_penalty, 2),
+        "model_version": MODEL_VERSION,
     }
 
 
@@ -1005,6 +1080,10 @@ def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
                 "pick": mk["pick"],
                 "pick_odds": mk["pick_odds"],
                 "confidence": mk["confidence"],
+                "model_probability": mk.get("model_probability", mk["confidence"]),
+                "stability_score": mk.get("stability_score", 0),
+                "wp_score": mk.get("wp_score", mk["confidence"]),
+                "source": mk.get("source", "bookmaker"),
                 "label": mk["label"],
                 "edge": mk.get("edge", 0),
                 "market": mk["market"],
