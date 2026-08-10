@@ -9,10 +9,20 @@ Architecture:
 IMPORTANT:
 This module explains an existing prediction. It NEVER calculates or modifies
 the official WNPulse prediction, confidence, odds or score.
+
+CORRECTIF v8.3.1 :
+- Ajout d'un cache en memoire par match (id + pick + cote), avec TTL — avant,
+  chaque ouverture de fiche match declenchait un appel Gemini/Anthropic
+  payant, meme si plusieurs utilisateurs consultaient le meme match dans la
+  meme minute. La cle de cache inclut le pick et la cote : si le pronostic
+  change lors d'un refresh, l'ancienne explication devient automatiquement
+  invalide sans logique supplementaire a maintenir.
 """
 
+import asyncio
 import json
 import os
+import time
 from typing import Any, Dict
 
 import httpx
@@ -36,6 +46,47 @@ ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 REQUEST_TIMEOUT = float(os.environ.get("AI_ANALYSIS_TIMEOUT_SECONDS", "25"))
 MAX_TOKENS = int(os.environ.get("AI_ANALYSIS_MAX_TOKENS", "600"))
+
+# ─── Cache en memoire par match (evite les appels API redondants) ───────────
+ANALYSIS_CACHE_TTL_SECONDS = int(os.environ.get("AI_ANALYSIS_CACHE_TTL_SECONDS", "3600"))
+_analysis_cache: Dict[str, Dict[str, Any]] = {}
+_analysis_cache_lock = asyncio.Lock()
+
+
+def _analysis_cache_key(match: Dict, prediction: Dict) -> str:
+    """
+    Cle de cache basee sur l'identite du match ET le pick/cote actuels — si
+    le pronostic change (nouveau refresh, nouvelle cote), la cle change
+    automatiquement et l'ancienne explication en cache n'est plus reutilisee,
+    sans avoir besoin d'invalider quoi que ce soit manuellement.
+    """
+    match_id = match.get("id") or match.get("match_id") or "unknown"
+    pick = prediction.get("pick") or ""
+    odds = prediction.get("pick_odds") or ""
+    return f"{match_id}::{pick}::{odds}"
+
+
+async def _get_cached_analysis(key: str) -> Any:
+    now = time.monotonic()
+    async with _analysis_cache_lock:
+        entry = _analysis_cache.get(key)
+        if entry and (now - entry["timestamp"]) < ANALYSIS_CACHE_TTL_SECONDS:
+            return entry["result"]
+    return None
+
+
+async def _store_cached_analysis(key: str, result: Dict) -> None:
+    async with _analysis_cache_lock:
+        _analysis_cache[key] = {"timestamp": time.monotonic(), "result": result}
+        # Purge légère si le cache grossit trop (site avec beaucoup de matchs
+        # distincts consultes sur la duree) — evite une fuite memoire lente.
+        if len(_analysis_cache) > 2000:
+            oldest_keys = sorted(
+                _analysis_cache.keys(),
+                key=lambda k: _analysis_cache[k]["timestamp"],
+            )[:500]
+            for k in oldest_keys:
+                _analysis_cache.pop(k, None)
 
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
@@ -225,25 +276,34 @@ async def _generate_anthropic(prompt: str) -> Dict:
 
 async def generate_analysis(match: Dict, prediction: Dict) -> Dict:
     """
-    Gemini -> Anthropic -> local fallback.
-
-    Aucun niveau ne modifie prediction.
+    Gemini -> Anthropic -> local fallback, avec cache en memoire par match
+    (voir ANALYSIS_CACHE_TTL_SECONDS). Aucun niveau ne modifie prediction.
     """
+    cache_key = _analysis_cache_key(match, prediction)
+    cached = await _get_cached_analysis(cache_key)
+    if cached is not None:
+        return cached
+
     prompt = _build_prompt(match, prediction)
+    result = None
 
     if GEMINI_API_KEY:
         try:
-            return await _generate_gemini(prompt)
+            result = await _generate_gemini(prompt)
         except Exception:
-            pass
+            result = None
 
-    if ANTHROPIC_API_KEY:
+    if result is None and ANTHROPIC_API_KEY:
         try:
-            return await _generate_anthropic(prompt)
+            result = await _generate_anthropic(prompt)
         except Exception:
-            pass
+            result = None
 
-    return _fallback_analysis(prediction)
+    if result is None:
+        result = _fallback_analysis(prediction)
+
+    await _store_cached_analysis(cache_key, result)
+    return result
 
 
 def _fallback_analysis(prediction: Dict) -> Dict:
