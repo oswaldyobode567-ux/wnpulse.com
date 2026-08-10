@@ -475,6 +475,13 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
             pred["locked"] = True
             pred["pick"] = None
             pred["pick_odds"] = None
+            # Correctif : "markets" (tous les marches analyses avec picks
+            # et cotes) n'etait jamais vide ici — un compte gratuit pouvait
+            # voir le detail complet payant en inspectant la reponse API
+            # brute (onglet Reseau du navigateur), meme si le frontend
+            # n'affichait rien grace a "locked". Le champ doit etre vide
+            # cote serveur, pas seulement cache cote client.
+            pred["markets"] = []
         else:
             pred["locked"] = False
         merged.append(_merge_match_prediction(m, pred))
@@ -532,6 +539,7 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
                 p["locked"] = True
                 p["pick"] = None
                 p["pick_odds"] = None
+                p["markets"] = []  # meme correctif que /api/matches
     else:
         for p in preds:
             p["locked"] = False
