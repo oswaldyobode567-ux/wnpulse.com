@@ -1,13 +1,13 @@
 """
-WinPulse Prediction Engine v8.0
-- Seuils assouplis pour garantir des picks visibles au quotidien
+WNPulse Prediction Engine v8.2
+- Analyse uniquement des marches reels fournis par les bookmakers
+- Plusieurs propositions par match avec probabilite de consensus et score de selection
+- Pick principal simple ; combine uniquement comme suggestion secondaire si suffisamment solide
 - Filtre "edge minimum" retiré du gate de qualité (bookmakers pro = edge quasi nul,
   bloquait presque tous les picks). Le vrai filtre de qualité reste MIN_CONFIDENCE.
-- Picks combinés (2 marchés compatibles fusionnés, cote multipliée)
-  ex: "Victoire Juventus & Plus de 2.5 buts" @ cote combinée
 - Anti-contradiction système complet
 - Organisation par championnat
-- Super combos généraux (tous sports mélangés)
+- Combos generaux conserves, mais uniquement a partir de picks reels
 - Labels français pour tous les marchés
 - Bookmaker prioritaire : 1xBet, fallback sur tous bookmakers disponibles
 """
@@ -29,9 +29,9 @@ MIN_ODDS = 1.15          # Redescendu a 1.15 sur demande explicite (volume/attra
 MAX_ODDS = 8.00          # Cote maximum pour picks principaux
 MIN_CONFIDENCE = 60.0    # Seuil minimum de score pour publication
 MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
-MIN_BOOKMAKERS = 1       # Minimum de bookmakers pour valider un pick
-MIN_BOOKMAKERS_STRONG = 2
-MODEL_VERSION = "8.0"
+MIN_BOOKMAKERS = 1       # Minimum pour analyser un marche disponible
+MIN_BOOKMAKERS_STRONG = 2     # minimum pour une recommandation forte
+MODEL_VERSION = "8.2"
 CALIBRATION_MIN_SAMPLE = 30
 
 # ─── Seuils de label et ciblage de "bonnes cotes" ────────────────────────────
@@ -56,8 +56,8 @@ MAX_PICKS_PER_DAY = 15
 MAX_PICKS_PER_MATCH = 3
 
 # Cible pour les picks combinés (quand la cote simple est trop basse)
-COMBO_TARGET_MIN_ODDS = 1.60   # En dessous de ça, on tente de combiner
-COMBO_MIN_CONFIDENCE = 55.0    # Seuil légèrement plus souple pour le 2ème pick du combo
+COMBO_TARGET_MIN_ODDS = 1.50   # En dessous de ça, on tente de combiner
+COMBO_MIN_CONFIDENCE = 70.0    # Seuil légèrement plus souple pour le 2ème pick du combo
 
 
 def _bookmaker_allowed(bm: Dict) -> bool:
@@ -313,9 +313,13 @@ def _wp_score(probability: float, stability: float, edge: float,
 def _analyze_market(market_key: str, bookmakers: List[Dict],
                      home: str, away: str,
                      min_conf: float = None, min_edge: float = None) -> Optional[Dict]:
-    """Analyse un marché et retourne le meilleur pick."""
+    """Analyse UN vrai marche bookmaker.
+
+    Important : aucune cote ni probabilite n'est inventee ici.
+    Chaque proposition vient d'un marche reel fourni par les bookmakers.
+    Le taux affiche est une probabilite de consensus, pas une garantie.
+    """
     min_conf = MIN_CONFIDENCE if min_conf is None else min_conf
-    min_edge = MIN_EDGE if min_edge is None else min_edge
 
     consensus_probs: Dict[Tuple[str, Optional[float]], List[float]] = {}
     best_odds: Dict[Tuple[str, Optional[float]], float] = {}
@@ -325,28 +329,29 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
         for m in bm.get("markets", []):
             if m.get("key") != market_key:
                 continue
-            outcomes = m.get("outcomes", [])
+            outcomes = m.get("outcomes", []) or []
             ip = _implied_probs(outcomes)
             if not ip:
                 continue
             num_books += 1
             for o in outcomes:
-                key = (o["name"], o.get("point"))
-                p = ip.get(o["name"], 0)
+                try:
+                    price = float(o.get("price", 0))
+                except (TypeError, ValueError):
+                    continue
+                if price <= 1.0:
+                    continue
+                key = (o.get("name"), o.get("point"))
+                p = ip.get(o.get("name"), 0.0)
                 consensus_probs.setdefault(key, []).append(p)
-                price = float(o.get("price", 0))
                 if price > best_odds.get(key, 0):
                     best_odds[key] = price
 
     if not consensus_probs or num_books < MIN_BOOKMAKERS:
         return None
 
-    consensus = {k: statistics.mean(v) for k, v in consensus_probs.items()}
-    variance_avg = statistics.mean([
-        statistics.pstdev(v) if len(v) > 1 else 0
-        for v in consensus_probs.values()
-    ])
-
+    # Median plus mean: la mediane limite l'effet d'un bookmaker aberrant.
+    consensus = {k: statistics.median(v) for k, v in consensus_probs.items()}
     pick_key = max(consensus, key=consensus.get)
     pick_prob = consensus[pick_key]
     pick_odds = best_odds.get(pick_key)
@@ -356,20 +361,33 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
         return None
 
     best_odd_prob = 1.0 / pick_odds
-    edge = (pick_prob - best_odd_prob) * 100
-    # NOTE: le filtre "if edge < min_edge: return None" a ete retire.
-    # Avec des bookmakers professionnels (Pinnacle, Betfair...), l'edge est
-    # quasi toujours proche de 0 meme sur des picks tres fiables (consensus fort),
-    # ce qui bloquait presque tous les picks. On garde edge uniquement pour
-    # l'affichage et le tri (confidence + edge*0.3).
-
+    edge = (pick_prob - best_odd_prob) * 100.0
     stability = _stability_score(consensus_probs, pick_key)
-    confidence = _wp_score(pick_prob, stability, edge, num_books, synthetic=False)
+
+    # IMPORTANT : confidence = probabilite de consensus, pas un score
+    # marketing. Les autres signaux servent au classement via selection_score.
+    # Ainsi un pick ne peut pas afficher 75% simplement parce qu'il a une cote
+    # basse ou parce qu'il existe chez plusieurs bookmakers.
+    confidence = _clamp(pick_prob * 100.0)
 
     if confidence < min_conf:
         return None
 
-    label = "safe" if confidence >= SAFE_THRESHOLD else ("value" if confidence >= VALUE_THRESHOLD else "risky")
+    label = "safe" if confidence >= SAFE_THRESHOLD else (
+        "value" if confidence >= VALUE_THRESHOLD else "risky"
+    )
+
+    # Mesure de domination : utile pour eviter qu'un marche tres serre soit
+    # presente comme un choix evident.
+    ordered = sorted(consensus.values(), reverse=True)
+    dominance = ((ordered[0] - ordered[1]) * 100.0) if len(ordered) > 1 else 100.0
+    selection_score = (
+        confidence * 0.60 +
+        stability * 0.20 +
+        min(100.0, 50.0 + max(0, num_books - 1) * 10.0) * 0.10 +
+        _clamp(50.0 + edge * 4.0) * 0.10 +
+        min(10.0, max(0.0, dominance)) * 0.40
+    )
 
     return {
         "market": market_key,
@@ -377,15 +395,23 @@ def _analyze_market(market_key: str, bookmakers: List[Dict],
         "pick": _outcome_label_fr(market_key, pick_name, pick_point),
         "pick_raw": pick_name,
         "pick_point": pick_point,
-        "pick_odds": pick_odds,
+        "pick_odds": round(pick_odds, 2),
         "confidence": round(confidence, 1),
         "model_probability": round(pick_prob * 100.0, 1),
+        "estimated_win_probability": round(pick_prob * 100.0, 1),
+        "probability_source": "bookmaker_consensus",
         "stability_score": round(stability, 1),
+        "dominance_score": round(max(0.0, dominance), 1),
+        "selection_score": round(selection_score, 1),
         "wp_score": round(confidence, 1),
         "label": label,
         "edge": round(edge, 2),
         "num_books": num_books,
-        "source": "bookmaker",  # cote reelle, edge exploitable
+        "source": "bookmaker",
+        "synthetic": False,
+        "strong_candidate": bool(
+            num_books >= MIN_BOOKMAKERS_STRONG and confidence >= SAFE_THRESHOLD
+        ),
     }
 
 
@@ -409,365 +435,76 @@ def _h2h_probs(bookmakers: List[Dict], home: str, away: str) -> Optional[Dict[st
 
 def _synthetic_markets(bookmakers: List[Dict], home: str, away: str,
                         sport_key: str) -> List[Dict]:
-    """Génère des marchés supplémentaires dérivés des probabilités h2h."""
-    out: List[Dict] = []
-    probs = _h2h_probs(bookmakers, home, away)
-    if not probs:
-        return out
+    """Desactive volontairement les marches synthetiques.
 
-    p_home = probs.get(home, 0.33) or 0.33
-    p_away = probs.get(away, 0.33) or 0.33
-    p_draw = probs.get("Draw", max(0, 1 - p_home - p_away))
-
-    def _mk(mkey, pick_raw, pick_label, prob, margin=1.05):
-        odds = round(1 / max(prob * margin, 0.01), 2)
-        if odds < MIN_ODDS or odds > MAX_ODDS:
-            return None
-        # IMPORTANT : cette cote est FABRIQUEE a partir de "prob" elle-meme
-        # (via 1/(prob*margin)) — ce n'est jamais une vraie cote de bookmaker.
-        # Calculer un "edge" en comparant cette cote a la meme "prob" revient
-        # a comparer le modele a lui-meme : le resultat est mathematiquement
-        # toujours proche de -(marge), quel que soit le match, et NE REFLETE
-        # AUCUNE vraie opportunite de marche. On le met donc a 0 (non
-        # applicable) plutot que d'afficher un faux edge trompeur.
-        # Estimation synthétique : on la pénalise volontairement.
-        conf = _wp_score(prob, 60.0, 0.0, 0, synthetic=True)
-        if conf < MIN_CONFIDENCE:
-            return None
-        return {
-            "market": mkey,
-            "market_label": _label_for_market(mkey),
-            "pick": pick_label,
-            "pick_raw": pick_raw,
-            "pick_point": None,
-            "pick_odds": odds,
-            "confidence": round(conf, 1),
-            "model_probability": round(prob * 100.0, 1),
-            "stability_score": 60.0,
-            "wp_score": round(conf, 1),
-            "label": "safe" if conf >= SAFE_THRESHOLD else ("value" if conf >= VALUE_THRESHOLD else "risky"),
-            "edge": 0,  # non applicable — cote estimee, pas une vraie cote de marche
-            "num_books": 0,
-            "synthetic": True,
-            "source": "estime_ia",  # a distinguer de "bookmaker" (cote reelle)
-        }
-
-    if sport_key.startswith("soccer"):
-        for combo, prob in [("1X", p_home+p_draw), ("X2", p_draw+p_away), ("12", p_home+p_away)]:
-            labels = {"1X": "Victoire domicile ou Nul",
-                      "X2": "Nul ou Victoire extérieure",
-                      "12": "Victoire domicile ou extérieure"}
-            mk = _mk("syn_double_chance", combo, f"Double chance {combo} — {labels[combo]}", prob)
-            if mk:
-                out.append(mk)
-
-        if p_home > p_away:
-            p_dnb = p_home / max(p_home + p_away, 0.01)
-            mk = _mk("syn_draw_no_bet", "home", f"{home} (remboursé si nul)", p_dnb)
-            if mk:
-                out.append(mk)
-        elif p_away > p_home:
-            p_dnb = p_away / max(p_home + p_away, 0.01)
-            mk = _mk("syn_draw_no_bet", "away", f"{away} (remboursé si nul)", p_dnb)
-            if mk:
-                out.append(mk)
-
-        p_btts = min(0.85, 0.35 + 4 * p_home * p_away)
-        if p_btts >= 0.55:
-            mk = _mk("syn_btts", "yes", "Oui — Les 2 équipes marquent", p_btts)
-            if mk:
-                out.append(mk)
-        elif p_btts < 0.45:
-            mk = _mk("syn_btts", "no", "Non — Au moins 1 équipe ne marque pas", 1-p_btts)
-            if mk:
-                out.append(mk)
-
-        p_over25 = min(0.80, 0.30 + 2.5 * (1 - p_draw) * (p_home + p_away) / 1.6)
-        if p_over25 >= 0.55:
-            mk = _mk("syn_over_25", "over", "Plus de 2.5 buts", p_over25)
-            if mk:
-                out.append(mk)
-        elif p_over25 <= 0.42:
-            mk = _mk("syn_over_25", "under", "Moins de 2.5 buts", 1-p_over25)
-            if mk:
-                out.append(mk)
-
-        p_over15 = min(0.92, 0.72 + 0.2 * (max(p_home, p_away) - 0.4))
-        if p_over15 >= 0.70:
-            mk = _mk("syn_over_15", "over", "Plus de 1.5 buts", p_over15)
-            if mk:
-                out.append(mk)
-
-        p_h1 = min(0.80, 0.45 + 0.3 * (1 - p_draw))
-        if p_h1 >= 0.60:
-            mk = _mk("syn_over_05_h1", "over", "But en 1ère mi-temps", p_h1)
-            if mk:
-                out.append(mk)
-
-        p_u15_h2 = min(0.75, 0.40 + 0.25 * p_draw)
-        if p_u15_h2 >= 0.50:
-            mk = _mk("syn_under_15_h2", "under", "Moins de 1.5 buts en 2ème mi-temps", p_u15_h2)
-            if mk:
-                out.append(mk)
-
-        if p_home >= 0.50:
-            p_cs = min(0.55, p_home * 0.55)
-            mk = _mk("syn_clean_sheet_home", "home_cs", f"{home} sans encaisser", p_cs, 1.08)
-            if mk:
-                out.append(mk)
-        if p_away >= 0.50:
-            p_cs = min(0.55, p_away * 0.55)
-            mk = _mk("syn_clean_sheet_away", "away_cs", f"{away} sans encaisser", p_cs, 1.08)
-            if mk:
-                out.append(mk)
-
-        tightness = 1 - abs(p_home - p_away)
-        p_cards_35 = 0.35 + tightness * 0.35
-        p_cards_45 = 0.20 + tightness * 0.25
-        if p_cards_35 >= 0.55:
-            mk = _mk("syn_cards_over_35", "over", "Plus de 3.5 cartons jaunes", p_cards_35, 1.06)
-            if mk:
-                out.append(mk)
-        if p_cards_45 >= 0.50:
-            mk = _mk("syn_cards_over_45", "over", "Plus de 4.5 cartons jaunes", p_cards_45, 1.08)
-            if mk:
-                out.append(mk)
-
-        attack = 1 - p_draw
-        p_c95 = 0.45 + attack * 0.35
-        p_c105 = 0.30 + attack * 0.30
-        if p_c95 >= 0.60:
-            mk = _mk("syn_corners_over_95", "over", "Plus de 9.5 corners", p_c95, 1.06)
-            if mk:
-                out.append(mk)
-        if p_c105 >= 0.50:
-            mk = _mk("syn_corners_over_105", "over", "Plus de 10.5 corners", p_c105, 1.08)
-            if mk:
-                out.append(mk)
-
-        if p_home > p_away and p_home >= 0.42:
-            p_fts = min(0.72, p_home * 0.85 + 0.1)
-            mk = _mk("syn_first_to_score_home", "home", f"{home} marque en premier", p_fts)
-            if mk:
-                out.append(mk)
-        elif p_away > p_home and p_away >= 0.42:
-            p_fts = min(0.72, p_away * 0.85 + 0.1)
-            mk = _mk("syn_first_to_score_away", "away", f"{away} marque en premier", p_fts)
-            if mk:
-                out.append(mk)
-
-    elif sport_key.startswith("basketball"):
-        p_over = min(0.75, 0.50 + (1 - p_draw) * 0.25)
-        mk = _mk("syn_nba_over", "over", "Plus de points (match ouvert)", p_over)
-        if mk:
-            out.append(mk)
-        if p_home > p_away + 0.10:
-            mk = _mk("syn_nba_spread", "home", f"{home} favori (-points)", p_home * 0.85)
-            if mk:
-                out.append(mk)
-        elif p_away > p_home + 0.10:
-            mk = _mk("syn_nba_spread", "away", f"{away} favori (-points)", p_away * 0.85)
-            if mk:
-                out.append(mk)
-
-    elif sport_key.startswith("icehockey"):
-        p_over = min(0.72, 0.45 + (1 - p_draw) * 0.3)
-        mk = _mk("syn_hockey_over", "over", "Plus de 5.5 buts", p_over)
-        if mk:
-            out.append(mk)
-
-    elif sport_key.startswith("tennis"):
-        fav_prob = max(p_home, p_away)
-        if fav_prob >= 0.60:
-            p_u25 = min(0.78, fav_prob * 0.82)
-            fav_name = max(probs, key=probs.get) if probs else home
-            mk = _mk("syn_tennis_under_sets", "under",
-                     f"Victoire rapide en 2 sets ({fav_name})", p_u25)
-            if mk:
-                out.append(mk)
-
-    return out
-
-
-# ─── Picks combinés ────────────────────────────────────────────────────────
-
-def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
+    Ancien comportement : fabrication de probabilites/cotes Over, BTTS,
+    corners, cartons, etc. a partir du seul 1X2. Ces marches pouvaient donner
+    l'impression que le moteur avait observe une vraie cote alors qu'elle
+    etait calculee par une formule. Une analyse WNPulse ne peut proposer qu'un
+    marche reellement fourni par les bookmakers.
     """
-    Quand le meilleur pick simple a une cote trop basse (< COMBO_TARGET_MIN_ODDS),
-    tente de le combiner avec le MEILLEUR 2eme marche compatible du meme match
-    (celui qui maximise la confiance combinee, pas le premier trouve) pour
-    obtenir une cote plus interessante sans sacrifier excessivement la fiabilite.
-    Ex: "Victoire Juventus & Plus de 2.5 buts".
+    return []
 
-    Ne combine QUE si :
-    - le pick principal est deja raisonnablement fiable (>= 62% seul)
-    - la meilleure combinaison possible reste au-dessus d'un plancher de
-      confiance correct (>= 52%)
-    Sinon, retourne None et le pick simple est garde tel quel — pas de
-    combinaison forcee qui degraderait un bon pick en "risque".
-    """
-    if not market_results:
-        return None
 
-    ranked = sorted(market_results, key=lambda x: x["confidence"], reverse=True)
-    primary = ranked[0]
-
-    if primary["pick_odds"] >= COMBO_TARGET_MIN_ODDS:
-        return None  # cote deja suffisante, pas besoin de combiner
-
-    if primary["confidence"] < 62:
-        return None  # pick principal pas assez solide pour justifier une combinaison
-
-    best_candidate = None
-    best_combined_conf = 0.0
-
-    for secondary in ranked[1:]:
-        if secondary["market"] == primary["market"]:
-            continue
-        if secondary["confidence"] < COMBO_MIN_CONFIDENCE:
-            continue
-        if _are_contradictory(primary["pick"], secondary["pick"]):
-            continue
-
-        combined_odds = round(primary["pick_odds"] * secondary["pick_odds"], 2)
-        if combined_odds < COMBO_TARGET_MIN_ODDS or combined_odds > MAX_ODDS * 1.5:
-            continue
-
-        # Probabilité naïve corrigée par corrélation : les marchés du même
-        # match sont souvent dépendants. On pénalise donc les combinaisons
-        # corrélées au lieu de multiplier aveuglément les confidences.
-        same_match = True
-        combined_prob = ((primary.get("model_probability", primary["confidence"]) / 100.0) *
-                         (secondary.get("model_probability", secondary["confidence"]) / 100.0))
-        correlation_penalty = 0.0
-        if same_match:
-            correlation_penalty = 0.15
-        if primary.get("market") == secondary.get("market"):
-            correlation_penalty += 0.10
-        combined_conf = round(_clamp((combined_prob * (1.0 - correlation_penalty)) * 100.0), 1)
-        if combined_conf > best_combined_conf:
-            best_combined_conf = combined_conf
-            best_candidate = (secondary, combined_odds, combined_conf)
-
-    if not best_candidate or best_combined_conf < 52:
-        return None  # aucune combinaison assez fiable — on garde le pick simple
-
-    secondary, combined_odds, combined_conf = best_candidate
-
-    return {
-        "market": "combo",
-        "market_label": "Combiné (IA)",
-        "pick": f"{primary['pick']} & {secondary['pick']}",
-        "pick_raw": f"{primary.get('pick_raw','')}+{secondary.get('pick_raw','')}",
-        "pick_point": None,
-        "pick_odds": combined_odds,
-        "confidence": combined_conf,
-        # Seuils de label adaptes : une confiance combinee (produit de 2
-        # probabilites) est naturellement plus basse qu'un pick simple, meme
-        # pour une tres bonne combinaison — les seuils sont donc plus bas
-        # que pour un pick simple (safe >=62, value >=50) pour refleter ca
-        # honnetement sans afficher "risque" a tort.
-        "label": "safe" if combined_conf >= 62 else ("value" if combined_conf >= 50 else "risky"),
-        "edge": round((primary.get("edge", 0) + secondary.get("edge", 0)) / 2, 2),
-        "num_books": min(primary.get("num_books", 0), secondary.get("num_books", 0)),
-        "is_combo": True,
-        "combo_legs": [primary["pick"], secondary["pick"]],
-        "source": "bookmaker",  # construit uniquement a partir de 2 marches reels
-    }
+# ─── Picks combinés
 
 
 # ─── Deep reasoning ──────────────────────────────────────────────────────────
 
 def _deep_reasoning(match: Dict, home: str, away: str,
                      probs: Dict[str, float], real_stats: Optional[Dict] = None) -> Dict:
-    seed_src = f"{match.get('id','')}|{home}|{away}"
+    """Retourne uniquement des donnees reelles disponibles.
 
-    def _r(k):
-        v = int(hashlib.sha1(f"{seed_src}::{k}".encode()).hexdigest()[:8], 16)
-        return (v % 1000) / 1000.0
+    L'ancienne version fabriquait deterministiquement forme, H2H, xG,
+    absences, arbitre et meteo quand les donnees reelles manquaient. Cela
+    pouvait donner l'illusion d'une analyse specifique au match alors que ces
+    informations n'etaient pas observees. Cette version ne fabrique plus rien.
+    """
+    stats = real_stats or {}
+    real_data_used = bool(stats.get("real_data_used")) and not bool(stats.get("estimated_ai"))
 
-    p_home = probs.get(home, 0.33) or 0.33
-    p_away = probs.get(away, 0.33) or 0.33
-    seed = int(hashlib.sha1(seed_src.encode()).hexdigest()[:12], 16)
+    h2h = stats.get("h2h") if real_data_used else None
+    form_home = stats.get("form_home") if real_data_used else None
+    form_away = stats.get("form_away") if real_data_used else None
 
-    # ─── H2H : reel si disponible (football-data.org), sinon estime ─────────
-    real_h2h = (real_stats or {}).get("h2h")
-    if real_h2h and real_h2h.get("matches_found", 0) > 0:
-        h2h_home = real_h2h["home_wins"]
-        h2h_draws = real_h2h["draws"]
-        h2h_away = real_h2h["away_wins"]
-        h2h_is_real = True
-    else:
-        h2h_home = round(3 + p_home * 5 + _r("h2h") * 2)
-        h2h_draws = max(0, 10 - h2h_home - round(_r("draws") * 4 + 1))
-        h2h_away = max(0, 10 - h2h_home - h2h_draws)
-        h2h_is_real = False
-
-    def _form(prob):
-        opts = ["W", "W", "W", "D", "L", "L", "D", "W"]
-        return "".join([
-            "W" if _r(f"fh{i}") < (0.35 + prob * 0.4)
-            else opts[int(_r(f"fh{i}") * len(opts))]
-            for i in range(5)
-        ])
-
-    # ─── Forme recente : reelle si disponible, sinon estimee ────────────────
-    real_form_home = (real_stats or {}).get("form_home") or ""
-    real_form_away = (real_stats or {}).get("form_away") or ""
-    if real_form_home:
-        form_h = real_form_home
-    else:
-        form_h = _form(p_home)
-    if real_form_away:
-        form_a = real_form_away
-    else:
-        form_a = _form(p_away)
-    form_is_real = bool(real_form_home or real_form_away)
-
-    xg_h = round(0.6 + p_home * 1.8 + _r("xgh") * 0.4, 2)
-    xg_a = round(0.6 + p_away * 1.8 + _r("xga") * 0.4, 2)
-    hw = round(4 + p_home * 3)
-    hd = round(1 + _r("hd") * 3)
-    hl = max(0, 10 - hw - hd)
-    aw = round(3 + p_away * 3)
-    ad = round(1 + _r("ad") * 3)
-    al = max(0, 10 - aw - ad)
-    absences_h = int(_r("abH") * 3)
-    absences_a = int(_r("abA") * 3)
-    ref_yellows = round(2.8 + _r("ref") * 2.4, 1)
-    weather_opts = ["Ensoleillé 24°C", "Nuageux 19°C", "Pluie légère 16°C",
-                    "Vent 22°C", "Dégagé 21°C"]
-    weather = weather_opts[seed % len(weather_opts)]
-
-    fav = home if p_home > p_away else away
-    fav_prob = max(p_home, p_away)
-    data_note = (
-        " (forme/H2H reels — football-data.org)"
-        if (h2h_is_real or form_is_real) else ""
-    )
-    summary = (
-        f"{fav} est favori ({int(fav_prob*100)}% modèle IA){data_note}. "
-        f"Forme récente : {home} {form_h} / {away} {form_a}. "
-        f"H2H {'reel' if h2h_is_real else '10 derniers (estime)'} : "
-        f"{h2h_home}V-{h2h_draws}N-{h2h_away}D. "
-        f"xG moyens : {xg_h} vs {xg_a}. "
-        f"Absences clés : {home} {absences_h}, {away} {absences_a}. "
-        f"Arbitre : {ref_yellows} cartons/match. "
-        f"Conditions : {weather}."
-    )
+    summary_parts = []
+    if probs:
+        top = max(probs.items(), key=lambda kv: kv[1])
+        summary_parts.append(
+            f"Consensus bookmaker : {top[0]} autour de {top[1] * 100:.1f}%"
+        )
+    if form_home or form_away:
+        summary_parts.append(
+            f"Forme reelle disponible : {home} {form_home or 'N/D'} / "
+            f"{away} {form_away or 'N/D'}"
+        )
+    if h2h and h2h.get("matches_found", 0) > 0:
+        summary_parts.append(
+            f"H2H reel : {h2h.get('home_wins', 0)}V-"
+            f"{h2h.get('draws', 0)}N-{h2h.get('away_wins', 0)}D"
+        )
+    if not real_data_used:
+        summary_parts.append(
+            "Aucune statistique externe verifiee disponible : le moteur "
+            "ne les invente pas et s'appuie uniquement sur les marches reels."
+        )
 
     return {
-        "h2h_last_10": {"home_wins": h2h_home, "draws": h2h_draws, "away_wins": h2h_away},
-        "form_last_5": {"home": form_h, "away": form_a},
-        "xg": {"home": xg_h, "away": xg_a},
-        "home_record": f"{hw}V-{hd}N-{hl}D (10 derniers à domicile)",
-        "away_record": f"{aw}V-{ad}N-{al}D (10 derniers à l'extérieur)",
-        "key_absences": {"home": absences_h, "away": absences_a},
-        "referee_yellows_avg": ref_yellows,
-        "weather": weather,
-        "summary": summary,
-        "estimated_ai": not (h2h_is_real or form_is_real),
-        "real_data_used": h2h_is_real or form_is_real,
+        "h2h_last_10": ({
+            "home_wins": h2h.get("home_wins", 0),
+            "draws": h2h.get("draws", 0),
+            "away_wins": h2h.get("away_wins", 0),
+        } if h2h else None),
+        "form_last_5": {"home": form_home, "away": form_away},
+        "xg": stats.get("xg") if real_data_used else None,
+        "home_record": stats.get("home_record") if real_data_used else None,
+        "away_record": stats.get("away_record") if real_data_used else None,
+        "key_absences": stats.get("key_absences") if real_data_used else None,
+        "referee_yellows_avg": stats.get("referee_yellows_avg") if real_data_used else None,
+        "weather": stats.get("weather") if real_data_used else None,
+        "summary": " ".join(summary_parts),
+        "estimated_ai": not real_data_used,
+        "real_data_used": real_data_used,
     }
 
 
@@ -797,15 +534,118 @@ def _is_finished_match(match: Dict) -> bool:
         return False
 
 
-def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
-    """Analyse complète d'un match — retourne le meilleur pick (simple ou combiné).
+def _market_sort_key(x: Dict) -> Tuple[float, float, float, float]:
+    return (
+        float(x.get("selection_score", x.get("confidence", 0))),
+        float(x.get("confidence", 0)),
+        float(x.get("edge", 0)),
+        float(x.get("pick_odds", 0) or 0),
+    )
 
-    real_stats_map (optionnel) : cache pre-charge de vraies stats
-    football-data.org (forme + H2H reels), fourni par server.py via
-    stats_service.get_real_stats_map(). Quand une vraie donnee existe pour
-    ce match, elle AJUSTE la confiance de chaque marche avant le choix du
-    meilleur pick (voir _real_stats_confidence_delta) — sinon le calcul
-    reste identique a avant, base uniquement sur les cotes.
+
+def _top_recommendations(market_results: List[Dict], limit: int = 4) -> List[Dict]:
+    """Retourne plusieurs propositions reelles, sans fabriquer de marche."""
+    ordered = sorted(market_results, key=_market_sort_key, reverse=True)
+    out = []
+    seen = set()
+    for item in ordered:
+        key = (
+            item.get("market"),
+            item.get("pick_raw"),
+            item.get("pick_point"),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(dict(item))
+        if len(out) >= limit:
+            break
+    for i, item in enumerate(out):
+        item["rank"] = i + 1
+        item["is_primary_candidate"] = i == 0
+    return out
+
+
+def _build_combined_pick(market_results: List[Dict]) -> Optional[Dict]:
+    """Construit un combine seulement si deux vrais marches sont solides.
+
+    Le combine est une SUGGESTION secondaire. Il ne remplace jamais le pick
+    principal. Sa probabilite est calculee de facon conservative et n'est pas
+    presentee comme une garantie.
+    """
+    real = [
+        x for x in market_results
+        if x.get("source") == "bookmaker"
+        and not x.get("synthetic", False)
+        and not x.get("is_combo", False)
+        and x.get("num_books", 0) >= MIN_BOOKMAKERS_STRONG
+        and x.get("confidence", 0) >= SAFE_THRESHOLD
+        and x.get("pick_odds", 0) >= 1.20
+    ]
+    if len(real) < 2:
+        return None
+
+    real = sorted(real, key=_market_sort_key, reverse=True)
+    best = None
+    for i, primary in enumerate(real):
+        for secondary in real[i + 1:]:
+            if primary.get("market") == secondary.get("market"):
+                continue
+            if _are_contradictory(primary.get("pick", ""), secondary.get("pick", "")):
+                continue
+
+            p1 = float(primary.get("model_probability", 0)) / 100.0
+            p2 = float(secondary.get("model_probability", 0)) / 100.0
+            if p1 <= 0 or p2 <= 0:
+                continue
+
+            # Meme match => dependance probable. Penalite conservative.
+            conservative_prob = p1 * p2 * 0.85
+            combined_odds = round(
+                float(primary.get("pick_odds", 0)) * float(secondary.get("pick_odds", 0)), 2
+            )
+            if combined_odds <= 1.0 or combined_odds > MAX_ODDS * 1.5:
+                continue
+
+            combined_conf = round(conservative_prob * 100.0, 1)
+            if combined_conf < 50.0:
+                continue
+
+            candidate = {
+                "market": "combo",
+                "market_label": "Combiné recommandé",
+                "pick": f"{primary['pick']} & {secondary['pick']}",
+                "pick_raw": f"{primary.get('pick_raw', '')}+{secondary.get('pick_raw', '')}",
+                "pick_point": None,
+                "pick_odds": combined_odds,
+                "confidence": combined_conf,
+                "model_probability": combined_conf,
+                "estimated_win_probability": combined_conf,
+                "probability_source": "conservative_product_of_real_market_probabilities",
+                "stability_score": round(min(primary.get("stability_score", 0), secondary.get("stability_score", 0)), 1),
+                "selection_score": round(combined_conf + min(combined_odds, 3) * 2, 1),
+                "label": "safe" if combined_conf >= 60 else "value",
+                "edge": round((primary.get("edge", 0) + secondary.get("edge", 0)) / 2, 2),
+                "num_books": min(primary.get("num_books", 0), secondary.get("num_books", 0)),
+                "is_combo": True,
+                "combo_legs": [primary["pick"], secondary["pick"]],
+                "source": "bookmaker",
+                "synthetic": False,
+                "correlation_penalty": 0.15,
+            }
+            if best is None or candidate["selection_score"] > best["selection_score"]:
+                best = candidate
+    return best
+
+
+def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
+    """Analyse un match sans inventer de pronostic.
+
+    - Tous les marches reels disponibles sont analyses.
+    - Les marches synthetiques ne sont jamais proposes comme picks.
+    - Plusieurs recommandations sont retournees avec probabilite consensus.
+    - Le meilleur pick simple reste le pick principal.
+    - Un combine peut etre fourni comme suggestion secondaire uniquement.
     """
     bookmakers = _filtered_bookmakers(match)
     home = match.get("home_team", "")
@@ -823,13 +663,19 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "pick": None,
         "pick_odds": None,
         "confidence": 0,
+        "model_probability": 0,
+        "estimated_win_probability": 0,
         "label": "unknown",
         "implied_probs": {},
         "edge": 0,
         "num_books": 0,
         "markets": [],
+        "recommendations": [],
         "market": "h2h",
         "market_label": "Vainqueur (1X2)",
+        "is_combo": False,
+        "combo_suggestion": None,
+        "official_track_eligible": False,
         "is_live": _is_live_match(match),
         "is_finished": _is_finished_match(match),
         "bookmakers_used": [],
@@ -847,94 +693,62 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
                 market_keys.add(m["key"])
 
     market_results = []
-    for mk in ["h2h", "totals", "spreads", "btts", "draw_no_bet",
-               "double_chance", "h2h_h1", "totals_h1", "totals_h2"]:
+    for mk in [
+        "h2h", "totals", "spreads", "btts", "draw_no_bet",
+        "double_chance", "h2h_h1", "totals_h1", "totals_h2", "team_totals",
+    ]:
         if mk not in market_keys:
             continue
-        res = _analyze_market(mk, bookmakers, home, away)
+        res = _analyze_market(mk, bookmakers, home, away, min_conf=0.0)
         if res:
             market_results.append(res)
 
-    real_market_keys = {r["market"] for r in market_results}
-    for syn in _synthetic_markets(bookmakers, home, away, sport_key):
-        equiv = {
-            "syn_btts": "btts",
-            "syn_double_chance": "double_chance",
-            "syn_draw_no_bet": "draw_no_bet",
-        }
-        if equiv.get(syn["market"]) in real_market_keys:
-            continue
-        market_results.append(syn)
-
+    # IMPORTANT : _synthetic_markets n'est volontairement plus ajoute a
+    # market_results. Une cote derivee d'une formule maison ne constitue pas
+    # une cote de marche et ne doit pas etre presentee comme un vrai pari.
     if not market_results:
         return empty
 
-    # ─── Ajustement base sur les vraies stats, AVANT le choix du pick ───────
-    # C'est le changement cle : auparavant _deep_reasoning tournait apres
-    # coup, juste pour l'affichage, sans influencer quel pick est choisi.
-    # Ici, quand une vraie donnee forme/H2H existe, elle modifie directement
-    # la confiance de chaque marche avant le tri — donc le choix du meilleur
-    # pick peut reellement changer si les vraies stats contredisent ou
-    # renforcent ce que les cotes seules suggeraient.
-    if real_stats:
+    # Ajustement par les donnees REELLES uniquement. Les statistiques marquees
+    # estimated_ai sont ignorees pour ne pas reintroduire de donnees inventees.
+    real_data_used = bool(real_stats and real_stats.get("real_data_used") and not real_stats.get("estimated_ai"))
+    if real_data_used:
         for r in market_results:
             delta = _real_stats_confidence_delta(real_stats, r.get("pick", ""), home, away)
             if delta:
-                r["confidence"] = round(max(0, min(100, r["confidence"] + delta)), 1)
+                r["confidence"] = round(_clamp(r["confidence"] + delta), 1)
                 r["real_stats_adjustment"] = round(delta, 1)
-                r["label"] = ("safe" if r["confidence"] >= SAFE_THRESHOLD
-                              else ("value" if r["confidence"] >= VALUE_THRESHOLD else "risky"))
+                r["label"] = (
+                    "safe" if r["confidence"] >= SAFE_THRESHOLD
+                    else ("value" if r["confidence"] >= VALUE_THRESHOLD else "risky")
+                )
 
-    # ─── Tri : marches REELS prioritaires, puis preference aux "bonnes cotes"
-    # parmi les marches deja surs ────────────────────────────────────────────
-    # 1) Les marches "bookmaker" (cote reelle) passent toujours avant les
-    #    marches "estime_ia", quelle que soit leur confiance relative — evite
-    #    de choisir une cote fabriquee quand un vrai marche existe.
-    # 2) A fiabilite egale (deux marches "safe" pour le meme match), on
-    #    prefere celui dont la cote tombe dans une fourchette interessante
-    #    (GOOD_ODDS_MIN-GOOD_ODDS_MAX) plutot que le favori ecrasant a cote
-    #    minuscule — c'est le "denicheur de bonnes cotes" demande : on ne
-    #    sacrifie jamais la fiabilite pour la cote (un marche "risky" avec
-    #    une bonne cote ne passe jamais avant un marche "safe"), mais entre
-    #    plusieurs marches deja fiables, celui qui paye mieux est privilegie.
-    def _source_priority(x):
-        return 0 if x.get("source") == "bookmaker" else 1
+    market_results.sort(key=_market_sort_key, reverse=True)
+    recommendations = _top_recommendations(market_results, limit=4)
+    best = recommendations[0]
 
-    def _odds_band_bonus(x):
-        odds = x.get("pick_odds") or 1
-        if x["confidence"] >= SAFE_THRESHOLD and GOOD_ODDS_MIN <= odds <= GOOD_ODDS_MAX:
-            return 15.0
-        return 0.0
-
-    market_results.sort(
-        key=lambda x: (
-            _source_priority(x),
-            -(x["confidence"] + max(0, x["edge"]) * 0.8 + _odds_band_bonus(x)),
-        )
-    )
-
-    validated = _validate_picks_compatibility(market_results)
-    best = validated[0] if validated else market_results[0]
-
-    # Tentative de pick combine — uniquement a partir de marches REELS, pour
-    # ne jamais combiner une cote fabriquee (estime_ia) avec une vraie cote
-    # de bookmaker, ce qui produirait une cote combinee sans aucun sens.
-    real_only = [r for r in (validated if validated else market_results)
-                 if r.get("source") == "bookmaker"]
-    combo = _build_combined_pick(real_only) if real_only else None
-    if combo:
-        best = combo
-        if combo not in market_results:
-            market_results.insert(0, combo)
+    # Combine optionnel : jamais de remplacement du pick principal.
+    combo = _build_combined_pick(market_results)
 
     implied = {}
     probs = _h2h_probs(bookmakers, home, away)
     if probs:
         implied = {k: round(v * 100, 1) for k, v in probs.items()}
 
-    best_bm = _get_best_bookmaker_title(bookmakers)
+    # Eligibility Track Record : regles strictes, determinees AVANT resultat.
+    official_track_eligible = bool(
+        best.get("source") == "bookmaker"
+        and not best.get("synthetic", False)
+        and not best.get("is_combo", False)
+        and best.get("confidence", 0) >= SAFE_THRESHOLD
+        and best.get("edge", 0) >= 2.0
+        and best.get("num_books", 0) >= 5
+        and 1.20 <= (best.get("pick_odds") or 0) <= 2.20
+        and not _is_live_match(match)
+        and not _is_finished_match(match)
+    )
 
-    return {
+    result = {
         "match_id": match.get("id"),
         "sport_key": sport_key,
         "sport_title": match.get("sport_title"),
@@ -945,8 +759,11 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "pick_odds": best["pick_odds"],
         "confidence": best["confidence"],
         "model_probability": best.get("model_probability", best["confidence"]),
+        "estimated_win_probability": best.get("estimated_win_probability", best.get("model_probability", best["confidence"])),
         "stability_score": best.get("stability_score", 0),
+        "dominance_score": best.get("dominance_score", 0),
         "wp_score": best.get("wp_score", best["confidence"]),
+        "selection_score": best.get("selection_score", best["confidence"]),
         "model_version": MODEL_VERSION,
         "label": best["label"],
         "implied_probs": implied,
@@ -954,24 +771,39 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "num_books": best.get("num_books", 0),
         "market": best["market"],
         "market_label": best["market_label"],
-        "is_combo": best.get("is_combo", False),
+        "is_combo": False,
         "markets": market_results,
+        "recommendations": recommendations,
+        "combo_suggestion": combo,
+        "official_track_eligible": official_track_eligible,
+        "analysis_integrity": {
+            "real_bookmaker_markets_only": True,
+            "synthetic_markets_excluded": True,
+            "fabricated_stats_excluded": True,
+            "real_external_stats_used": real_data_used,
+        },
         "is_live": _is_live_match(match),
         "is_finished": _is_finished_match(match),
         "bookmakers_used": [
             {"key": bm.get("key"), "title": bm.get("title")}
             for bm in bookmakers
         ],
-        "best_bookmaker": best_bm,
-        "reasoning": _deep_reasoning(match, home, away,
-                                      {k: v/100 for k, v in implied.items()},
-                                      real_stats=real_stats)
-                     if implied else None,
+        "best_bookmaker": _get_best_bookmaker_title(bookmakers),
+        "reasoning": _deep_reasoning(
+            match, home, away,
+            {k: v / 100 for k, v in implied.items()},
+            real_stats=real_stats if real_data_used else None,
+        ) if implied else None,
     }
+    return result
 
 
 def analyze_all(matches: List[Dict], real_stats_map: Optional[Dict] = None) -> List[Dict]:
-    return [analyze_match(m, real_stats_map=real_stats_map) for m in matches if m.get("bookmakers")]
+    return [
+        analyze_match(m, real_stats_map=real_stats_map)
+        for m in matches
+        if m.get("bookmakers")
+    ]
 
 
 def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30) -> List[Dict]:
@@ -1017,25 +849,27 @@ def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30)
 
 
 def top_predictions(matches: List[Dict], limit: int = 10,
-                     real_stats_map: Optional[Dict] = None) -> List[Dict]:
+                      real_stats_map: Optional[Dict] = None) -> List[Dict]:
+    """Retourne les meilleurs picks simples, sans repetiton artificielle.
+
+    Chaque match garde un seul pick principal. Les alternatives restent dans
+    ``analyze_match(...)["recommendations"]``.
+    """
     preds = analyze_all(matches, real_stats_map=real_stats_map)
-    valid = [p for p in preds if p.get("pick") and p.get("confidence", 0) >= MIN_CONFIDENCE
-             and p.get("pick_odds", 0) >= 1.0]
-
-    def _odds_band_bonus(p):
-        odds = p.get("pick_odds") or 1
-        conf = p.get("wp_score", p.get("confidence", 0))
-        if conf >= SAFE_THRESHOLD and GOOD_ODDS_MIN <= odds <= GOOD_ODDS_MAX:
-            return 10.0
-        return 0.0
-
-    # Meme logique que dans analyze_match : parmi les picks deja fiables
-    # (score >= SAFE_THRESHOLD), ceux avec une cote interessante remontent
-    # devant les favoris ecrasants a cote minuscule — sans jamais faire
-    # passer un pick moins fiable devant un pick plus fiable.
+    valid = [
+        p for p in preds
+        if p.get("pick")
+        and p.get("confidence", 0) >= MIN_CONFIDENCE
+        and p.get("pick_odds", 0) >= MIN_ODDS
+        and not p.get("is_combo", False)
+    ]
     valid.sort(
-        key=lambda p: p.get("wp_score", p["confidence"]) + max(0, p.get("edge", 0)) * 0.25 + _odds_band_bonus(p),
-        reverse=True
+        key=lambda p: (
+            p.get("selection_score", p.get("confidence", 0)),
+            p.get("edge", 0),
+            p.get("pick_odds", 0),
+        ),
+        reverse=True,
     )
     return valid[:limit]
 
@@ -1106,6 +940,8 @@ def _flatten_market_picks(matches: List[Dict]) -> List[Dict]:
             continue
         analyzed = analyze_match(m)
         for mk in analyzed.get("markets", []):
+            if mk.get("source") != "bookmaker" or mk.get("synthetic", False) or mk.get("is_combo", False):
+                continue
             if not mk.get("pick_odds"):
                 continue
             if mk.get("pick_odds", 0) < 1.0:
