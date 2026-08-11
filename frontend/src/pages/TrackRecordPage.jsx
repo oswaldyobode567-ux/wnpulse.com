@@ -5,8 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Activity, Trophy, TrendingUp, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap } from "lucide-react";
-import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Area, AreaChart } from "recharts";
+import { Activity, Trophy, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap } from "lucide-react";
 import dayjs from "dayjs";
 export default function TrackRecordPage() {
   const [data, setData] = useState(null);
@@ -42,7 +41,7 @@ export default function TrackRecordPage() {
           <div className="relative text-center">
             <div className="inline-flex items-center gap-2 rounded-full bg-emerald-400/20 border border-emerald-400/40 px-3 py-1 text-xs font-bold text-emerald-200 mb-4 backdrop-blur-sm">
               <span className="h-2 w-2 rounded-full bg-emerald-400 live-dot" />
-              Track record 100% transparent · vérifiable
+              Track Record officiel · vérifiable
             </div>
             <h1 className="font-heading text-4xl sm:text-6xl font-black tracking-tighter leading-[0.95]">
               Nos résultats.<br />
@@ -51,14 +50,14 @@ export default function TrackRecordPage() {
               </span>
             </h1>
             <p className="mt-4 text-slate-300 max-w-2xl mx-auto text-base">
-              Chaque pronostic est publié automatiquement après le match. Pas de cherry-picking, pas d'effacement. Tout est là.
+              Les picks officiels sont sélectionnés avant le match selon des critères fixes. Les résultats confirmés restent affichés, gagnés comme perdus.
             </p>
           </div>
         </div>
         {loading || !data ? (
           <div className="space-y-6">
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">{[1,2,3,4].map(i => <Skeleton key={i} className="h-28" />)}</div>
-            <Skeleton className="h-80" /><Skeleton className="h-96" />
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">{[1,2,3].map(i => <Skeleton key={i} className="h-28" />)}</div>
+            <Skeleton className="h-96" />
           </div>
         ) : (
           <>
@@ -75,40 +74,15 @@ export default function TrackRecordPage() {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8" data-testid="kpis">
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8" data-testid="kpis">
               <Kpi icon={Target} label="Taux de réussite" value={`${data.stats.win_rate}%`} sub={`${data.stats.wins}/${data.stats.total} picks`} accent="emerald" />
-              <Kpi icon={TrendingUp} label="ROI 30 jours" value={`${data.stats.roi_percent >= 0 ? "+" : ""}${data.stats.roi_percent}%`} sub={`${data.stats.profit_units_30d} unités`} accent={data.stats.roi_percent >= 0 ? "emerald" : "rose"} />
               <Kpi icon={Flame} label="Série en cours" value={`${data.stats.current_streak}`} sub="picks gagnants" accent="orange" />
               <Kpi icon={Trophy} label="Cote moyenne" value={data.stats.avg_odds} sub="par pick" accent="amber" mono />
             </div>
-            <Card className="bg-white border-neutral-200 p-5 mb-8" data-testid="roi-chart">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="font-heading font-bold text-slate-900">Évolution de la bankroll · 60 jours</h2>
-                <div className="text-xs text-slate-500">Base : <span className="font-mono font-bold">{data.stats.base.toLocaleString()} FCFA</span> · Mise : <span className="font-mono font-bold">{data.stats.stake_xof} FCFA/pick</span></div>
-              </div>
-              <div className="text-3xl font-heading font-extrabold text-emerald-600 mb-3" data-testid="balance-now">
-                {data.stats.balance_now.toLocaleString()} FCFA
-              </div>
-              <ResponsiveContainer width="100%" height={260}>
-                <AreaChart data={data.chart}>
-                  <defs>
-                    <linearGradient id="gradROI" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="#10b981" stopOpacity={0.4} />
-                      <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid stroke="#f1f5f9" strokeDasharray="3 3" />
-                  <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(d) => dayjs(d).format("DD/MM")} />
-                  <YAxis tick={{ fontSize: 11 }} tickFormatter={(v) => `${(v/1000).toFixed(0)}k`} />
-                  <Tooltip formatter={(v) => `${v.toLocaleString()} FCFA`} labelFormatter={(d) => dayjs(d).format("DD MMM YYYY")} />
-                  <Area type="monotone" dataKey="balance" stroke="#10b981" strokeWidth={2.5} fill="url(#gradROI)" />
-                </AreaChart>
-              </ResponsiveContainer>
-            </Card>
             <Card className="bg-white border-neutral-200 overflow-hidden">
               <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
-                <h2 className="font-heading font-bold text-slate-900 flex items-center gap-2"><Activity className="h-5 w-5 text-orange-600" /> Tous les résultats</h2>
-                <Badge variant="outline" className="text-xs">Mis à jour automatiquement après chaque match</Badge>
+                <h2 className="font-heading font-bold text-slate-900 flex items-center gap-2"><Activity className="h-5 w-5 text-orange-600" /> Track Record officiel</h2>
+                <Badge variant="outline" className="text-xs">Sélection pré-match · résultats non modifiés</Badge>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -120,7 +94,6 @@ export default function TrackRecordPage() {
                       <th className="px-4 py-2.5 text-left">Pick</th>
                       <th className="px-4 py-2.5 text-center">Cote</th>
                       <th className="px-4 py-2.5 text-center">Résultat</th>
-                      <th className="px-4 py-2.5 text-right">Profit</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100" data-testid="results-table">
@@ -135,9 +108,6 @@ export default function TrackRecordPage() {
                           <Badge className={r.status === "won" ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-rose-100 text-rose-700 border-rose-200"}>
                             {r.status === "won" ? "GAGNÉ" : "PERDU"}
                           </Badge>
-                        </td>
-                        <td className={`px-4 py-3 text-right font-bold font-mono text-xs ${r.status === "won" ? "text-emerald-600" : "text-rose-600"}`}>
-                          {r.profit_xof > 0 ? "+" : ""}{r.profit_xof.toLocaleString()}
                         </td>
                       </tr>
                     ))}
@@ -156,7 +126,7 @@ export default function TrackRecordPage() {
               </div>
             </Card>
             <div className="mt-10 text-center">
-              <h3 className="font-heading text-2xl font-extrabold text-slate-900 mb-2">Convaincu ?</h3>
+              <h3 className="font-heading text-2xl font-extrabold text-slate-900 mb-2">Découvre les picks officiels</h3>
               <p className="text-slate-600 mb-4">Rejoins les abonnés Pro pour avoir tous nos picks chaque jour.</p>
               <Link to="/register"><Button className="wp-gradient-warm text-white border-0 h-12 px-8 text-base">Démarrer gratuit</Button></Link>
             </div>
