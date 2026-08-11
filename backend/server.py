@@ -29,7 +29,7 @@ from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
-    _is_today as _is_today_match,
+    _is_today as _is_today_match, MODEL_VERSION,
 )
 from ai_service import generate_analysis
 
@@ -208,7 +208,7 @@ app.add_middleware(
 
 @app.get("/api/")
 async def racine():
-    return {"application": "WinPulse", "statut": "OK", "version": "8.0"}
+    return {"application": "WinPulse", "statut": "OK", "version": MODEL_VERSION}
 
 
 @app.get("/api/sante")
@@ -333,20 +333,21 @@ async def _compute_calibration_map() -> Dict[int, Dict]:
     """
     Calibration empirique sans sur-ajuster les petits échantillons.
 
-    CORRECTIF : filtre desormais sur model_version="8.0" — avant, les picks
-    de generations anterieures du moteur (avant MIN_ODDS remonte a 1.40 et
-    avant la formule _wp_score actuelle) etaient melanges avec les picks
-    recents dans le meme calcul de calibration. Le champ "confidence" n'a
-    pas la meme signification d'une version a l'autre, ce qui produisait des
-    resultats incoherents (ex: la tranche 75-79% mesuree moins fiable que la
-    tranche 70-74%, l'inverse de ce qu'on attend d'un systeme bien calibre).
-    Consequence attendue de ce filtre : l'echantillon repart quasiment a
-    zero le temps que le moteur v8.0 accumule au moins 30 resultats par
-    tranche — c'est voulu, une calibration sur des donnees melangees n'aurait
-    aucune valeur predictive fiable.
+    CORRECTIF : filtre sur MODEL_VERSION (importe depuis prediction_engine,
+    donc toujours synchronise avec la version reellement deployee — "8.2"
+    actuellement) — avant, les picks de generations anterieures du moteur
+    etaient melanges avec les picks recents dans le meme calcul de
+    calibration. Le champ "confidence" n'a pas la meme signification d'une
+    version a l'autre (v8.2 : confidence = vraie probabilite de consensus ;
+    versions anterieures : score composite), ce qui produisait des resultats
+    incoherents. Consequence attendue de ce filtre : l'echantillon repart
+    quasiment a zero a chaque montee de version, le temps d'accumuler au
+    moins 30 resultats par tranche sous la nouvelle version — c'est voulu,
+    une calibration sur des donnees melangees n'aurait aucune valeur
+    predictive fiable.
     """
     resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}, "model_version": "8.0"},
+        {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION},
         {"confidence": 1, "result": 1}
     ).to_list(length=10000)
     buckets: Dict[int, Dict[str, int]] = {}
@@ -482,6 +483,11 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
             # n'affichait rien grace a "locked". Le champ doit etre vide
             # cote serveur, pas seulement cache cote client.
             pred["markets"] = []
+            # Meme correctif etendu aux nouveaux champs v8.2 : "recommendations"
+            # (jusqu'a 4 marches avec picks/cotes) et "combo_suggestion"
+            # contiennent exactement le meme type de donnees payantes.
+            pred["recommendations"] = []
+            pred["combo_suggestion"] = None
         else:
             pred["locked"] = False
         merged.append(_merge_match_prediction(m, pred))
@@ -506,7 +512,7 @@ async def get_prediction_model_status():
     resolved = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost"]}})
     pending = await db.predictions_history.count_documents({"result": "pending"})
     return {
-        "model_version": "8.0",
+        "model_version": MODEL_VERSION,
         "cache_ttl_seconds": PREDICTION_CACHE_TTL,
         "resolved_picks": resolved,
         "pending_picks": pending,
@@ -540,6 +546,8 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
                 p["pick"] = None
                 p["pick_odds"] = None
                 p["markets"] = []  # meme correctif que /api/matches
+                p["recommendations"] = []
+                p["combo_suggestion"] = None
     else:
         for p in preds:
             p["locked"] = False
@@ -1365,20 +1373,28 @@ def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
 @app.get("/api/track-record")
 async def get_track_record_public(page: int = 1, per_page: int = 20):
     """
-    Page publique "Nos resultats. Sans triche." — stats reelles, graphique
-    de bankroll simule, et tableau paginé de tous les picks resolus
-    (gagnes/perdus), calcules a partir de db.predictions_history.
+    Page publique "Nos resultats. Sans triche." — stats reelles et tableau
+    pagine de tous les picks resolus (gagnes/perdus), calcules a partir de
+    db.predictions_history.
 
     IMPORTANT — transparence sur les hypotheses de calcul :
-    - Mise fixe simulee de 1000 FCFA par pick (TRACK_RECORD_STAKE_XOF)
-    - Bankroll de depart simulee de 100 000 FCFA (TRACK_RECORD_BASE_BANKROLL)
+    - Seuls les picks marques "official_track_eligible" au moment de leur
+      creation apparaissent ici (v8.2) — criteres stricts fixes AVANT le
+      resultat : marche reel (jamais synthetique/combo), confiance >= seuil
+      "safe", edge >= 2%, au moins 5 bookmakers, cote entre 1.20 et 2.20, et
+      publie avant le debut du match. Ce filtre elimine le risque qu'un pick
+      marginal (petite confiance, cote extreme, peu de bookmakers d'accord)
+      vienne fausser le Track Record officiel dans un sens ou l'autre.
+    - Consequence attendue : le nombre de picks affiches ici est nettement
+      plus bas que le nombre total de picks generes par le moteur — c'est
+      volontaire, la selectivite est la garantie de fiabilite de cette page.
     - Seuls les picks avec un resultat CONFIRME (won/lost) sont comptes —
-      jamais les picks encore "pending", pour ne pas fausser les chiffres
+      jamais les picks encore "pending", pour ne pas fausser les chiffres.
     - Ces statistiques ne seront representatives qu'apres accumulation de
       suffisamment de picks resolus dans le temps (systeme de suivi recent)
     """
     resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}}
+        {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
     ).to_list(length=5000)
 
     # Tri chronologique croissant (pour le graphique de bankroll)
@@ -1838,6 +1854,15 @@ async def _save_predictions_to_history(matches: List[Dict]):
     UNE SEULE FOIS par match+pick — pour ensuite mesurer la vraie performance
     dans le temps, sans jamais modifier un pick deja enregistre (integrite
     de la mesure : on n'ajuste jamais un pick apres coup).
+
+    CORRECTIF v8.2 : "official_track_eligible" est desormais FIGE ici, au
+    moment exact de la creation du pick — jamais recalcule plus tard. En
+    effet, analyze_match() calcule ce champ en fonction de l'heure actuelle
+    (is_live/is_finished) : si on le relisait depuis un nouvel appel a
+    analyze_match() une fois le match commence ou termine, un pick eligible
+    au moment de sa publication deviendrait a tort "non eligible" pour le
+    Track Record juste parce que le match a demarre entre temps. La valeur
+    stockee en base est donc la source de verite definitive pour ce pick.
     """
     try:
         real_stats_map = await get_real_stats_map(db, matches)
@@ -1862,10 +1887,17 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
                 "model_probability": p.get("model_probability"),
+                "estimated_win_probability": p.get("estimated_win_probability"),
                 "wp_score": p.get("wp_score"),
+                "selection_score": p.get("selection_score"),
                 "stability_score": p.get("stability_score"),
-                "model_version": p.get("model_version", "8.0"),
+                "dominance_score": p.get("dominance_score"),
+                "num_books": p.get("num_books"),
+                "edge": p.get("edge"),
+                "model_version": p.get("model_version", MODEL_VERSION),
                 "is_combo": p.get("is_combo", False),
+                # Fige definitivement au moment de la creation — voir docstring.
+                "official_track_eligible": bool(p.get("official_track_eligible", False)),
                 "result": "pending",  # pending -> won / lost apres reconciliation
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
