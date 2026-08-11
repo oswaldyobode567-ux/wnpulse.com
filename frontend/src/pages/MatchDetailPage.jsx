@@ -12,7 +12,6 @@ import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { toast } from "sonner";
-
 export default function MatchDetailPage() {
   const { matchId } = useParams();
   const navigate = useNavigate();
@@ -23,14 +22,12 @@ export default function MatchDetailPage() {
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
   const isAdmin = Boolean(user?.is_admin);
-
   useEffect(() => {
     setLoadingMatch(true);
     api.get(`/matches/${matchId}`)
       .then((r) => setData(r.data))
       .finally(() => setLoadingMatch(false));
   }, [matchId]);
-
   const fetchAnalysis = async () => {
     setLoadingAnalysis(true);
     try {
@@ -42,7 +39,6 @@ export default function MatchDetailPage() {
       setLoadingAnalysis(false);
     }
   };
-
   const handleBack = () => {
     if (window.history.state && window.history.state.idx > 0) {
       navigate(-1);
@@ -50,7 +46,6 @@ export default function MatchDetailPage() {
       navigate("/app");
     }
   };
-
   if (loadingMatch) {
     return (
       <AppLayout>
@@ -62,7 +57,6 @@ export default function MatchDetailPage() {
       </AppLayout>
     );
   }
-
   if (!data) {
     return (
       <AppLayout>
@@ -70,7 +64,6 @@ export default function MatchDetailPage() {
       </AppLayout>
     );
   }
-
   const p = data.prediction;
   const locked = p.locked || !p.pick;
   const labelColor = {
@@ -78,9 +71,7 @@ export default function MatchDetailPage() {
     value: "bg-amber-50 border-amber-200",
     risky: "bg-rose-50 border-rose-200",
   }[p.label] || "bg-orange-50 border-orange-200";
-
   const isPaid = user?.subscription_tier && user.subscription_tier !== "free";
-
   return (
     <AppLayout>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -91,7 +82,6 @@ export default function MatchDetailPage() {
         >
           <ChevronLeft className="h-4 w-4" /> Retour
         </button>
-
         {/* Match header */}
         <Card className={`bg-white border-slate-200 p-6 mb-6 ${data.is_live ? "ring-2 ring-rose-500/40" : ""}`} data-testid="match-header">
           <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
@@ -99,8 +89,7 @@ export default function MatchDetailPage() {
               <Badge variant="outline" className="font-mono">{data.sport_title}</Badge>
               <span>·</span>
               <span>{dayjs(data.commence_time).format("dddd D MMM · HH:mm")}</span>
-            </div>
-            {data.is_live && (
+            </div> {data.is_live && (
               <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2.5 py-1 text-[11px] font-black uppercase tracking-wider animate-pulse" data-testid="match-live-badge">
                 <Radio className="h-3 w-3" /> LIVE
               </span>
@@ -120,7 +109,6 @@ export default function MatchDetailPage() {
             </div>
           </div>
         </Card>
-
         {/* Prediction summary */}
         {locked ? (
           <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
@@ -156,8 +144,7 @@ export default function MatchDetailPage() {
                 {p.pick}
                 <span className="text-slate-500 text-xl font-mono font-semibold ml-2">@ {p.pick_odds}</span>
               </div>
-            </div>
-            <ConfidenceBadge label={p.label} confidence={p.confidence} size="md" />
+            </div>  <ConfidenceBadge label={p.label} confidence={p.confidence} size="md" />
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-200/60">
             <Stat label="Bookmakers" value={p.num_books} />
@@ -187,7 +174,6 @@ export default function MatchDetailPage() {
           )}
         </Card>
         )}
-
         {/* All markets analyzed (Pro feature) */}
         {!locked && p.markets && p.markets.length > 1 && (
           <Card className="bg-white border-neutral-200 p-6 mb-6" data-testid="all-markets-card">
@@ -212,8 +198,7 @@ export default function MatchDetailPage() {
                       <div className="font-semibold text-slate-900 truncate">
                         {m.pick} <span className="text-slate-400 font-normal font-mono text-sm ml-1">@ {m.pick_odds}</span>
                       </div>
-                    </div>
-                    <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold border ${labelCls}`}>
+                    </div>   <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold border ${labelCls}`}>
                       {m.confidence}%
                     </span>
                   </div>
@@ -222,7 +207,6 @@ export default function MatchDetailPage() {
             </div>
           </Card>
         )}
-
         {/* Deep reasoning — H2H / xG / forme / absences / arbitre / météo */}
         {!locked && p.reasoning && (
           <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="deep-reasoning-card">
@@ -232,22 +216,56 @@ export default function MatchDetailPage() {
               <Badge className="bg-purple-100 text-purple-700 border-purple-200 text-[10px] ml-1">IA</Badge>
             </div>
             <p className="text-sm text-slate-700 leading-relaxed mb-4">{p.reasoning.summary}</p>
-            <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4" data-testid="reasoning-grid">
-              <ReasonBox label="H2H (10 derniers)" value={`${p.reasoning.h2h_last_10.home_wins}V-${p.reasoning.h2h_last_10.draws}N-${p.reasoning.h2h_last_10.away_wins}D`} sub={`${data.home_team}`} />
-              <ReasonBox label="Forme récente" value={`${p.reasoning.form_last_5.home} / ${p.reasoning.form_last_5.away}`} mono />
-              <ReasonBox label="xG moyens" value={`${p.reasoning.xg.home} vs ${p.reasoning.xg.away}`} mono />
-              <ReasonBox label="Domicile" value={p.reasoning.home_record} />
-              <ReasonBox label="Extérieur" value={p.reasoning.away_record} />
-              <ReasonBox label="Absences clés" value={`${data.home_team.split(" ")[0]}: ${p.reasoning.key_absences.home} · ${data.away_team.split(" ")[0]}: ${p.reasoning.key_absences.away}`} />
-              <ReasonBox label="Cartons arbitre" value={`${p.reasoning.referee_yellows_avg}/match`} />
-              <ReasonBox label="Conditions" value={p.reasoning.weather} />
-            </div>
+            {p.reasoning.real_data_used ? (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4" data-testid="reasoning-grid">
+                {p.reasoning.h2h_last_10 && (
+                  <ReasonBox
+                    label="H2H (10 derniers)"
+                    value={`${p.reasoning.h2h_last_10.home_wins}V-${p.reasoning.h2h_last_10.draws}N-${p.reasoning.h2h_last_10.away_wins}D`}
+                    sub={`${data.home_team}`}
+                  />
+                )}
+                {(p.reasoning.form_last_5?.home || p.reasoning.form_last_5?.away) && (
+                  <ReasonBox
+                    label="Forme récente"
+                    value={`${p.reasoning.form_last_5?.home ?? "N/D"} / ${p.reasoning.form_last_5?.away ?? "N/D"}`}
+                    mono
+                  />
+                )}
+                {p.reasoning.xg && (
+                  <ReasonBox label="xG moyens" value={`${p.reasoning.xg.home} vs ${p.reasoning.xg.away}`} mono />
+                )}
+                {p.reasoning.home_record && (
+                  <ReasonBox label="Domicile" value={p.reasoning.home_record} />
+                )}
+                {p.reasoning.away_record && (
+                  <ReasonBox label="Extérieur" value={p.reasoning.away_record} />
+                )}
+                {p.reasoning.key_absences && (
+                  <ReasonBox
+                    label="Absences clés"
+                    value={`${data.home_team.split(" ")[0]}: ${p.reasoning.key_absences.home} · ${data.away_team.split(" ")[0]}: ${p.reasoning.key_absences.away}`}
+                  />
+                )}
+                {p.reasoning.referee_yellows_avg != null && (
+                  <ReasonBox label="Cartons arbitre" value={`${p.reasoning.referee_yellows_avg}/match`} />
+                )}
+                {p.reasoning.weather && (
+                  <ReasonBox label="Conditions" value={p.reasoning.weather} />
+                )}
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4">
+                Aucune statistique externe vérifiée disponible pour ce match — le moteur s'appuie uniquement sur le consensus des cotes bookmakers, sans donnée inventée.
+              </div>
+            )}
             <div className="text-[10px] text-slate-400 italic pt-3 border-t border-slate-100">
-              Estimations IA basées sur les cotes bookmakers agrégées + historique modélisé. Plan Odds API payant requis pour les données réelles complètes (xG live, blessures officielles, arbitre).
+              {p.reasoning.real_data_used
+                ? "Forme et historique H2H réels (football-data.org) quand disponibles. Autres champs : analyse basée sur le consensus des cotes bookmakers."
+                : "Analyse basée uniquement sur le consensus des cotes bookmakers agrégées — aucune statistique externe fabriquée."}
             </div>
           </Card>
         )}
-
         {/* AI Analysis */}
         <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex items-center justify-between mb-4">
@@ -267,7 +285,6 @@ export default function MatchDetailPage() {
               </Button>
             )}
           </div>
-
           {!analysis && !loadingAnalysis && (
             <div className="text-sm text-slate-500">
               Cliquez sur "Lancer l'analyse" pour obtenir une analyse complète : facteurs clés, alertes risque et pari alternatif suggéré.
@@ -279,14 +296,12 @@ export default function MatchDetailPage() {
               )}
             </div>
           )}
-
           {analysis && (
             <div className="space-y-4" data-testid="analysis-content">
               <div className="rounded-lg bg-orange-50 border border-orange-200 p-4">
                 <div className="text-xs uppercase tracking-wider text-orange-700 font-bold mb-1">Verdict</div>
                 <div className="text-sm text-slate-900 font-medium">{analysis.verdict}</div>
               </div>
-
               {analysis.key_factors?.length > 0 && (
                 <div>
                   <div className="text-xs uppercase tracking-wider text-slate-600 font-bold mb-2">Facteurs clés</div>
@@ -300,14 +315,12 @@ export default function MatchDetailPage() {
                   </ul>
                 </div>
               )}
-
               {analysis.risk_alert && (
                 <div className="rounded-lg bg-rose-50 border border-rose-200 p-3 flex gap-2">
                   <AlertTriangle className="h-4 w-4 text-rose-600 flex-shrink-0 mt-0.5" />
                   <div className="text-sm text-rose-900">{analysis.risk_alert}</div>
                 </div>
               )}
-
               {analysis.alternative_bet && (
                 <div className="rounded-lg bg-emerald-50 border border-emerald-200 p-3 flex gap-2">
                   <Lightbulb className="h-4 w-4 text-emerald-600 flex-shrink-0 mt-0.5" />
@@ -316,14 +329,12 @@ export default function MatchDetailPage() {
                   </div>
                 </div>
               )}
-
               <div className="text-[10px] text-slate-400 pt-2">
                 Source : {analysis.source === "ai" ? "Analyse IA experte" : "Moteur statistique"}
               </div>
             </div>
           )}
         </Card>
-
         {/* Bookmakers */}
         <Card className="bg-white border-slate-200 p-6 mb-6">
           <h2 className="font-heading text-lg font-bold text-slate-900 mb-4">Cotes par bookmaker</h2>
@@ -352,7 +363,6 @@ export default function MatchDetailPage() {
             </table>
           </div>
         </Card>
-
         {/* Stats panel — FootyStat style (deterministic mock from match id) */}
         {!locked && <MatchStatsPanel home={data.home_team} away={data.away_team} seed={data.id} />}
       </div>
@@ -364,13 +374,11 @@ export default function MatchDetailPage() {
     </AppLayout>
   );
 }
-
 function seededRng(seed) {
   let h = 0;
   for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) | 0;
   return () => { h = (h * 9301 + 49297) % 233280; return h / 233280; };
 }
-
 function MatchStatsPanel({ home, away, seed }) {
   const rng = seededRng(seed || "x");
   const r = () => rng();
@@ -382,7 +390,6 @@ function MatchStatsPanel({ home, away, seed }) {
   const wins = (f) => f.filter(x => x === "W").length;
   const draws = (f) => f.filter(x => x === "D").length;
   const losses = (f) => f.filter(x => x === "L").length;
-
   // H2H 10 derniers
   const h2h = Array.from({ length: 10 }, (_, i) => {
     const hs = Math.floor(r() * 4); const as = Math.floor(r() * 4);
@@ -400,7 +407,6 @@ function MatchStatsPanel({ home, away, seed }) {
   const h2hBtts = Math.round((h2h.filter(m => m.btts).length / h2h.length) * 100);
   const h2hOv25 = Math.round((h2h.filter(m => m.ov25).length / h2h.length) * 100);
   const h2hGoalsAvg = (h2h.reduce((a, m) => a + m.hs + m.as, 0) / h2h.length).toFixed(2);
-
   // Team aggregated stats
   const mkTeam = (bias) => ({
     gs: +(1.2 + r() * 1.6).toFixed(2),    // goals scored / match
@@ -424,7 +430,6 @@ function MatchStatsPanel({ home, away, seed }) {
   const A = mkTeam(-2);
   H.poss = Math.min(64, H.poss);
   A.poss = 100 - H.poss;
-
   // Derived multi-market predictions (FootyStats-style)
   const pred = {
     btts: Math.round((H.btts_pct + A.btts_pct) / 2),
@@ -444,15 +449,12 @@ function MatchStatsPanel({ home, away, seed }) {
   };
   pred.no_btts = 100 - pred.btts;
   pred.un25 = 100 - pred.ov25;
-
   const formColor = (x) => x === "W" ? "bg-emerald-500" : x === "D" ? "bg-amber-500" : "bg-rose-500";
-
   // Injuries
   const injuries = {
     home: [{ name: "Milieu défensif", status: "INCERTAIN" }, { name: "Latéral droit", status: "INDISPONIBLE" }],
     away: [{ name: "Attaquant titulaire", status: "INCERTAIN" }],
   };
-
   return (
     <div className="space-y-5" data-testid="stats-panel">
       {/* === Smart Combos derived from stats === */}
@@ -487,7 +489,6 @@ function MatchStatsPanel({ home, away, seed }) {
           ))}
         </div>
       </div>
-
       {/* === Form 10 last matches === */}
       <div className="grid sm:grid-cols-2 gap-4">
         {[["Domicile", home, homeForm], ["Extérieur", away, awayForm]].map(([lbl, team, form], k) => (
@@ -498,8 +499,7 @@ function MatchStatsPanel({ home, away, seed }) {
             <div className="flex flex-wrap gap-1.5 mb-3">
               {form.map((x, i) => (
                 <span key={i} className={`h-7 w-7 rounded-full grid place-items-center text-[11px] font-bold text-white ${formColor(x)}`} title={x === "W" ? "V" : x === "D" ? "N" : "D"}>{x === "W" ? "V" : x === "D" ? "N" : "D"}</span>
-              ))}
-            </div>
+              ))} </div>
             <div className="flex gap-3 text-xs">
               <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-emerald-500" /> {wins(form)} V</span>
               <span className="flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-amber-500" /> {draws(form)} N</span>
@@ -508,7 +508,6 @@ function MatchStatsPanel({ home, away, seed }) {
           </div>
         ))}
       </div>
-
       {/* === Detailed comparison bars (FootyStats-style) === */}
       <div className="bg-white border border-neutral-200 rounded-xl p-5">
         <h3 className="font-heading font-bold text-slate-900 mb-4 flex items-center gap-2">⚖️ Comparaison statistique (saison)</h3>
@@ -540,11 +539,9 @@ function MatchStatsPanel({ home, away, seed }) {
                   <div className="h-full bg-gradient-to-r from-rose-500 to-rose-300" style={{ width: `${Math.min(100, Math.max(8, aw))}%` }} />
                 </div>
               </div>
-            </div>
-          ))}
+            </div>      ))}
         </div>
       </div>
-
       {/* === H2H last 10 with detailed columns === */}
       <div className="bg-white border border-neutral-200 rounded-xl p-5">
         <h3 className="font-heading font-bold text-slate-900 mb-3">📅 Confrontations directes (10 derniers H2H)</h3>
@@ -577,10 +574,8 @@ function MatchStatsPanel({ home, away, seed }) {
               <td className="py-1.5 text-center"><span className={`text-[10px] px-1.5 py-0.5 rounded ${m.btts ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{m.btts ? "OUI" : "NON"}</span></td>
               <td className="py-1.5 text-center"><span className={`text-[10px] px-1.5 py-0.5 rounded ${m.ov25 ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{m.ov25 ? "OUI" : "NON"}</span></td>
             </tr>
-          ))}</tbody>
-        </table>
+          ))}</tbody>  </table>
       </div>
-
       {/* === Tendances & Patterns === */}
       <div className="bg-white border border-neutral-200 rounded-xl p-5">
         <h3 className="font-heading font-bold text-slate-900 mb-3">📊 Tendances & patterns détectés</h3>
@@ -592,7 +587,6 @@ function MatchStatsPanel({ home, away, seed }) {
           <li className="flex items-start gap-2"><span className="text-fuchsia-500 mt-0.5">●</span> <span>Moyenne de <strong>{((H.avg_corners + A.avg_corners) / 2).toFixed(1)} corners/match</strong> attendus — marché Over 9.5 corners cote intéressante.</span></li>
         </ul>
       </div>
-
       {/* === Injuries === */}
       <div className="grid sm:grid-cols-2 gap-4">
         {[["Domicile", home, injuries.home], ["Extérieur", away, injuries.away]].map(([lbl, team, inj], k) => (
@@ -612,7 +606,6 @@ function MatchStatsPanel({ home, away, seed }) {
     </div>
   );
 }
-
 function Stat({ label, value, mono }) {
   return (
     <div>
@@ -621,7 +614,6 @@ function Stat({ label, value, mono }) {
     </div>
   );
 }
-
 function ReasonBox({ label, value, sub, mono }) {
   return (
     <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
