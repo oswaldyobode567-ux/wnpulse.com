@@ -1102,6 +1102,122 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
     return scores_map
 
 
+def _convert_odds_api_io_event_to_score(evt: Dict, sport: str) -> Optional[Dict]:
+    """
+    Convertit un evenement odds-api.io (n'importe quel statut : pending,
+    live, ou termine) au meme format que celui retourne par The Odds API
+    pour /scores, attendu par LivePage.jsx (via /api/scores) :
+    {id, sport_key, sport_title, commence_time, home_team, away_team,
+    completed, scores: [{name, score}] | None, last_update}.
+
+    CORRECTIF : avant, /api/scores (donc l'onglet Live du site) ne consultait
+    QUE The Odds API — les matchs venant d'odds-api.io (qualifications UEFA,
+    ligues scandinaves, hockey, basketball minoritaire) n'apparaissaient
+    jamais dans "Live & Scores", meme une fois termines, alors qu'ils
+    apparaissaient bien sur le Dashboard avant le coup d'envoi.
+    """
+    event_id = evt.get("id")
+    home = evt.get("home")
+    away = evt.get("away")
+    commence = evt.get("date")
+    if not (event_id and home and away and commence):
+        return None
+
+    status = evt.get("status", "")
+    completed = status not in ("pending", "live", "")
+
+    scores_obj = evt.get("scores") or {}
+    home_score = scores_obj.get("home")
+    away_score = scores_obj.get("away")
+    scores_list = None
+    if home_score is not None and away_score is not None:
+        scores_list = [
+            {"name": home, "score": str(home_score)},
+            {"name": away, "score": str(away_score)},
+        ]
+
+    league_name = (evt.get("league") or {}).get("name", "Football")
+    sport_key_map = {
+        "ice-hockey": "icehockey_minor_leagues",
+        "basketball": "basketball_minor_leagues",
+    }
+
+    return {
+        "id": f"oaio-{event_id}",
+        "sport_key": sport_key_map.get(sport, "soccer_minor_leagues"),
+        "sport_title": league_name,
+        "commence_time": commence,
+        "home_team": home,
+        "away_team": away,
+        "completed": completed,
+        "scores": scores_list,
+        "last_update": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def _fetch_odds_api_io_all_scores() -> List[Dict]:
+    """
+    Recupere TOUS les evenements odds-api.io (foot + hockey + basketball,
+    quel que soit leur statut) au format /scores, pour completer les
+    resultats de The Odds API dans /api/scores. Voir _convert_odds_api_io_event_to_score.
+    """
+    if not ODDS_API_IO_KEY:
+        return []
+
+    all_leagues = [
+        (lg, "football") for lg in ODDS_API_IO_LEAGUES
+    ] + [
+        (lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES
+    ] + [
+        (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
+    ]
+
+    out: List[Dict] = []
+    for league_slug, sport in all_leagues:
+        try:
+            events = await _fetch_odds_api_io_events(league_slug, sport=sport)
+            for evt in events:
+                converted = _convert_odds_api_io_event_to_score(evt, sport)
+                if converted:
+                    out.append(converted)
+        except Exception:
+            continue
+    return out
+
+
+ODDS_API_IO_SCORES_CACHE_TTL_SECONDS = int(os.environ.get("ODDS_API_IO_SCORES_CACHE_TTL", "180"))
+
+
+async def _get_odds_api_io_scores_cached(db) -> List[Dict]:
+    """
+    Cache dedie pour les scores odds-api.io, avec un TTL plus long (3 min
+    par defaut) que le cache principal /api/scores (60s) — le endpoint
+    /v3/events d'odds-api.io est soumis a quota, et le Live Score se
+    rafraichit toutes les 45s cote frontend : sans ce cache separe, chaque
+    rafraichissement de la page Live epuiserait rapidement le quota horaire.
+    """
+    if not ODDS_API_IO_KEY:
+        return []
+    cached = await db.oaio_scores_cache.find_one({"_id": "oaio_scores"})
+    if cached:
+        updated = cached.get("updated_at")
+        if updated:
+            try:
+                updated_dt = datetime.fromisoformat(updated)
+                if datetime.now(timezone.utc) - updated_dt < timedelta(seconds=ODDS_API_IO_SCORES_CACHE_TTL_SECONDS):
+                    return cached.get("data", [])
+            except Exception:
+                pass
+
+    fresh = await _fetch_odds_api_io_all_scores()
+    await db.oaio_scores_cache.update_one(
+        {"_id": "oaio_scores"},
+        {"$set": {"data": fresh, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        upsert=True,
+    )
+    return fresh
+
+
 async def fetch_all_scores(db) -> List[Dict]:
     """Scores avec cache 60 secondes. Endpoint GRATUIT."""
     cached = await db.scores_cache.find_one({"_id": "all_scores"})
@@ -1157,6 +1273,20 @@ async def fetch_all_scores(db) -> List[Dict]:
     results=await asyncio.gather(*[_scores_one(sk) for sk in active_sports], return_exceptions=True)
     for result in results:
         if isinstance(result,list): scores.extend(result)
+
+    # ─── Fusion des scores odds-api.io (qualifications UEFA, ligues
+    # scandinaves, hockey/basketball minoritaires) — CORRECTIF : avant,
+    # /api/scores (donc l'onglet Live du site) n'incluait QUE The Odds API.
+    # Les matchs venant d'odds-api.io n'apparaissaient jamais dans "Live &
+    # Scores", meme une fois termines, alors qu'ils apparaissaient bien sur
+    # le Dashboard avant le coup d'envoi — d'ou l'impression que seuls
+    # certains championnats (MLB, etc.) etaient suivis.
+    try:
+        oaio_scores = await _get_odds_api_io_scores_cached(db)
+        if oaio_scores:
+            scores.extend(oaio_scores)
+    except Exception as e:
+        logger.warning(f"fusion scores odds-api.io echouee -> {e}")
 
     await db.scores_cache.update_one(
         {"_id": "all_scores"},
