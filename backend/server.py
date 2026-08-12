@@ -448,6 +448,29 @@ def _merge_match_prediction(match: dict, prediction: dict) -> dict:
     return merged
 
 
+def _match_is_finished(match: dict) -> bool:
+    """
+    Determine si un match brut (cache odds_service) est termine, avec la
+    meme regle que prediction_engine._is_finished_match (plus de 4h depuis
+    le coup d'envoi). Utilise pour EXCLURE les matchs termines des vues
+    "pronostics du jour" (Dashboard, /api/predictions/top, Combo Builder)
+    — le cache brut les garde jusqu'a 24h (voir odds_service.py) pour
+    rester consultable dans la section Live/Termine dediee, mais ils ne
+    doivent plus apparaitre dans les listes de pronostics actifs, sous
+    peine de melanger les matchs d'hier avec ceux du jour.
+    """
+    ct = match.get("commence_time", "")
+    if not ct:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt) > timedelta(hours=4)
+    except Exception:
+        return False
+
+
 @app.get("/api/matches")
 async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload)):
     """
@@ -456,9 +479,16 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
     tableau reste visible), coherent avec /api/predictions/top et
     /api/builder/matches — cette route n'avait jamais eu cette verification,
     ce qui laissait passer les picks complets a tous, gratuit ou payant.
+
+    CORRECTIF : les matchs TERMINES sont desormais exclus de ce Dashboard —
+    avant, ils restaient visibles jusqu'a 24h apres coup de sifflet final
+    (meme fenetre que le cache brut dans odds_service.py), ce qui melangeait
+    les pronostics du jour avec des matchs deja joues et creait de la
+    confusion. Ils restent consultables pendant 24h via la section dediee
+    Live/Termine (route /api/scores), mais plus sur le Dashboard principal.
     """
     snapshot = await _get_prediction_snapshot()
-    matches = snapshot["matches"]
+    matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
     predictions = _apply_calibration(
         [dict(p) for p in snapshot["predictions"]],
         snapshot["calibration"],
@@ -525,8 +555,11 @@ async def get_prediction_model_status():
 @app.get("/api/predictions/top")
 async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
+    # CORRECTIF : exclut les matchs termines — meme logique que /api/matches,
+    # is_finished est deja calcule par analyze_match() pour chaque prediction.
     preds = _apply_calibration(
-        [dict(p) for p in snapshot["predictions"] if p.get("pick")], snapshot["calibration"]
+        [dict(p) for p in snapshot["predictions"] if p.get("pick") and not p.get("is_finished")],
+        snapshot["calibration"],
     )
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
     preds = preds[:max(1, min(limit, 50))]
@@ -1072,8 +1105,12 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
     deverrouille (1 pick par match, sur 2 matchs differents au total).
     Tous les autres picks, sur ces 2 matchs et sur tous les matchs
     suivants, sont entierement verrouilles (marche, pick et cote caches).
+
+    CORRECTIF : exclut les matchs termines, meme logique que /api/matches —
+    on ne construit pas de combine avec un match deja joue.
     """
     matches = await fetch_all_matches(db)
+    matches = [m for m in matches if not _match_is_finished(m)]
     if sport and sport != "all":
         matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
     is_paid = False
