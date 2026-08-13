@@ -658,36 +658,33 @@ async def get_data_source_audit():
 SUBSCRIPTION_PLANS = [
     {
         "id": "pro",
-        "name": "Pro",
-        "price": 4900,
-        "price_fcfa": 4900,
-        "price_xof": 4900,
+        "name": "WinPulse Pro",
+        "price": 6500,
+        "price_fcfa": 6500,
+        "price_xof": 6500,
         "duration_days": 30,
         "period": "mois",
         "features": [
-            "Tous les pronostics du jour (7 sports)",
-            "3 combinés (Sécurité / Équilibre / Jackpot)",
-            "Analyse IA Claude Sonnet",
-            "Value bets & track record détaillé",
+            "Accès illimité à tous les pronostics, tous les jours, sur 7 sports",
+            "Tous les combinés (Sûr, Booster, Extra, Jackpot) débloqués",
+            "Chaque match analysé sur tous ses marchés — pas juste le favori évident",
+            "Combo Builder : construis tes propres combinés à partir de nos analyses",
+            "Détecteur de value bets : les cotes où le marché sous-estime nos calculs",
+            "Analyse IA experte sur chaque match, avec verdict et facteurs clés",
+            "Track Record public et vérifiable — aucun résultat caché",
+            "Support prioritaire par WhatsApp",
         ],
         "highlighted": True,
-    },
-    {
-        "id": "elite",
-        "name": "Elite",
-        "price": 14900,
-        "price_fcfa": 14900,
-        "price_xof": 14900,
-        "duration_days": 30,
-        "period": "mois",
-        "features": [
-            "Tout du plan Pro",
-            "Picks VIP envoyés en avant-première",
-            "Stratégie bankroll personnalisée",
-            "Support prioritaire WhatsApp",
-        ],
+        "tagline": "Un seul prix. Tout WinPulse. Sans compromis.",
     },
 ]
+
+# NOTE : le plan "elite" a ete retire — palier unique desormais (decision
+# assumee : simplifier le choix a l'inscription plutot que de segmenter les
+# revenus entre 2 paliers, dans une phase ou la priorite est la croissance
+# du nombre d'abonnes). L'id "pro" est conserve tel quel pour ne rien casser
+# dans le reste du code (checkout, approbation admin, etc.) qui reference ce
+# plan_id — seul le contenu du plan a change, pas son identifiant technique.
 
 
 @app.get("/api/subscription/plans")
