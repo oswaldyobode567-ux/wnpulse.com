@@ -149,7 +149,7 @@ export default function MatchDetailPage() {
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-200/60">
             <Stat label="Bookmakers" value={p.num_books} />
             <Stat label="Edge value" value={`${p.edge >= 0 ? "+" : ""}${p.edge}%`} />
-            <Stat label="Prob. pick" value={`${(p.implied_probs?.[p.pick] || 0).toFixed(1)}%`} />
+            <Stat label="Prob. pick" value={`${(p.model_probability ?? p.confidence ?? 0).toFixed(1)}%`} />
             <Stat label="Cote optimale" value={p.pick_odds} mono />
           </div>
           {isAdmin && (
