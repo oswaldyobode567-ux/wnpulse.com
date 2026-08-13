@@ -1511,7 +1511,7 @@ async def get_value_bets():
     """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
-    bets = find_value_bets(matches, min_edge=3.0, limit=30)
+    bets = find_value_bets(matches, min_edge=1.5, limit=30)
     return {"count": len(bets), "bets": bets}
 
 
