@@ -921,27 +921,240 @@ async def admin_get_payments(
     return requests
 
 
+# ─── Helpers pour l'envoi de picks (email + WhatsApp) ────────────────────
+
+async def _get_combo_by_tier(tier_key: str) -> Optional[Dict]:
+    """Recupere un combine (safe/balanced/jackpot) a partir des matchs en cache."""
+    matches = await fetch_all_matches(db)
+    combos = build_multi_combos(matches)
+    return combos.get(tier_key)
+
+
+def _combo_display_name(tier_key: str) -> str:
+    return {"safe": "Sécurité", "balanced": "Équilibre", "jackpot": "Jackpot"}.get(tier_key, tier_key.capitalize())
+
+
+def _build_combo_email_html(combo: Dict, tier_key: str) -> str:
+    legs = combo.get("legs", [])
+    rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:8px 0;border-bottom:1px solid #eee;">
+            <div style="font-weight:700;color:#0f172a;">{leg.get('home_team','')} vs {leg.get('away_team','')}</div>
+            <div style="color:#ea580c;font-weight:600;">{leg.get('pick','')}</div>
+          </td>
+          <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;font-family:monospace;font-weight:700;">
+            {leg.get('pick_odds','')}
+          </td>
+        </tr>
+        """
+        for leg in legs
+    )
+    body = f"""
+    <p>Voici le combiné <strong>{_combo_display_name(tier_key)}</strong> du jour, sélectionné par le moteur WinPulse :</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;">{rows}</table>
+    <p style="font-size:18px;font-weight:800;color:#0f172a;">
+      Cote totale : <span style="color:#ea580c;">{combo.get('total_odds', '—')}</span>
+    </p>
+    <p><a href="https://www.wnpulse.com/app" style="color:#ea580c;font-weight:bold;">Voir l'analyse complète →</a></p>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;">
+      Aucun pari sportif n'est garanti. Joue de façon responsable.
+    </p>
+    """
+    return _email_layout(f"Ton combiné {_combo_display_name(tier_key)} du jour", body)
+
+
+def _build_teaser_email_html(combo: Dict) -> str:
+    legs = combo.get("legs", [])
+    if not legs:
+        return _email_layout("Pari de la semaine", "<p>Aucun pick disponible pour le moment.</p>")
+    first = legs[0]
+    blurred_count = max(0, len(legs) - 1)
+    body = f"""
+    <p>Voici un aperçu de notre sélection de la semaine :</p>
+    <div style="padding:12px;border:1px solid #e5e7eb;border-radius:10px;margin:12px 0;">
+      <div style="font-weight:700;color:#0f172a;">{first.get('home_team','')} vs {first.get('away_team','')}</div>
+      <div style="color:#ea580c;font-weight:700;font-size:18px;">{first.get('pick','')} @ {first.get('pick_odds','')}</div>
+    </div>
+    {f'<p style="color:#94a3b8;">+ {blurred_count} autre(s) pick(s) réservé(s) aux abonnés Pro 🔒</p>' if blurred_count else ''}
+    <p><a href="https://www.wnpulse.com/app/abonnement" style="color:#ea580c;font-weight:bold;">Débloquer tous les picks →</a></p>
+    """
+    return _email_layout("🎁 Pari de la semaine — 1 pick offert", body)
+
+
+def _build_whatsapp_blast_text(combo: Dict, now_local: datetime) -> str:
+    legs = combo.get("legs", [])
+    lines = [
+        f"🔥 *WinPulse — Combiné du {now_local.strftime('%d/%m/%Y')}*",
+        "",
+    ]
+    for leg in legs:
+        lines.append(f"⚽ {leg.get('home_team','')} vs {leg.get('away_team','')}")
+        lines.append(f"👉 {leg.get('pick','')} @ *{leg.get('pick_odds','')}*")
+        lines.append("")
+    lines.append(f"💰 Cote totale : *{combo.get('total_odds', '—')}*")
+    lines.append("")
+    lines.append("📲 Analyse complète : https://wnpulse.com/app")
+    lines.append("18+ · Jeu responsable")
+    return "\n".join(lines)
+
+
 @app.get("/api/admin/whatsapp-blast")
 async def admin_whatsapp_blast(payload: dict = Depends(get_current_user_payload)):
     """
-    Donnees pour l'envoi groupe WhatsApp aux utilisateurs (liste de contacts
-    a contacter). L'envoi effectif necessite une integration WhatsApp
-    Business API non encore configuree — cette route fournit pour l'instant
-    la liste des utilisateurs payants a contacter manuellement, plutot
-    qu'un 404 qui casse la page admin.
+    CORRECTIF : le format renvoye ici ne correspondait pas a ce qu'attend
+    AdminPage.jsx (blast.date, blast.active_subscribers, blast.combo_total_odds,
+    blast.legs_count, blast.blast_text) — d'ou les tirets "—" affiches partout
+    sur le panneau "Suiveur 7h" meme quand des donnees existaient reellement.
     """
     await _require_admin(payload)
-    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=500)
-    contacts = [
-        {"email": u.get("email"), "name": u.get("name", ""), "subscription": u.get("subscription")}
-        for u in paid_users
-    ]
+    now_local = datetime.now(timezone.utc) + timedelta(hours=1)  # WAT (UTC+1)
+    active_subscribers = await db.users.count_documents({"subscription": {"$ne": "free"}})
+    combo = await _get_combo_by_tier("balanced")
+
+    if not combo or not combo.get("legs"):
+        return {
+            "date": now_local.strftime("%d/%m/%Y"),
+            "active_subscribers": active_subscribers,
+            "combo_total_odds": None,
+            "legs_count": 0,
+            "blast_text": None,
+        }
+
     return {
-        "ready": False,
-        "detail": "Integration WhatsApp Business API pas encore configuree. Liste des contacts payants ci-dessous.",
-        "contacts": contacts,
-        "total": len(contacts),
+        "date": now_local.strftime("%d/%m/%Y"),
+        "active_subscribers": active_subscribers,
+        "combo_total_odds": combo.get("total_odds"),
+        "legs_count": len(combo.get("legs", [])),
+        "blast_text": _build_whatsapp_blast_text(combo, now_local),
     }
+
+
+class BroadcastPicksPayload(BaseModel):
+    tier: str = "pro"
+    combo_tier: str = "balanced"
+
+
+@app.post("/api/admin/broadcast/picks")
+async def admin_broadcast_picks(
+    payload_in: BroadcastPicksPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """Envoie le combine du jour (email) a tous les abonnes payants."""
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier(payload_in.combo_tier)
+    if not combo or not combo.get("legs"):
+        raise HTTPException(status_code=400, detail="Aucun combiné disponible pour ce niveau aujourd'hui")
+
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=2000)
+    html = _build_combo_email_html(combo, payload_in.combo_tier)
+    subject = f"🎯 Ton combiné {_combo_display_name(payload_in.combo_tier)} du jour"
+
+    sent = drafted = errors = 0
+    for u in paid_users:
+        try:
+            ok = await _send_email(u["email"], subject, html)
+            if ok:
+                sent += 1
+            elif not RESEND_API_KEY:
+                drafted += 1
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "drafted": drafted, "errors": errors, "total_recipients": len(paid_users)}
+
+
+@app.post("/api/admin/broadcast/free-weekly-teaser")
+async def admin_broadcast_free_teaser(payload: dict = Depends(get_current_user_payload)):
+    """Envoie un teaser hebdomadaire (1 pick visible + reste flouté) aux comptes gratuits."""
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier("safe")
+    if not combo or not combo.get("legs"):
+        raise HTTPException(status_code=400, detail="Aucun pick disponible pour le teaser aujourd'hui")
+
+    free_users = await db.users.find({"subscription": "free"}).to_list(length=5000)
+    html = _build_teaser_email_html(combo)
+
+    sent = errors = 0
+    for u in free_users:
+        try:
+            ok = await _send_email(u["email"], "🎁 Pari de la semaine — 1 pick offert", html)
+            sent += 1 if ok else 0
+            errors += 0 if ok else 1
+        except Exception:
+            errors += 1
+
+    return {"users": len(free_users), "sent": sent, "errors": errors}
+
+
+@app.post("/api/admin/test-email")
+async def admin_test_email(payload: dict = Depends(get_current_user_payload)):
+    """Envoie un email de test (avec le vrai combine du jour si disponible) a l'admin lui-meme."""
+    user = await _require_admin(payload)
+    combo = await _get_combo_by_tier("balanced")
+    html = (
+        _build_combo_email_html(combo, "balanced")
+        if combo and combo.get("legs")
+        else _email_layout("Test WinPulse", "<p>Aucun combiné disponible actuellement, mais l'envoi d'email fonctionne.</p>")
+    )
+
+    if not RESEND_API_KEY:
+        return {"status": "draft", "email_id": None, "error": None}
+
+    ok = await _send_email(user["email"], "🧪 Test WinPulse", html)
+    return {
+        "status": "sent" if ok else "error",
+        "email_id": None,
+        "error": None if ok else "Échec de l'envoi (verifie RESEND_API_KEY)",
+    }
+
+
+@app.post("/api/admin/auto-follower/run")
+async def admin_auto_follower_run(
+    dry_run: bool = False,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """
+    Suiveur automatique 7h : envoie le combine Equilibre du jour aux abonnes
+    payants, une seule fois par jour (dedoublonnage via db.auto_follower_log).
+    dry_run=true : simule sans envoyer, pour previsualiser le nombre de
+    destinataires avant l'envoi reel.
+    """
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier("balanced")
+    if not combo or not combo.get("legs"):
+        return {"no_picks": True, "sent": 0, "skipped_already_sent": 0, "errors": 0}
+
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=2000)
+    today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    html = _build_combo_email_html(combo, "balanced")
+
+    sent = skipped = errors = 0
+    for u in paid_users:
+        already = await db.auto_follower_log.find_one({"user_id": u["id"], "date": today_key})
+        if already:
+            skipped += 1
+            continue
+        if dry_run:
+            sent += 1
+            continue
+        try:
+            ok = await _send_email(u["email"], "🌅 Ton combiné du matin — WinPulse", html)
+            if ok:
+                sent += 1
+                await db.auto_follower_log.insert_one({
+                    "user_id": u["id"],
+                    "date": today_key,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                })
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "skipped_already_sent": skipped, "errors": errors, "no_picks": False}
 
 
 @app.get("/api/admin/subscription-requests")
