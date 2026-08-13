@@ -1104,17 +1104,30 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
 
 def _convert_odds_api_io_event_to_score(evt: Dict, sport: str) -> Optional[Dict]:
     """
-    Convertit un evenement odds-api.io (n'importe quel statut : pending,
-    live, ou termine) au meme format que celui retourne par The Odds API
-    pour /scores, attendu par LivePage.jsx (via /api/scores) :
+    Convertit un evenement odds-api.io au meme format que celui retourne par
+    The Odds API pour /scores, attendu par LivePage.jsx (via /api/scores) :
     {id, sport_key, sport_title, commence_time, home_team, away_team,
     completed, scores: [{name, score}] | None, last_update}.
 
-    CORRECTIF : avant, /api/scores (donc l'onglet Live du site) ne consultait
-    QUE The Odds API — les matchs venant d'odds-api.io (qualifications UEFA,
-    ligues scandinaves, hockey, basketball minoritaire) n'apparaissaient
-    jamais dans "Live & Scores", meme une fois termines, alors qu'ils
-    apparaissaient bien sur le Dashboard avant le coup d'envoi.
+    CORRECTIF v1 (precedent) : /api/scores ne consultait QUE The Odds API —
+    les matchs venant d'odds-api.io (qualifications UEFA, ligues
+    scandinaves, hockey/basketball minoritaires) n'apparaissaient jamais
+    dans "Live & Scores", meme une fois termines.
+
+    CORRECTIF v2 (celui-ci) : la version precedente classait "termine" tout
+    match dont le champ "status" n'etait ni "pending" ni "live" — mais la
+    valeur exacte que renvoie odds-api.io pour un match PAS ENCORE COMMENCE
+    n'a jamais ete confirmee avec un exemple reel. Si leur vrai statut
+    "a venir" differe de "pending" (ex: "scheduled", "not_started"...), TOUS
+    les matchs a venir etaient a tort classes "termines", avec un score par
+    defaut 0-0 — exactement le bug observe (tout melange, tout a 0-0).
+
+    Desormais, la classification live/termine/a venir se base UNIQUEMENT sur
+    l'heure du match (commence_time) — la meme methode deja utilisee et
+    fiable partout ailleurs dans le code (_is_live_match, _is_finished_match,
+    _match_is_finished dans server.py) — plutot que sur ce champ "status"
+    dont la valeur exacte reste incertaine. Le score n'est attache que si le
+    match a reellement demarre (evite d'afficher un 0-0 fictif pre-match).
     """
     event_id = evt.get("id")
     home = evt.get("home")
@@ -1123,18 +1136,33 @@ def _convert_odds_api_io_event_to_score(evt: Dict, sport: str) -> Optional[Dict]
     if not (event_id and home and away and commence):
         return None
 
-    status = evt.get("status", "")
-    completed = status not in ("pending", "live", "")
+    try:
+        commence_dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
+        if commence_dt.tzinfo is None:
+            commence_dt = commence_dt.replace(tzinfo=timezone.utc)
+        now = datetime.now(timezone.utc)
+        elapsed = now - commence_dt
+    except Exception:
+        # Date illisible : on ne peut pas classer ce match de facon fiable,
+        # on l'ignore plutot que de deviner un statut potentiellement faux.
+        return None
 
-    scores_obj = evt.get("scores") or {}
-    home_score = scores_obj.get("home")
-    away_score = scores_obj.get("away")
-    scores_list = None
-    if home_score is not None and away_score is not None:
-        scores_list = [
-            {"name": home, "score": str(home_score)},
-            {"name": away, "score": str(away_score)},
-        ]
+    if elapsed.total_seconds() < 0:
+        # Match pas encore commence — jamais de score, meme si l'API en
+        # renvoie un par defaut (0-0 fictif avant coup d'envoi).
+        completed = False
+        scores_list = None
+    else:
+        completed = elapsed > timedelta(hours=4)
+        scores_obj = evt.get("scores") or {}
+        home_score = scores_obj.get("home")
+        away_score = scores_obj.get("away")
+        scores_list = None
+        if home_score is not None and away_score is not None:
+            scores_list = [
+                {"name": home, "score": str(home_score)},
+                {"name": away, "score": str(away_score)},
+            ]
 
     league_name = (evt.get("league") or {}).get("name", "Football")
     sport_key_map = {
