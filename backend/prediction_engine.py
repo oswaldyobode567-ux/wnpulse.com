@@ -806,7 +806,7 @@ def analyze_all(matches: List[Dict], real_stats_map: Optional[Dict] = None) -> L
     ]
 
 
-def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30) -> List[Dict]:
+def find_value_bets(matches: List[Dict], min_edge: float = 1.5, limit: int = 30) -> List[Dict]:
     """
     Detecte les VRAIS value bets : picks ou l'edge (probabilite consensus
     moins probabilite implicite de la meilleure cote) est POSITIF et
@@ -814,6 +814,18 @@ def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30)
     ici seul un edge >= min_edge qualifie un pick — un pick a 90% de
     confiance mais edge negatif n'est PAS un value bet, juste un favori net
     dont la cote ne compense pas le risque.
+
+    CORRECTIF : exclusion des marches a moins de 3 bookmakers. Raison
+    mathematique, pas arbitraire — pick_prob est une probabilite NORMALISEE
+    (marge du bookmaker retiree), comparee a best_odd_prob = 1/cote qui, lui,
+    GARDE la marge. Pour un marche a 1 seul bookmaker, ces deux valeurs
+    viennent de la meme source : l'edge est alors TOUJOURS negatif ou nul,
+    jamais positif, par construction (ex: cote 1.90 seule -> implicite brute
+    52.6%, normalisee 49.7% -> edge = -2.9% garanti). Inclure ces marches ne
+    fait donc que polluer le calcul sans jamais remonter un vrai value bet.
+    Seuil par defaut abaisse a 1.5% (au lieu de 3%) : sur un marche a
+    plusieurs bookmakers europeens generalement bien alignes, un edge reel
+    au-dela de 3% est rare — 1.5% reste un seuil honnete sans etre inatteignable.
     """
     out = []
     for m in matches:
@@ -824,6 +836,11 @@ def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30)
             # ne reflete jamais une vraie opportunite de marche — seuls les
             # marches "bookmaker" (cote reelle) peuvent etre un vrai value bet.
             if mk.get("source") != "bookmaker":
+                continue
+            # Exclusion des marches a moins de 3 bookmakers — voir docstring :
+            # edge structurellement negatif/nul pour 1-2 bookmakers, jamais
+            # un vrai signal de valeur.
+            if mk.get("num_books", 0) < 3:
                 continue
             edge = mk.get("edge", 0)
             if edge < min_edge:
