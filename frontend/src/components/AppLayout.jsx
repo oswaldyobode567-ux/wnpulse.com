@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -15,10 +16,13 @@ import {
   Gift,
   Sparkles,
   Radio,
+  Menu,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true, testId: "nav-dashboard" },
   { to: "/app/live", label: "Live", icon: Radio, testId: "nav-live", badge: "Live" },
@@ -32,21 +36,49 @@ const NAV = [
   { to: "/app/parrainage", label: "Parrainage", icon: Gift, testId: "nav-referral" },
   { to: "/app/abonnement", label: "Abonnement", icon: CreditCard, testId: "nav-subscription" },
 ];
+
+// CORRECTIF : la barre mobile en bas de page forçait 11-12 onglets dans une
+// grille de 5-6 colonnes — CSS Grid empilait alors automatiquement les
+// elements manquants sur 2-3 rangees supplementaires, rendant cette barre
+// (positionnee "fixed") 3x plus haute que prevu et recouvrant le bas du
+// contenu sur TOUTES les pages mobiles, pas seulement Combo Builder.
+//
+// La barre mobile se limite desormais a 4 onglets essentiels + un bouton
+// "Plus" qui ouvre un panneau listant tous les autres — jamais plus d'une
+// seule rangee, quel que soit le nombre total d'onglets du site.
+const MOBILE_PRIMARY_KEYS = ["/app", "/app/live", "/app/aujourdhui", "/app/builder"];
+
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const [moreOpen, setMoreOpen] = useState(false);
+
+  // Ferme le panneau "Plus" automatiquement a chaque changement de page.
+  useEffect(() => {
+    setMoreOpen(false);
+  }, [location.pathname]);
+
   const tierLabel = {
     free: { label: "Free", cls: "bg-slate-100 text-slate-700" },
     pro: { label: "Pro", cls: "bg-orange-100 text-orange-700" },
     elite: { label: "Elite", cls: "bg-rose-100 text-rose-700" },
   }[user?.subscription_tier || "free"];
+
   const navItems = [...NAV];
   if (user?.is_admin) {
     navItems.push({ to: "/app/admin", label: "Admin", icon: ShieldCheck, testId: "nav-admin" });
   }
+
+  const isActive = (item) =>
+    item.end ? location.pathname === item.to : location.pathname.startsWith(item.to);
+
+  const primaryMobileItems = navItems.filter((i) => MOBILE_PRIMARY_KEYS.includes(i.to));
+  const moreMobileItems = navItems.filter((i) => !MOBILE_PRIMARY_KEYS.includes(i.to));
+
   return (
     <div className="min-h-screen bg-neutral-50">
+      {/* Sidebar desktop */}
       <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 bg-slate-950 text-slate-100 flex-col" data-testid="app-sidebar">
         <div className="px-6 py-6 border-b border-slate-800/80 flex items-center gap-2.5">
           <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center shadow-lg shadow-orange-600/30">
@@ -57,12 +89,10 @@ export default function AppLayout({ children }) {
             <div className="text-[10px] uppercase tracking-[0.18em] text-orange-400/70 mt-1">Ton pouls de gagnant</div>
           </div>
         </div>
-        <nav className="flex-1 px-3 py-6 space-y-1">
+        <nav className="flex-1 px-3 py-6 space-y-1 overflow-y-auto">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = item.end
-              ? location.pathname === item.to
-              : location.pathname.startsWith(item.to);
+            const active = isActive(item);
             return (
               <Link
                 key={item.to}
@@ -76,7 +106,8 @@ export default function AppLayout({ children }) {
                 )}
               >
                 <Icon className={cn("h-4 w-4", active && "text-orange-400")} strokeWidth={2} />
-                <span className="flex-1">{item.label}</span>    {item.badge && (
+                <span className="flex-1">{item.label}</span>
+                {item.badge && (
                   <span className="text-[9px] font-bold uppercase tracking-wider bg-orange-500 text-white px-1.5 py-0.5 rounded">
                     {item.badge}
                   </span>
@@ -99,7 +130,8 @@ export default function AppLayout({ children }) {
             <Button
               data-testid="logout-button"
               size="sm"
-              variant="ghost"              className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
+              variant="ghost"
+              className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
               onClick={() => { logout(); navigate("/"); }}
             >
               <LogOut className="h-3.5 w-3.5 mr-2" />
@@ -108,6 +140,8 @@ export default function AppLayout({ children }) {
           </div>
         </div>
       </aside>
+
+      {/* Header mobile */}
       <header className="lg:hidden sticky top-0 z-40 bg-white/85 backdrop-blur-xl border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
         <div className="flex items-center gap-2">
           <div className="h-8 w-8 rounded-lg wp-gradient-warm grid place-items-center text-white">
@@ -128,12 +162,57 @@ export default function AppLayout({ children }) {
           </Button>
         </div>
       </header>
-      <nav className={cn("lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-neutral-200 grid", user?.is_admin ? "grid-cols-6" : "grid-cols-5")}>
-        {navItems.map((item) => {
+
+      {/* Panneau "Plus" (mobile) — s'ouvre au-dessus de la barre du bas,
+          liste tous les onglets qui n'entrent pas dans les 4 principaux. */}
+      {moreOpen && (
+        <>
+          <div
+            className="lg:hidden fixed inset-0 z-40 bg-black/30"
+            onClick={() => setMoreOpen(false)}
+            data-testid="mobile-more-overlay"
+          />
+          <div
+            className="lg:hidden fixed bottom-16 inset-x-0 z-50 bg-white border-t border-neutral-200 rounded-t-2xl shadow-2xl max-h-[60vh] overflow-y-auto"
+            data-testid="mobile-more-panel"
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-100">
+              <span className="font-heading font-bold text-slate-900 text-sm">Plus d'options</span>
+              <button onClick={() => setMoreOpen(false)} className="text-slate-400 hover:text-slate-700">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-1 p-3">
+              {moreMobileItems.map((item) => {
+                const Icon = item.icon;
+                const active = isActive(item);
+                return (
+                  <Link
+                    key={item.to}
+                    to={item.to}
+                    data-testid={`${item.testId}-mobile-more`}
+                    className={cn(
+                      "flex flex-col items-center justify-center gap-1.5 rounded-xl py-3 text-[11px] font-medium text-center",
+                      active ? "bg-orange-50 text-orange-600" : "text-slate-600 hover:bg-neutral-50"
+                    )}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span className="leading-tight">{item.label}</span>
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Barre de navigation mobile — 4 onglets essentiels + "Plus",
+          toujours sur une seule rangee quel que soit le nombre total
+          d'onglets du site. */}
+      <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-neutral-200 grid grid-cols-5">
+        {primaryMobileItems.map((item) => {
           const Icon = item.icon;
-          const active = item.end
-            ? location.pathname === item.to
-            : location.pathname.startsWith(item.to);
+          const active = isActive(item);
           return (
             <Link
               key={item.to}
@@ -145,13 +224,25 @@ export default function AppLayout({ children }) {
               )}
             >
               <Icon className="h-5 w-5 mb-1" />
-              <span className="leading-none">{item.label.split(" ")[0]}</span>
+              <span className="leading-none truncate max-w-[56px]">{item.label.split(" ")[0]}</span>
             </Link>
           );
         })}
+        <button
+          onClick={() => setMoreOpen((v) => !v)}
+          data-testid="mobile-more-toggle"
+          className={cn(
+            "flex flex-col items-center justify-center py-2 text-[10px]",
+            moreOpen ? "text-orange-600" : "text-slate-500"
+          )}
+        >
+          <Menu className="h-5 w-5 mb-1" />
+          <span className="leading-none">Plus</span>
+        </button>
       </nav>
+
       <main className="lg:pl-64 pb-24 lg:pb-0 min-h-screen flex flex-col">
-        <div className="flex-1">{children}</div>
+        <div className="flex-1 overflow-x-hidden">{children}</div>
         <footer className="border-t border-neutral-200 bg-white py-5 px-4">
           <div className="max-w-6xl mx-auto flex flex-col items-center gap-2 text-xs">
             <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
