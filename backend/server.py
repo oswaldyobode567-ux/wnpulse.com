@@ -1323,6 +1323,7 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
     matches = [m for m in matches if not _match_is_finished(m)]
     if sport and sport != "all":
         matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
+    real_stats_map = await get_real_stats_map(db, matches)
     is_paid = False
     if payload:
         user = await db.users.find_one({"id": payload.get("sub")})
@@ -1332,7 +1333,7 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
     result = []
     unlocked_matches_count = 0
     for m in matches:
-        analyzed = analyze_match(m)
+        analyzed = analyze_match(m, real_stats_map=real_stats_map)
         raw_picks = analyzed.get("markets", [])
         if not raw_picks:
             continue
@@ -1384,7 +1385,8 @@ async def get_builder_match_stats(match_id: str):
     if not match:
         raise HTTPException(status_code=404, detail="Match introuvable")
 
-    analyzed = analyze_match(match)
+    real_stats_map = await get_real_stats_map(db, [match])
+    analyzed = analyze_match(match, real_stats_map=real_stats_map)
     implied = analyzed.get("implied_probs", {})
     home = analyzed.get("home_team", "")
     away = analyzed.get("away_team", "")
