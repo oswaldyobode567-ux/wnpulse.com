@@ -330,7 +330,9 @@ export default function MatchDetailPage() {
                 </div>
               )}
               <div className="text-[10px] text-slate-400 pt-2">
-                Source : {analysis.source === "ai" ? "Analyse IA experte" : "Moteur statistique"}
+                Source : {["gemini", "anthropic"].includes(analysis.source)
+                  ? `Analyse IA experte (${analysis.source === "gemini" ? "Gemini" : "Claude"})`
+                  : "Moteur statistique (repli automatique)"}
               </div>
             </div>
           )}
