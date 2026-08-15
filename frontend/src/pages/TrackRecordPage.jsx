@@ -5,8 +5,15 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Activity, Trophy, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap } from "lucide-react";
+import { Activity, Trophy, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap, Info } from "lucide-react";
 import dayjs from "dayjs";
+
+const LABEL_META = {
+  safe: { text: "SÛR", cls: "bg-emerald-100 text-emerald-700 border-emerald-200" },
+  value: { text: "MODÉRÉ", cls: "bg-amber-100 text-amber-700 border-amber-200" },
+  risky: { text: "RISQUÉ", cls: "bg-rose-100 text-rose-700 border-rose-200" },
+};
+
 export default function TrackRecordPage() {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
@@ -61,6 +68,14 @@ export default function TrackRecordPage() {
           </div>
         ) : (
           <>
+            {/* Bandeau mode transition — explique pourquoi l'ensemble complet est affiche */}
+            {data.transition_mode && data.note && (
+              <div className="mb-6 rounded-2xl bg-blue-50 border border-blue-200 p-4 flex items-start gap-3" data-testid="transition-mode-banner">
+                <Info className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                <p className="text-sm text-blue-900">{data.note}</p>
+              </div>
+            )}
+
             {data.stats.current_streak >= 3 && (
               <div className="mb-6 rounded-2xl bg-gradient-to-r from-orange-500 to-rose-500 p-5 text-white flex items-center gap-4 shadow-lg shadow-orange-500/20" data-testid="streak-banner">
                 <div className="text-4xl">🔥</div>
@@ -74,11 +89,43 @@ export default function TrackRecordPage() {
                 </div>
               </div>
             )}
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-8" data-testid="kpis">
-              <Kpi icon={Target} label="Taux de réussite" value={`${data.stats.win_rate}%`} sub={`${data.stats.wins}/${data.stats.total} picks`} accent="emerald" />
+
+            {/* KPIs globaux */}
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6" data-testid="kpis">
+              <Kpi icon={Target} label="Taux de réussite (global)" value={`${data.stats.win_rate}%`} sub={`${data.stats.wins}/${data.stats.total} picks`} accent="emerald" />
               <Kpi icon={Flame} label="Série en cours" value={`${data.stats.current_streak}`} sub="picks gagnants" accent="orange" />
               <Kpi icon={Trophy} label="Cote moyenne" value={data.stats.avg_odds} sub="par pick" accent="amber" mono />
             </div>
+
+            {/* Répartition par niveau de confiance — le vrai chiffre a mettre
+                en avant commercialement est celui du niveau "Sûr", toujours
+                clairement étiqueté comme tel. */}
+            {data.stats.by_label && (
+              <Card className="bg-white border-neutral-200 p-5 mb-8" data-testid="by-label-stats">
+                <h2 className="font-heading font-bold text-slate-900 mb-4">Taux de réussite par niveau de confiance</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  {["safe", "value", "risky"].map((lbl) => {
+                    const d = data.stats.by_label[lbl];
+                    const meta = LABEL_META[lbl];
+                    return (
+                      <div key={lbl} className="rounded-xl border border-neutral-200 p-4">
+                        <Badge className={`text-[10px] font-bold border mb-2 ${meta.cls}`}>{meta.text}</Badge>
+                        <div className="font-heading text-3xl font-black text-slate-900">
+                          {d.win_rate != null ? `${d.win_rate}%` : "—"}
+                        </div>
+                        <div className="text-xs text-slate-500 mt-1">
+                          {d.total > 0 ? `${d.wins}/${d.total} picks résolus` : "Pas encore de résultat"}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-slate-400 mt-4">
+                  Le niveau de confiance (Sûr / Modéré / Risqué) est déterminé avant chaque match, selon des critères fixes — un pick "Risqué" perdu ne reflète pas la fiabilité de nos picks "Sûr".
+                </p>
+              </Card>
+            )}
+
             <Card className="bg-white border-neutral-200 overflow-hidden">
               <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
                 <h2 className="font-heading font-bold text-slate-900 flex items-center gap-2"><Activity className="h-5 w-5 text-orange-600" /> Track Record officiel</h2>
@@ -92,25 +139,36 @@ export default function TrackRecordPage() {
                       <th className="px-4 py-2.5 text-left">Compétition</th>
                       <th className="px-4 py-2.5 text-left">Match</th>
                       <th className="px-4 py-2.5 text-left">Pick</th>
+                      <th className="px-4 py-2.5 text-center">Niveau</th>
                       <th className="px-4 py-2.5 text-center">Cote</th>
                       <th className="px-4 py-2.5 text-center">Résultat</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-neutral-100" data-testid="results-table">
-                    {data.results.map((r) => (
-                      <tr key={r.id} className="hover:bg-neutral-50">
-                        <td className="px-4 py-3 text-slate-500 font-mono text-xs">{dayjs(r.date).format("DD/MM")}</td>
-                        <td className="px-4 py-3 text-slate-700 text-xs">{r.league}</td>
-                        <td className="px-4 py-3 font-medium text-slate-900 text-xs">{r.match}</td>
-                        <td className="px-4 py-3 font-bold text-orange-600 text-xs">{r.pick}</td>
-                        <td className="px-4 py-3 text-center font-mono text-xs">{r.odds}</td>
-                        <td className="px-4 py-3 text-center">
-                          <Badge className={r.status === "won" ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-rose-100 text-rose-700 border-rose-200"}>
-                            {r.status === "won" ? "GAGNÉ" : "PERDU"}
-                          </Badge>
-                        </td>
-                      </tr>
-                    ))}
+                    {data.results.map((r) => {
+                      const meta = LABEL_META[r.label] || null;
+                      return (
+                        <tr key={r.id} className="hover:bg-neutral-50">
+                          <td className="px-4 py-3 text-slate-500 font-mono text-xs">{dayjs(r.date).format("DD/MM")}</td>
+                          <td className="px-4 py-3 text-slate-700 text-xs">{r.league}</td>
+                          <td className="px-4 py-3 font-medium text-slate-900 text-xs">{r.match}</td>
+                          <td className="px-4 py-3 font-bold text-orange-600 text-xs">{r.pick}</td>
+                          <td className="px-4 py-3 text-center">
+                            {meta ? (
+                              <Badge className={`text-[10px] font-bold border ${meta.cls}`}>{meta.text}</Badge>
+                            ) : (
+                              <span className="text-slate-300 text-xs">—</span>
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-center font-mono text-xs">{r.odds}</td>
+                          <td className="px-4 py-3 text-center">
+                            <Badge className={r.status === "won" ? "bg-emerald-100 text-emerald-700 border-emerald-200" : "bg-rose-100 text-rose-700 border-rose-200"}>
+                              {r.status === "won" ? "GAGNÉ" : "PERDU"}
+                            </Badge>
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
