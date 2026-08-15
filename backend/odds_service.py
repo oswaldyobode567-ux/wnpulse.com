@@ -175,6 +175,7 @@ REAL_SPORT_KEYS = [
     "soccer_france_ligue_two",
     "soccer_italy_serie_a",
     # Autres ligues européennes
+    "soccer_efl_champ",
     "soccer_netherlands_eredivisie",
     "soccer_portugal_primeira_liga",
     "soccer_turkey_super_league",
@@ -1348,6 +1349,7 @@ async def fetch_all_scores(db) -> List[Dict]:
         "soccer_italy_serie_a",
         "soccer_netherlands_eredivisie",
         "soccer_portugal_primeira_liga",
+        "soccer_efl_champ",
         # Football — autres competitions
         "soccer_uefa_champs_league",
         "soccer_uefa_europa_league",
