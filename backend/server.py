@@ -23,7 +23,7 @@ from auth import (
 )
 from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
-    fetch_odds_api_io_scores_map,
+    fetch_odds_api_io_scores_map, diagnose_sport_key,
 )
 from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
@@ -2070,6 +2070,25 @@ async def admin_refresh_real_stats_simple(key: str = ""):
         raise HTTPException(status_code=403, detail="Cle invalide")
     matches = await fetch_all_matches(db)
     result = await refresh_real_stats_cache(db, matches)
+    return result
+
+
+@app.get("/api/admin/diagnose-sport-simple")
+async def admin_diagnose_sport_simple(sport_key: str = "", key: str = ""):
+    """
+    Diagnostic cible : teste separement chaque etape du pipeline (fetch brut
+    chez The Odds API, filtres qualite, presence dans le cache final servi
+    par /api/matches) pour UN sport_key precis. Permet d'identifier
+    exactement ou un match disparait quand un championnat est confirme
+    present chez The Odds API mais absent du site — plutot que de deviner.
+    Usage : https://TON-BACKEND/api/admin/diagnose-sport-simple?sport_key=soccer_spain_la_liga&key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not sport_key:
+        raise HTTPException(status_code=400, detail="Parametre 'sport_key' requis")
+    result = await diagnose_sport_key(db, sport_key)
     return result
 
 
