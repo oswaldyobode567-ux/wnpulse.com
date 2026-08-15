@@ -1374,3 +1374,81 @@ async def get_match_by_id(db, match_id: str) -> Optional[Dict]:
         if m.get("id") == match_id:
             return m
     return None
+
+
+async def diagnose_sport_key(db, sport_key: str) -> Dict:
+    """
+    Diagnostic cible pour un sport_key donne : teste separement chaque
+    etape du pipeline pour identifier PRECISEMENT ou un match disparait,
+    plutot que de deviner. Utile quand un championnat est confirme present
+    chez The Odds API mais absent du site.
+
+    Etapes testees :
+    1. fetch_raw : appel direct a The Odds API pour ce sport_key seul
+    2. apres_filtres : combien de ces matchs survivent aux filtres qualite
+       (amical, fenetre temporelle 24h/7j, minimum bookmakers)
+    3. dans_cache_final : combien de ces matchs sont reellement presents
+       dans le cache MongoDB actuellement servi par /api/matches
+    """
+    markets = _get_markets_for_sport(sport_key)
+    raw = await _fetch_real_sport(sport_key, markets=markets, regions="eu")
+
+    now = datetime.now(timezone.utc)
+    after_filters = []
+    filtered_out_reasons: Dict[str, int] = {}
+
+    for m in raw:
+        if _is_friendly(m):
+            filtered_out_reasons["match_amical"] = filtered_out_reasons.get("match_amical", 0) + 1
+            continue
+        try:
+            ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
+            if (now - ct) > timedelta(hours=24):
+                filtered_out_reasons["deja_termine_+24h"] = filtered_out_reasons.get("deja_termine_+24h", 0) + 1
+                continue
+            if (ct - now) > timedelta(days=7):
+                filtered_out_reasons["trop_lointain_+7j"] = filtered_out_reasons.get("trop_lointain_+7j", 0) + 1
+                continue
+        except Exception:
+            filtered_out_reasons["date_illisible"] = filtered_out_reasons.get("date_illisible", 0) + 1
+            continue
+        if len(m.get("bookmakers", [])) < 2:
+            filtered_out_reasons["moins_de_2_bookmakers"] = filtered_out_reasons.get("moins_de_2_bookmakers", 0) + 1
+            continue
+        after_filters.append(m)
+
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    cached_data = cached.get("data", []) if cached else []
+    in_final_cache = [m for m in cached_data if m.get("sport_key") == sport_key]
+
+    return {
+        "sport_key": sport_key,
+        "1_fetch_brut_the_odds_api": {
+            "count": len(raw),
+            "sample": [
+                {"id": m.get("id"), "home": m.get("home_team"), "away": m.get("away_team"),
+                 "commence_time": m.get("commence_time"), "num_bookmakers": len(m.get("bookmakers", []))}
+                for m in raw[:5]
+            ],
+        },
+        "2_apres_filtres_qualite": {
+            "count": len(after_filters),
+            "elimines_par_filtre": filtered_out_reasons,
+        },
+        "3_dans_cache_final_actuel": {
+            "count": len(in_final_cache),
+            "cache_updated_at": cached.get("updated_at") if cached else None,
+            "cache_total_matches_tous_sports": len(cached_data),
+        },
+        "diagnostic": (
+            "Le match n'existe pas cote The Odds API pour ce sport_key en ce moment."
+            if len(raw) == 0 else
+            "Les filtres qualite eliminent tout — voir 'elimines_par_filtre'."
+            if len(after_filters) > 0 and len(in_final_cache) == 0 and len(raw) > len(after_filters) else
+            "Les matchs passent les filtres mais n'apparaissent pas dans le cache final : le cache n'a probablement pas ete regenere depuis le dernier fetch, ou une erreur silencieuse survient pendant _force_fetch_and_cache."
+            if len(after_filters) > 0 and len(in_final_cache) == 0 else
+            "Tout semble en ordre : le match devrait etre visible sur /api/matches."
+            if len(in_final_cache) > 0 else
+            "Aucun match ne passe les filtres qualite (voir 'elimines_par_filtre')."
+        ),
+    }
