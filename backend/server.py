@@ -1627,24 +1627,38 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
     db.predictions_history.
 
     IMPORTANT — transparence sur les hypotheses de calcul :
-    - Seuls les picks marques "official_track_eligible" au moment de leur
-      creation apparaissent ici (v8.2) — criteres stricts fixes AVANT le
-      resultat : marche reel (jamais synthetique/combo), confiance >= seuil
-      "safe", edge >= 2%, au moins 5 bookmakers, cote entre 1.20 et 2.20, et
-      publie avant le debut du match. Ce filtre elimine le risque qu'un pick
-      marginal (petite confiance, cote extreme, peu de bookmakers d'accord)
-      vienne fausser le Track Record officiel dans un sens ou l'autre.
-    - Consequence attendue : le nombre de picks affiches ici est nettement
-      plus bas que le nombre total de picks generes par le moteur — c'est
-      volontaire, la selectivite est la garantie de fiabilite de cette page.
+    - En regime normal (20+ resultats "official_track_eligible"), seuls les
+      picks marques ainsi au moment de leur creation apparaissent ici —
+      criteres stricts fixes AVANT le resultat : marche reel (jamais
+      synthetique/combo), confiance >= seuil "safe", edge >= 2%, au moins 5
+      bookmakers, cote entre 1.20 et 2.20, publie avant le debut du match.
+    - MODE TRANSITION (< 20 resultats officiels, typiquement en debut de
+      saison avant que les grands championnats n'aient assez joue) : la
+      page bascule automatiquement sur TOUS les picks resolus de la version
+      actuelle du moteur (model_version = MODEL_VERSION), GAGNES ET PERDUS,
+      SANS AUCUN TRI PAR RESULTAT — jamais de selection des seuls picks
+      gagnants. Le champ "transition_mode": true et une note explicite
+      signalent ce mode au frontend, pour que l'utilisateur sache que ces
+      resultats n'ont pas encore ete filtres par les criteres stricts (mais
+      restent 100% complets, aucun resultat n'est cache).
     - Seuls les picks avec un resultat CONFIRME (won/lost) sont comptes —
       jamais les picks encore "pending", pour ne pas fausser les chiffres.
-    - Ces statistiques ne seront representatives qu'apres accumulation de
-      suffisamment de picks resolus dans le temps (systeme de suivi recent)
     """
-    resolved = await db.predictions_history.find(
+    official_resolved = await db.predictions_history.find(
         {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
     ).to_list(length=5000)
+
+    transition_mode = len(official_resolved) < 20
+
+    if transition_mode:
+        # Tous les picks resolus de la version actuelle, sans filtre
+        # d'eligibilite ET SANS TRI PAR RESULTAT — gagnes et perdus inclus
+        # integralement, dans l'ordre naturel (aucune selection).
+        resolved = await db.predictions_history.find(
+            {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
+        ).to_list(length=5000)
+    else:
+        resolved = official_resolved
 
     # Tri chronologique croissant (pour le graphique de bankroll)
     resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
@@ -1690,6 +1704,30 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         profit_units_30d += (odds - 1) if r.get("result") == "won" else -1
     roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
 
+    # ─── Repartition par niveau de confiance (safe/value/risky) ─────────────
+    # Le label a ete fige AVANT le resultat (au moment de la creation du
+    # pick, jamais recalcule apres coup) — decouper les stats par label n'est
+    # donc pas une selection a posteriori, juste une lecture plus fine d'un
+    # jeu de donnees deja complet et non filtre par resultat. Le chiffre
+    # global (stats.win_rate) reste toujours calcule sur TOUS les resultats,
+    # rien n'est jamais cache dans le tableau ci-dessous.
+    by_label: Dict[str, Dict] = {"safe": {"wins": 0, "total": 0}, "value": {"wins": 0, "total": 0}, "risky": {"wins": 0, "total": 0}}
+    for r in resolved:
+        lbl = r.get("label")
+        if lbl not in by_label:
+            continue
+        by_label[lbl]["total"] += 1
+        if r.get("result") == "won":
+            by_label[lbl]["wins"] += 1
+    by_label_stats = {
+        lbl: {
+            "wins": d["wins"],
+            "total": d["total"],
+            "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
+        }
+        for lbl, d in by_label.items()
+    }
+
     stats = {
         "win_rate": win_rate,
         "wins": wins,
@@ -1701,6 +1739,7 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         "base": TRACK_RECORD_BASE_BANKROLL,
         "balance_now": round(balance),
         "stake_xof": TRACK_RECORD_STAKE_XOF,
+        "by_label": by_label_stats,
     }
 
     # ─── Tableau des resultats, plus recent en premier, pagine ────────────────
@@ -1720,6 +1759,7 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
             "pick": r.get("pick", ""),
             "odds": odds,
             "status": r.get("result"),
+            "label": r.get("label"),  # safe/value/risky — pour afficher le badge de risque a cote du resultat
             "profit_xof": profit_xof,
         })
 
@@ -1731,6 +1771,15 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         "results": results,
         "page": page,
         "total_pages": total_pages,
+        "transition_mode": transition_mode,
+        "note": (
+            "Moins de 20 résultats officiels accumulés pour le moment "
+            "(les grands championnats reprennent progressivement) — cette "
+            "page affiche donc TOUS les picks résolus de la version "
+            "actuelle du moteur, gagnés et perdus, sans aucune sélection. "
+            "Une fois 20 résultats officiels atteints, la page basculera "
+            "automatiquement sur notre sélection stricte pré-match."
+        ) if transition_mode else None,
     }
 
 
@@ -2154,6 +2203,7 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "market": p.get("market"),
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
+                "label": p.get("label"),  # safe/value/risky — fige au moment du pick, jamais recalcule apres coup
                 "model_probability": p.get("model_probability"),
                 "estimated_win_probability": p.get("estimated_win_probability"),
                 "wp_score": p.get("wp_score"),
