@@ -937,6 +937,40 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     if not matches:
         matches = get_all_mock_matches()
 
+    # ─── CORRECTIF : fusion avec l'ancien cache pour les matchs en cours ────
+    # Avant, cette fonction reconstruisait la liste entierement a chaque
+    # cycle, uniquement a partir de ce que The Odds API renvoie a cet
+    # instant precis. Or, The Odds API arrete generalement de renvoyer un
+    # match dans sa reponse /odds une fois qu'il a commence (les bookmakers
+    # suspendent les cotes pre-match) — meme si l'intention documentee du
+    # code etait de garder les matchs visibles jusqu'a 24h apres coup de
+    # sifflet. Resultat concret observe : un match commence (ex: La Liga)
+    # disparaissait immediatement du Dashboard des le prochain cycle de
+    # refresh, alors qu'il restait visible sur la page Live (alimentee par
+    # une source differente, /scores, qui elle suit les matchs en cours
+    # independamment de la disponibilite des cotes). On fusionne desormais
+    # avec les matchs du cache precedent (par id), pour les garder visibles
+    # sur la fenetre de retention prevue, meme si l'API ne les renvoie plus.
+    try:
+        previous_cache = await db.odds_cache.find_one({"_id": "all_matches"})
+        previous_matches = previous_cache.get("data", []) if previous_cache else []
+        current_ids = {m.get("id") for m in matches}
+        now_check = datetime.now(timezone.utc)
+        for old_m in previous_matches:
+            if old_m.get("id") in current_ids:
+                continue  # deja present dans le fetch frais, pas besoin de le garder en double
+            try:
+                ct = datetime.fromisoformat(str(old_m.get("commence_time", "")).replace("Z", "+00:00"))
+                if ct.tzinfo is None:
+                    ct = ct.replace(tzinfo=timezone.utc)
+                if (now_check - ct) > timedelta(hours=24):
+                    continue  # trop vieux, laisse tomber comme prevu par la fenetre de retention
+            except Exception:
+                continue
+            matches.append(old_m)
+    except Exception as e:
+        logger.warning(f"fusion avec l'ancien cache echouee -> {e}")
+
     # ─── Filtres qualité ────────────────────────────────────────────────────
 
     now = datetime.now(timezone.utc)
