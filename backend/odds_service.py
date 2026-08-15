@@ -979,7 +979,8 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     except Exception:
         pass
 
-    # ─── Tri : LIVE → À venir → Terminés ────────────────────────────────────
+    # ─── Tri : LIVE → À venir → Terminés (a l'interieur de chaque championnat,
+    # une fois la repartition round-robin faite ci-dessous) ─────────────────
     def _sort_key(m):
         try:
             ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
@@ -995,17 +996,48 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
     filtered.sort(key=_sort_key)
 
-    # ─── Diversification : max 15 matchs par compétition ────────────────────
-    per_comp: Dict[str, int] = {}
-    diversified = []
+    # ─── Diversification équitable (round-robin) entre championnats ─────────
+    # CORRECTIF : l'ancienne logique triait TOUS les matchs de TOUS les
+    # championnats par heure de coup d'envoi, puis tronquait a 150 matchs au
+    # total. Un championnat dont les matchs du jour se jouent plus tard que
+    # d'autres (ex: La Liga, souvent en soiree) pouvait alors etre
+    # ENTIEREMENT elimine si assez d'autres championnats remplissaient deja
+    # les 150 places avec des matchs plus tot dans la journee — meme si ce
+    # championnat avait bien ete recupere cote API. Desormais, chaque
+    # championnat garde sa place au tour par tour (round-robin), garantissant
+    # qu'aucun championnat actif ne disparaisse entierement de la liste
+    # finale a cause de son horaire de coup d'envoi.
+    per_comp_cap = 15
+    total_cap = 200  # releve de 150 a 200 : marge supplementaire, en plus
+                      # de la repartition equitable qui protege deja chaque
+                      # championnat individuellement.
+
+    groups: Dict[str, List[Dict]] = {}
+    order: List[str] = []
     for m in filtered:
         key = m.get("sport_title") or "Other"
-        if per_comp.get(key, 0) >= 15:
-            continue
-        diversified.append(m)
-        per_comp[key] = per_comp.get(key, 0) + 1
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        if len(groups[key]) < per_comp_cap:
+            groups[key].append(m)
 
-    final = _annotate_bookmakers(diversified[:150])
+    pointers = {k: 0 for k in order}
+    diversified: List[Dict] = []
+    while len(diversified) < total_cap:
+        progressed = False
+        for key in order:
+            if len(diversified) >= total_cap:
+                break
+            p = pointers[key]
+            if p < len(groups[key]):
+                diversified.append(groups[key][p])
+                pointers[key] = p + 1
+                progressed = True
+        if not progressed:
+            break
+
+    final = _annotate_bookmakers(diversified)
 
     await _save_to_cache(db, final)
     return final
