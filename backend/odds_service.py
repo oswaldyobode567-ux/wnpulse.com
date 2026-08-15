@@ -1295,7 +1295,26 @@ async def fetch_all_scores(db) -> List[Dict]:
 
     scores: List[Dict] = []
     active_sports = [
-        # Football — competitions realistes en cours en juillet
+        # CORRECTIF : cette liste avait ete ecrite en pensant a juillet
+        # (intersaison des grands championnats europeens) et ne contenait
+        # que des ligues mineures + MLB. Consequence : les grands
+        # championnats (Premier League, Liga, Bundesliga, Ligue 1, Serie A)
+        # affichaient bien le badge LIVE sur le Dashboard (calcule juste a
+        # partir de l'heure du match, independamment de cette liste), mais
+        # n'apparaissaient JAMAIS sur la page Live (qui, elle, ne recupere
+        # de scores que pour les sport_key listes ici) — d'ou l'impression
+        # que seules les ligues mineures et MLB "fonctionnaient" en Live.
+        # Top 5 championnats europeens — desormais actifs (reprise aout)
+        "soccer_epl",
+        "soccer_spain_la_liga",
+        "soccer_germany_bundesliga",
+        "soccer_germany_bundesliga2",
+        "soccer_france_ligue_one",
+        "soccer_france_ligue_two",
+        "soccer_italy_serie_a",
+        "soccer_netherlands_eredivisie",
+        "soccer_portugal_primeira_liga",
+        # Football — autres competitions
         "soccer_uefa_champs_league",
         "soccer_uefa_europa_league",
         "soccer_uefa_europa_conference_league",
@@ -1315,11 +1334,11 @@ async def fetch_all_scores(db) -> List[Dict]:
         "soccer_japan_j_league",
         "soccer_china_superleague",
         "soccer_mexico_ligamx",
-        # Basketball — NBA hors saison en juillet, Summer League active
+        # Basketball
         "basketball_nba_summer_league",
-        # Baseball — seul sport majeur US actif en juillet
+        # Baseball
         "baseball_mlb",
-        # Hockey — NHL hors saison, garde par securite si reprise anticipee
+        # Hockey
         "icehockey_nhl",
         # MMA — actif toute l'annee
         "mma_mixed_martial_arts",
