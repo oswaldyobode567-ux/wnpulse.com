@@ -243,7 +243,7 @@ DEEP_MARKET_SPORTS = {
     "tennis_wta_wimbledon",
 }
 
-SOCCER_MARKETS = "h2h,totals,btts,double_chance,draw_no_bet"
+SOCCER_MARKETS = "h2h,totals"
 BASKET_MARKETS = "h2h,totals,spreads"
 TENNIS_MARKETS = "h2h"
 HOCKEY_MARKETS = "h2h,totals"
