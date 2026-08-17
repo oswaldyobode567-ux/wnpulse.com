@@ -9,7 +9,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import {
   Trophy, Flame, ChevronRight, Activity, Lock,
   Sparkles, Radio, Send, CheckCircle2, XCircle,
-  Clock, TrendingUp, RefreshCw, Filter
+  Clock, TrendingUp, RefreshCw, Filter, ShieldCheck
 } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -35,6 +35,15 @@ const BET_FILTERS = [
   { key: "cartons",       label: "🟨 Cartons" },
   { key: "corners",       label: "📐 Corners" },
   { key: "mi_temps",      label: "⏱ Mi-temps" },
+];
+// Nouvelle ligne de filtre, additive — ne remplace rien de l'existant.
+// Permet de regrouper/reperer tous les picks Surs, Moderes ou Risques,
+// combinable avec les filtres sport et marche deja en place.
+const RISK_FILTERS = [
+  { key: "all",   label: "Tous les niveaux", cls: "bg-slate-800 text-white border-slate-800" },
+  { key: "safe",  label: "🟢 Sûr",     cls: "bg-emerald-600 text-white border-emerald-600" },
+  { key: "value", label: "🟡 Modéré",  cls: "bg-amber-500 text-white border-amber-500" },
+  { key: "risky", label: "🔴 Risqué",  cls: "bg-rose-600 text-white border-rose-600" },
 ];
 function matchesBetFilter(pick = "", filterKey) {
   if (filterKey === "all") return true;
@@ -77,10 +86,10 @@ export default function DashboardPage() {
   const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
-  const [validated,   setValidated]  = useState([]);
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [validated,   setValidated]  = useState([]); const [searchParams, setSearchParams] = useSearchParams();
   const sport = searchParams.get("sport") || "all";
   const betFilter = searchParams.get("bet") || "all";
+  const riskFilter = searchParams.get("risk") || "all";
   const setSport = (val) => setSearchParams(prev => {
     const p = new URLSearchParams(prev);
     val === "all" ? p.delete("sport") : p.set("sport", val);
@@ -89,6 +98,11 @@ export default function DashboardPage() {
   const setBetFilter = (val) => setSearchParams(prev => {
     const p = new URLSearchParams(prev);
     val === "all" ? p.delete("bet") : p.set("bet", val);
+    return p;
+  });
+  const setRiskFilter = (val) => setSearchParams(prev => {
+    const p = new URLSearchParams(prev);
+    val === "all" ? p.delete("risk") : p.set("risk", val);
     return p;
   });
   const [showAll,     setShowAll]    = useState(false);
@@ -123,7 +137,6 @@ export default function DashboardPage() {
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
     toast.success("WhatsApp ouvert !");
   }, []);
-
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await refresh();
@@ -136,15 +149,27 @@ export default function DashboardPage() {
       list = list.filter(m => (m.sport_key || "").toLowerCase().includes(sport));
     if (betFilter !== "all")
       list = list.filter(m => matchesBetFilter((m.prediction?.pick || ""), betFilter));
+    if (riskFilter !== "all")
+      list = list.filter(m => (m.prediction?.label || "") === riskFilter);
     return list;
-  }, [matches, sport, betFilter]);
+  }, [matches, sport, betFilter, riskFilter]);
   const sportCounts = useMemo(() => {
     const c = {};
     matches.forEach(m => {
-      SPORT_TABS.forEach(tab => {
-        if (tab.key !== "all" && (m.sport_key || "").toLowerCase().includes(tab.key))
+      SPORT_TABS.forEach(tab => {       if (tab.key !== "all" && (m.sport_key || "").toLowerCase().includes(tab.key))
           c[tab.key] = (c[tab.key] || 0) + 1;
       });
+    });
+    return c;
+  }, [matches]);
+  // Compte par niveau de confiance, pour afficher un badge sur chaque
+  // bouton de filtre (ex: "🟢 Sûr (12)") — aide a voir d'un coup d'oeil
+  // combien de picks sont disponibles dans chaque categorie.
+  const riskCounts = useMemo(() => {
+    const c = { safe: 0, value: 0, risky: 0 };
+    matches.forEach(m => {
+      const lbl = m.prediction?.label;
+      if (lbl && c[lbl] !== undefined) c[lbl] += 1;
     });
     return c;
   }, [matches]);
@@ -198,8 +223,7 @@ export default function DashboardPage() {
               <Trophy className="h-5 w-5 text-amber-500" />
               <h2 className="font-heading text-lg font-bold text-slate-900">À la une</h2>
               <span className="text-xs text-slate-500">Top confiance IA</span>
-            </div>
-            <Link to="/app/top" className="text-sm text-orange-600 font-semibold flex items-center gap-1 hover:underline">
+            </div><Link to="/app/top" className="text-sm text-orange-600 font-semibold flex items-center gap-1 hover:underline">
               Tout voir <ChevronRight className="h-3.5 w-3.5" />
             </Link>
           </div>
@@ -247,8 +271,7 @@ export default function DashboardPage() {
                           <span className="ml-1 bg-orange-100 text-orange-700 border border-orange-200 rounded-full px-1.5 text-[9px] font-bold uppercase">
                             {p.market_label}
                           </span>
-                        )}
-                      </div>
+                        )} </div>
                       <div className="space-y-0.5 mb-3">
                         <div className="font-heading font-bold text-sm text-slate-900 truncate">{p.home_team}</div>
                         <div className="text-xs text-slate-400">vs</div>
@@ -298,8 +321,7 @@ export default function DashboardPage() {
           <Card className="border-orange-200 bg-gradient-to-r from-orange-50 to-rose-50 p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
             <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-orange-500 to-rose-500 grid place-items-center text-white flex-shrink-0">
               <Sparkles className="h-5 w-5" />
-            </div>
-            <div className="flex-1">
+            </div>     <div className="flex-1">
               <div className="font-heading font-bold text-slate-900">Tu as vu ton pick gratuit du jour.</div>
               <div className="text-sm text-slate-700">
                 <strong>{Math.max(0, topPicks.length - 1)}</strong> autres picks t'attendent · Analyse complète · Combos · Super Combos
@@ -342,19 +364,43 @@ export default function DashboardPage() {
               </button>
             ))}
           </div>
-          <div className="flex gap-2 overflow-x-auto pb-2 mb-5 scrollbar-thin">
+          <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-thin">
             {BET_FILTERS.map(f => (
               <button
                 key={f.key}
                 onClick={() => setBetFilter(f.key)}
                 className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all
-                  ${betFilter === f.key
-                    ? "bg-slate-800 text-white border-slate-800"
+                  ${betFilter === f.key     ? "bg-slate-800 text-white border-slate-800"
                     : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"}`}
               >
                 {f.label}
               </button>
             ))}
+          </div>
+          {/* Ligne de filtre par niveau de confiance — additive, en plus des
+              filtres sport et marche existants ci-dessus. Permet de reperer
+              d'un clic tous les picks Surs, Moderes ou Risques. */}
+          <div className="flex items-center gap-2 mb-5">
+            <ShieldCheck className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
+            <div className="flex gap-2 overflow-x-auto scrollbar-thin">
+              {RISK_FILTERS.map(f => (
+                <button
+                  key={f.key}
+                  onClick={() => setRiskFilter(f.key)}
+                  data-testid={`risk-filter-${f.key}`}
+                  className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all
+                    ${riskFilter === f.key ? f.cls : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"}`}
+                >
+                  <span>{f.label}</span>
+                  {f.key !== "all" && riskCounts[f.key] > 0 && (
+                    <span className={`text-[9px] rounded-full px-1.5 font-bold
+                      ${riskFilter === f.key ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600"}`}>
+                      {riskCounts[f.key]}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
           </div>
           {loading ? (
             <div className="space-y-6">
@@ -372,7 +418,7 @@ export default function DashboardPage() {
               <div className="text-3xl mb-3">🔍</div>
               <div className="text-slate-700 font-semibold text-lg">Aucun match pour ce filtre</div>
               <div className="text-slate-500 text-sm mt-2">Essaie "Tous les sports" ou change le type de pari</div>
-              <Button variant="outline" className="mt-4" onClick={() => { setSport("all"); setBetFilter("all"); }}>
+              <Button variant="outline" className="mt-4" onClick={() => { setSport("all"); setBetFilter("all"); setRiskFilter("all"); }}>
                 Réinitialiser les filtres
               </Button>
             </Card>
@@ -397,8 +443,7 @@ export default function DashboardPage() {
                 </div>
               )}
             </div>
-          )}
-        </section>
+          )}   </section>
       </div>
       <PaymentModal
         isOpen={payState.isOpen}
@@ -451,8 +496,7 @@ function ValidatedSection({ picks }) {
   const weekPicks  = (picks||[]).filter(p => { const d=(p.date||"").slice(0,10); return d>=weekStart && d!==today; });
   const stats = arr => ({ wins:arr.filter(p=>p.won===true).length, losses:arr.filter(p=>p.won===false).length, pending:arr.filter(p=>p.won==null).length, total:arr.length });
   if (todayPicks.length + weekPicks.length === 0) return null;
-  return (
-    <section>
+  return (  <section>
       <div className="flex items-center gap-2 mb-3">
         <TrendingUp className="h-5 w-5 text-emerald-500" />
         <h2 className="font-heading font-bold text-lg text-slate-900">Picks validés</h2>
