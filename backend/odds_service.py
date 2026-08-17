@@ -243,7 +243,7 @@ DEEP_MARKET_SPORTS = {
     "tennis_wta_wimbledon",
 }
 
-SOCCER_MARKETS = "h2h,totals"
+SOCCER_MARKETS = "h2h,totals,btts,double_chance,draw_no_bet"
 BASKET_MARKETS = "h2h,totals,spreads"
 TENNIS_MARKETS = "h2h"
 HOCKEY_MARKETS = "h2h,totals"
@@ -836,6 +836,140 @@ def _attach_bsd_enrichment(matches: List[Dict], bsd_predictions: List[Dict]) -> 
     return matches
 
 
+def _convert_bsd_prediction_to_match(pred: Dict) -> Optional[Dict]:
+    """
+    Convertit une prediction BSD en match complementaire, UNIQUEMENT si la
+    reponse contient de VRAIES cotes de bookmaker exploitables.
+
+    IMPORTANT — principe de non-fabrication : BSD est documente comme un
+    addon de predictions ML (CatBoost), pas necessairement une source de
+    cotes de marche. Le schema exact de sa reponse (contient-elle des
+    cotes reelles, ou seulement des probabilites calculees par le modele ?)
+    N'A JAMAIS ETE CONFIRME avec un exemple reel. Si seule une probabilite
+    est presente (sans cote associee d'un vrai bookmaker), cette fonction
+    retourne None plutot que de fabriquer une cote a partir de cette
+    probabilite — exactement le meme principe que celui applique aux
+    marches synthetiques du moteur de prediction (jamais presenter une
+    estimation comme une vraie cote de marche).
+
+    Cette fonction cherche defensivement plusieurs noms de champs possibles
+    pour des cotes reelles (odds/bookmaker_odds/market_odds) — si aucun
+    n'est trouve, retourne None.
+    """
+    try:
+        home = _first_present(pred, ["home_team", "homeTeam"], {})
+        away = _first_present(pred, ["away_team", "awayTeam"], {})
+        home_name = home.get("name") if isinstance(home, dict) else home
+        away_name = away.get("name") if isinstance(away, dict) else away
+        commence = _first_present(pred, ["commence_time", "match_date", "date", "kickoff"])
+        event_id = _first_present(pred, ["id", "match_id", "fixture_id"])
+        league = _first_present(pred, ["league", "competition", "sport_title"], "Football")
+
+        if not (home_name and away_name and commence and event_id):
+            return None
+
+        # Recherche defensive de VRAIES cotes — plusieurs noms de champs
+        # possibles, car le schema BSD n'a jamais ete confirme avec un
+        # exemple reel de reponse.
+        raw_odds = _first_present(pred, ["odds", "bookmaker_odds", "market_odds", "bookmakers"])
+        if not raw_odds:
+            return None  # pas de vraie cote : on n'invente rien, on s'arrete la
+
+        bookmakers = []
+        if isinstance(raw_odds, list):
+            for bm in raw_odds:
+                if not isinstance(bm, dict):
+                    continue
+                title = _first_present(bm, ["bookmaker", "title", "name"], "BSD")
+                home_price = _first_present(bm, ["home", "home_odds", "1"])
+                away_price = _first_present(bm, ["away", "away_odds", "2"])
+                draw_price = _first_present(bm, ["draw", "draw_odds", "x", "X"])
+                outcomes = []
+                try:
+                    if home_price:
+                        outcomes.append({"name": home_name, "price": float(home_price)})
+                    if away_price:
+                        outcomes.append({"name": away_name, "price": float(away_price)})
+                    if draw_price:
+                        outcomes.append({"name": "Draw", "price": float(draw_price)})
+                except (TypeError, ValueError):
+                    continue
+                if outcomes:
+                    bookmakers.append({
+                        "key": _normalize_bookmaker_key(title),
+                        "title": str(title),
+                        "markets": [{"key": "h2h", "outcomes": outcomes}],
+                    })
+
+        if not bookmakers:
+            return None  # champ "odds" present mais aucune cote exploitable trouvee
+
+        return {
+            "id": f"bsd-{event_id}",
+            "sport_key": "soccer_bsd_complementary",
+            "sport_title": str(league),
+            "commence_time": str(commence),
+            "home_team": home_name,
+            "away_team": away_name,
+            "bookmakers": bookmakers,
+            "bsd_enrichment": pred,  # garde aussi la prediction ML elle-meme
+        }
+    except Exception:
+        return None
+
+
+async def _fetch_bsd_complementary_matches(existing_matches: List[Dict], bsd_predictions: List[Dict]) -> List[Dict]:
+    """
+    3eme source de matchs (complementaire a The Odds API + odds-api.io) :
+    parcourt les predictions BSD, et pour celles qui NE CORRESPONDENT A
+    AUCUN match deja recupere (ni The Odds API, ni odds-api.io), tente de
+    les convertir en match a part entiere — mais SEULEMENT si de vraies
+    cotes existent dans la reponse (voir _convert_bsd_prediction_to_match).
+
+    Si BSD ne fournit jamais de vraies cotes (juste des probabilites ML),
+    cette fonction ne rajoute aucun match — le comportement retombe alors
+    sur l'enrichissement seul (_attach_bsd_enrichment), sans jamais
+    fabriquer de fausse cote pour combler ce manque.
+    """
+    if not bsd_predictions:
+        return []
+
+    existing_keys = {
+        (_normalize_team_name(m.get("home_team", "")), _normalize_team_name(m.get("away_team", "")))
+        for m in existing_matches
+    }
+
+    added = []
+    skipped_no_odds = 0
+    for pred in bsd_predictions:
+        home = _first_present(pred, ["home_team", "homeTeam"], {})
+        away = _first_present(pred, ["away_team", "awayTeam"], {})
+        home_name = home.get("name") if isinstance(home, dict) else home
+        away_name = away.get("name") if isinstance(away, dict) else away
+        if not (home_name and away_name):
+            continue
+        key = (_normalize_team_name(home_name), _normalize_team_name(away_name))
+        if key in existing_keys:
+            continue  # deja couvert par The Odds API ou odds-api.io, pas besoin de BSD ici
+
+        converted = _convert_bsd_prediction_to_match(pred)
+        if converted:
+            added.append(converted)
+        else:
+            skipped_no_odds += 1
+
+    if skipped_no_odds > 0:
+        logger.warning(
+            f"BSD : {skipped_no_odds} match(s) uniques a BSD trouves mais SANS cote reelle "
+            f"exploitable — non ajoutes (pas de fabrication de cote). Reste en enrichissement "
+            f"seul pour les matchs deja connus des autres sources."
+        )
+    if added:
+        logger.warning(f"BSD : {len(added)} match(s) complementaire(s) ajoutes avec de vraies cotes.")
+
+    return added
+
+
 def _event_identity(event: Dict):
     return (_normalize_team_name(event.get("home_team","")), _normalize_team_name(event.get("away_team","")))
 
@@ -1006,13 +1140,25 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
         filtered.append(m)
 
-    # ─── Enrichissement BSD (predictions ML) ─────────────────────────────────
+    # ─── BSD : 3eme source complementaire + enrichissement ───────────────────
+    # Le croisement a 3 sources fonctionne desormais ainsi :
+    # 1. The Odds API (source principale) + odds-api.io (source secondaire)
+    #    sont deja fusionnees via _merge_events plus haut dans cette fonction.
+    # 2. BSD vient s'ajouter en complement : pour chaque match BSD qui NE
+    #    CORRESPOND A AUCUN match deja trouve, on tente de l'ajouter comme
+    #    match a part entiere — mais SEULEMENT si BSD fournit de vraies
+    #    cotes (voir _convert_bsd_prediction_to_match). Sans vraie cote,
+    #    aucun match n'est fabrique — on se contente d'enrichir les matchs
+    #    deja connus des 2 autres sources avec le contexte ML de BSD.
     try:
         bsd_predictions = await _fetch_bsd_predictions()
         if bsd_predictions:
+            bsd_complementary = await _fetch_bsd_complementary_matches(filtered, bsd_predictions)
+            if bsd_complementary:
+                filtered.extend(bsd_complementary)
             filtered = _attach_bsd_enrichment(filtered, bsd_predictions)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"croisement BSD echoue -> {e}")
 
     # ─── Tri : LIVE → À venir → Terminés (a l'interieur de chaque championnat,
     # une fois la repartition round-robin faite ci-dessous) ─────────────────
