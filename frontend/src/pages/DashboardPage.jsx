@@ -86,7 +86,23 @@ export default function DashboardPage() {
   const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
-  const [validated,   setValidated]  = useState([]); const [searchParams, setSearchParams] = useSearchParams();
+  const [validated,   setValidated]  = useState([]);
+  // CORRECTIF : le prix affiche etait code en dur ("9 900 FCFA") a 2
+  // endroits, jamais mis a jour quand le tarif est passe a un palier
+  // unique a 6 500 FCFA cote backend (server.py SUBSCRIPTION_PLANS).
+  // Desormais lu dynamiquement depuis /api/plans, pour que ce type de
+  // desynchronisation ne puisse plus se reproduire si le prix change.
+  const [planPrice, setPlanPrice] = useState(null);
+  useEffect(() => {
+    api.get("/plans")
+      .then(r => {
+        const price = r.data?.[0]?.price_xof ?? r.data?.[0]?.price_fcfa ?? r.data?.[0]?.price;
+        if (price) setPlanPrice(price);
+      })
+      .catch(() => {});
+  }, []);
+  const priceLabel = planPrice ? `${planPrice.toLocaleString()} FCFA` : "…";
+  const [searchParams, setSearchParams] = useSearchParams();
   const sport = searchParams.get("sport") || "all";
   const betFilter = searchParams.get("bet") || "all";
   const riskFilter = searchParams.get("risk") || "all";
@@ -132,11 +148,11 @@ export default function DashboardPage() {
       `🎯 Confiance : ${Math.round(p.confidence || 0)}%`,
       ``,
       `📱 wnpulse.com`,
-      `💳 Pro dès 9 900 FCFA · MTN MoMo 🇧🇯`,
+      `💳 Pro dès ${priceLabel} · MTN MoMo 🇧🇯`,
     ].join("\n");
     window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
     toast.success("WhatsApp ouvert !");
-  }, []);
+  }, [priceLabel]);
   const handleRefresh = useCallback(async () => {
     setRefreshing(true);
     await refresh();
@@ -331,7 +347,7 @@ export default function DashboardPage() {
               className="bg-gradient-to-r from-orange-500 to-rose-500 text-white border-0 hover:opacity-90 flex-shrink-0"
               onClick={() => setPayState({ isOpen: true, tier: "pro" })}
             >
-              Passer Pro · 9 900 FCFA <ChevronRight className="h-4 w-4 ml-1" />
+              Passer Pro · {priceLabel} <ChevronRight className="h-4 w-4 ml-1" />
             </Button>
           </Card>
         )}
