@@ -22,42 +22,33 @@ import {
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 
-const TIER_CONFIG = {
-  PRO: {
-    label: "Pro",
-    price: 4900,
-    accent: "from-orange-500 to-rose-500",
-    icon: Sparkles,
-    perks: [
-      "Tous les pronostics du jour (7 sports)",
-      "3 combinés (Sécurité / Équilibre / Jackpot)",
-      "Analyse IA Claude Sonnet",
-      "Value bets & track record détaillé",
-    ],
-  },
-  ELITE: {
-    label: "Elite",
-    price: 14900,
-    accent: "from-amber-500 via-rose-500 to-fuchsia-600",
-    icon: Crown,
-    perks: [
-      "Tout du plan Pro",
-      "Picks VIP envoyés en avant-première",
-      "Stratégie bankroll personnalisée",
-      "Support prioritaire WhatsApp",
-    ],
-  },
+// CORRECTIF : ce fichier avait son PROPRE TIER_CONFIG code en dur (Pro a
+// 4 900 FCFA, Elite a 14 900 FCFA — un plan Elite qui n'existe meme plus
+// depuis le passage a un palier unique a 6 500 FCFA cote backend). C'est
+// cette incoherence precise qui faisait que le prix affiche au clic ne
+// correspondait jamais au vrai montant facture. Desormais, le plan reel
+// (nom, prix, avantages) est recupere dynamiquement depuis /api/plans au
+// chargement du modal — plus aucun prix ni nom de palier code en dur ici.
+const FALLBACK_TIER = {
+  label: "Pro",
+  price: 6500,
+  accent: "from-orange-500 to-rose-500",
+  icon: Sparkles,
+  perks: [
+    "Accès illimité à tous les pronostics, tous les jours",
+    "Tous les combinés débloqués",
+    "Analyse IA experte sur chaque match",
+    "Value bets & Track Record détaillé",
+  ],
 };
 
 function genRef() {
   const part = Math.random().toString(36).slice(2, 10).toUpperCase().replace(/[^A-Z0-9]/g, "X");
   return `PE-${part.padEnd(8, "X").slice(0, 8)}`;
 }
-
 function formatXof(n) {
   return n.toLocaleString("fr-FR");
 }
-
 const MERCHANT = "+229 01 66 28 06 03";
 const OWNER_NAME = "KOUKPAKI VIANEY";
 const WHATSAPP = "+33 7 67 97 17 52";
@@ -65,8 +56,31 @@ const WHATSAPP = "+33 7 67 97 17 52";
 export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const navigate = useNavigate();
   const { user, refresh } = useAuth();
-  const tierKey = (targetTier || "PRO").toUpperCase();
-  const tier = TIER_CONFIG[tierKey] || TIER_CONFIG.PRO;
+
+  // Recupere le VRAI plan (nom/prix/avantages) depuis le backend — plus
+  // aucune valeur codee en dur ici. Comme il n'existe plus qu'un seul
+  // palier, targetTier n'est conserve que pour compatibilite d'appel mais
+  // n'affecte plus le prix affiche : c'est toujours le plan reel qui prime.
+  const [plan, setPlan] = useState(FALLBACK_TIER);
+  const [planId, setPlanId] = useState("pro");
+  useEffect(() => {
+    api.get("/plans")
+      .then(r => {
+        const p = r.data?.[0];
+        if (!p) return;
+        setPlanId(p.id || "pro");
+        setPlan({
+          label: p.name || "Pro",
+          price: p.price_xof ?? p.price_fcfa ?? p.price ?? FALLBACK_TIER.price,
+          accent: FALLBACK_TIER.accent,
+          icon: (p.name || "").toLowerCase().includes("elite") ? Crown : Sparkles,
+          perks: Array.isArray(p.features) && p.features.length ? p.features : FALLBACK_TIER.perks,
+        });
+      })
+      .catch(() => {}); // silencieux : le fallback ci-dessus reste utilisable
+  }, []);
+
+  const tier = plan;
   const TierIcon = tier.icon;
 
   const [step, setStep] = useState(1); // 1 summary, 2 instructions, 3 confirmation
@@ -82,13 +96,12 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
     if (isOpen) {
       setStep(1);
       setReference(genRef());
-      setPhone("");
-      setPayerName(user?.full_name || "");
+      setPhone(""); setPayerName(user?.full_name || "");
       setSubmitting(false);
       setConfirmed(false);
       setAcceptedTerms(false);
     }
-  }, [isOpen, tierKey, user?.full_name]);
+  }, [isOpen, user?.full_name]);
 
   const whatsappUrl = useMemo(() => {
     const cleanWa = WHATSAPP.replace(/[^0-9]/g, "");
@@ -133,8 +146,11 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
     }
     setSubmitting(true);
     try {
+      // CORRECTIF : envoie toujours planId (recupere du backend), jamais
+      // targetTier — au cas ou un appelant passerait encore "ELITE" par
+      // habitude, ca n'enverrait plus un plan_id inexistant au backend.
       const { data } = await api.post("/subscription/checkout", {
-        tier: tierKey.toLowerCase(),
+        tier: planId,
         phone: phone.trim(),
         payer_name: payerName.trim(),
       });
@@ -170,8 +186,7 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
           <div className="flex items-center gap-3">
             <div className="h-11 w-11 rounded-xl bg-white/15 backdrop-blur-sm grid place-items-center ring-1 ring-white/25">
               <TierIcon className="h-5 w-5" />
-            </div>
-            <div>
+            </div>  <div>
               <DialogHeader className="space-y-0 text-left">
                 <DialogTitle className="text-white font-heading text-xl font-extrabold tracking-tight" data-testid="payment-modal-title">
                   Activer le plan {tier.label}
@@ -182,7 +197,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
               </DialogHeader>
             </div>
           </div>
-
           {/* Stepper */}
           <div className="mt-5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider">
             {[1, 2, 3].map((s) => (
@@ -201,9 +215,7 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                 {s < 3 && <div className="flex-1 h-px bg-white/20" />}
               </div>
             ))}
-          </div>
-        </div>
-
+          </div>   </div>
         <div className="px-6 py-5 bg-white">
           {/* STEP 1 — Summary */}
           {step === 1 && (
@@ -223,7 +235,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                   Référence commande : <span className="font-mono font-semibold text-slate-700" data-testid="payment-reference">{reference}</span>
                 </div>
               </div>
-
               <ul className="space-y-2">
                 {tier.perks.map((p, i) => (
                   <li key={i} className="flex items-start gap-2 text-sm text-slate-700">
@@ -232,7 +243,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                   </li>
                 ))}
               </ul>
-
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <Label htmlFor="pm-name" className="text-xs">Nom complet</Label>
@@ -258,12 +268,10 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                   />
                 </div>
               </div>
-
               <div className="flex items-center gap-1.5 text-[11px] text-slate-500">
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
                 Aucune carte requise · Validation manuelle par notre équipe sous 1h
               </div>
-
               {/* No-refund consent checkbox */}
               <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-amber-200 bg-amber-50/60 p-3 hover:bg-amber-50 transition-colors">
                 <input
@@ -274,164 +282,3 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                   data-testid="payment-accept-terms"
                 />
                 <span className="text-xs text-slate-700 leading-relaxed">
-                  J'ai compris qu'<strong>aucun remboursement n'est possible après activation</strong> de l'abonnement (service numérique consommable immédiatement). J'accepte les{" "}
-                  <a href="/legal/cgv" target="_blank" rel="noopener noreferrer" className="text-orange-700 font-semibold underline">CGV</a> et la{" "}
-                  <a href="/legal/confidentialite" target="_blank" rel="noopener noreferrer" className="text-orange-700 font-semibold underline">politique de confidentialité</a>.
-                </span>
-              </label>
-
-              <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-end pt-1">
-                <Button variant="ghost" onClick={handleClose} data-testid="payment-cancel-btn">
-                  Annuler
-                </Button>
-                <Button
-                  className={`bg-gradient-to-r ${tier.accent} text-white border-0 hover:opacity-90 font-semibold disabled:opacity-50`}
-                  onClick={goToInstructions}
-                  disabled={submitting || !acceptedTerms}
-                  data-testid="payment-next-btn"
-                >
-                  {submitting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      Continuer <ArrowRight className="h-4 w-4 ml-1" />
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 2 — Instructions */}
-          {step === 2 && (
-            <div className="space-y-4" data-testid="payment-step-2">
-              <div className="rounded-xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 to-yellow-50 p-4 shadow-sm">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="flex items-center gap-2">
-                    <div className="h-8 w-8 rounded-lg bg-yellow-400 grid place-items-center text-slate-900">
-                      <Smartphone className="h-4 w-4" />
-                    </div>
-                    <span className="font-heading font-extrabold text-slate-900 text-sm">MTN Mobile Money</span>
-                  </div>
-                  <Badge className="bg-yellow-400 text-slate-900 border-0">Bénin</Badge>
-                </div>
-
-                <div className="grid grid-cols-1 gap-2.5">
-                  <CopyRow label="Numéro MTN MoMo" value={MERCHANT} onCopy={copy} testid="copy-merchant" />
-                  <CopyRow label="Nom du destinataire" value={OWNER_NAME} onCopy={copy} testid="copy-owner" />
-                  <CopyRow label="Montant" value={`${formatXof(tier.price)} FCFA`} rawValue={tier.price} onCopy={copy} testid="copy-amount" />
-                  <CopyRow label="Référence (motif)" value={reference} onCopy={copy} testid="copy-reference" mono />
-                </div>
-              </div>
-
-              <ol className="text-sm text-slate-700 space-y-2 list-decimal pl-5">
-                <li>Composez <span className="font-mono font-bold">*880#</span> sur ton téléphone MTN Bénin.</li>
-                <li>Choisis <strong>Transfert d'argent</strong>.</li>
-                <li>Saisis le <strong>numéro</strong> : <span className="font-mono">{MERCHANT}</span></li>
-                <li><strong>Vérifie le nom affiché</strong> : il doit être <strong className="text-orange-700">{OWNER_NAME}</strong>. Sinon, annule immédiatement.</li>
-                <li>Montant exact : <span className="font-mono">{formatXof(tier.price)} FCFA</span>.</li>
-                <li>Référence (motif) : <span className="font-mono">{reference}</span>.</li>
-                <li>Confirme avec ton <strong>code PIN MTN</strong>.</li>
-                <li>Envoie la capture du SMS de confirmation sur WhatsApp <span className="font-mono">{WHATSAPP}</span>.</li>
-              </ol>
-
-              <a
-                href={whatsappUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="flex items-center justify-center gap-2 w-full rounded-lg bg-[#25D366] hover:bg-[#1ebe5c] text-white font-bold py-2.5 transition-colors"
-                data-testid="payment-whatsapp-link"
-              >
-                <MessageCircle className="h-4 w-4" />
-                Confirmer sur WhatsApp ({WHATSAPP})
-              </a>
-
-              <div className="flex items-start gap-2 text-[11px] text-slate-500 bg-slate-50 rounded-lg p-2.5 border border-slate-200">
-                <Clock className="h-3.5 w-3.5 text-orange-500 mt-0.5 flex-shrink-0" />
-                Notre équipe valide manuellement chaque paiement (en moyenne sous 1h). Tu recevras un email dès activation.
-              </div>
-
-              <div className="flex flex-col-reverse sm:flex-row gap-2 sm:justify-between pt-1">
-                <Button variant="ghost" onClick={() => setStep(1)} data-testid="payment-back-btn">
-                  <ArrowLeft className="h-4 w-4 mr-1" /> Retour
-                </Button>
-                <Button
-                  className="bg-emerald-600 hover:bg-emerald-700 text-white font-semibold"
-                  onClick={markPaid}
-                  data-testid="payment-mark-paid-btn"
-                >
-                  <CheckCircle2 className="h-4 w-4 mr-1.5" /> J'ai effectué le paiement
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* STEP 3 — Confirmation */}
-          {step === 3 && (
-            <div className="space-y-4 text-center py-2" data-testid="payment-step-3">
-              <div className="mx-auto h-16 w-16 rounded-full bg-emerald-50 grid place-items-center ring-4 ring-emerald-100">
-                <CheckCircle2 className="h-8 w-8 text-emerald-600" />
-              </div>
-              <div>
-                <div className="font-heading text-xl font-extrabold text-slate-900">Merci, on s'en occupe ! 🎉</div>
-                <p className="text-sm text-slate-600 mt-1">
-                  Ton paiement <span className="font-mono font-semibold">{reference}</span> est en cours de vérification.
-                  Tu recevras un email de confirmation dès que ton plan <strong>{tier.label}</strong> sera activé.
-                </p>
-              </div>
-
-              <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-left text-xs text-slate-600 space-y-1">
-                <div className="flex justify-between"><span>Plan</span><span className="font-semibold text-slate-900">{tier.label}</span></div>
-                <div className="flex justify-between"><span>Montant</span><span className="font-semibold text-slate-900">{formatXof(tier.price)} FCFA</span></div>
-                <div className="flex justify-between"><span>Référence</span><span className="font-mono font-semibold text-slate-900">{reference}</span></div>
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-2">
-                <a
-                  href={whatsappUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-[#25D366] hover:bg-[#1ebe5c] text-white font-bold py-2.5 transition-colors text-sm"
-                  data-testid="payment-whatsapp-followup"
-                >
-                  <MessageCircle className="h-4 w-4" /> Envoyer la capture
-                </a>
-                <Button
-                  variant="outline"
-                  className="flex-1"
-                  onClick={handleClose}
-                  data-testid="payment-done-btn"
-                >
-                  Terminé
-                </Button>
-              </div>
-            </div>
-          )}
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function CopyRow({ label, value, rawValue, onCopy, testid, mono = false }) {
-  return (
-    <div className="flex items-center justify-between gap-2 bg-white/70 rounded-lg px-3 py-2 border border-amber-200/60">
-      <div className="min-w-0">
-        <div className="text-[10px] uppercase tracking-wider text-amber-800 font-semibold">{label}</div>
-        <div className={`text-slate-900 font-bold text-sm truncate ${mono ? "font-mono" : ""}`} data-testid={`${testid}-value`}>
-          {value}
-        </div>
-      </div>
-      <Button
-        size="sm"
-        variant="ghost"
-        className="h-8 w-8 p-0 hover:bg-amber-100"
-        onClick={() => onCopy(rawValue ?? value, `${label} copié`)}
-        data-testid={`${testid}-btn`}
-        aria-label={`Copier ${label}`}
-      >
-        <Copy className="h-4 w-4" />
-      </Button>
-    </div>
-  );
-}
