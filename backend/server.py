@@ -24,6 +24,7 @@ from auth import (
 from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
     fetch_odds_api_io_scores_map, diagnose_sport_key,
+    probe_odds_api_io_event, probe_odds_api_io_league_sample,
 )
 from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
@@ -2119,6 +2120,39 @@ async def admin_refresh_real_stats_simple(key: str = ""):
         raise HTTPException(status_code=403, detail="Cle invalide")
     matches = await fetch_all_matches(db)
     result = await refresh_real_stats_cache(db, matches)
+    return result
+
+
+@app.get("/api/admin/probe-oaio-event-simple")
+async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
+    """
+    SONDE : cherche un match odds-api.io precis (par son id numerique, sans
+    le prefixe "oaio-") dans TOUTES les ligues suivies, SANS aucun filtre de
+    statut, et renvoie sa reponse brute complete. Permet de voir les vrais
+    noms de champs et valeurs pour un match qu'on sait deja termine, au lieu
+    de continuer a deviner la valeur du champ "status".
+    Usage : https://TON-BACKEND/api/admin/probe-oaio-event-simple?match_id=71924970&key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not match_id:
+        raise HTTPException(status_code=400, detail="Parametre 'match_id' requis (id numerique, sans 'oaio-')")
+    result = await probe_odds_api_io_event(match_id)
+    return result
+
+
+@app.get("/api/admin/probe-oaio-league-simple")
+async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sport: str = "football", key: str = ""):
+    """
+    SONDE : renvoie tous les evenements bruts d'une ligue odds-api.io (sans
+    filtre de statut), avec un resume des valeurs du champ "status"
+    rencontrees. Usage : https://TON-BACKEND/api/admin/probe-oaio-league-simple?league=denmark-superligaen&key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await probe_odds_api_io_league_sample(league, sport)
     return result
 
 
