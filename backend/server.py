@@ -2146,6 +2146,7 @@ async def admin_diagnose_labels_simple(key: str = ""):
     resolved_official_true = 0
     resolved_official_false = 0
     resolved_samples = []
+    pending_samples = []
 
     for d in all_safe:
         r = d.get("result", "autre")
@@ -2167,6 +2168,16 @@ async def admin_diagnose_labels_simple(key: str = ""):
                     "confidence": d.get("confidence"),
                     "created_at": d.get("created_at"),
                 })
+        elif r == "pending" and len(pending_samples) < 15:
+            pending_samples.append({
+                "match": f"{d.get('home_team')} vs {d.get('away_team')}",
+                "pick": d.get("pick"),
+                "market": d.get("market"),
+                "is_combo": d.get("is_combo"),
+                "commence_time": d.get("commence_time"),
+                "created_at": d.get("created_at"),
+                "match_id": d.get("match_id"),
+            })
 
     return {
         "current_model_version": MODEL_VERSION,
@@ -2176,6 +2187,7 @@ async def admin_diagnose_labels_simple(key: str = ""):
         "resolved_official_track_eligible_true": resolved_official_true,
         "resolved_official_track_eligible_false": resolved_official_false,
         "resolved_samples": resolved_samples,
+        "pending_samples": pending_samples,
         "explication": (
             "Si 'resolved_by_model_version' contient une version differente "
             "de 'current_model_version', ces picks sont exclus du mode "
