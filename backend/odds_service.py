@@ -477,6 +477,53 @@ async def _fetch_odds_api_io_events(league_slug: str, sport: str = "football") -
             return data if isinstance(data, list) else []
     except Exception as e:
         logger.warning(f"odds-api.io events [{league_slug}] -> exception: {e}")
+
+
+async def _fetch_odds_api_io_finished_events(league_slug: str, sport: str = "football") -> List[Dict]:
+    """
+    Variante de _fetch_odds_api_io_events pour les matchs TERMINES.
+
+    CORRECTIF CRITIQUE : _fetch_odds_api_io_events() envoie explicitement
+    "status": "pending" dans la requete a l'API — ce qui signifie que les
+    matchs deja joues ne sont JAMAIS renvoyes par cette fonction, quel que
+    soit le filtre applique cote client apres coup. C'est la vraie cause
+    du bug ou les picks sur des matchs odds-api.io deja termines restaient
+    bloques en "pending" indefiniment : la reconciliation ne recevait
+    simplement jamais ces matchs dans la reponse de l'API.
+
+    Cette fonction envoie "status": "finished" a la place. La valeur exacte
+    attendue par odds-api.io pour ce statut n'a jamais ete confirmee avec
+    un exemple reel (essais successifs : "finished", puis "completed" en
+    repli si le premier ne renvoie rien) — d'ou la tentative sur 2 valeurs
+    possibles avant d'abandonner proprement.
+    """
+    if not ODDS_API_IO_KEY:
+        return []
+    url = f"{ODDS_API_IO_BASE}/events"
+
+    for status_value in ("finished", "completed"):
+        params = {
+            "apiKey": ODDS_API_IO_KEY,
+            "sport": sport,
+            "league": league_slug,
+            "status": status_value,
+        }
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(url, params=params)
+                if r.status_code != 200:
+                    logger.warning(
+                        f"odds-api.io finished events [{league_slug}, status={status_value}] "
+                        f"-> HTTP {r.status_code}: {r.text[:200]}"
+                    )
+                    continue
+                data = r.json()
+                if isinstance(data, list) and data:
+                    return data
+        except Exception as e:
+            logger.warning(f"odds-api.io finished events [{league_slug}, status={status_value}] -> exception: {e}")
+
+    return []
         return []
 
 
@@ -1275,10 +1322,23 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
     Recupere le statut/score actuel de tous les matchs odds-api.io suivis
     (foot + hockey + basketball), pour la reconciliation des predictions.
     Retourne un dict {id_numerique_str: {"status":..., "home_score":...,
-    "away_score":...}}. Un match est considere termine si son statut n'est
-    pas "pending" ni "live" (valeur exacte du statut "termine" non confirmee
-    avec un exemple reel — traite tout statut autre que pending/live comme
-    final, par prudence plutot que de bloquer la reconciliation).
+    "away_score":...}}.
+
+    CORRECTIF : cette fonction se basait auparavant sur le champ "status"
+    renvoye par odds-api.io ("termine" si different de "pending"/"live") —
+    exactement la meme hypothese non confirmee qui avait deja cause un bug
+    similaire sur la page Live (voir _convert_odds_api_io_event_to_score,
+    deja corrige). Consequence concrete observee ici : des picks sur des
+    matchs odds-api.io deja termines depuis 1-2 jours restaient bloques en
+    "pending" indefiniment, car leur vrai statut "termine" ne correspondait
+    jamais a la valeur attendue par ce filtre — la reconciliation ne les
+    voyait donc jamais comme eligibles.
+
+    Desormais, un match est considere pret pour reconciliation des que son
+    heure de coup d'envoi (commence_time) date de plus de 4h — la meme
+    methode fiable, basee sur le temps et non sur un champ de statut
+    incertain, deja utilisee partout ailleurs dans le code (_is_finished_match,
+    _match_is_finished, _convert_odds_api_io_event_to_score).
     """
     if not ODDS_API_IO_KEY:
         return {}
@@ -1292,20 +1352,35 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
         (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
     ]
 
+    now = datetime.now(timezone.utc)
+
     for league_slug, sport in all_leagues:
         try:
-            events = await _fetch_odds_api_io_events(league_slug, sport=sport)
+            events = await _fetch_odds_api_io_finished_events(league_slug, sport=sport)
             for evt in events:
-                status = evt.get("status", "")
-                if status in ("pending", "live", ""):
+                commence = evt.get("date")
+                if not commence:
                     continue
+                try:
+                    commence_dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
+                    if commence_dt.tzinfo is None:
+                        commence_dt = commence_dt.replace(tzinfo=timezone.utc)
+                except Exception:
+                    continue
+
+                # Match pas encore termine (moins de 4h depuis le coup
+                # d'envoi, ou pas encore commence) : pas encore pret pour
+                # reconciliation, on ne le traite pas comme definitif.
+                if (now - commence_dt) < timedelta(hours=4):
+                    continue
+
                 scores = evt.get("scores") or {}
                 home_score = scores.get("home")
                 away_score = scores.get("away")
                 if home_score is None or away_score is None:
                     continue
                 scores_map[str(evt.get("id"))] = {
-                    "status": status,
+                    "status": evt.get("status", "termine_estime_par_horaire"),
                     "home_score": home_score,
                     "away_score": away_score,
                 }
@@ -1399,8 +1474,16 @@ def _convert_odds_api_io_event_to_score(evt: Dict, sport: str) -> Optional[Dict]
 async def _fetch_odds_api_io_all_scores() -> List[Dict]:
     """
     Recupere TOUS les evenements odds-api.io (foot + hockey + basketball,
-    quel que soit leur statut) au format /scores, pour completer les
-    resultats de The Odds API dans /api/scores. Voir _convert_odds_api_io_event_to_score.
+    a venir ET termines) au format /scores, pour completer les resultats
+    de The Odds API dans /api/scores. Voir _convert_odds_api_io_event_to_score.
+
+    CORRECTIF : _fetch_odds_api_io_events() ne renvoie que les matchs a
+    venir (requete API avec status=pending explicite) — les matchs deja
+    termines n'apparaissaient donc jamais dans l'onglet "Termines" de la
+    page Live pour les championnats mineurs, meme avec la classification
+    par horaire deja en place dans _convert_odds_api_io_event_to_score.
+    On recupere desormais les deux listes (a venir + terminees) et on les
+    fusionne, dedupliquees par id.
     """
     if not ODDS_API_IO_KEY:
         return []
@@ -1414,13 +1497,19 @@ async def _fetch_odds_api_io_all_scores() -> List[Dict]:
     ]
 
     out: List[Dict] = []
+    seen_ids = set()
     for league_slug, sport in all_leagues:
         try:
-            events = await _fetch_odds_api_io_events(league_slug, sport=sport)
-            for evt in events:
+            pending_events = await _fetch_odds_api_io_events(league_slug, sport=sport)
+            finished_events = await _fetch_odds_api_io_finished_events(league_slug, sport=sport)
+            for evt in (pending_events + finished_events):
+                evt_id = evt.get("id")
+                if evt_id in seen_ids:
+                    continue
                 converted = _convert_odds_api_io_event_to_score(evt, sport)
                 if converted:
                     out.append(converted)
+                    seen_ids.add(evt_id)
         except Exception:
             continue
     return out
