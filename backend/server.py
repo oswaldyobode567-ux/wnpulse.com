@@ -29,7 +29,7 @@ from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
-    _is_today as _is_today_match, MODEL_VERSION,
+    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
 
@@ -2120,6 +2120,125 @@ async def admin_refresh_real_stats_simple(key: str = ""):
     matches = await fetch_all_matches(db)
     result = await refresh_real_stats_cache(db, matches)
     return result
+
+
+@app.get("/api/admin/diagnose-labels-simple")
+async def admin_diagnose_labels_simple(key: str = ""):
+    """
+    Diagnostic PURE LECTURE (ne modifie rien) : explique precisement
+    pourquoi les picks "Sur" peuvent etre absents du Track Record meme
+    s'ils ont ete affiches et resolus recemment. Verifie separement :
+    1. Combien de picks ont label="safe" en base, tous statuts confondus
+    2. Parmi eux, combien sont resolus (won/lost) vs encore pending
+    3. Parmi les resolus, combien ont model_version == version actuelle
+       (le mode transition du Track Record ne compte QUE cette version)
+    4. Parmi les resolus, combien ont official_track_eligible=True
+    Usage : https://TON-BACKEND/api/admin/diagnose-labels-simple?key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    all_safe = await db.predictions_history.find({"label": "safe"}).to_list(length=20000)
+
+    by_result: Dict[str, int] = {"won": 0, "lost": 0, "pending": 0, "autre": 0}
+    resolved_by_version: Dict[str, int] = {}
+    resolved_official_true = 0
+    resolved_official_false = 0
+    resolved_samples = []
+
+    for d in all_safe:
+        r = d.get("result", "autre")
+        by_result[r] = by_result.get(r, 0) + 1
+        if r in ("won", "lost"):
+            v = d.get("model_version", "inconnu")
+            resolved_by_version[v] = resolved_by_version.get(v, 0) + 1
+            if d.get("official_track_eligible"):
+                resolved_official_true += 1
+            else:
+                resolved_official_false += 1
+            if len(resolved_samples) < 8:
+                resolved_samples.append({
+                    "match": f"{d.get('home_team')} vs {d.get('away_team')}",
+                    "pick": d.get("pick"),
+                    "result": r,
+                    "model_version": d.get("model_version"),
+                    "official_track_eligible": d.get("official_track_eligible"),
+                    "confidence": d.get("confidence"),
+                    "created_at": d.get("created_at"),
+                })
+
+    return {
+        "current_model_version": MODEL_VERSION,
+        "total_label_safe_all_time": len(all_safe),
+        "by_result": by_result,
+        "resolved_by_model_version": resolved_by_version,
+        "resolved_official_track_eligible_true": resolved_official_true,
+        "resolved_official_track_eligible_false": resolved_official_false,
+        "resolved_samples": resolved_samples,
+        "explication": (
+            "Si 'resolved_by_model_version' contient une version differente "
+            "de 'current_model_version', ces picks sont exclus du mode "
+            "transition du Track Record (qui ne compte que la version "
+            "actuelle). Si 'resolved_official_track_eligible_false' est "
+            "eleve alors qu'on n'est PAS en mode transition (20+ picks "
+            "officiels), ces picks sont exclus car ils ne remplissent pas "
+            "les criteres stricts (edge>=2%, 5+ bookmakers, cote 1.20-2.20)."
+        ),
+    }
+
+
+
+async def admin_backfill_labels_simple(key: str = ""):
+    """
+    Retro-remplit le champ "label" (safe/value/risky) des picks historiques
+    qui en sont depourvus — ce champ n'a ete ajoute a la sauvegarde des
+    picks que recemment, laissant tous les picks anterieurs sans
+    classification, meme une fois resolus.
+
+    IMPORTANT — ceci n'est PAS une selection a posteriori : le label est
+    recalcule a partir de la "confidence" DEJA ENREGISTREE au moment de la
+    creation du pick (avant le resultat, jamais modifiee depuis), avec
+    exactement les memes seuils que le moteur actuel (SAFE_THRESHOLD,
+    VALUE_THRESHOLD). Aucun resultat (won/lost) n'est touche — seule la
+    classification manquante est completee, a partir d'une donnee deja
+    figee et non retouchee.
+
+    Usage : https://TON-BACKEND/api/admin/backfill-labels-simple?key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    docs = await db.predictions_history.find({
+        "$or": [{"label": {"$exists": False}}, {"label": None}]
+    }).to_list(length=20000)
+
+    updated = 0
+    skipped_no_confidence = 0
+    for d in docs:
+        conf = d.get("confidence")
+        if conf is None:
+            skipped_no_confidence += 1
+            continue
+        try:
+            conf = float(conf)
+        except (TypeError, ValueError):
+            skipped_no_confidence += 1
+            continue
+        label = "safe" if conf >= SAFE_THRESHOLD else ("value" if conf >= VALUE_THRESHOLD else "risky")
+        await db.predictions_history.update_one(
+            {"signature": d["signature"]},
+            {"$set": {"label": label}},
+        )
+        updated += 1
+
+    return {
+        "ok": True,
+        "checked": len(docs),
+        "updated": updated,
+        "skipped_no_confidence": skipped_no_confidence,
+    }
 
 
 @app.get("/api/admin/diagnose-sport-simple")
