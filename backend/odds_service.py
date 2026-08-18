@@ -526,6 +526,92 @@ async def _fetch_odds_api_io_finished_events(league_slug: str, sport: str = "foo
     return []
 
 
+async def probe_odds_api_io_event(numeric_id: str) -> Dict:
+    """
+    SONDE DE DIAGNOSTIC : interroge l'API odds-api.io SANS aucun filtre de
+    statut, cherche un match precis par son id numerique dans toutes les
+    ligues suivies, et retourne sa reponse BRUTE complete.
+
+    Utilisee pour arreter de deviner la valeur exacte du champ "status"
+    qu'odds-api.io utilise pour un match termine (essais precedents
+    "finished" et "completed" infructueux — voir historique du bug de
+    reconciliation). Permet de voir directement les vrais noms de champs
+    et valeurs pour un match qu'on sait deja termine.
+    """
+    if not ODDS_API_IO_KEY:
+        return {"error": "ODDS_API_IO_KEY absente"}
+
+    all_leagues = [
+        (lg, "football") for lg in ODDS_API_IO_LEAGUES
+    ] + [
+        (lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES
+    ] + [
+        (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
+    ]
+
+    results = {}
+    for league_slug, sport in all_leagues:
+        # Sans aucun parametre "status" — pour voir ce que l'API renvoie par defaut
+        url = f"{ODDS_API_IO_BASE}/events"
+        params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(url, params=params)
+                if r.status_code != 200:
+                    continue
+                data = r.json()
+                if not isinstance(data, list):
+                    continue
+                for evt in data:
+                    if str(evt.get("id")) == str(numeric_id):
+                        return {
+                            "found_in_league": league_slug,
+                            "sport": sport,
+                            "raw_event": evt,
+                            "total_events_returned_for_this_league_no_status_filter": len(data),
+                        }
+                results[league_slug] = len(data)
+        except Exception as e:
+            results[league_slug] = f"erreur: {e}"
+
+    return {
+        "found": False,
+        "detail": "Match non trouve dans aucune ligue suivie, meme sans filtre de statut.",
+        "events_count_per_league_no_status_filter": results,
+    }
+
+
+async def probe_odds_api_io_league_sample(league_slug: str, sport: str = "football") -> Dict:
+    """
+    SONDE : renvoie les evenements bruts d'UNE ligue, sans filtre de statut,
+    pour inspecter directement les valeurs reelles du champ "status" que
+    l'API utilise (plutot que de continuer a deviner "finished"/"completed").
+    """
+    if not ODDS_API_IO_KEY:
+        return {"error": "ODDS_API_IO_KEY absente"}
+    url = f"{ODDS_API_IO_BASE}/events"
+    params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params=params)
+            if r.status_code != 200:
+                return {"error": f"HTTP {r.status_code}", "body": r.text[:500]}
+            data = r.json()
+            if not isinstance(data, list):
+                return {"error": "reponse non-liste", "raw": data}
+            statuses_seen = {}
+            for evt in data:
+                s = evt.get("status", "(absent)")
+                statuses_seen[s] = statuses_seen.get(s, 0) + 1
+            return {
+                "total_events": len(data),
+                "statuses_seen": statuses_seen,
+                "sample_events": data[:5],
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
+
 async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
     """
     Recupere les cotes pour un evenement donne via odds-api.io.
