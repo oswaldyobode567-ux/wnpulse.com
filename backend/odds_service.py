@@ -479,51 +479,79 @@ async def _fetch_odds_api_io_events(league_slug: str, sport: str = "football") -
         logger.warning(f"odds-api.io events [{league_slug}] -> exception: {e}")
 
 
-async def _fetch_odds_api_io_finished_events(league_slug: str, sport: str = "football") -> List[Dict]:
+async def _fetch_odds_api_io_all_events_unfiltered(league_slug: str, sport: str = "football") -> List[Dict]:
     """
-    Variante de _fetch_odds_api_io_events pour les matchs TERMINES.
-
-    CORRECTIF CRITIQUE : _fetch_odds_api_io_events() envoie explicitement
-    "status": "pending" dans la requete a l'API — ce qui signifie que les
-    matchs deja joues ne sont JAMAIS renvoyes par cette fonction, quel que
-    soit le filtre applique cote client apres coup. C'est la vraie cause
-    du bug ou les picks sur des matchs odds-api.io deja termines restaient
-    bloques en "pending" indefiniment : la reconciliation ne recevait
-    simplement jamais ces matchs dans la reponse de l'API.
-
-    Cette fonction envoie "status": "finished" a la place. La valeur exacte
-    attendue par odds-api.io pour ce statut n'a jamais ete confirmee avec
-    un exemple reel (essais successifs : "finished", puis "completed" en
-    repli si le premier ne renvoie rien) — d'ou la tentative sur 2 valeurs
-    possibles avant d'abandonner proprement.
+    Recupere TOUS les evenements d'une ligue, SANS filtre de statut cote
+    requete API — confirme par sonde reelle (probe_odds_api_io_league_sample)
+    que ceci renvoie deja le melange complet pending + settled en une seule
+    reponse, sans qu'il soit necessaire de deviner une valeur de statut a
+    envoyer. Le filtrage se fait cote client, sur le vrai champ "status"
+    (valeur confirmee pour un match termine : "settled" — ni "finished" ni
+    "completed" comme suppose a tort dans des versions precedentes).
     """
     if not ODDS_API_IO_KEY:
         return []
     url = f"{ODDS_API_IO_BASE}/events"
+    params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params=params)
+            if r.status_code != 200:
+                logger.warning(f"odds-api.io events (non filtre) [{league_slug}] -> HTTP {r.status_code}: {r.text[:200]}")
+                return []
+            data = r.json()
+            return data if isinstance(data, list) else []
+    except Exception as e:
+        logger.warning(f"odds-api.io events (non filtre) [{league_slug}] -> exception: {e}")
+        return []
 
-    for status_value in ("finished", "completed"):
-        params = {
-            "apiKey": ODDS_API_IO_KEY,
-            "sport": sport,
-            "league": league_slug,
-            "status": status_value,
-        }
+
+async def _fetch_odds_api_io_finished_events(league_slug: str, sport: str = "football") -> List[Dict]:
+    """
+    Retourne uniquement les evenements TERMINES d'une ligue.
+
+    CORRECTIF FINAL (base sur donnees reelles, plus de suppositions) :
+    - _fetch_odds_api_io_events() envoie "status": "pending" a l'API, donc
+      ne renvoie jamais de match termine (1ere cause du bug).
+    - Les tentatives precedentes avec "status": "finished" puis "completed"
+      envoyes a l'API ont echoue (0 resultat) — valeurs incorrectes.
+    - Sonde reelle (probe_odds_api_io_league_sample) confirmee : la vraie
+      valeur du champ status pour un match termine est "settled". Appeler
+      l'API SANS aucun parametre status renvoie deja le melange complet
+      pending + settled en une seule reponse.
+
+    Filtre donc simplement sur status=="settled" apres un appel sans filtre.
+    Repli supplementaire (filet de securite) : si le statut n'est ni
+    "pending" ni "settled" (valeur non prevue, notamment pour hockey/
+    basketball ou la valeur exacte n'a pas ete confirmee), on considere le
+    match termine si son coup d'envoi date de plus de 4h ET qu'un score est
+    present — evite de rester bloque si un autre sport utilise un libelle
+    de statut different de "settled".
+    """
+    events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport)
+    now = datetime.now(timezone.utc)
+    finished = []
+
+    for evt in events:
+        status = evt.get("status", "")
+        if status == "settled":
+            finished.append(evt)
+            continue
+        if status == "pending":
+            continue
+        # Statut inconnu/inattendu : filet de securite base sur l'heure
         try:
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                r = await http.get(url, params=params)
-                if r.status_code != 200:
-                    logger.warning(
-                        f"odds-api.io finished events [{league_slug}, status={status_value}] "
-                        f"-> HTTP {r.status_code}: {r.text[:200]}"
-                    )
-                    continue
-                data = r.json()
-                if isinstance(data, list) and data:
-                    return data
-        except Exception as e:
-            logger.warning(f"odds-api.io finished events [{league_slug}, status={status_value}] -> exception: {e}")
+            commence_dt = datetime.fromisoformat(str(evt.get("date", "")).replace("Z", "+00:00"))
+            if commence_dt.tzinfo is None:
+                commence_dt = commence_dt.replace(tzinfo=timezone.utc)
+            scores = evt.get("scores") or {}
+            has_score = scores.get("home") is not None and scores.get("away") is not None
+            if (now - commence_dt) > timedelta(hours=4) and has_score:
+                finished.append(evt)
+        except Exception:
+            continue
 
-    return []
+    return finished
 
 
 async def probe_odds_api_io_event(numeric_id: str) -> Dict:
