@@ -524,7 +524,6 @@ async def _fetch_odds_api_io_finished_events(league_slug: str, sport: str = "foo
             logger.warning(f"odds-api.io finished events [{league_slug}, status={status_value}] -> exception: {e}")
 
     return []
-        return []
 
 
 async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
