@@ -62,9 +62,24 @@ ODDS_API_IO_LEAGUES = [
     "denmark-superligaen",
     "brazil-brasileiro-serie-b",
     "italy-coppa-italia",
+    # CORRECTIF : odds-api.io decoupe les qualifications europeennes par
+    # TOUR precis (pas un slug generique "qualification" qui couvrirait
+    # toute la periode de pre-saison). Le slug "...qualification" utilise
+    # avant correspondait a un tour deja termine (0 evenement desormais) —
+    # confirme via le catalogue reel odds-api.io le 18/08/2026 que le tour
+    # actuel (barrage/playoff) porte un slug DIFFERENT :
+    # "international-clubs-uefa-champions-league-playoff-round" (14
+    # evenements confirmes). Garde aussi l'ancien slug "qualification" en
+    # repli, au cas ou un tour anterieur aurait encore des matchs actifs.
     "international-clubs-uefa-champions-league-qualification",
+    "international-clubs-uefa-champions-league-playoff-round",
+    # Non verifies individuellement (deduits par analogie du meme schema de
+    # nommage que la Champions League ci-dessus, a confirmer via le
+    # catalogue reel si aucun match Europa/Conference League n'apparait) :
     "international-clubs-uefa-europa-league-qualification",
+    "international-clubs-uefa-europa-league-playoff-round",
     "international-clubs-uefa-conference-league-qualification",
+    "international-clubs-uefa-conference-league-playoff-round",
 ]
 
 # Hockey — sport distinct, gere separement (voir ODDS_API_IO_HOCKEY_LEAGUES)
