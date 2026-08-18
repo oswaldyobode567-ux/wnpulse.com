@@ -25,6 +25,7 @@ from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
     fetch_odds_api_io_scores_map, diagnose_sport_key,
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
+    ODDS_API_IO_LEAGUES,
 )
 from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
@@ -2121,6 +2122,26 @@ async def admin_refresh_real_stats_simple(key: str = ""):
     matches = await fetch_all_matches(db)
     result = await refresh_real_stats_cache(db, matches)
     return result
+
+
+@app.get("/api/admin/debug-config-simple")
+async def admin_debug_config_simple(key: str = ""):
+    """
+    Affiche directement ce que le serveur EN PRODUCTION a reellement charge
+    en memoire pour ODDS_API_IO_LEAGUES — permet de confirmer avec
+    certitude si un deploiement a bien pris effet, sans avoir a deviner a
+    partir de comportements indirects (utile vu l'historique de
+    deploiements corrompus rencontres sur ce projet).
+    Usage : https://TON-BACKEND/api/admin/debug-config-simple?key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    return {
+        "odds_api_io_leagues_actuellement_chargees": ODDS_API_IO_LEAGUES,
+        "contient_playoff_round_champions_league": "international-clubs-uefa-champions-league-playoff-round" in ODDS_API_IO_LEAGUES,
+        "total_ligues": len(ODDS_API_IO_LEAGUES),
+    }
 
 
 @app.get("/api/admin/probe-oaio-event-simple")
