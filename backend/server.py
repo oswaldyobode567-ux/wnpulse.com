@@ -172,14 +172,6 @@ ADMIN_EMAILS = {
 # ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
 
-# Cache applicatif court : évite de recalculer toutes les prédictions à chaque
-# requête. Le cache est invalidé après chaque refresh des données.
-# CORRECTIF : la calibration empirique (_get_calibration_map) est desormais
-# integree a CE MEME cache/TTL, au lieu d'etre requetee en base (jusqu'a
-# 10 000 documents) a chaque appel de route — avant, /api/matches,
-# /api/predictions/top, /api/matches/{id} interrogeaient chacun MongoDB
-# separement pour la calibration, meme quand le snapshot de predictions
-# etait deja frais en cache. Desormais un seul calcul partage par cycle.
 PREDICTION_CACHE_TTL = int(os.environ.get("PREDICTION_CACHE_TTL", "300"))
 _prediction_cache = {
     "timestamp": 0.0,
@@ -241,7 +233,6 @@ async def register(payload: RegisterPayload):
     is_admin = payload.email.lower() in ADMIN_EMAILS
     user_id = str(uuid.uuid4())
 
-    # Rattache le nouveau compte a son parrain si un code valide est fourni
     referred_by = None
     if payload.referral_code:
         referrer = await db.users.find_one({"referral_code": payload.referral_code.strip().upper()})
@@ -332,22 +323,6 @@ async def _invalidate_prediction_cache():
 
 
 async def _compute_calibration_map() -> Dict[int, Dict]:
-    """
-    Calibration empirique sans sur-ajuster les petits échantillons.
-
-    CORRECTIF : filtre sur MODEL_VERSION (importe depuis prediction_engine,
-    donc toujours synchronise avec la version reellement deployee — "8.2"
-    actuellement) — avant, les picks de generations anterieures du moteur
-    etaient melanges avec les picks recents dans le meme calcul de
-    calibration. Le champ "confidence" n'a pas la meme signification d'une
-    version a l'autre (v8.2 : confidence = vraie probabilite de consensus ;
-    versions anterieures : score composite), ce qui produisait des resultats
-    incoherents. Consequence attendue de ce filtre : l'echantillon repart
-    quasiment a zero a chaque montee de version, le temps d'accumuler au
-    moins 30 resultats par tranche sous la nouvelle version — c'est voulu,
-    une calibration sur des donnees melangees n'aurait aucune valeur
-    predictive fiable.
-    """
     resolved = await db.predictions_history.find(
         {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION},
         {"confidence": 1, "result": 1}
@@ -369,8 +344,6 @@ async def _compute_calibration_map() -> Dict[int, Dict]:
         total = item["total"]
         if total < 30:
             continue
-        # Lissage léger vers la probabilité annoncée pour éviter les sauts
-        # artificiels quand un bucket contient encore peu de données.
         prior = (bucket + 2.5) / 100.0
         calibrated = (item["wins"] + prior * 20.0) / (total + 20.0)
         out[bucket] = {
@@ -382,12 +355,6 @@ async def _compute_calibration_map() -> Dict[int, Dict]:
 
 
 async def _get_prediction_snapshot(force: bool = False) -> Dict:
-    """
-    Snapshot partage (matchs + predictions + vraies stats + calibration),
-    recalcule au maximum une fois toutes les PREDICTION_CACHE_TTL secondes.
-    La calibration est calculee ICI, dans le meme cycle que le reste, plutot
-    que d'etre requetee en base separement a chaque route qui en a besoin.
-    """
     now = time.monotonic()
     async with _prediction_cache_lock:
         if (not force and _prediction_cache["matches"] and
@@ -409,11 +376,6 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
 
 
 async def _get_calibration_map() -> Dict[int, Dict]:
-    """
-    Conserve pour compatibilite (ex: /api/predictions/model-status qui veut
-    la calibration seule, sans forcement recalculer tout le snapshot) — lit
-    depuis le cache partage si frais, recalcule sinon.
-    """
     snapshot = await _get_prediction_snapshot()
     return snapshot["calibration"]
 
@@ -444,23 +406,12 @@ def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) ->
 # ─── Matches & predictions ──────────────────────────────────────────────────
 
 def _merge_match_prediction(match: dict, prediction: dict) -> dict:
-    """Fusionne un match brut avec sa prediction, format attendu par le frontend."""
     merged = dict(match)
     merged["prediction"] = prediction
     return merged
 
 
 def _match_is_finished(match: dict) -> bool:
-    """
-    Determine si un match brut (cache odds_service) est termine, avec la
-    meme regle que prediction_engine._is_finished_match (plus de 4h depuis
-    le coup d'envoi). Utilise pour EXCLURE les matchs termines des vues
-    "pronostics du jour" (Dashboard, /api/predictions/top, Combo Builder)
-    — le cache brut les garde jusqu'a 24h (voir odds_service.py) pour
-    rester consultable dans la section Live/Termine dediee, mais ils ne
-    doivent plus apparaitre dans les listes de pronostics actifs, sous
-    peine de melanger les matchs d'hier avec ceux du jour.
-    """
     ct = match.get("commence_time", "")
     if not ct:
         return False
@@ -475,20 +426,6 @@ def _match_is_finished(match: dict) -> bool:
 
 @app.get("/api/matches")
 async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """
-    Retourne un tableau de matchs avec leur prediction integree. Verrouille
-    le pick pour les comptes gratuits (seul le tout premier match du
-    tableau reste visible), coherent avec /api/predictions/top et
-    /api/builder/matches — cette route n'avait jamais eu cette verification,
-    ce qui laissait passer les picks complets a tous, gratuit ou payant.
-
-    CORRECTIF : les matchs TERMINES sont desormais exclus de ce Dashboard —
-    avant, ils restaient visibles jusqu'a 24h apres coup de sifflet final
-    (meme fenetre que le cache brut dans odds_service.py), ce qui melangeait
-    les pronostics du jour avec des matchs deja joues et creait de la
-    confusion. Ils restent consultables pendant 24h via la section dediee
-    Live/Termine (route /api/scores), mais plus sur le Dashboard principal.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
     predictions = _apply_calibration(
@@ -508,16 +445,7 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
             pred["locked"] = True
             pred["pick"] = None
             pred["pick_odds"] = None
-            # Correctif : "markets" (tous les marches analyses avec picks
-            # et cotes) n'etait jamais vide ici — un compte gratuit pouvait
-            # voir le detail complet payant en inspectant la reponse API
-            # brute (onglet Reseau du navigateur), meme si le frontend
-            # n'affichait rien grace a "locked". Le champ doit etre vide
-            # cote serveur, pas seulement cache cote client.
             pred["markets"] = []
-            # Meme correctif etendu aux nouveaux champs v8.2 : "recommendations"
-            # (jusqu'a 4 marches avec picks/cotes) et "combo_suggestion"
-            # contiennent exactement le meme type de donnees payantes.
             pred["recommendations"] = []
             pred["combo_suggestion"] = None
         else:
@@ -538,7 +466,6 @@ async def get_predictions():
 
 @app.get("/api/predictions/model-status")
 async def get_prediction_model_status():
-    """Expose les métriques de calibration du moteur sans exposer les données privées."""
     snapshot = await _get_prediction_snapshot()
     calibration = snapshot["calibration"]
     resolved = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost"]}})
@@ -557,8 +484,6 @@ async def get_prediction_model_status():
 @app.get("/api/predictions/top")
 async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
-    # CORRECTIF : exclut les matchs termines — meme logique que /api/matches,
-    # is_finished est deja calcule par analyze_match() pour chaque prediction.
     preds = _apply_calibration(
         [dict(p) for p in snapshot["predictions"] if p.get("pick") and not p.get("is_finished")],
         snapshot["calibration"],
@@ -580,31 +505,21 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
                 p["locked"] = True
                 p["pick"] = None
                 p["pick_odds"] = None
-                p["markets"] = []  # meme correctif que /api/matches
+                p["markets"] = []
                 p["recommendations"] = []
                 p["combo_suggestion"] = None
     else:
         for p in preds:
             p["locked"] = False
 
-    return preds
-
-
-@app.get("/api/matches/{match_id}/analysis")
+    return preds@app.get("/api/matches/{match_id}/analysis")
 async def get_match_analysis(match_id: str):
-    """
-    Recherche le match par son id parmi TOUS les matchs en cache (pas seulement
-    ceux retenus par analyze_all), pour eviter les faux "introuvable" quand le
-    match n'a pas de pick valide ou que le cache a legerement change entre deux
-    appels. Recherche aussi sur match_id en secours.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
 
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
 
     if not match:
-        # Repli : certains ids peuvent etre stockes sous une autre cle
         match = next(
             (m for m in matches if str(m.get("match_id", "")) == str(match_id)),
             None,
@@ -626,7 +541,6 @@ async def get_match_analysis(match_id: str):
 
 @app.get("/api/data/status")
 async def get_data_status():
-    """Statut du cache de donnees, utilise pour l'indicateur de connexion."""
     cached = await db.odds_cache.find_one({"_id": "all_matches"})
     if not cached:
         return {"odds_updated_at": None, "count": 0}
@@ -638,7 +552,6 @@ async def get_data_status():
 
 @app.post("/api/data/refresh")
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Force le rafraichissement du cache (authentifie)."""
     result = await refresh_matches_worker(db)
     await _invalidate_prediction_cache()
     return result
@@ -646,7 +559,6 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/data/source-audit")
 async def get_data_source_audit():
-    """Alias attendu par le frontend — infos sur la source/fraicheur des donnees."""
     cached = await db.odds_cache.find_one({"_id": "all_matches"})
     return {
         "updated_at": cached.get("updated_at") if cached else None,
@@ -680,13 +592,6 @@ SUBSCRIPTION_PLANS = [
         "tagline": "Un seul prix. Tout WinPulse. Sans compromis.",
     },
 ]
-
-# NOTE : le plan "elite" a ete retire — palier unique desormais (decision
-# assumee : simplifier le choix a l'inscription plutot que de segmenter les
-# revenus entre 2 paliers, dans une phase ou la priorite est la croissance
-# du nombre d'abonnes). L'id "pro" est conserve tel quel pour ne rien casser
-# dans le reste du code (checkout, approbation admin, etc.) qui reference ce
-# plan_id — seul le contenu du plan a change, pas son identifiant technique.
 
 
 @app.get("/api/subscription/plans")
@@ -725,11 +630,6 @@ async def subscription_checkout(
     payload_in: CheckoutPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Route reellement appelee par PaymentModal.jsx (contrat exact : tier,
-    phone, payer_name). Cree une demande de paiement en attente, avec le
-    numero MoMo et le nom du payeur pour verification manuelle par l'admin.
-    """
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.tier.lower()), None)
     if not plan:
         raise HTTPException(status_code=400, detail="Plan inconnu")
@@ -768,11 +668,6 @@ async def request_subscription_upgrade(
     payload_in: UpgradeRequestPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Cree une demande de mise a niveau en attente et retourne les instructions
-    de paiement MoMo, avec un message WhatsApp pre-rempli a envoyer pour
-    confirmation manuelle par l'admin.
-    """
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.plan_id), None)
     if not plan:
         raise HTTPException(status_code=400, detail="Plan inconnu")
@@ -837,7 +732,6 @@ async def request_subscription_upgrade_alias(
     payload_in: UpgradeRequestPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """Alias de /api/subscription/request-upgrade, nom possible cote frontend."""
     return await request_subscription_upgrade(payload_in, payload)
 
 
@@ -850,7 +744,6 @@ async def _require_admin(payload: dict) -> dict:
 
 @app.get("/api/admin/stats")
 async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
-    """Statistiques globales pour le tableau de bord admin."""
     await _require_admin(payload)
 
     total_users = await db.users.count_documents({})
@@ -875,7 +768,6 @@ async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/admin/users")
 async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
-    """Liste de tous les utilisateurs, pour le panneau admin."""
     await _require_admin(payload)
     users = await db.users.find({}).sort("created_at", -1).to_list(length=500)
     result = []
@@ -891,7 +783,6 @@ async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
     return result
 
 
-# Statuts en francais attendus par le frontend, mappes vers les valeurs internes
 _PAYMENT_STATUS_MAP_FR_TO_EN = {
     "en attente": "pending",
     "approuve": "approved",
@@ -908,10 +799,6 @@ async def admin_get_payments(
     status_filter: str = "en attente",
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Liste des demandes de paiement/abonnement, avec filtre de statut en
-    francais (nom de parametre et valeurs attendues par le frontend).
-    """
     await _require_admin(payload)
     internal_status = _PAYMENT_STATUS_MAP_FR_TO_EN.get(
         status_filter.lower().strip(), status_filter
@@ -926,7 +813,6 @@ async def admin_get_payments(
 # ─── Helpers pour l'envoi de picks (email + WhatsApp) ────────────────────
 
 async def _get_combo_by_tier(tier_key: str) -> Optional[Dict]:
-    """Recupere un combine (safe/balanced/jackpot) a partir des matchs en cache."""
     matches = await fetch_all_matches(db)
     combos = build_multi_combos(matches)
     return combos.get(tier_key)
@@ -1003,14 +889,8 @@ def _build_whatsapp_blast_text(combo: Dict, now_local: datetime) -> str:
 
 @app.get("/api/admin/whatsapp-blast")
 async def admin_whatsapp_blast(payload: dict = Depends(get_current_user_payload)):
-    """
-    CORRECTIF : le format renvoye ici ne correspondait pas a ce qu'attend
-    AdminPage.jsx (blast.date, blast.active_subscribers, blast.combo_total_odds,
-    blast.legs_count, blast.blast_text) — d'ou les tirets "—" affiches partout
-    sur le panneau "Suiveur 7h" meme quand des donnees existaient reellement.
-    """
     await _require_admin(payload)
-    now_local = datetime.now(timezone.utc) + timedelta(hours=1)  # WAT (UTC+1)
+    now_local = datetime.now(timezone.utc) + timedelta(hours=1)
     active_subscribers = await db.users.count_documents({"subscription": {"$ne": "free"}})
     combo = await _get_combo_by_tier("balanced")
 
@@ -1042,7 +922,6 @@ async def admin_broadcast_picks(
     payload_in: BroadcastPicksPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """Envoie le combine du jour (email) a tous les abonnes payants."""
     await _require_admin(payload)
     combo = await _get_combo_by_tier(payload_in.combo_tier)
     if not combo or not combo.get("legs"):
@@ -1070,7 +949,6 @@ async def admin_broadcast_picks(
 
 @app.post("/api/admin/broadcast/free-weekly-teaser")
 async def admin_broadcast_free_teaser(payload: dict = Depends(get_current_user_payload)):
-    """Envoie un teaser hebdomadaire (1 pick visible + reste flouté) aux comptes gratuits."""
     await _require_admin(payload)
     combo = await _get_combo_by_tier("safe")
     if not combo or not combo.get("legs"):
@@ -1093,7 +971,6 @@ async def admin_broadcast_free_teaser(payload: dict = Depends(get_current_user_p
 
 @app.post("/api/admin/test-email")
 async def admin_test_email(payload: dict = Depends(get_current_user_payload)):
-    """Envoie un email de test (avec le vrai combine du jour si disponible) a l'admin lui-meme."""
     user = await _require_admin(payload)
     combo = await _get_combo_by_tier("balanced")
     html = (
@@ -1118,12 +995,6 @@ async def admin_auto_follower_run(
     dry_run: bool = False,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Suiveur automatique 7h : envoie le combine Equilibre du jour aux abonnes
-    payants, une seule fois par jour (dedoublonnage via db.auto_follower_log).
-    dry_run=true : simule sans envoyer, pour previsualiser le nombre de
-    destinataires avant l'envoi reel.
-    """
     await _require_admin(payload)
     combo = await _get_combo_by_tier("balanced")
     if not combo or not combo.get("legs"):
@@ -1243,12 +1114,6 @@ async def get_super_combos():
 
 @app.get("/api/combos/ultra-safe")
 async def get_ultra_safe_combo():
-    """
-    Combine de 2-3 matchs DU JOUR a tres haute confiance (favoris nets
-    uniquement) — memes matchs que l'onglet "Aujourd'hui", pas une fenetre
-    de 7 jours. Voir build_ultra_safe_combo() pour les regles exactes et
-    l'avertissement obligatoire inclus dans la reponse.
-    """
     matches = await fetch_all_matches(db)
     today_matches = [m for m in matches if _is_today_match(m.get("commence_time", ""))]
     return build_ultra_safe_combo(today_matches)
@@ -1264,11 +1129,6 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
             user = await db.users.find_one({"id": payload.get("sub")})
             if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
                 is_paid = True
-        # Comptes gratuits : Booster/Extra/Jackpot restent entierement caches
-        # (comme avant), et seul "Sur" applique un verrouillage par pick
-        # individuel (1er pick visible, le reste verrouille) — pour laisser
-        # entrevoir la valeur sans jamais donner l'integralite du "Sur"
-        # gratuitement, ce qui inciterait moins a l'abonnement.
         if not is_paid:
             for family in result.get("families", {}).values():
                 for tkey, tier in family.get("tiers", {}).items():
@@ -1296,31 +1156,20 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
         }
 
 
-# ─── Alias de routes attendues par le frontend (memes donnees, autres noms) ──
+# ─── Alias de routes attendues par le frontend ──
 
 @app.get("/api/predictions/today-combos")
 async def get_predictions_today_combos_alias(payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """Alias de /api/combos/today, nom attendu par le frontend."""
     return await get_today_combos(payload)
 
 
 @app.get("/api/predictions/combos")
 async def get_predictions_combos_alias():
-    """Alias de /api/combos, nom attendu par le frontend."""
     return await get_combos()
 
 
 @app.get("/api/builder/matches")
 async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """
-    Comptes gratuits : seul le PREMIER pick des 2 PREMIERS MATCHS est
-    deverrouille (1 pick par match, sur 2 matchs differents au total).
-    Tous les autres picks, sur ces 2 matchs et sur tous les matchs
-    suivants, sont entierement verrouilles (marche, pick et cote caches).
-
-    CORRECTIF : exclut les matchs termines, meme logique que /api/matches —
-    on ne construit pas de combine avec un match deja joue.
-    """
     matches = await fetch_all_matches(db)
     matches = [m for m in matches if not _match_is_finished(m)]
     if sport and sport != "all":
@@ -1331,7 +1180,7 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
         user = await db.users.find_one({"id": payload.get("sub")})
         if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
             is_paid = True
-    FREE_UNLOCKED_MATCHES = 2  # nombre de matchs avec 1 pick gratuit visible
+    FREE_UNLOCKED_MATCHES = 2
     result = []
     unlocked_matches_count = 0
     for m in matches:
@@ -1344,8 +1193,6 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
             unlocked_matches_count += 1
         picks = []
         for i, mk in enumerate(raw_picks):
-            # Seul le tout premier marche du match est deverrouille, et
-            # uniquement si ce match fait partie des matchs gratuits
             if is_paid:
                 locked = False
             elif this_match_gets_free_pick and i == 0:
@@ -1372,16 +1219,8 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
             "commence_time": analyzed.get("commence_time"),
             "picks": picks,
         })
-    return {"matches": result}
-
-
-@app.get("/api/builder/stats/{match_id}")
+    return {"matches": result}@app.get("/api/builder/stats/{match_id}")
 async def get_builder_match_stats(match_id: str):
-    """
-    Statistiques detaillees d'un match pour le panneau deplie du Combo
-    Builder : probabilites 1X2 et pourcentages BTTS/over/clean-sheet,
-    derivees des marches deja calcules par analyze_match.
-    """
     matches = await fetch_all_matches(db)
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
     if not match:
@@ -1427,7 +1266,6 @@ async def save_builder_combo(
     payload_in: SaveComboPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """Sauvegarde un combo construit manuellement par l'utilisateur."""
     if not payload_in.legs:
         raise HTTPException(status_code=400, detail="Aucun pick selectionne")
 
@@ -1452,7 +1290,6 @@ async def save_builder_combo(
 
 @app.get("/api/builder/my-combos")
 async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload)):
-    """Combos personnalises sauvegardes par l'utilisateur."""
     saved = await db.user_combos.find({"user_id": payload["sub"]}).sort("created_at", -1).to_list(length=100)
     for s in saved:
         s.pop("_id", None)
@@ -1461,25 +1298,16 @@ async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload
 
 @app.delete("/api/builder/my-combos/{combo_id}")
 async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_current_user_payload)):
-    """Supprime un combo sauvegarde, uniquement s'il appartient a l'utilisateur."""
     result = await db.user_combos.delete_one({"id": combo_id, "user_id": payload["sub"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Combo introuvable")
     return {"ok": True}
 
 
-# NOTE : la route /api/predictions/history reelle (avec historique persiste)
-# est definie plus bas, apres l'implementation du suivi des predictions.
-
-
 # ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
 
 @app.get("/api/matches/{match_id}")
 async def get_single_match(match_id: str):
-    """
-    Le frontend appelle /api/matches/{id} directement (pas /analysis) pour
-    la fiche detail d'un pick. Meme logique de recherche que /analysis.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
 
@@ -1508,11 +1336,6 @@ async def get_single_match(match_id: str):
 
 @app.get("/api/value-bets")
 async def get_value_bets():
-    """
-    Vrais value bets : edge positif (notre probabilite > probabilite
-    implicite du bookmaker), pas juste des picks a haute confiance.
-    Format attendu par le frontend : {"count": N, "bets": [...]}.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
     bets = find_value_bets(matches, min_edge=1.5, limit=30)
@@ -1523,7 +1346,6 @@ async def get_value_bets():
 
 @app.get("/api/plans")
 async def get_plans_alias():
-    """Alias de /api/subscription/plans, nom attendu par le frontend."""
     return SUBSCRIPTION_PLANS
 
 
@@ -1535,17 +1357,11 @@ REFERRAL_REWARD_DAYS = 7
 
 @app.get("/api/referral/me")
 async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
-    """
-    Statut reel de parrainage : compte les comptes effectivement inscrits
-    avec le code de ce user (champ referred_by), et l'etat d'eligibilite/
-    reclamation de la recompense.
-    """
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
     code = user.get("referral_code") or user["id"][:8].upper()
-    # Migration douce : si un vieux compte n'a pas encore de referral_code stocke
     if not user.get("referral_code"):
         await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code}})
 
@@ -1573,14 +1389,6 @@ async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
 
 @app.post("/api/referral/claim")
 async def claim_referral_reward(payload: dict = Depends(get_current_user_payload)):
-    """
-    Reclame la recompense de parrainage (acces Pro) une fois le seuil
-    atteint. Ne peut etre reclamee qu'une seule fois par compte.
-
-    Fixe une date d'expiration reelle a REFERRAL_REWARD_DAYS jours — verifiee
-    automatiquement (a la connexion, sur /api/auth/me, et par balayage
-    quotidien) pour retrograder le compte en "free" une fois expire.
-    """
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
@@ -1605,8 +1413,8 @@ async def claim_referral_reward(payload: dict = Depends(get_current_user_payload
     return {"ok": True, "message": f"{REFERRAL_REWARD_DAYS} jours Pro activés ! 🎉"}
 
 
-TRACK_RECORD_BASE_BANKROLL = 100000  # FCFA, hypothese de depart pour la simulation
-TRACK_RECORD_STAKE_XOF = 1000  # FCFA, mise fixe par pick pour la simulation
+TRACK_RECORD_BASE_BANKROLL = 100000
+TRACK_RECORD_STAKE_XOF = 1000
 
 
 def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
@@ -1623,29 +1431,6 @@ def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
 
 @app.get("/api/track-record")
 async def get_track_record_public(page: int = 1, per_page: int = 20):
-    """
-    Page publique "Nos resultats. Sans triche." — stats reelles et tableau
-    pagine de tous les picks resolus (gagnes/perdus), calcules a partir de
-    db.predictions_history.
-
-    IMPORTANT — transparence sur les hypotheses de calcul :
-    - En regime normal (20+ resultats "official_track_eligible"), seuls les
-      picks marques ainsi au moment de leur creation apparaissent ici —
-      criteres stricts fixes AVANT le resultat : marche reel (jamais
-      synthetique/combo), confiance >= seuil "safe", edge >= 2%, au moins 5
-      bookmakers, cote entre 1.20 et 2.20, publie avant le debut du match.
-    - MODE TRANSITION (< 20 resultats officiels, typiquement en debut de
-      saison avant que les grands championnats n'aient assez joue) : la
-      page bascule automatiquement sur TOUS les picks resolus de la version
-      actuelle du moteur (model_version = MODEL_VERSION), GAGNES ET PERDUS,
-      SANS AUCUN TRI PAR RESULTAT — jamais de selection des seuls picks
-      gagnants. Le champ "transition_mode": true et une note explicite
-      signalent ce mode au frontend, pour que l'utilisateur sache que ces
-      resultats n'ont pas encore ete filtres par les criteres stricts (mais
-      restent 100% complets, aucun resultat n'est cache).
-    - Seuls les picks avec un resultat CONFIRME (won/lost) sont comptes —
-      jamais les picks encore "pending", pour ne pas fausser les chiffres.
-    """
     official_resolved = await db.predictions_history.find(
         {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
     ).to_list(length=5000)
@@ -1653,16 +1438,12 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
     transition_mode = len(official_resolved) < 20
 
     if transition_mode:
-        # Tous les picks resolus de la version actuelle, sans filtre
-        # d'eligibilite ET SANS TRI PAR RESULTAT — gagnes et perdus inclus
-        # integralement, dans l'ordre naturel (aucune selection).
         resolved = await db.predictions_history.find(
             {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
         ).to_list(length=5000)
     else:
         resolved = official_resolved
 
-    # Tri chronologique croissant (pour le graphique de bankroll)
     resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
 
     total = len(resolved)
@@ -1671,7 +1452,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
     odds_list = [r["pick_odds"] for r in resolved if r.get("pick_odds")]
     avg_odds = round(statistics.mean(odds_list), 2) if odds_list else 0
 
-    # ─── Simulation de bankroll (mise fixe) ──────────────────────────────────
     balance = TRACK_RECORD_BASE_BANKROLL
     daily_balance: Dict[str, float] = {}
     for r in resolved:
@@ -1684,9 +1464,8 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         daily_balance[day_key] = balance
 
     chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())]
-    chart = chart[-60:]  # 60 derniers jours avec activite
+    chart = chart[-60:]
 
-    # ─── Serie en cours (picks gagnants consecutifs les plus recents) ────────
     streak = 0
     for r in reversed(resolved):
         if r.get("result") == "won":
@@ -1694,7 +1473,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         else:
             break
 
-    # ─── ROI sur 30 jours (en unites de mise, independant du montant) ────────
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     recent = [
         r for r in resolved
@@ -1706,13 +1484,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         profit_units_30d += (odds - 1) if r.get("result") == "won" else -1
     roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
 
-    # ─── Repartition par niveau de confiance (safe/value/risky) ─────────────
-    # Le label a ete fige AVANT le resultat (au moment de la creation du
-    # pick, jamais recalcule apres coup) — decouper les stats par label n'est
-    # donc pas une selection a posteriori, juste une lecture plus fine d'un
-    # jeu de donnees deja complet et non filtre par resultat. Le chiffre
-    # global (stats.win_rate) reste toujours calcule sur TOUS les resultats,
-    # rien n'est jamais cache dans le tableau ci-dessous.
     by_label: Dict[str, Dict] = {"safe": {"wins": 0, "total": 0}, "value": {"wins": 0, "total": 0}, "risky": {"wins": 0, "total": 0}}
     for r in resolved:
         lbl = r.get("label")
@@ -1744,7 +1515,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         "by_label": by_label_stats,
     }
 
-    # ─── Tableau des resultats, plus recent en premier, pagine ────────────────
     results_desc = list(reversed(resolved))
     start = max(0, (page - 1) * per_page)
     page_items = results_desc[start:start + per_page]
@@ -1761,7 +1531,7 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
             "pick": r.get("pick", ""),
             "odds": odds,
             "status": r.get("result"),
-            "label": r.get("label"),  # safe/value/risky — pour afficher le badge de risque a cote du resultat
+            "label": r.get("label"),
             "profit_xof": profit_xof,
         })
 
@@ -1787,11 +1557,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
 
 @app.get("/api/predictions/history")
 async def get_predictions_history(limit: int = 100, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """
-    Historique reel des picks publies avec leur resultat (gagne/perdu/en attente).
-    Alimente par _save_predictions_to_history() a chaque refresh et reconcilie
-    avec les scores reels par _reconcile_predictions_with_scores().
-    """
     history = await db.predictions_history.find({}).sort("created_at", -1).to_list(length=limit)
     for h in history:
         h.pop("_id", None)
@@ -1800,13 +1565,6 @@ async def get_predictions_history(limit: int = 100, payload: Optional[dict] = De
 
 @app.get("/api/admin/accuracy-stats")
 async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payload)):
-    """
-    Statistiques REELLES de reussite, calculees uniquement sur les picks
-    dont le resultat a ete confirme (won/lost) — jamais sur des picks
-    encore en attente. Casse par tranche de confiance pour verifier si le
-    moteur est bien calibre (ex: les picks a 75% de confiance gagnent-ils
-    vraiment ~75% du temps ?).
-    """
     await _require_admin(payload)
 
     resolved = await db.predictions_history.find(
@@ -1860,14 +1618,6 @@ async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payl
 
 @app.get("/api/admin/clv-stats")
 async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload)):
-    """
-    Statistiques CLV (closing line value) — mesure la valeur reelle detectee
-    par le moteur, independamment du resultat final de chaque match. Un CLV
-    moyen positif et stable dans le temps est la preuve la plus fiable
-    reconnue dans l'industrie des paris qu'un systeme trouve une vraie
-    valeur, plus fiable que le seul taux de reussite. Actuellement limite
-    aux picks du marche h2h (1X2) — voir _update_closing_odds().
-    """
     await _require_admin(payload)
 
     with_clv = await db.predictions_history.find(
@@ -1887,8 +1637,6 @@ async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload))
     clv_values = [p["clv_percent"] for p in with_clv if p.get("clv_percent") is not None]
     positive_count = sum(1 for v in clv_values if v > 0)
 
-    # CLV par version du moteur, pour ne pas melanger les generations —
-    # meme logique de prudence que pour la calibration de confiance.
     by_version: Dict[str, List[float]] = {}
     for p in with_clv:
         v = p.get("model_version", "inconnu")
@@ -1921,12 +1669,6 @@ async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload))
 
 @app.get("/api/admin/diagnose-pending-simple")
 async def admin_diagnose_pending_simple(key: str = ""):
-    """
-    Diagnostic : montre combien de picks 'pending' auraient du etre
-    reconcilies (match deja passe depuis plus de 3h), separes par source
-    (odds-api.io vs The Odds API classique), avec quelques exemples.
-    Usage : https://TON-BACKEND/api/admin/diagnose-pending-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1947,8 +1689,6 @@ async def admin_diagnose_pending_simple(key: str = ""):
     classic_stuck = [p for p in should_be_finished if not p["match_id"].startswith("oaio-")]
 
     def _sample(lst, n=5):
-        # Trie du plus recent au plus ancien pour voir les vrais blocages
-        # actuels, pas seulement les tres vieux matchs deja perdus
         sorted_lst = sorted(lst, key=lambda p: p["commence_time"], reverse=True)
         return [
             {
@@ -1973,11 +1713,6 @@ async def admin_diagnose_pending_simple(key: str = ""):
 
 @app.get("/api/admin/reconcile-results-simple")
 async def admin_reconcile_results_simple(key: str = ""):
-    """
-    Force la reconciliation manuelle des picks avec les scores reels.
-    Usage : https://TON-BACKEND/api/admin/reconcile-results-simple?key=TA_CLE
-    Normalement execute automatiquement par le worker planifie.
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1987,11 +1722,6 @@ async def admin_reconcile_results_simple(key: str = ""):
 
 @app.get("/api/admin/sweep-expired-simple")
 async def admin_sweep_expired_simple(key: str = ""):
-    """
-    Force le balayage manuel des abonnements expires (retrograde en "free").
-    Usage : https://TON-BACKEND/api/admin/sweep-expired-simple?key=TA_CLE
-    Normalement execute automatiquement chaque heure par le worker planifie.
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2011,7 +1741,6 @@ async def get_scores():
 
 @app.post("/api/admin/refresh")
 async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Force le rafraichissement du cache (consomme des credits API)."""
     result = await refresh_matches_worker(db)
     await _invalidate_prediction_cache()
     return result
@@ -2019,12 +1748,6 @@ async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/admin/activate-admin-simple")
 async def admin_activate_admin_simple(email: str = "", key: str = ""):
-    """
-    Active is_admin=true et subscription=elite pour un compte donne, en direct.
-    Contourne la logique d'auto-promotion a la connexion (utile si un compte
-    existait deja avant la configuration de ADMIN_EMAILS).
-    Usage : https://TON-BACKEND/api/admin/activate-admin-simple?email=X&key=TA_CLE_SECRETE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2049,11 +1772,6 @@ async def admin_activate_admin_simple(email: str = "", key: str = ""):
 
 @app.get("/api/admin/test-email-simple")
 async def admin_test_email_simple(to: str = "", key: str = ""):
-    """
-    Envoie un email de test pour verifier que l'integration Resend
-    fonctionne, sans passer par une vraie inscription.
-    Usage : https://TON-BACKEND/api/admin/test-email-simple?to=TON_EMAIL&key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2070,11 +1788,6 @@ async def admin_test_email_simple(to: str = "", key: str = ""):
 
 @app.get("/api/admin/whoami-simple")
 async def admin_whoami_simple(email: str = "", key: str = ""):
-    """
-    Diagnostic simple par lien navigateur, sans besoin de console/token.
-    Usage : https://TON-BACKEND/api/admin/whoami-simple?email=X&key=TA_CLE_SECRETE
-    Montre l'etat exact d'un compte en base (is_admin, subscription, etc.)
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2095,10 +1808,6 @@ async def admin_whoami_simple(email: str = "", key: str = ""):
 
 @app.get("/api/admin/refresh-simple")
 async def admin_refresh_simple(key: str = ""):
-    """
-    Rafraichissement simple via lien navigateur, protege par une cle secrete.
-    Usage : https://TON-BACKEND/api/admin/refresh-simple?key=TA_CLE_SECRETE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2108,14 +1817,6 @@ async def admin_refresh_simple(key: str = ""):
 
 @app.get("/api/admin/refresh-real-stats-simple")
 async def admin_refresh_real_stats_simple(key: str = ""):
-    """
-    Force le rafraichissement du cache de vraies stats football-data.org
-    (forme + H2H reels), independamment du cycle complet. Utile pour tester
-    l'integration sans attendre le prochain refresh planifie de 4h.
-    Retourne aussi le nombre de matchs couverts, pour verifier que le token
-    FOOTBALL_DATA_TOKEN et le mapping des equipes fonctionnent.
-    Usage : https://TON-BACKEND/api/admin/refresh-real-stats-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2126,16 +1827,6 @@ async def admin_refresh_real_stats_simple(key: str = ""):
 
 @app.get("/api/admin/probe-oaio-odds-simple")
 async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
-    """
-    SONDE : interroge directement les cotes d'un evenement odds-api.io
-    precis (endpoint /odds, meme appel que celui utilise en production).
-    Permet de verifier si Bet365 (seul bookmaker autorise par le plan
-    actuel) couvre reellement ce match — si l'evenement existe (confirme
-    par probe-oaio-league-simple) mais que /odds ne renvoie aucune cote
-    Bet365 exploitable, le match est liste cote API mais jamais converti
-    en pick cote site (silencieusement, sans erreur visible).
-    Usage : https://TON-BACKEND/api/admin/probe-oaio-odds-simple?event_id=73394740&key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2152,14 +1843,6 @@ async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
 
 @app.get("/api/admin/debug-config-simple")
 async def admin_debug_config_simple(key: str = ""):
-    """
-    Affiche directement ce que le serveur EN PRODUCTION a reellement charge
-    en memoire pour ODDS_API_IO_LEAGUES — permet de confirmer avec
-    certitude si un deploiement a bien pris effet, sans avoir a deviner a
-    partir de comportements indirects (utile vu l'historique de
-    deploiements corrompus rencontres sur ce projet).
-    Usage : https://TON-BACKEND/api/admin/debug-config-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2172,14 +1855,6 @@ async def admin_debug_config_simple(key: str = ""):
 
 @app.get("/api/admin/probe-oaio-event-simple")
 async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
-    """
-    SONDE : cherche un match odds-api.io precis (par son id numerique, sans
-    le prefixe "oaio-") dans TOUTES les ligues suivies, SANS aucun filtre de
-    statut, et renvoie sa reponse brute complete. Permet de voir les vrais
-    noms de champs et valeurs pour un match qu'on sait deja termine, au lieu
-    de continuer a deviner la valeur du champ "status".
-    Usage : https://TON-BACKEND/api/admin/probe-oaio-event-simple?match_id=71924970&key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2191,11 +1866,6 @@ async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
 
 @app.get("/api/admin/probe-oaio-league-simple")
 async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sport: str = "football", key: str = ""):
-    """
-    SONDE : renvoie tous les evenements bruts d'une ligue odds-api.io (sans
-    filtre de statut), avec un resume des valeurs du champ "status"
-    rencontrees. Usage : https://TON-BACKEND/api/admin/probe-oaio-league-simple?league=denmark-superligaen&key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2205,17 +1875,6 @@ async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sp
 
 @app.get("/api/admin/diagnose-labels-simple")
 async def admin_diagnose_labels_simple(key: str = ""):
-    """
-    Diagnostic PURE LECTURE (ne modifie rien) : explique precisement
-    pourquoi les picks "Sur" peuvent etre absents du Track Record meme
-    s'ils ont ete affiches et resolus recemment. Verifie separement :
-    1. Combien de picks ont label="safe" en base, tous statuts confondus
-    2. Parmi eux, combien sont resolus (won/lost) vs encore pending
-    3. Parmi les resolus, combien ont model_version == version actuelle
-       (le mode transition du Track Record ne compte QUE cette version)
-    4. Parmi les resolus, combien ont official_track_eligible=True
-    Usage : https://TON-BACKEND/api/admin/diagnose-labels-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2281,24 +1940,8 @@ async def admin_diagnose_labels_simple(key: str = ""):
     }
 
 
-
+@app.get("/api/admin/backfill-labels-simple")
 async def admin_backfill_labels_simple(key: str = ""):
-    """
-    Retro-remplit le champ "label" (safe/value/risky) des picks historiques
-    qui en sont depourvus — ce champ n'a ete ajoute a la sauvegarde des
-    picks que recemment, laissant tous les picks anterieurs sans
-    classification, meme une fois resolus.
-
-    IMPORTANT — ceci n'est PAS une selection a posteriori : le label est
-    recalcule a partir de la "confidence" DEJA ENREGISTREE au moment de la
-    creation du pick (avant le resultat, jamais modifiee depuis), avec
-    exactement les memes seuils que le moteur actuel (SAFE_THRESHOLD,
-    VALUE_THRESHOLD). Aucun resultat (won/lost) n'est touche — seule la
-    classification manquante est completee, a partir d'une donnee deja
-    figee et non retouchee.
-
-    Usage : https://TON-BACKEND/api/admin/backfill-labels-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2336,14 +1979,6 @@ async def admin_backfill_labels_simple(key: str = ""):
 
 @app.get("/api/admin/diagnose-sport-simple")
 async def admin_diagnose_sport_simple(sport_key: str = "", key: str = ""):
-    """
-    Diagnostic cible : teste separement chaque etape du pipeline (fetch brut
-    chez The Odds API, filtres qualite, presence dans le cache final servi
-    par /api/matches) pour UN sport_key precis. Permet d'identifier
-    exactement ou un match disparait quand un championnat est confirme
-    present chez The Odds API mais absent du site — plutot que de deviner.
-    Usage : https://TON-BACKEND/api/admin/diagnose-sport-simple?sport_key=soccer_spain_la_liga&key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2355,11 +1990,6 @@ async def admin_diagnose_sport_simple(sport_key: str = "", key: str = ""):
 
 @app.get("/api/admin/update-closing-odds-simple")
 async def admin_update_closing_odds_simple(key: str = ""):
-    """
-    Force le calcul du CLV (closing line value) pour les picks h2h dont le
-    match a deja demarre, sans attendre le prochain cycle planifie de 4h.
-    Usage : https://TON-BACKEND/api/admin/update-closing-odds-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -2368,31 +1998,14 @@ async def admin_update_closing_odds_simple(key: str = ""):
     return result
 
 
-
 # ─── Suivi reel des predictions (backtest continu) ──────────────────────────
 
 def _pick_signature(match_id: str, pick: str) -> str:
-    """Identifiant unique pour eviter de dupliquer le meme pick en historique."""
     import hashlib
     return hashlib.md5(f"{match_id}::{pick}".encode()).hexdigest()
 
 
 async def _save_predictions_to_history(matches: List[Dict]):
-    """
-    Sauvegarde chaque pick publie (confiance suffisante) dans l'historique,
-    UNE SEULE FOIS par match+pick — pour ensuite mesurer la vraie performance
-    dans le temps, sans jamais modifier un pick deja enregistre (integrite
-    de la mesure : on n'ajuste jamais un pick apres coup).
-
-    CORRECTIF v8.2 : "official_track_eligible" est desormais FIGE ici, au
-    moment exact de la creation du pick — jamais recalcule plus tard. En
-    effet, analyze_match() calcule ce champ en fonction de l'heure actuelle
-    (is_live/is_finished) : si on le relisait depuis un nouvel appel a
-    analyze_match() une fois le match commence ou termine, un pick eligible
-    au moment de sa publication deviendrait a tort "non eligible" pour le
-    Track Record juste parce que le match a demarre entre temps. La valeur
-    stockee en base est donc la source de verite definitive pour ce pick.
-    """
     try:
         real_stats_map = await get_real_stats_map(db, matches)
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
@@ -2402,7 +2015,7 @@ async def _save_predictions_to_history(matches: List[Dict]):
             sig = _pick_signature(p["match_id"], p["pick"])
             existing = await db.predictions_history.find_one({"signature": sig})
             if existing:
-                continue  # deja enregistre, on ne touche pas (integrite de la mesure)
+                continue
 
             await db.predictions_history.insert_one({
                 "signature": sig,
@@ -2415,7 +2028,7 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "market": p.get("market"),
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
-                "label": p.get("label"),  # safe/value/risky — fige au moment du pick, jamais recalcule apres coup
+                "label": p.get("label"),
                 "model_probability": p.get("model_probability"),
                 "estimated_win_probability": p.get("estimated_win_probability"),
                 "wp_score": p.get("wp_score"),
@@ -2426,9 +2039,8 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "edge": p.get("edge"),
                 "model_version": p.get("model_version", MODEL_VERSION),
                 "is_combo": p.get("is_combo", False),
-                # Fige definitivement au moment de la creation — voir docstring.
                 "official_track_eligible": bool(p.get("official_track_eligible", False)),
-                "result": "pending",  # pending -> won / lost apres reconciliation
+                "result": "pending",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
     except Exception:
@@ -2436,13 +2048,6 @@ async def _save_predictions_to_history(matches: List[Dict]):
 
 
 def _find_current_h2h_odds(match: Dict, pick_text: str, home: str, away: str) -> Optional[float]:
-    """
-    Cherche la meilleure cote actuelle (parmi les bookmakers du match en
-    cache) pour le meme outcome 1X2 que le pick original. Utilise pour le
-    CLV tracking — uniquement les picks sur le marche h2h pour l'instant
-    (le plus simple a matcher de facon fiable ; les autres marches pourront
-    etre ajoutes plus tard sur le meme principe).
-    """
     pick_l = (pick_text or "").lower()
     if "nul" in pick_l or pick_l.strip() == "match nul":
         target_name = "Draw"
@@ -2467,28 +2072,6 @@ def _find_current_h2h_odds(match: Dict, pick_text: str, home: str, away: str) ->
 
 
 async def _update_closing_odds(matches: List[Dict]) -> Dict:
-    """
-    CLV tracking (closing line value) : pour chaque pick encore "pending"
-    dont le match a deja commence (donc la cote n'evoluera plus), fige la
-    derniere cote vue chez les bookmakers comme "cote de cloture" et calcule
-    l'ecart avec la cote au moment ou le pick a ete publie.
-
-    Pourquoi c'est une mesure utile et honnete : le CLV (closing line value)
-    est reconnu dans l'industrie des paris comme l'indicateur le plus
-    fiable de la vraie valeur d'un systeme de pronostics — plus fiable que
-    le seul taux de reussite, car il compare directement le jugement du
-    modele a celui du marche au moment ou ce dernier dispose du plus
-    d'informations (juste avant le coup d'envoi). Un CLV positif repete
-    dans le temps est la preuve la plus solide qu'un systeme detecte une
-    vraie valeur, independamment de la chance sur un match donne.
-
-    Limite actuelle assumee : uniquement les picks sur le marche "h2h"
-    (1X2) sont couverts pour l'instant — c'est le marche le plus simple a
-    matcher de facon fiable entre le pick original et les cotes actuelles.
-    Les autres marches (totals, btts, double chance...) restent hors CLV
-    tracking pour le moment, plutot que de risquer un matching approximatif
-    qui fausserait la mesure.
-    """
     now = datetime.now(timezone.utc)
     match_by_id = {m.get("id"): m for m in matches}
 
@@ -2503,7 +2086,7 @@ async def _update_closing_odds(matches: List[Dict]) -> Dict:
         try:
             ct = _parse_iso(pred.get("commence_time"))
             if not ct or ct > now:
-                continue  # match pas encore commence, cote pas encore figee
+                continue
 
             match = match_by_id.get(pred.get("match_id"))
             if not match:
@@ -2535,18 +2118,6 @@ async def _update_closing_odds(matches: List[Dict]) -> Dict:
 
 
 async def _reconcile_predictions_with_scores() -> Dict:
-    """
-    Compare les picks "pending" avec les scores reels des matchs termines,
-    et met a jour leur resultat (won/lost). Ne touche jamais un pick deja
-    reconcilie — integrite de la mesure.
-
-    Deux sources de scores :
-    - The Odds API (fetch_all_scores) pour les match_id "classiques"
-    - odds-api.io (fetch_odds_api_io_scores_map) pour les match_id
-      prefixes "oaio-" (qualifications UEFA, ligues mineures, hockey,
-      basketball) — sans ca, ces picks restaient indefiniment "pending"
-      car The Odds API n'a aucune connaissance de ces matchs.
-    """
     pending = await db.predictions_history.find({"result": "pending"}).to_list(length=1000)
     if not pending:
         return {"ok": True, "checked": 0, "updated": 0}
@@ -2600,15 +2171,6 @@ async def _reconcile_predictions_with_scores() -> Dict:
 
 
 def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
-    """
-    Determine si un pick a gagne ou perdu, a partir du score final. Couvre
-    uniquement ce qui est deductible du score (buts) : h2h, totals/over-under,
-    btts, double chance, remboursement si nul, clean sheets. Retourne None
-    pour tout le reste (corners, cartons, mi-temps, combos) — ces marches
-    necessiteraient une source de donnees que nous n'avons pas (nombre reel
-    de corners/cartons), et resteront "pending" indefiniment plutot que
-    d'inventer un resultat.
-    """
     import re
 
     pick = (pred.get("pick") or "").lower()
@@ -2626,8 +2188,6 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
             return "won" if home_score == away_score else "lost"
 
     if market in ("totals", "syn_over_25", "syn_over_15") or "plus de" in pick or "moins de" in pick:
-        # Extrait le seuil numerique directement du texte (ex: "2.5" dans
-        # "Plus de 2.5 buts"), car pick_point n'est pas fiable/transmis.
         match_num = re.search(r"(\d+(?:\.\d+)?)", pick)
         if match_num:
             threshold = float(match_num.group(1))
@@ -2652,9 +2212,6 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
             return "won" if home_score != away_score else "lost"
 
     if market in ("draw_no_bet", "syn_draw_no_bet"):
-        # En cas de match nul, la mise est remboursee — ni gagne ni perdu.
-        # On laisse "pending" plutot que d'inventer un resultat force, car
-        # notre systeme ne gere pas de statut "rembourse" separe.
         if home_score == away_score:
             return None
         if home.lower() in pick:
@@ -2668,8 +2225,6 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     if market in ("syn_clean_sheet_away",):
         return "won" if home_score == 0 else "lost"
 
-    # Marches non couverts automatiquement (combo, corners, cartons, mi-temps...)
-    # restent "pending" — pas de fausse estimation.
     return None
 
 
@@ -2679,25 +2234,17 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 async def _full_refresh_and_track():
-    """Refresh les donnees, sauvegarde les nouveaux picks, reconcilie les anciens."""
     matches = await refresh_matches_worker(db)
     all_matches = await fetch_all_matches(db)
-    # Vraies stats football-data.org (forme + H2H reels) pour les 12 grandes
-    # ligues couvertes par le plan gratuit — vient EN PLUS des cotes
-    # existantes (The Odds API, odds-api.io, BSD), ne les remplace jamais.
     try:
         await refresh_real_stats_cache(db, all_matches)
     except Exception:
-        pass  # ne doit jamais bloquer le refresh principal des cotes
+        pass
     await _save_predictions_to_history(all_matches)
-    # CLV tracking : fige la cote de cloture des picks h2h dont le match a
-    # demarre, AVANT la reconciliation des resultats — l'ordre n'a pas
-    # d'importance fonctionnelle ici, mais autant capter le CLV le plus tot
-    # possible apres le coup d'envoi pour une mesure precise.
     try:
         await _update_closing_odds(all_matches)
     except Exception:
-        pass  # ne doit jamais bloquer le refresh principal
+        pass
     await _reconcile_predictions_with_scores()
     await _invalidate_prediction_cache()
     return matches
@@ -2705,20 +2252,11 @@ async def _full_refresh_and_track():
 
 @app.on_event("startup")
 async def startup_event():
-    # Refresh complet automatique toutes les 4h (00h, 04h, 08h, 12h, 16h, 20h UTC)
-    # — plus besoin de forcer manuellement, toutes les sources (The Odds API,
-    # odds-api.io, BSD) se synchronisent ensemble a chaque cycle. Frequence
-    # choisie comme compromis : suffisamment frequent pour rester a jour sans
-    # exploser la consommation de credits The Odds API (facture au volume).
     scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour="*/4", minute=0)
-    # Reconciliation supplementaire toutes les 2h pour capter les matchs
-    # termines entre deux refresh complets, sans consommer de credit odds
     scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
-    # Balayage horaire des abonnements expires (retrograde en "free")
     scheduler.add_job(lambda: _sweep_expired_subscriptions(), "cron", minute=30)
     scheduler.start()
 
-    # Premier fetch si cache vide (ne consomme des credits que si absent)
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
     if not existing:
         await _full_refresh_and_track()
