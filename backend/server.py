@@ -2124,6 +2124,32 @@ async def admin_refresh_real_stats_simple(key: str = ""):
     return result
 
 
+@app.get("/api/admin/probe-oaio-odds-simple")
+async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
+    """
+    SONDE : interroge directement les cotes d'un evenement odds-api.io
+    precis (endpoint /odds, meme appel que celui utilise en production).
+    Permet de verifier si Bet365 (seul bookmaker autorise par le plan
+    actuel) couvre reellement ce match — si l'evenement existe (confirme
+    par probe-oaio-league-simple) mais que /odds ne renvoie aucune cote
+    Bet365 exploitable, le match est liste cote API mais jamais converti
+    en pick cote site (silencieusement, sans erreur visible).
+    Usage : https://TON-BACKEND/api/admin/probe-oaio-odds-simple?event_id=73394740&key=TA_CLE
+    """
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Parametre 'event_id' requis")
+    from odds_service import _fetch_odds_api_io_odds
+    result = await _fetch_odds_api_io_odds(event_id)
+    return {
+        "event_id": event_id,
+        "raw_odds_response": result,
+        "a_des_cotes_bet365": bool(result and result.get("bookmakers")),
+    }
+
+
 @app.get("/api/admin/debug-config-simple")
 async def admin_debug_config_simple(key: str = ""):
     """
