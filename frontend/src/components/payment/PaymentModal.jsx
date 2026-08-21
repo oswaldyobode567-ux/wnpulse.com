@@ -22,13 +22,6 @@ import {
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
 
-// CORRECTIF : ce fichier avait son PROPRE TIER_CONFIG code en dur (Pro a
-// 4 900 FCFA, Elite a 14 900 FCFA — un plan Elite qui n'existe meme plus
-// depuis le passage a un palier unique a 6 500 FCFA cote backend). C'est
-// cette incoherence precise qui faisait que le prix affiche au clic ne
-// correspondait jamais au vrai montant facture. Desormais, le plan reel
-// (nom, prix, avantages) est recupere dynamiquement depuis /api/plans au
-// chargement du modal — plus aucun prix ni nom de palier code en dur ici.
 const FALLBACK_TIER = {
   label: "Pro",
   price: 6500,
@@ -57,10 +50,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const navigate = useNavigate();
   const { user, refresh } = useAuth();
 
-  // Recupere le VRAI plan (nom/prix/avantages) depuis le backend — plus
-  // aucune valeur codee en dur ici. Comme il n'existe plus qu'un seul
-  // palier, targetTier n'est conserve que pour compatibilite d'appel mais
-  // n'affecte plus le prix affiche : c'est toujours le plan reel qui prime.
   const [plan, setPlan] = useState(FALLBACK_TIER);
   const [planId, setPlanId] = useState("pro");
   useEffect(() => {
@@ -77,13 +66,13 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
           perks: Array.isArray(p.features) && p.features.length ? p.features : FALLBACK_TIER.perks,
         });
       })
-      .catch(() => {}); // silencieux : le fallback ci-dessus reste utilisable
+      .catch(() => {});
   }, []);
 
   const tier = plan;
   const TierIcon = tier.icon;
 
-  const [step, setStep] = useState(1); // 1 summary, 2 instructions, 3 confirmation
+  const [step, setStep] = useState(1);
   const [reference, setReference] = useState("");
   const [phone, setPhone] = useState("");
   const [payerName, setPayerName] = useState("");
@@ -91,7 +80,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const [confirmed, setConfirmed] = useState(false);
   const [acceptedTerms, setAcceptedTerms] = useState(false);
 
-  // Reset whenever the modal is opened/closed or tier changes
   useEffect(() => {
     if (isOpen) {
       setStep(1);
@@ -146,19 +134,14 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
     }
     setSubmitting(true);
     try {
-      // CORRECTIF : envoie toujours planId (recupere du backend), jamais
-      // targetTier — au cas ou un appelant passerait encore "ELITE" par
-      // habitude, ca n'enverrait plus un plan_id inexistant au backend.
       const { data } = await api.post("/subscription/checkout", {
         tier: planId,
         phone: phone.trim(),
         payer_name: payerName.trim(),
       });
-      // Use server-issued reference if returned (already PE-XXXXXXXX), else keep local
       if (data?.reference) setReference(data.reference);
       setStep(2);
     } catch (err) {
-      // Record fails (e.g. offline) — fall back to local ref so user can still pay manually
       toast.warning("Connexion limitée — vous pouvez quand même payer, prévenez-nous via WhatsApp.");
       setStep(2);
     } finally {
@@ -174,19 +157,18 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
   const markPaid = () => {
     setConfirmed(true);
     setStep(3);
-    // Refresh user in background — admin will activate after verification
     refresh?.();
   };
 
   return (
     <Dialog open={isOpen} onOpenChange={(v) => !v && handleClose()}>
       <DialogContent className="max-w-lg p-0 overflow-hidden" data-testid="payment-modal">
-        {/* Gradient header */}
         <div className={`relative bg-gradient-to-br ${tier.accent} px-6 pt-6 pb-5 text-white`}>
           <div className="flex items-center gap-3">
             <div className="h-11 w-11 rounded-xl bg-white/15 backdrop-blur-sm grid place-items-center ring-1 ring-white/25">
               <TierIcon className="h-5 w-5" />
-            </div>  <div>
+            </div>
+            <div>
               <DialogHeader className="space-y-0 text-left">
                 <DialogTitle className="text-white font-heading text-xl font-extrabold tracking-tight" data-testid="payment-modal-title">
                   Activer le plan {tier.label}
@@ -197,7 +179,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
               </DialogHeader>
             </div>
           </div>
-          {/* Stepper */}
           <div className="mt-5 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider">
             {[1, 2, 3].map((s) => (
               <div key={s} className="flex items-center gap-2 flex-1">
@@ -215,9 +196,9 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                 {s < 3 && <div className="flex-1 h-px bg-white/20" />}
               </div>
             ))}
-          </div>   </div>
+          </div>
+        </div>
         <div className="px-6 py-5 bg-white">
-          {/* STEP 1 — Summary */}
           {step === 1 && (
             <div className="space-y-5" data-testid="payment-step-1">
               <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-4">
@@ -272,7 +253,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                 <ShieldCheck className="h-3.5 w-3.5 text-emerald-500" />
                 Aucune carte requise · Validation manuelle par notre équipe sous 1h
               </div>
-              {/* No-refund consent checkbox */}
               <label className="flex items-start gap-2 cursor-pointer rounded-lg border border-amber-200 bg-amber-50/60 p-3 hover:bg-amber-50 transition-colors">
                 <input
                   type="checkbox"
@@ -305,9 +285,9 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                     </>
                   )}
                 </Button>
-              </div>      </div>
+              </div>
+            </div>
           )}
-          {/* STEP 2 — Instructions */}
           {step === 2 && (
             <div className="space-y-4" data-testid="payment-step-2">
               <div className="rounded-xl border-2 border-amber-300 bg-gradient-to-br from-amber-50 to-yellow-50 p-4 shadow-sm">
@@ -365,7 +345,6 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
               </div>
             </div>
           )}
-          {/* STEP 3 — Confirmation */}
           {step === 3 && (
             <div className="space-y-4 text-center py-2" data-testid="payment-step-3">
               <div className="mx-auto h-16 w-16 rounded-full bg-emerald-50 grid place-items-center ring-4 ring-emerald-100">
@@ -384,7 +363,8 @@ export default function PaymentModal({ isOpen, onClose, targetTier = "PRO" }) {
                 <div className="flex justify-between"><span>Référence</span><span className="font-mono font-semibold text-slate-900">{reference}</span></div>
               </div>
               <div className="flex flex-col sm:flex-row gap-2">
-                <a       href={whatsappUrl}
+                
+                  href={whatsappUrl}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex-1 flex items-center justify-center gap-2 rounded-lg bg-[#25D366] hover:bg-[#1ebe5c] text-white font-bold py-2.5 transition-colors text-sm"
