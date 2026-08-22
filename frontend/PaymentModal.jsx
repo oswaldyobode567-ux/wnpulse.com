@@ -24,3 +24,4 @@ import { useAuth } from "@/contexts/AuthContext";
 
 // CORRECTIF : ce fichier avait son PROPRE TIER_CONFIG code en dur (Pro a
 // 4 900 FCFA, Elite a 1
+
