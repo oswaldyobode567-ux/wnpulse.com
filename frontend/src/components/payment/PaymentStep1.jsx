@@ -1,3 +1,5 @@
+"use client";
+
 import { ArrowRight, CheckCircle2, ShieldCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -20,18 +22,20 @@ import { Loader2 } from "lucide-react";
  * @param {Function} props.onCancel - Cancel button handler
  */
 export function PaymentStep1({
-  tier,
-  reference,
-  phone,
-  payerName,
-  acceptedTerms,
-  submitting,
-  onPhoneChange,
-  onNameChange,
-  onTermsChange,
-  onContinue,
-  onCancel,
+  tier = { price: 0, perks: [], accent: "from-orange-500 to-amber-500" },
+  reference = "",
+  phone = "",
+  payerName = "",
+  acceptedTerms = false,
+  submitting = false,
+  onPhoneChange = () => {},
+  onNameChange = () => {},
+  onTermsChange = () => {},
+  onContinue = () => {},
+  onCancel = () => {},
 }) {
+  const amount = Number(tier?.price ?? 0);
+
   return (
     <div className="space-y-5" data-testid="payment-step-1">
       {/* Price Summary */}
@@ -49,7 +53,7 @@ export function PaymentStep1({
             className="font-heading text-4xl font-black text-slate-900 tracking-tighter"
             data-testid="payment-amount"
           >
-            {tier.price.toLocaleString("fr-FR")}
+            {amount.toLocaleString("fr-FR")}
           </span>
           <span className="text-sm text-slate-500 font-medium">FCFA</span>
         </div>
@@ -66,7 +70,7 @@ export function PaymentStep1({
 
       {/* Perks List */}
       <ul className="space-y-2">
-        {tier.perks?.map((perk, i) => (
+        {tier?.perks?.map((perk, i) => (
           <li
             key={i}
             className="flex items-start gap-2 text-sm text-slate-700"
