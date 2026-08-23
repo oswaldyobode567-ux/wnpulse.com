@@ -42,12 +42,27 @@ COMPETITION_MAP = {
     "soccer_italy_serie_a": "SA",
     "soccer_france_ligue_one": "FL1",
     "soccer_uefa_champs_league": "CL",
-    "soccer_uefa_europa_league": "EL",
     "soccer_fifa_world_cup": "WC",
     "soccer_netherlands_eredivisie": "DED",
     "soccer_portugal_primeira_liga": "PPL",
-    "soccer_conmebol_copa_libertadores": "CLI",
     "soccer_brazil_campeonato": "BSA",
+    # NOTE : "EL" (Europa League) et "CLI" (Copa Libertadores) retires —
+    # verification faite (aout 2026) : ils NE font PAS partie des 12
+    # competitions du plan gratuit football-data.org, contrairement a ce
+    # qui etait suppose ici avant. Les garder aurait fait echouer
+    # silencieusement chaque appel pour ces competitions (0 vraie donnee
+    # recuperee, fallback sur l'estimation, sans jamais planter — mais
+    # sans jamais donner de vraie donnee non plus).
+    #
+    # LIMITE ASSUMEE ET CONFIRMEE : le plan gratuit ne couvre QUE ces 10
+    # championnats — aucune ligue scandinave (Norvege, Suede, Danemark),
+    # aucune qualification UEFA, aucune ligue mineure. Tant que les grands
+    # championnats n'ont pas repris pleinement, la tres grande majorite des
+    # matchs actifs sur le site (odds-api.io : ligues scandinaves,
+    # qualifications UEFA) n'auront jamais de vraies statistiques via cette
+    # source — c'est une limite du plan gratuit, pas un bug. Passer sur une
+    # API payante (ex: API-Football) est la seule vraie solution pour
+    # couvrir ces competitions.
 }
 
 
