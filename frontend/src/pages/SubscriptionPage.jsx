@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { CheckCircle2, Crown, Zap } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
-import PaymentModal from "../../PaymentModal";
+import PaymentModal from "@/components/payment/PaymentModal";
 export default function SubscriptionPage() {
   const { user } = useAuth();
   const [plans, setPlans] = useState([]);
