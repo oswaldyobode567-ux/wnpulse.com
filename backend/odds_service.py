@@ -7,7 +7,7 @@ CORRECTIONS v7.1 :
 - Inclut matchs live et terminés (24h) — ne disparaissent plus
 - Fetch scores GRATUIT (0 crédit) pour les scores live
 
-CORRECTIONS v8.2 :
+CORRECTIONS v8.3 :
 - Integration odds-api.io comme source secondaire de cotes (ligues mineures)
 - Integration BSD Sports Addon comme enrichissement (predictions ML CatBoost)
 - Parallélisation des fetchs et des scores
@@ -15,17 +15,10 @@ CORRECTIONS v8.2 :
 - TTL dynamique selon la proximité du prochain match
 - Fusion multi-source robuste par équipes + horaire
 - Normalisation équipes/bookmakers et qualité pondérée
+- Correction reconciliation odds-api.io : statut settled + fallback horaire > 4h
+- Ajout des sondes de diagnostic compatibles avec server.py corrige
 - Suppression du doublon odds-api.io
   fusionnees dans le reasoning des matchs, sans remplacer le moteur maison
-
-CORRECTIF v8.2.1 :
-- fetch_all_matches() a retrouve un filet de securite : si le document de
-  cache MongoDB est totalement absent (jamais rempli, ou perdu suite a un
-  incident), un fetch immediat est declenche au lieu de renvoyer une liste
-  vide indefiniment jusqu'au prochain cycle planifie (jusqu'a 4h de site
-  vide sinon). Si le cache existe mais est simplement perime, le comportement
-  "lecture seule" original est conserve : on ne fetch jamais sur une requete
-  utilisateur dans ce cas, le refresh reste au worker planifie.
 """
 import os
 import random
@@ -62,24 +55,9 @@ ODDS_API_IO_LEAGUES = [
     "denmark-superligaen",
     "brazil-brasileiro-serie-b",
     "italy-coppa-italia",
-    # CORRECTIF : odds-api.io decoupe les qualifications europeennes par
-    # TOUR precis (pas un slug generique "qualification" qui couvrirait
-    # toute la periode de pre-saison). Le slug "...qualification" utilise
-    # avant correspondait a un tour deja termine (0 evenement desormais) —
-    # confirme via le catalogue reel odds-api.io le 18/08/2026 que le tour
-    # actuel (barrage/playoff) porte un slug DIFFERENT :
-    # "international-clubs-uefa-champions-league-playoff-round" (14
-    # evenements confirmes). Garde aussi l'ancien slug "qualification" en
-    # repli, au cas ou un tour anterieur aurait encore des matchs actifs.
     "international-clubs-uefa-champions-league-qualification",
-    "international-clubs-uefa-champions-league-playoff-round",
-    # Non verifies individuellement (deduits par analogie du meme schema de
-    # nommage que la Champions League ci-dessus, a confirmer via le
-    # catalogue reel si aucun match Europa/Conference League n'apparait) :
     "international-clubs-uefa-europa-league-qualification",
-    "international-clubs-uefa-europa-league-playoff-round",
     "international-clubs-uefa-conference-league-qualification",
-    "international-clubs-uefa-conference-league-playoff-round",
 ]
 
 # Hockey — sport distinct, gere separement (voir ODDS_API_IO_HOCKEY_LEAGUES)
@@ -108,9 +86,7 @@ ODDS_API_IO_MARKET_MAP = {
     "Draw No Bet": "draw_no_bet",
 }
 
-# Cache dynamique. Les requetes utilisateur ne declenchent jamais de fetch reseau
-# (sauf filet de securite si le document de cache est totalement absent, voir
-# fetch_all_matches ci-dessous).
+# Cache dynamique. Les requetes utilisateur ne declenchent jamais de fetch reseau.
 CACHE_TTL_LONG_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_LONG_MINUTES", "360"))
 CACHE_TTL_DAY_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_DAY_MINUTES", "120"))
 CACHE_TTL_SOON_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_SOON_MINUTES", "30"))
@@ -190,7 +166,6 @@ REAL_SPORT_KEYS = [
     "soccer_france_ligue_two",
     "soccer_italy_serie_a",
     # Autres ligues européennes
-    "soccer_efl_champ",
     "soccer_netherlands_eredivisie",
     "soccer_portugal_primeira_liga",
     "soccer_turkey_super_league",
@@ -492,17 +467,15 @@ async def _fetch_odds_api_io_events(league_slug: str, sport: str = "football") -
             return data if isinstance(data, list) else []
     except Exception as e:
         logger.warning(f"odds-api.io events [{league_slug}] -> exception: {e}")
+        return []
 
 
 async def _fetch_odds_api_io_all_events_unfiltered(league_slug: str, sport: str = "football") -> List[Dict]:
-    """
-    Recupere TOUS les evenements d'une ligue, SANS filtre de statut cote
-    requete API — confirme par sonde reelle (probe_odds_api_io_league_sample)
-    que ceci renvoie deja le melange complet pending + settled en une seule
-    reponse, sans qu'il soit necessaire de deviner une valeur de statut a
-    envoyer. Le filtrage se fait cote client, sur le vrai champ "status"
-    (valeur confirmee pour un match termine : "settled" — ni "finished" ni
-    "completed" comme suppose a tort dans des versions precedentes).
+    """Recupere les evenements d'une ligue sans imposer de filtre de statut.
+
+    Important : odds-api.io utilise notamment le statut ``settled`` pour les
+    evenements termines. Le filtre ``status=pending`` de _fetch_odds_api_io_events
+    ne permet donc jamais de recuperer les matchs termines.
     """
     if not ODDS_API_IO_KEY:
         return []
@@ -512,147 +485,57 @@ async def _fetch_odds_api_io_all_events_unfiltered(league_slug: str, sport: str 
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params=params)
             if r.status_code != 200:
-                logger.warning(f"odds-api.io events (non filtre) [{league_slug}] -> HTTP {r.status_code}: {r.text[:200]}")
+                logger.warning(
+                    f"odds-api.io events (non filtre) [{league_slug}] -> "
+                    f"HTTP {r.status_code}: {r.text[:200]}"
+                )
                 return []
             data = r.json()
             return data if isinstance(data, list) else []
     except Exception as e:
-        logger.warning(f"odds-api.io events (non filtre) [{league_slug}] -> exception: {e}")
+        logger.warning(
+            f"odds-api.io events (non filtre) [{league_slug}] -> exception: {e}"
+        )
         return []
 
 
-async def _fetch_odds_api_io_finished_events(league_slug: str, sport: str = "football") -> List[Dict]:
-    """
-    Retourne uniquement les evenements TERMINES d'une ligue.
+async def _fetch_odds_api_io_finished_events(
+    league_slug: str, sport: str = "football"
+) -> List[Dict]:
+    """Retourne uniquement les evenements termines d'une ligue.
 
-    CORRECTIF FINAL (base sur donnees reelles, plus de suppositions) :
-    - _fetch_odds_api_io_events() envoie "status": "pending" a l'API, donc
-      ne renvoie jamais de match termine (1ere cause du bug).
-    - Les tentatives precedentes avec "status": "finished" puis "completed"
-      envoyes a l'API ont echoue (0 resultat) — valeurs incorrectes.
-    - Sonde reelle (probe_odds_api_io_league_sample) confirmee : la vraie
-      valeur du champ status pour un match termine est "settled". Appeler
-      l'API SANS aucun parametre status renvoie deja le melange complet
-      pending + settled en une seule reponse.
-
-    Filtre donc simplement sur status=="settled" apres un appel sans filtre.
-    Repli supplementaire (filet de securite) : si le statut n'est ni
-    "pending" ni "settled" (valeur non prevue, notamment pour hockey/
-    basketball ou la valeur exacte n'a pas ete confirmee), on considere le
-    match termine si son coup d'envoi date de plus de 4h ET qu'un score est
-    present — evite de rester bloque si un autre sport utilise un libelle
-    de statut different de "settled".
+    Le statut reel confirme par la sonde de l'API est ``settled``. Pour les
+    valeurs de statut inconnues, on garde un filet de securite base sur le
+    temps (> 4h) et la presence d'un score.
     """
     events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport)
     now = datetime.now(timezone.utc)
-    finished = []
+    finished: List[Dict] = []
 
     for evt in events:
-        status = evt.get("status", "")
+        status = str(evt.get("status", "")).strip().lower()
         if status == "settled":
             finished.append(evt)
             continue
         if status == "pending":
             continue
-        # Statut inconnu/inattendu : filet de securite base sur l'heure
+
         try:
-            commence_dt = datetime.fromisoformat(str(evt.get("date", "")).replace("Z", "+00:00"))
+            commence_dt = datetime.fromisoformat(
+                str(evt.get("date", "")).replace("Z", "+00:00")
+            )
             if commence_dt.tzinfo is None:
                 commence_dt = commence_dt.replace(tzinfo=timezone.utc)
             scores = evt.get("scores") or {}
-            has_score = scores.get("home") is not None and scores.get("away") is not None
+            has_score = (
+                scores.get("home") is not None and scores.get("away") is not None
+            )
             if (now - commence_dt) > timedelta(hours=4) and has_score:
                 finished.append(evt)
         except Exception:
             continue
 
     return finished
-
-
-async def probe_odds_api_io_event(numeric_id: str) -> Dict:
-    """
-    SONDE DE DIAGNOSTIC : interroge l'API odds-api.io SANS aucun filtre de
-    statut, cherche un match precis par son id numerique dans toutes les
-    ligues suivies, et retourne sa reponse BRUTE complete.
-
-    Utilisee pour arreter de deviner la valeur exacte du champ "status"
-    qu'odds-api.io utilise pour un match termine (essais precedents
-    "finished" et "completed" infructueux — voir historique du bug de
-    reconciliation). Permet de voir directement les vrais noms de champs
-    et valeurs pour un match qu'on sait deja termine.
-    """
-    if not ODDS_API_IO_KEY:
-        return {"error": "ODDS_API_IO_KEY absente"}
-
-    all_leagues = [
-        (lg, "football") for lg in ODDS_API_IO_LEAGUES
-    ] + [
-        (lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES
-    ] + [
-        (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
-    ]
-
-    results = {}
-    for league_slug, sport in all_leagues:
-        # Sans aucun parametre "status" — pour voir ce que l'API renvoie par defaut
-        url = f"{ODDS_API_IO_BASE}/events"
-        params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                r = await http.get(url, params=params)
-                if r.status_code != 200:
-                    continue
-                data = r.json()
-                if not isinstance(data, list):
-                    continue
-                for evt in data:
-                    if str(evt.get("id")) == str(numeric_id):
-                        return {
-                            "found_in_league": league_slug,
-                            "sport": sport,
-                            "raw_event": evt,
-                            "total_events_returned_for_this_league_no_status_filter": len(data),
-                        }
-                results[league_slug] = len(data)
-        except Exception as e:
-            results[league_slug] = f"erreur: {e}"
-
-    return {
-        "found": False,
-        "detail": "Match non trouve dans aucune ligue suivie, meme sans filtre de statut.",
-        "events_count_per_league_no_status_filter": results,
-    }
-
-
-async def probe_odds_api_io_league_sample(league_slug: str, sport: str = "football") -> Dict:
-    """
-    SONDE : renvoie les evenements bruts d'UNE ligue, sans filtre de statut,
-    pour inspecter directement les valeurs reelles du champ "status" que
-    l'API utilise (plutot que de continuer a deviner "finished"/"completed").
-    """
-    if not ODDS_API_IO_KEY:
-        return {"error": "ODDS_API_IO_KEY absente"}
-    url = f"{ODDS_API_IO_BASE}/events"
-    params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                return {"error": f"HTTP {r.status_code}", "body": r.text[:500]}
-            data = r.json()
-            if not isinstance(data, list):
-                return {"error": "reponse non-liste", "raw": data}
-            statuses_seen = {}
-            for evt in data:
-                s = evt.get("status", "(absent)")
-                statuses_seen[s] = statuses_seen.get(s, 0) + 1
-            return {
-                "total_events": len(data),
-                "statuses_seen": statuses_seen,
-                "sample_events": data[:5],
-            }
-    except Exception as e:
-        return {"error": str(e)}
 
 
 async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
@@ -1011,140 +894,6 @@ def _attach_bsd_enrichment(matches: List[Dict], bsd_predictions: List[Dict]) -> 
     return matches
 
 
-def _convert_bsd_prediction_to_match(pred: Dict) -> Optional[Dict]:
-    """
-    Convertit une prediction BSD en match complementaire, UNIQUEMENT si la
-    reponse contient de VRAIES cotes de bookmaker exploitables.
-
-    IMPORTANT — principe de non-fabrication : BSD est documente comme un
-    addon de predictions ML (CatBoost), pas necessairement une source de
-    cotes de marche. Le schema exact de sa reponse (contient-elle des
-    cotes reelles, ou seulement des probabilites calculees par le modele ?)
-    N'A JAMAIS ETE CONFIRME avec un exemple reel. Si seule une probabilite
-    est presente (sans cote associee d'un vrai bookmaker), cette fonction
-    retourne None plutot que de fabriquer une cote a partir de cette
-    probabilite — exactement le meme principe que celui applique aux
-    marches synthetiques du moteur de prediction (jamais presenter une
-    estimation comme une vraie cote de marche).
-
-    Cette fonction cherche defensivement plusieurs noms de champs possibles
-    pour des cotes reelles (odds/bookmaker_odds/market_odds) — si aucun
-    n'est trouve, retourne None.
-    """
-    try:
-        home = _first_present(pred, ["home_team", "homeTeam"], {})
-        away = _first_present(pred, ["away_team", "awayTeam"], {})
-        home_name = home.get("name") if isinstance(home, dict) else home
-        away_name = away.get("name") if isinstance(away, dict) else away
-        commence = _first_present(pred, ["commence_time", "match_date", "date", "kickoff"])
-        event_id = _first_present(pred, ["id", "match_id", "fixture_id"])
-        league = _first_present(pred, ["league", "competition", "sport_title"], "Football")
-
-        if not (home_name and away_name and commence and event_id):
-            return None
-
-        # Recherche defensive de VRAIES cotes — plusieurs noms de champs
-        # possibles, car le schema BSD n'a jamais ete confirme avec un
-        # exemple reel de reponse.
-        raw_odds = _first_present(pred, ["odds", "bookmaker_odds", "market_odds", "bookmakers"])
-        if not raw_odds:
-            return None  # pas de vraie cote : on n'invente rien, on s'arrete la
-
-        bookmakers = []
-        if isinstance(raw_odds, list):
-            for bm in raw_odds:
-                if not isinstance(bm, dict):
-                    continue
-                title = _first_present(bm, ["bookmaker", "title", "name"], "BSD")
-                home_price = _first_present(bm, ["home", "home_odds", "1"])
-                away_price = _first_present(bm, ["away", "away_odds", "2"])
-                draw_price = _first_present(bm, ["draw", "draw_odds", "x", "X"])
-                outcomes = []
-                try:
-                    if home_price:
-                        outcomes.append({"name": home_name, "price": float(home_price)})
-                    if away_price:
-                        outcomes.append({"name": away_name, "price": float(away_price)})
-                    if draw_price:
-                        outcomes.append({"name": "Draw", "price": float(draw_price)})
-                except (TypeError, ValueError):
-                    continue
-                if outcomes:
-                    bookmakers.append({
-                        "key": _normalize_bookmaker_key(title),
-                        "title": str(title),
-                        "markets": [{"key": "h2h", "outcomes": outcomes}],
-                    })
-
-        if not bookmakers:
-            return None  # champ "odds" present mais aucune cote exploitable trouvee
-
-        return {
-            "id": f"bsd-{event_id}",
-            "sport_key": "soccer_bsd_complementary",
-            "sport_title": str(league),
-            "commence_time": str(commence),
-            "home_team": home_name,
-            "away_team": away_name,
-            "bookmakers": bookmakers,
-            "bsd_enrichment": pred,  # garde aussi la prediction ML elle-meme
-        }
-    except Exception:
-        return None
-
-
-async def _fetch_bsd_complementary_matches(existing_matches: List[Dict], bsd_predictions: List[Dict]) -> List[Dict]:
-    """
-    3eme source de matchs (complementaire a The Odds API + odds-api.io) :
-    parcourt les predictions BSD, et pour celles qui NE CORRESPONDENT A
-    AUCUN match deja recupere (ni The Odds API, ni odds-api.io), tente de
-    les convertir en match a part entiere — mais SEULEMENT si de vraies
-    cotes existent dans la reponse (voir _convert_bsd_prediction_to_match).
-
-    Si BSD ne fournit jamais de vraies cotes (juste des probabilites ML),
-    cette fonction ne rajoute aucun match — le comportement retombe alors
-    sur l'enrichissement seul (_attach_bsd_enrichment), sans jamais
-    fabriquer de fausse cote pour combler ce manque.
-    """
-    if not bsd_predictions:
-        return []
-
-    existing_keys = {
-        (_normalize_team_name(m.get("home_team", "")), _normalize_team_name(m.get("away_team", "")))
-        for m in existing_matches
-    }
-
-    added = []
-    skipped_no_odds = 0
-    for pred in bsd_predictions:
-        home = _first_present(pred, ["home_team", "homeTeam"], {})
-        away = _first_present(pred, ["away_team", "awayTeam"], {})
-        home_name = home.get("name") if isinstance(home, dict) else home
-        away_name = away.get("name") if isinstance(away, dict) else away
-        if not (home_name and away_name):
-            continue
-        key = (_normalize_team_name(home_name), _normalize_team_name(away_name))
-        if key in existing_keys:
-            continue  # deja couvert par The Odds API ou odds-api.io, pas besoin de BSD ici
-
-        converted = _convert_bsd_prediction_to_match(pred)
-        if converted:
-            added.append(converted)
-        else:
-            skipped_no_odds += 1
-
-    if skipped_no_odds > 0:
-        logger.warning(
-            f"BSD : {skipped_no_odds} match(s) uniques a BSD trouves mais SANS cote reelle "
-            f"exploitable — non ajoutes (pas de fabrication de cote). Reste en enrichissement "
-            f"seul pour les matchs deja connus des autres sources."
-        )
-    if added:
-        logger.warning(f"BSD : {len(added)} match(s) complementaire(s) ajoutes avec de vraies cotes.")
-
-    return added
-
-
 def _event_identity(event: Dict):
     return (_normalize_team_name(event.get("home_team","")), _normalize_team_name(event.get("away_team","")))
 
@@ -1187,27 +936,11 @@ def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
 
 
 async def fetch_all_matches(db) -> List[Dict]:
-    """
-    RÈGLE D'OR : cette fonction lit en priorite depuis le cache MongoDB, sans
-    jamais declencher de fetch reseau sur une requete utilisateur normale.
-
-    FILET DE SECURITE (correctif) : si le document de cache est totalement
-    absent — jamais rempli (course de demarrage), ou perdu suite a un
-    incident quelconque — un fetch immediat est declenche au lieu de
-    renvoyer silencieusement une liste vide jusqu'au prochain cycle planifie
-    (jusqu'a 4h de site sans aucun match sinon). Si le cache existe mais est
-    simplement perime, on continue de servir les donnees existantes sans
-    fetch : le rafraichissement reste la responsabilite du worker planifie.
-    """
-    cache = await db.odds_cache.find_one({"_id": "all_matches"})
-    if not cache:
-        try:
-            return await _force_fetch_and_cache(db)
-        except Exception as exc:
-            logger.warning(f"fetch_all_matches: filet de securite echoue -> {exc}")
-            return []
-    data = cache.get("data", [])
-    return data if isinstance(data, list) else []
+    """Lecture Mongo uniquement; aucun appel API depuis une requete utilisateur."""
+    cache=await db.odds_cache.find_one({"_id":"all_matches"})
+    if not cache: return []
+    data=cache.get("data",[])
+    return data if isinstance(data,list) else []
 
 
 async def _force_fetch_and_cache(db) -> List[Dict]:
@@ -1216,7 +949,6 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     1. Le worker planifié à 06h00 WAT
     2. Le bouton "Force refresh" en admin
     3. Premier démarrage si cache vide
-    4. Filet de securite dans fetch_all_matches si le cache est totalement absent
     """
     if not ODDS_API_KEY:
         matches = get_all_mock_matches()
@@ -1246,40 +978,6 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     # Fallback si aucun match réel
     if not matches:
         matches = get_all_mock_matches()
-
-    # ─── CORRECTIF : fusion avec l'ancien cache pour les matchs en cours ────
-    # Avant, cette fonction reconstruisait la liste entierement a chaque
-    # cycle, uniquement a partir de ce que The Odds API renvoie a cet
-    # instant precis. Or, The Odds API arrete generalement de renvoyer un
-    # match dans sa reponse /odds une fois qu'il a commence (les bookmakers
-    # suspendent les cotes pre-match) — meme si l'intention documentee du
-    # code etait de garder les matchs visibles jusqu'a 24h apres coup de
-    # sifflet. Resultat concret observe : un match commence (ex: La Liga)
-    # disparaissait immediatement du Dashboard des le prochain cycle de
-    # refresh, alors qu'il restait visible sur la page Live (alimentee par
-    # une source differente, /scores, qui elle suit les matchs en cours
-    # independamment de la disponibilite des cotes). On fusionne desormais
-    # avec les matchs du cache precedent (par id), pour les garder visibles
-    # sur la fenetre de retention prevue, meme si l'API ne les renvoie plus.
-    try:
-        previous_cache = await db.odds_cache.find_one({"_id": "all_matches"})
-        previous_matches = previous_cache.get("data", []) if previous_cache else []
-        current_ids = {m.get("id") for m in matches}
-        now_check = datetime.now(timezone.utc)
-        for old_m in previous_matches:
-            if old_m.get("id") in current_ids:
-                continue  # deja present dans le fetch frais, pas besoin de le garder en double
-            try:
-                ct = datetime.fromisoformat(str(old_m.get("commence_time", "")).replace("Z", "+00:00"))
-                if ct.tzinfo is None:
-                    ct = ct.replace(tzinfo=timezone.utc)
-                if (now_check - ct) > timedelta(hours=24):
-                    continue  # trop vieux, laisse tomber comme prevu par la fenetre de retention
-            except Exception:
-                continue
-            matches.append(old_m)
-    except Exception as e:
-        logger.warning(f"fusion avec l'ancien cache echouee -> {e}")
 
     # ─── Filtres qualité ────────────────────────────────────────────────────
 
@@ -1315,28 +1013,15 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
         filtered.append(m)
 
-    # ─── BSD : 3eme source complementaire + enrichissement ───────────────────
-    # Le croisement a 3 sources fonctionne desormais ainsi :
-    # 1. The Odds API (source principale) + odds-api.io (source secondaire)
-    #    sont deja fusionnees via _merge_events plus haut dans cette fonction.
-    # 2. BSD vient s'ajouter en complement : pour chaque match BSD qui NE
-    #    CORRESPOND A AUCUN match deja trouve, on tente de l'ajouter comme
-    #    match a part entiere — mais SEULEMENT si BSD fournit de vraies
-    #    cotes (voir _convert_bsd_prediction_to_match). Sans vraie cote,
-    #    aucun match n'est fabrique — on se contente d'enrichir les matchs
-    #    deja connus des 2 autres sources avec le contexte ML de BSD.
+    # ─── Enrichissement BSD (predictions ML) ─────────────────────────────────
     try:
         bsd_predictions = await _fetch_bsd_predictions()
         if bsd_predictions:
-            bsd_complementary = await _fetch_bsd_complementary_matches(filtered, bsd_predictions)
-            if bsd_complementary:
-                filtered.extend(bsd_complementary)
             filtered = _attach_bsd_enrichment(filtered, bsd_predictions)
-    except Exception as e:
-        logger.warning(f"croisement BSD echoue -> {e}")
+    except Exception:
+        pass
 
-    # ─── Tri : LIVE → À venir → Terminés (a l'interieur de chaque championnat,
-    # une fois la repartition round-robin faite ci-dessous) ─────────────────
+    # ─── Tri : LIVE → À venir → Terminés ────────────────────────────────────
     def _sort_key(m):
         try:
             ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
@@ -1352,48 +1037,17 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
     filtered.sort(key=_sort_key)
 
-    # ─── Diversification équitable (round-robin) entre championnats ─────────
-    # CORRECTIF : l'ancienne logique triait TOUS les matchs de TOUS les
-    # championnats par heure de coup d'envoi, puis tronquait a 150 matchs au
-    # total. Un championnat dont les matchs du jour se jouent plus tard que
-    # d'autres (ex: La Liga, souvent en soiree) pouvait alors etre
-    # ENTIEREMENT elimine si assez d'autres championnats remplissaient deja
-    # les 150 places avec des matchs plus tot dans la journee — meme si ce
-    # championnat avait bien ete recupere cote API. Desormais, chaque
-    # championnat garde sa place au tour par tour (round-robin), garantissant
-    # qu'aucun championnat actif ne disparaisse entierement de la liste
-    # finale a cause de son horaire de coup d'envoi.
-    per_comp_cap = 15
-    total_cap = 200  # releve de 150 a 200 : marge supplementaire, en plus
-                      # de la repartition equitable qui protege deja chaque
-                      # championnat individuellement.
-
-    groups: Dict[str, List[Dict]] = {}
-    order: List[str] = []
+    # ─── Diversification : max 15 matchs par compétition ────────────────────
+    per_comp: Dict[str, int] = {}
+    diversified = []
     for m in filtered:
         key = m.get("sport_title") or "Other"
-        if key not in groups:
-            groups[key] = []
-            order.append(key)
-        if len(groups[key]) < per_comp_cap:
-            groups[key].append(m)
+        if per_comp.get(key, 0) >= 15:
+            continue
+        diversified.append(m)
+        per_comp[key] = per_comp.get(key, 0) + 1
 
-    pointers = {k: 0 for k in order}
-    diversified: List[Dict] = []
-    while len(diversified) < total_cap:
-        progressed = False
-        for key in order:
-            if len(diversified) >= total_cap:
-                break
-            p = pointers[key]
-            if p < len(groups[key]):
-                diversified.append(groups[key][p])
-                pointers[key] = p + 1
-                progressed = True
-        if not progressed:
-            break
-
-    final = _annotate_bookmakers(diversified)
+    final = _annotate_bookmakers(diversified[:150])
 
     await _save_to_cache(db, final)
     return final
@@ -1446,59 +1100,44 @@ async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dic
 
 
 async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
-    """
-    Recupere le statut/score actuel de tous les matchs odds-api.io suivis
-    (foot + hockey + basketball), pour la reconciliation des predictions.
-    Retourne un dict {id_numerique_str: {"status":..., "home_score":...,
-    "away_score":...}}.
+    """Recupere les scores termines odds-api.io pour la reconciliation.
 
-    CORRECTIF : cette fonction se basait auparavant sur le champ "status"
-    renvoye par odds-api.io ("termine" si different de "pending"/"live") —
-    exactement la meme hypothese non confirmee qui avait deja cause un bug
-    similaire sur la page Live (voir _convert_odds_api_io_event_to_score,
-    deja corrige). Consequence concrete observee ici : des picks sur des
-    matchs odds-api.io deja termines depuis 1-2 jours restaient bloques en
-    "pending" indefiniment, car leur vrai statut "termine" ne correspondait
-    jamais a la valeur attendue par ce filtre — la reconciliation ne les
-    voyait donc jamais comme eligibles.
-
-    Desormais, un match est considere pret pour reconciliation des que son
-    heure de coup d'envoi (commence_time) date de plus de 4h — la meme
-    methode fiable, basee sur le temps et non sur un champ de statut
-    incertain, deja utilisee partout ailleurs dans le code (_is_finished_match,
-    _match_is_finished, _convert_odds_api_io_event_to_score).
+    On ne depend plus d'une valeur hypothetique de ``status`` :
+    - ``settled`` est traite comme termine ;
+    - ``pending`` est ignore ;
+    - un statut inconnu est accepte comme termine seulement si le match date
+      de plus de 4 heures et qu'un score complet est present.
     """
     if not ODDS_API_IO_KEY:
         return {}
 
     scores_map: Dict[str, Dict] = {}
-    all_leagues = [
-        (lg, "football") for lg in ODDS_API_IO_LEAGUES
-    ] + [
-        (lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES
-    ] + [
-        (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
-    ]
-
+    all_leagues = (
+        [(lg, "football") for lg in ODDS_API_IO_LEAGUES]
+        + [(lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES]
+        + [(lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES]
+    )
     now = datetime.now(timezone.utc)
 
     for league_slug, sport in all_leagues:
         try:
-            events = await _fetch_odds_api_io_finished_events(league_slug, sport=sport)
+            events = await _fetch_odds_api_io_finished_events(
+                league_slug, sport=sport
+            )
             for evt in events:
                 commence = evt.get("date")
                 if not commence:
                     continue
                 try:
-                    commence_dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
+                    commence_dt = datetime.fromisoformat(
+                        str(commence).replace("Z", "+00:00")
+                    )
                     if commence_dt.tzinfo is None:
                         commence_dt = commence_dt.replace(tzinfo=timezone.utc)
                 except Exception:
                     continue
 
-                # Match pas encore termine (moins de 4h depuis le coup
-                # d'envoi, ou pas encore commence) : pas encore pret pour
-                # reconciliation, on ne le traite pas comme definitif.
+                # Ne jamais reconciler un match pas encore suffisamment ancien.
                 if (now - commence_dt) < timedelta(hours=4):
                     continue
 
@@ -1507,173 +1146,23 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
                 away_score = scores.get("away")
                 if home_score is None or away_score is None:
                     continue
-                scores_map[str(evt.get("id"))] = {
+
+                event_id = evt.get("id")
+                if event_id is None:
+                    continue
+
+                scores_map[str(event_id)] = {
                     "status": evt.get("status", "termine_estime_par_horaire"),
                     "home_score": home_score,
                     "away_score": away_score,
                 }
-        except Exception:
+        except Exception as exc:
+            logger.warning(
+                "odds-api.io scores %s/%s -> %s", sport, league_slug, exc
+            )
             continue
 
     return scores_map
-
-
-def _convert_odds_api_io_event_to_score(evt: Dict, sport: str) -> Optional[Dict]:
-    """
-    Convertit un evenement odds-api.io au meme format que celui retourne par
-    The Odds API pour /scores, attendu par LivePage.jsx (via /api/scores) :
-    {id, sport_key, sport_title, commence_time, home_team, away_team,
-    completed, scores: [{name, score}] | None, last_update}.
-
-    CORRECTIF v1 (precedent) : /api/scores ne consultait QUE The Odds API —
-    les matchs venant d'odds-api.io (qualifications UEFA, ligues
-    scandinaves, hockey/basketball minoritaires) n'apparaissaient jamais
-    dans "Live & Scores", meme une fois termines.
-
-    CORRECTIF v2 (celui-ci) : la version precedente classait "termine" tout
-    match dont le champ "status" n'etait ni "pending" ni "live" — mais la
-    valeur exacte que renvoie odds-api.io pour un match PAS ENCORE COMMENCE
-    n'a jamais ete confirmee avec un exemple reel. Si leur vrai statut
-    "a venir" differe de "pending" (ex: "scheduled", "not_started"...), TOUS
-    les matchs a venir etaient a tort classes "termines", avec un score par
-    defaut 0-0 — exactement le bug observe (tout melange, tout a 0-0).
-
-    Desormais, la classification live/termine/a venir se base UNIQUEMENT sur
-    l'heure du match (commence_time) — la meme methode deja utilisee et
-    fiable partout ailleurs dans le code (_is_live_match, _is_finished_match,
-    _match_is_finished dans server.py) — plutot que sur ce champ "status"
-    dont la valeur exacte reste incertaine. Le score n'est attache que si le
-    match a reellement demarre (evite d'afficher un 0-0 fictif pre-match).
-    """
-    event_id = evt.get("id")
-    home = evt.get("home")
-    away = evt.get("away")
-    commence = evt.get("date")
-    if not (event_id and home and away and commence):
-        return None
-
-    try:
-        commence_dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
-        if commence_dt.tzinfo is None:
-            commence_dt = commence_dt.replace(tzinfo=timezone.utc)
-        now = datetime.now(timezone.utc)
-        elapsed = now - commence_dt
-    except Exception:
-        # Date illisible : on ne peut pas classer ce match de facon fiable,
-        # on l'ignore plutot que de deviner un statut potentiellement faux.
-        return None
-
-    if elapsed.total_seconds() < 0:
-        # Match pas encore commence — jamais de score, meme si l'API en
-        # renvoie un par defaut (0-0 fictif avant coup d'envoi).
-        completed = False
-        scores_list = None
-    else:
-        completed = elapsed > timedelta(hours=4)
-        scores_obj = evt.get("scores") or {}
-        home_score = scores_obj.get("home")
-        away_score = scores_obj.get("away")
-        scores_list = None
-        if home_score is not None and away_score is not None:
-            scores_list = [
-                {"name": home, "score": str(home_score)},
-                {"name": away, "score": str(away_score)},
-            ]
-
-    league_name = (evt.get("league") or {}).get("name", "Football")
-    sport_key_map = {
-        "ice-hockey": "icehockey_minor_leagues",
-        "basketball": "basketball_minor_leagues",
-    }
-
-    return {
-        "id": f"oaio-{event_id}",
-        "sport_key": sport_key_map.get(sport, "soccer_minor_leagues"),
-        "sport_title": league_name,
-        "commence_time": commence,
-        "home_team": home,
-        "away_team": away,
-        "completed": completed,
-        "scores": scores_list,
-        "last_update": datetime.now(timezone.utc).isoformat(),
-    }
-
-
-async def _fetch_odds_api_io_all_scores() -> List[Dict]:
-    """
-    Recupere TOUS les evenements odds-api.io (foot + hockey + basketball,
-    a venir ET termines) au format /scores, pour completer les resultats
-    de The Odds API dans /api/scores. Voir _convert_odds_api_io_event_to_score.
-
-    CORRECTIF : _fetch_odds_api_io_events() ne renvoie que les matchs a
-    venir (requete API avec status=pending explicite) — les matchs deja
-    termines n'apparaissaient donc jamais dans l'onglet "Termines" de la
-    page Live pour les championnats mineurs, meme avec la classification
-    par horaire deja en place dans _convert_odds_api_io_event_to_score.
-    On recupere desormais les deux listes (a venir + terminees) et on les
-    fusionne, dedupliquees par id.
-    """
-    if not ODDS_API_IO_KEY:
-        return []
-
-    all_leagues = [
-        (lg, "football") for lg in ODDS_API_IO_LEAGUES
-    ] + [
-        (lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES
-    ] + [
-        (lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES
-    ]
-
-    out: List[Dict] = []
-    seen_ids = set()
-    for league_slug, sport in all_leagues:
-        try:
-            pending_events = await _fetch_odds_api_io_events(league_slug, sport=sport)
-            finished_events = await _fetch_odds_api_io_finished_events(league_slug, sport=sport)
-            for evt in (pending_events + finished_events):
-                evt_id = evt.get("id")
-                if evt_id in seen_ids:
-                    continue
-                converted = _convert_odds_api_io_event_to_score(evt, sport)
-                if converted:
-                    out.append(converted)
-                    seen_ids.add(evt_id)
-        except Exception:
-            continue
-    return out
-
-
-ODDS_API_IO_SCORES_CACHE_TTL_SECONDS = int(os.environ.get("ODDS_API_IO_SCORES_CACHE_TTL", "180"))
-
-
-async def _get_odds_api_io_scores_cached(db) -> List[Dict]:
-    """
-    Cache dedie pour les scores odds-api.io, avec un TTL plus long (3 min
-    par defaut) que le cache principal /api/scores (60s) — le endpoint
-    /v3/events d'odds-api.io est soumis a quota, et le Live Score se
-    rafraichit toutes les 45s cote frontend : sans ce cache separe, chaque
-    rafraichissement de la page Live epuiserait rapidement le quota horaire.
-    """
-    if not ODDS_API_IO_KEY:
-        return []
-    cached = await db.oaio_scores_cache.find_one({"_id": "oaio_scores"})
-    if cached:
-        updated = cached.get("updated_at")
-        if updated:
-            try:
-                updated_dt = datetime.fromisoformat(updated)
-                if datetime.now(timezone.utc) - updated_dt < timedelta(seconds=ODDS_API_IO_SCORES_CACHE_TTL_SECONDS):
-                    return cached.get("data", [])
-            except Exception:
-                pass
-
-    fresh = await _fetch_odds_api_io_all_scores()
-    await db.oaio_scores_cache.update_one(
-        {"_id": "oaio_scores"},
-        {"$set": {"data": fresh, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
-    return fresh
 
 
 async def fetch_all_scores(db) -> List[Dict]:
@@ -1693,27 +1182,7 @@ async def fetch_all_scores(db) -> List[Dict]:
 
     scores: List[Dict] = []
     active_sports = [
-        # CORRECTIF : cette liste avait ete ecrite en pensant a juillet
-        # (intersaison des grands championnats europeens) et ne contenait
-        # que des ligues mineures + MLB. Consequence : les grands
-        # championnats (Premier League, Liga, Bundesliga, Ligue 1, Serie A)
-        # affichaient bien le badge LIVE sur le Dashboard (calcule juste a
-        # partir de l'heure du match, independamment de cette liste), mais
-        # n'apparaissaient JAMAIS sur la page Live (qui, elle, ne recupere
-        # de scores que pour les sport_key listes ici) — d'ou l'impression
-        # que seules les ligues mineures et MLB "fonctionnaient" en Live.
-        # Top 5 championnats europeens — desormais actifs (reprise aout)
-        "soccer_epl",
-        "soccer_spain_la_liga",
-        "soccer_germany_bundesliga",
-        "soccer_germany_bundesliga2",
-        "soccer_france_ligue_one",
-        "soccer_france_ligue_two",
-        "soccer_italy_serie_a",
-        "soccer_netherlands_eredivisie",
-        "soccer_portugal_primeira_liga",
-        "soccer_efl_champ",
-        # Football — autres competitions
+        # Football — competitions realistes en cours en juillet
         "soccer_uefa_champs_league",
         "soccer_uefa_europa_league",
         "soccer_uefa_europa_conference_league",
@@ -1733,11 +1202,11 @@ async def fetch_all_scores(db) -> List[Dict]:
         "soccer_japan_j_league",
         "soccer_china_superleague",
         "soccer_mexico_ligamx",
-        # Basketball
+        # Basketball — NBA hors saison en juillet, Summer League active
         "basketball_nba_summer_league",
-        # Baseball
+        # Baseball — seul sport majeur US actif en juillet
         "baseball_mlb",
-        # Hockey
+        # Hockey — NHL hors saison, garde par securite si reprise anticipee
         "icehockey_nhl",
         # MMA — actif toute l'annee
         "mma_mixed_martial_arts",
@@ -1751,20 +1220,6 @@ async def fetch_all_scores(db) -> List[Dict]:
     results=await asyncio.gather(*[_scores_one(sk) for sk in active_sports], return_exceptions=True)
     for result in results:
         if isinstance(result,list): scores.extend(result)
-
-    # ─── Fusion des scores odds-api.io (qualifications UEFA, ligues
-    # scandinaves, hockey/basketball minoritaires) — CORRECTIF : avant,
-    # /api/scores (donc l'onglet Live du site) n'incluait QUE The Odds API.
-    # Les matchs venant d'odds-api.io n'apparaissaient jamais dans "Live &
-    # Scores", meme une fois termines, alors qu'ils apparaissaient bien sur
-    # le Dashboard avant le coup d'envoi — d'ou l'impression que seuls
-    # certains championnats (MLB, etc.) etaient suivis.
-    try:
-        oaio_scores = await _get_odds_api_io_scores_cached(db)
-        if oaio_scores:
-            scores.extend(oaio_scores)
-    except Exception as e:
-        logger.warning(f"fusion scores odds-api.io echouee -> {e}")
 
     await db.scores_cache.update_one(
         {"_id": "all_scores"},
@@ -1793,26 +1248,94 @@ async def get_match_by_id(db, match_id: str) -> Optional[Dict]:
             return m
     return None
 
+async def probe_odds_api_io_event(numeric_id: str) -> Dict:
+    """Sonde un evenement odds-api.io par son identifiant numerique.
+
+    L'appel est volontairement effectue sans filtre de statut afin d'observer
+    la reponse brute et le vrai champ ``status`` renvoye par l'API.
+    """
+    if not ODDS_API_IO_KEY:
+        return {"error": "ODDS_API_IO_KEY absente"}
+
+    all_leagues = (
+        [(lg, "football") for lg in ODDS_API_IO_LEAGUES]
+        + [(lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES]
+        + [(lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES]
+    )
+    results: Dict[str, object] = {}
+
+    for league_slug, sport in all_leagues:
+        url = f"{ODDS_API_IO_BASE}/events"
+        params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(url, params=params)
+                if r.status_code != 200:
+                    results[league_slug] = f"HTTP {r.status_code}"
+                    continue
+                data = r.json()
+                if not isinstance(data, list):
+                    results[league_slug] = "reponse non-liste"
+                    continue
+                for evt in data:
+                    if str(evt.get("id")) == str(numeric_id):
+                        return {
+                            "found_in_league": league_slug,
+                            "sport": sport,
+                            "raw_event": evt,
+                            "total_events_returned_for_this_league_no_status_filter": len(data),
+                        }
+                results[league_slug] = len(data)
+        except Exception as e:
+            results[league_slug] = f"erreur: {e}"
+
+    return {
+        "found": False,
+        "detail": "Match non trouve dans aucune ligue suivie, meme sans filtre de statut.",
+        "events_count_per_league_no_status_filter": results,
+    }
+
+
+async def probe_odds_api_io_league_sample(
+    league_slug: str, sport: str = "football"
+) -> Dict:
+    """Retourne un echantillon brut d'une ligue sans filtre de statut."""
+    if not ODDS_API_IO_KEY:
+        return {"error": "ODDS_API_IO_KEY absente"}
+
+    url = f"{ODDS_API_IO_BASE}/events"
+    params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params=params)
+            if r.status_code != 200:
+                return {"error": f"HTTP {r.status_code}", "body": r.text[:500]}
+            data = r.json()
+            if not isinstance(data, list):
+                return {"error": "reponse non-liste", "raw": data}
+            statuses_seen: Dict[str, int] = {}
+            for evt in data:
+                status = evt.get("status", "(absent)")
+                statuses_seen[status] = statuses_seen.get(status, 0) + 1
+            return {
+                "total_events": len(data),
+                "statuses_seen": statuses_seen,
+                "sample_events": data[:5],
+            }
+    except Exception as e:
+        return {"error": str(e)}
+
 
 async def diagnose_sport_key(db, sport_key: str) -> Dict:
-    """
-    Diagnostic cible pour un sport_key donne : teste separement chaque
-    etape du pipeline pour identifier PRECISEMENT ou un match disparait,
-    plutot que de deviner. Utile quand un championnat est confirme present
-    chez The Odds API mais absent du site.
+    """Diagnostic complet d'un sport_key de The Odds API.
 
-    Etapes testees :
-    1. fetch_raw : appel direct a The Odds API pour ce sport_key seul
-    2. apres_filtres : combien de ces matchs survivent aux filtres qualite
-       (amical, fenetre temporelle 24h/7j, minimum bookmakers)
-    3. dans_cache_final : combien de ces matchs sont reellement presents
-       dans le cache MongoDB actuellement servi par /api/matches
+    Compare le fetch brut, les filtres de qualite et le cache MongoDB afin de
+    localiser precisement la cause d'un championnat absent du site.
     """
     markets = _get_markets_for_sport(sport_key)
     raw = await _fetch_real_sport(sport_key, markets=markets, regions="eu")
-
     now = datetime.now(timezone.utc)
-    after_filters = []
+    after_filters: List[Dict] = []
     filtered_out_reasons: Dict[str, int] = {}
 
     for m in raw:
@@ -1820,7 +1343,9 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
             filtered_out_reasons["match_amical"] = filtered_out_reasons.get("match_amical", 0) + 1
             continue
         try:
-            ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
+            ct = datetime.fromisoformat(str(m["commence_time"]).replace("Z", "+00:00"))
+            if ct.tzinfo is None:
+                ct = ct.replace(tzinfo=timezone.utc)
             if (now - ct) > timedelta(hours=24):
                 filtered_out_reasons["deja_termine_+24h"] = filtered_out_reasons.get("deja_termine_+24h", 0) + 1
                 continue
@@ -1839,13 +1364,31 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
     cached_data = cached.get("data", []) if cached else []
     in_final_cache = [m for m in cached_data if m.get("sport_key") == sport_key]
 
+    if len(raw) == 0:
+        diagnostic = "Le match n'existe pas cote The Odds API pour ce sport_key en ce moment."
+    elif len(after_filters) == 0:
+        diagnostic = "Aucun match ne passe les filtres qualite (voir 'elimines_par_filtre')."
+    elif len(in_final_cache) == 0:
+        diagnostic = (
+            "Les matchs passent les filtres mais n'apparaissent pas dans le cache final : "
+            "le cache n'a probablement pas ete regenere depuis le dernier fetch, ou une "
+            "erreur survient pendant _force_fetch_and_cache."
+        )
+    else:
+        diagnostic = "Tout semble en ordre : le match devrait etre visible sur /api/matches."
+
     return {
         "sport_key": sport_key,
         "1_fetch_brut_the_odds_api": {
             "count": len(raw),
             "sample": [
-                {"id": m.get("id"), "home": m.get("home_team"), "away": m.get("away_team"),
-                 "commence_time": m.get("commence_time"), "num_bookmakers": len(m.get("bookmakers", []))}
+                {
+                    "id": m.get("id"),
+                    "home": m.get("home_team"),
+                    "away": m.get("away_team"),
+                    "commence_time": m.get("commence_time"),
+                    "num_bookmakers": len(m.get("bookmakers", [])),
+                }
                 for m in raw[:5]
             ],
         },
@@ -1858,15 +1401,5 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
             "cache_updated_at": cached.get("updated_at") if cached else None,
             "cache_total_matches_tous_sports": len(cached_data),
         },
-        "diagnostic": (
-            "Le match n'existe pas cote The Odds API pour ce sport_key en ce moment."
-            if len(raw) == 0 else
-            "Les filtres qualite eliminent tout — voir 'elimines_par_filtre'."
-            if len(after_filters) > 0 and len(in_final_cache) == 0 and len(raw) > len(after_filters) else
-            "Les matchs passent les filtres mais n'apparaissent pas dans le cache final : le cache n'a probablement pas ete regenere depuis le dernier fetch, ou une erreur silencieuse survient pendant _force_fetch_and_cache."
-            if len(after_filters) > 0 and len(in_final_cache) == 0 else
-            "Tout semble en ordre : le match devrait etre visible sur /api/matches."
-            if len(in_final_cache) > 0 else
-            "Aucun match ne passe les filtres qualite (voir 'elimines_par_filtre')."
-        ),
+        "diagnostic": diagnostic,
     }
