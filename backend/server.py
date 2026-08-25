@@ -1,5 +1,5 @@
 """
-WinPulse API — server.py (v8.0)
+WinPulse API — server.py (v8.4)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
@@ -23,13 +23,15 @@ from auth import (
 )
 from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
-    fetch_odds_api_io_scores_map,
+    fetch_odds_api_io_scores_map, diagnose_sport_key,
+    probe_odds_api_io_event, probe_odds_api_io_league_sample,
+    get_odds_cache_status, ODDS_API_IO_LEAGUES,
 )
 from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
-    _is_today as _is_today_match,
+    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
 
@@ -170,10 +172,14 @@ ADMIN_EMAILS = {
 # ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
 
-# Cache applicatif court : évite de recalculer toutes les prédictions à chaque
-# requête. Le cache est invalidé après chaque refresh des données.
 PREDICTION_CACHE_TTL = int(os.environ.get("PREDICTION_CACHE_TTL", "300"))
-_prediction_cache = {"timestamp": 0.0, "matches": [], "predictions": [], "real_stats_map": {}}
+_prediction_cache = {
+    "timestamp": 0.0,
+    "matches": [],
+    "predictions": [],
+    "real_stats_map": {},
+    "calibration": {},
+}
 _prediction_cache_lock = asyncio.Lock()
 
 CORS_ORIGINS = [
@@ -196,7 +202,7 @@ app.add_middleware(
 
 @app.get("/api/")
 async def racine():
-    return {"application": "WinPulse", "statut": "OK", "version": "8.0"}
+    return {"application": "WinPulse", "statut": "OK", "version": MODEL_VERSION}
 
 
 @app.get("/api/sante")
@@ -227,7 +233,6 @@ async def register(payload: RegisterPayload):
     is_admin = payload.email.lower() in ADMIN_EMAILS
     user_id = str(uuid.uuid4())
 
-    # Rattache le nouveau compte a son parrain si un code valide est fourni
     referred_by = None
     if payload.referral_code:
         referrer = await db.users.find_one({"referral_code": payload.referral_code.strip().upper()})
@@ -314,31 +319,13 @@ async def _invalidate_prediction_cache():
         _prediction_cache["matches"] = []
         _prediction_cache["predictions"] = []
         _prediction_cache["real_stats_map"] = {}
+        _prediction_cache["calibration"] = {}
+        _prediction_cache["source_cache_updated_at"] = None
 
 
-async def _get_prediction_snapshot(force: bool = False) -> Dict:
-    now = time.monotonic()
-    async with _prediction_cache_lock:
-        if (not force and _prediction_cache["matches"] and
-                now - _prediction_cache["timestamp"] < PREDICTION_CACHE_TTL):
-            return _prediction_cache
-
-        matches = await fetch_all_matches(db)
-        real_stats_map = await get_real_stats_map(db, matches)
-        predictions = analyze_all(matches, real_stats_map=real_stats_map)
-        _prediction_cache.update({
-            "timestamp": now,
-            "matches": matches,
-            "predictions": predictions,
-            "real_stats_map": real_stats_map,
-        })
-        return _prediction_cache
-
-
-async def _get_calibration_map() -> Dict[int, Dict]:
-    """Calibration empirique sans sur-ajuster les petits échantillons."""
+async def _compute_calibration_map() -> Dict[int, Dict]:
     resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}},
+        {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION},
         {"confidence": 1, "result": 1}
     ).to_list(length=10000)
     buckets: Dict[int, Dict[str, int]] = {}
@@ -358,8 +345,6 @@ async def _get_calibration_map() -> Dict[int, Dict]:
         total = item["total"]
         if total < 30:
             continue
-        # Lissage léger vers la probabilité annoncée pour éviter les sauts
-        # artificiels quand un bucket contient encore peu de données.
         prior = (bucket + 2.5) / 100.0
         calibrated = (item["wins"] + prior * 20.0) / (total + 20.0)
         out[bucket] = {
@@ -368,6 +353,51 @@ async def _get_calibration_map() -> Dict[int, Dict]:
             "total": total,
         }
     return out
+
+
+async def _get_prediction_snapshot(force: bool = False) -> Dict:
+    now = time.monotonic()
+    async with _prediction_cache_lock:
+        source_cache_updated_at = None
+        try:
+            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1})
+            source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
+        except Exception:
+            pass
+        same_source_snapshot = (
+            source_cache_updated_at == _prediction_cache.get("source_cache_updated_at")
+        )
+        if (not force and _prediction_cache["matches"] and same_source_snapshot and
+                now - _prediction_cache["timestamp"] < PREDICTION_CACHE_TTL):
+            return _prediction_cache
+
+        matches = await fetch_all_matches(db)
+        real_stats_map = await get_real_stats_map(db, matches)
+        predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        calibration = await _compute_calibration_map()
+        # Le cache des prédictions doit suivre immédiatement le cache Mongo des
+        # matchs. Sans ce contrôle, un refresh du flux pouvait laisser l'API
+        # servir pendant 300 s l'ancienne liste de matchs.
+        source_cache_updated_at = None
+        try:
+            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1})
+            source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
+        except Exception:
+            pass
+        _prediction_cache.update({
+            "timestamp": now,
+            "matches": matches,
+            "predictions": predictions,
+            "real_stats_map": real_stats_map,
+            "calibration": calibration,
+            "source_cache_updated_at": source_cache_updated_at,
+        })
+        return _prediction_cache
+
+
+async def _get_calibration_map() -> Dict[int, Dict]:
+    snapshot = await _get_prediction_snapshot()
+    return snapshot["calibration"]
 
 
 def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) -> List[Dict]:
@@ -396,26 +426,31 @@ def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) ->
 # ─── Matches & predictions ──────────────────────────────────────────────────
 
 def _merge_match_prediction(match: dict, prediction: dict) -> dict:
-    """Fusionne un match brut avec sa prediction, format attendu par le frontend."""
     merged = dict(match)
     merged["prediction"] = prediction
     return merged
 
 
+def _match_is_finished(match: dict) -> bool:
+    ct = match.get("commence_time", "")
+    if not ct:
+        return False
+    try:
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt) > timedelta(hours=4)
+    except Exception:
+        return False
+
+
 @app.get("/api/matches")
 async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """
-    Retourne un tableau de matchs avec leur prediction integree. Verrouille
-    le pick pour les comptes gratuits (seul le tout premier match du
-    tableau reste visible), coherent avec /api/predictions/top et
-    /api/builder/matches — cette route n'avait jamais eu cette verification,
-    ce qui laissait passer les picks complets a tous, gratuit ou payant.
-    """
     snapshot = await _get_prediction_snapshot()
-    matches = snapshot["matches"]
+    matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
     predictions = _apply_calibration(
         [dict(p) for p in snapshot["predictions"]],
-        await _get_calibration_map(),
+        snapshot["calibration"],
     )
     pred_by_id = {p.get("match_id"): p for p in predictions}
     is_paid = False
@@ -430,6 +465,9 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
             pred["locked"] = True
             pred["pick"] = None
             pred["pick_odds"] = None
+            pred["markets"] = []
+            pred["recommendations"] = []
+            pred["combo_suggestion"] = None
         else:
             pred["locked"] = False
         merged.append(_merge_match_prediction(m, pred))
@@ -439,22 +477,21 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
 @app.get("/api/predictions")
 async def get_predictions():
     snapshot = await _get_prediction_snapshot()
-    matches = snapshot["matches"]
     predictions = _apply_calibration(
         [dict(p) for p in snapshot["predictions"]],
-        await _get_calibration_map(),
+        snapshot["calibration"],
     )
     return predictions
 
 
 @app.get("/api/predictions/model-status")
 async def get_prediction_model_status():
-    """Expose les métriques de calibration du moteur sans exposer les données privées."""
-    calibration = await _get_calibration_map()
-    resolved = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost"]}})
-    pending = await db.predictions_history.count_documents({"result": "pending"})
+    snapshot = await _get_prediction_snapshot()
+    calibration = snapshot["calibration"]
+    resolved = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION})
+    pending = await db.predictions_history.count_documents({"result": "pending", "model_version": MODEL_VERSION})
     return {
-        "model_version": "8.0",
+        "model_version": MODEL_VERSION,
         "cache_ttl_seconds": PREDICTION_CACHE_TTL,
         "resolved_picks": resolved,
         "pending_picks": pending,
@@ -467,9 +504,9 @@ async def get_prediction_model_status():
 @app.get("/api/predictions/top")
 async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
-    calibration = await _get_calibration_map()
     preds = _apply_calibration(
-        [dict(p) for p in snapshot["predictions"] if p.get("pick")], calibration
+        [dict(p) for p in snapshot["predictions"] if p.get("pick") and not p.get("is_finished")],
+        snapshot["calibration"],
     )
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
     preds = preds[:max(1, min(limit, 50))]
@@ -488,6 +525,9 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
                 p["locked"] = True
                 p["pick"] = None
                 p["pick_odds"] = None
+                p["markets"] = []
+                p["recommendations"] = []
+                p["combo_suggestion"] = None
     else:
         for p in preds:
             p["locked"] = False
@@ -497,19 +537,12 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
 
 @app.get("/api/matches/{match_id}/analysis")
 async def get_match_analysis(match_id: str):
-    """
-    Recherche le match par son id parmi TOUS les matchs en cache (pas seulement
-    ceux retenus par analyze_all), pour eviter les faux "introuvable" quand le
-    match n'a pas de pick valide ou que le cache a legerement change entre deux
-    appels. Recherche aussi sur match_id en secours.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
 
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
 
     if not match:
-        # Repli : certains ids peuvent etre stockes sous une autre cle
         match = next(
             (m for m in matches if str(m.get("match_id", "")) == str(match_id)),
             None,
@@ -531,7 +564,6 @@ async def get_match_analysis(match_id: str):
 
 @app.get("/api/data/status")
 async def get_data_status():
-    """Statut du cache de donnees, utilise pour l'indicateur de connexion."""
     cached = await db.odds_cache.find_one({"_id": "all_matches"})
     if not cached:
         return {"odds_updated_at": None, "count": 0}
@@ -543,7 +575,6 @@ async def get_data_status():
 
 @app.post("/api/data/refresh")
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Force le rafraichissement du cache (authentifie)."""
     result = await refresh_matches_worker(db)
     await _invalidate_prediction_cache()
     return result
@@ -551,7 +582,6 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/data/source-audit")
 async def get_data_source_audit():
-    """Alias attendu par le frontend — infos sur la source/fraicheur des donnees."""
     cached = await db.odds_cache.find_one({"_id": "all_matches"})
     return {
         "updated_at": cached.get("updated_at") if cached else None,
@@ -565,34 +595,24 @@ async def get_data_source_audit():
 SUBSCRIPTION_PLANS = [
     {
         "id": "pro",
-        "name": "Pro",
-        "price": 4900,
-        "price_fcfa": 4900,
-        "price_xof": 4900,
+        "name": "WinPulse Pro",
+        "price": 6500,
+        "price_fcfa": 6500,
+        "price_xof": 6500,
         "duration_days": 30,
         "period": "mois",
         "features": [
-            "Tous les pronostics du jour (7 sports)",
-            "3 combinés (Sécurité / Équilibre / Jackpot)",
-            "Analyse IA Claude Sonnet",
-            "Value bets & track record détaillé",
+            "Accès illimité à tous les pronostics, tous les jours, sur 7 sports",
+            "Tous les combinés (Sûr, Booster, Extra, Jackpot) débloqués",
+            "Chaque match analysé sur tous ses marchés — pas juste le favori évident",
+            "Combo Builder : construis tes propres combinés à partir de nos analyses",
+            "Détecteur de value bets : les cotes où le marché sous-estime nos calculs",
+            "Analyse IA experte sur chaque match, avec verdict et facteurs clés",
+            "Track Record public et vérifiable — aucun résultat caché",
+            "Support prioritaire par WhatsApp",
         ],
         "highlighted": True,
-    },
-    {
-        "id": "elite",
-        "name": "Elite",
-        "price": 14900,
-        "price_fcfa": 14900,
-        "price_xof": 14900,
-        "duration_days": 30,
-        "period": "mois",
-        "features": [
-            "Tout du plan Pro",
-            "Picks VIP envoyés en avant-première",
-            "Stratégie bankroll personnalisée",
-            "Support prioritaire WhatsApp",
-        ],
+        "tagline": "Un seul prix. Tout WinPulse. Sans compromis.",
     },
 ]
 
@@ -633,11 +653,6 @@ async def subscription_checkout(
     payload_in: CheckoutPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Route reellement appelee par PaymentModal.jsx (contrat exact : tier,
-    phone, payer_name). Cree une demande de paiement en attente, avec le
-    numero MoMo et le nom du payeur pour verification manuelle par l'admin.
-    """
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.tier.lower()), None)
     if not plan:
         raise HTTPException(status_code=400, detail="Plan inconnu")
@@ -676,11 +691,6 @@ async def request_subscription_upgrade(
     payload_in: UpgradeRequestPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Cree une demande de mise a niveau en attente et retourne les instructions
-    de paiement MoMo, avec un message WhatsApp pre-rempli a envoyer pour
-    confirmation manuelle par l'admin.
-    """
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.plan_id), None)
     if not plan:
         raise HTTPException(status_code=400, detail="Plan inconnu")
@@ -745,7 +755,6 @@ async def request_subscription_upgrade_alias(
     payload_in: UpgradeRequestPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """Alias de /api/subscription/request-upgrade, nom possible cote frontend."""
     return await request_subscription_upgrade(payload_in, payload)
 
 
@@ -758,7 +767,6 @@ async def _require_admin(payload: dict) -> dict:
 
 @app.get("/api/admin/stats")
 async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
-    """Statistiques globales pour le tableau de bord admin."""
     await _require_admin(payload)
 
     total_users = await db.users.count_documents({})
@@ -783,7 +791,6 @@ async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/admin/users")
 async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
-    """Liste de tous les utilisateurs, pour le panneau admin."""
     await _require_admin(payload)
     users = await db.users.find({}).sort("created_at", -1).to_list(length=500)
     result = []
@@ -799,7 +806,6 @@ async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
     return result
 
 
-# Statuts en francais attendus par le frontend, mappes vers les valeurs internes
 _PAYMENT_STATUS_MAP_FR_TO_EN = {
     "en attente": "pending",
     "approuve": "approved",
@@ -816,10 +822,6 @@ async def admin_get_payments(
     status_filter: str = "en attente",
     payload: dict = Depends(get_current_user_payload),
 ):
-    """
-    Liste des demandes de paiement/abonnement, avec filtre de statut en
-    francais (nom de parametre et valeurs attendues par le frontend).
-    """
     await _require_admin(payload)
     internal_status = _PAYMENT_STATUS_MAP_FR_TO_EN.get(
         status_filter.lower().strip(), status_filter
@@ -831,27 +833,224 @@ async def admin_get_payments(
     return requests
 
 
+# ─── Helpers pour l'envoi de picks (email + WhatsApp) ────────────────────
+
+async def _get_combo_by_tier(tier_key: str) -> Optional[Dict]:
+    matches = await fetch_all_matches(db)
+    combos = build_multi_combos(matches)
+    return combos.get(tier_key)
+
+
+def _combo_display_name(tier_key: str) -> str:
+    return {"safe": "Sécurité", "balanced": "Équilibre", "jackpot": "Jackpot"}.get(tier_key, tier_key.capitalize())
+
+
+def _build_combo_email_html(combo: Dict, tier_key: str) -> str:
+    legs = combo.get("legs", [])
+    rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:8px 0;border-bottom:1px solid #eee;">
+            <div style="font-weight:700;color:#0f172a;">{leg.get('home_team','')} vs {leg.get('away_team','')}</div>
+            <div style="color:#ea580c;font-weight:600;">{leg.get('pick','')}</div>
+          </td>
+          <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;font-family:monospace;font-weight:700;">
+            {leg.get('pick_odds','')}
+          </td>
+        </tr>
+        """
+        for leg in legs
+    )
+    body = f"""
+    <p>Voici le combiné <strong>{_combo_display_name(tier_key)}</strong> du jour, sélectionné par le moteur WinPulse :</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;">{rows}</table>
+    <p style="font-size:18px;font-weight:800;color:#0f172a;">
+      Cote totale : <span style="color:#ea580c;">{combo.get('total_odds', '—')}</span>
+    </p>
+    <p><a href="https://www.wnpulse.com/app" style="color:#ea580c;font-weight:bold;">Voir l'analyse complète →</a></p>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;">
+      Aucun pari sportif n'est garanti. Joue de façon responsable.
+    </p>
+    """
+    return _email_layout(f"Ton combiné {_combo_display_name(tier_key)} du jour", body)
+
+
+def _build_teaser_email_html(combo: Dict) -> str:
+    legs = combo.get("legs", [])
+    if not legs:
+        return _email_layout("Pari de la semaine", "<p>Aucun pick disponible pour le moment.</p>")
+    first = legs[0]
+    blurred_count = max(0, len(legs) - 1)
+    body = f"""
+    <p>Voici un aperçu de notre sélection de la semaine :</p>
+    <div style="padding:12px;border:1px solid #e5e7eb;border-radius:10px;margin:12px 0;">
+      <div style="font-weight:700;color:#0f172a;">{first.get('home_team','')} vs {first.get('away_team','')}</div>
+      <div style="color:#ea580c;font-weight:700;font-size:18px;">{first.get('pick','')} @ {first.get('pick_odds','')}</div>
+    </div>
+    {f'<p style="color:#94a3b8;">+ {blurred_count} autre(s) pick(s) réservé(s) aux abonnés Pro 🔒</p>' if blurred_count else ''}
+    <p><a href="https://www.wnpulse.com/app/abonnement" style="color:#ea580c;font-weight:bold;">Débloquer tous les picks →</a></p>
+    """
+    return _email_layout("🎁 Pari de la semaine — 1 pick offert", body)
+
+
+def _build_whatsapp_blast_text(combo: Dict, now_local: datetime) -> str:
+    legs = combo.get("legs", [])
+    lines = [
+        f"🔥 *WinPulse — Combiné du {now_local.strftime('%d/%m/%Y')}*",
+        "",
+    ]
+    for leg in legs:
+        lines.append(f"⚽ {leg.get('home_team','')} vs {leg.get('away_team','')}")
+        lines.append(f"👉 {leg.get('pick','')} @ *{leg.get('pick_odds','')}*")
+        lines.append("")
+    lines.append(f"💰 Cote totale : *{combo.get('total_odds', '—')}*")
+    lines.append("")
+    lines.append("📲 Analyse complète : https://wnpulse.com/app")
+    lines.append("18+ · Jeu responsable")
+    return "\n".join(lines)
+
+
 @app.get("/api/admin/whatsapp-blast")
 async def admin_whatsapp_blast(payload: dict = Depends(get_current_user_payload)):
-    """
-    Donnees pour l'envoi groupe WhatsApp aux utilisateurs (liste de contacts
-    a contacter). L'envoi effectif necessite une integration WhatsApp
-    Business API non encore configuree — cette route fournit pour l'instant
-    la liste des utilisateurs payants a contacter manuellement, plutot
-    qu'un 404 qui casse la page admin.
-    """
     await _require_admin(payload)
-    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=500)
-    contacts = [
-        {"email": u.get("email"), "name": u.get("name", ""), "subscription": u.get("subscription")}
-        for u in paid_users
-    ]
+    now_local = datetime.now(timezone.utc) + timedelta(hours=1)
+    active_subscribers = await db.users.count_documents({"subscription": {"$ne": "free"}})
+    combo = await _get_combo_by_tier("balanced")
+
+    if not combo or not combo.get("legs"):
+        return {
+            "date": now_local.strftime("%d/%m/%Y"),
+            "active_subscribers": active_subscribers,
+            "combo_total_odds": None,
+            "legs_count": 0,
+            "blast_text": None,
+        }
+
     return {
-        "ready": False,
-        "detail": "Integration WhatsApp Business API pas encore configuree. Liste des contacts payants ci-dessous.",
-        "contacts": contacts,
-        "total": len(contacts),
+        "date": now_local.strftime("%d/%m/%Y"),
+        "active_subscribers": active_subscribers,
+        "combo_total_odds": combo.get("total_odds"),
+        "legs_count": len(combo.get("legs", [])),
+        "blast_text": _build_whatsapp_blast_text(combo, now_local),
     }
+
+
+class BroadcastPicksPayload(BaseModel):
+    tier: str = "pro"
+    combo_tier: str = "balanced"
+
+
+@app.post("/api/admin/broadcast/picks")
+async def admin_broadcast_picks(
+    payload_in: BroadcastPicksPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier(payload_in.combo_tier)
+    if not combo or not combo.get("legs"):
+        raise HTTPException(status_code=400, detail="Aucun combiné disponible pour ce niveau aujourd'hui")
+
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=2000)
+    html = _build_combo_email_html(combo, payload_in.combo_tier)
+    subject = f"🎯 Ton combiné {_combo_display_name(payload_in.combo_tier)} du jour"
+
+    sent = drafted = errors = 0
+    for u in paid_users:
+        try:
+            ok = await _send_email(u["email"], subject, html)
+            if ok:
+                sent += 1
+            elif not RESEND_API_KEY:
+                drafted += 1
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "drafted": drafted, "errors": errors, "total_recipients": len(paid_users)}
+
+
+@app.post("/api/admin/broadcast/free-weekly-teaser")
+async def admin_broadcast_free_teaser(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier("safe")
+    if not combo or not combo.get("legs"):
+        raise HTTPException(status_code=400, detail="Aucun pick disponible pour le teaser aujourd'hui")
+
+    free_users = await db.users.find({"subscription": "free"}).to_list(length=5000)
+    html = _build_teaser_email_html(combo)
+
+    sent = errors = 0
+    for u in free_users:
+        try:
+            ok = await _send_email(u["email"], "🎁 Pari de la semaine — 1 pick offert", html)
+            sent += 1 if ok else 0
+            errors += 0 if ok else 1
+        except Exception:
+            errors += 1
+
+    return {"users": len(free_users), "sent": sent, "errors": errors}
+
+
+@app.post("/api/admin/test-email")
+async def admin_test_email(payload: dict = Depends(get_current_user_payload)):
+    user = await _require_admin(payload)
+    combo = await _get_combo_by_tier("balanced")
+    html = (
+        _build_combo_email_html(combo, "balanced")
+        if combo and combo.get("legs")
+        else _email_layout("Test WinPulse", "<p>Aucun combiné disponible actuellement, mais l'envoi d'email fonctionne.</p>")
+    )
+
+    if not RESEND_API_KEY:
+        return {"status": "draft", "email_id": None, "error": None}
+
+    ok = await _send_email(user["email"], "🧪 Test WinPulse", html)
+    return {
+        "status": "sent" if ok else "error",
+        "email_id": None,
+        "error": None if ok else "Échec de l'envoi (verifie RESEND_API_KEY)",
+    }
+
+
+@app.post("/api/admin/auto-follower/run")
+async def admin_auto_follower_run(
+    dry_run: bool = False,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier("balanced")
+    if not combo or not combo.get("legs"):
+        return {"no_picks": True, "sent": 0, "skipped_already_sent": 0, "errors": 0}
+
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=2000)
+    today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    html = _build_combo_email_html(combo, "balanced")
+
+    sent = skipped = errors = 0
+    for u in paid_users:
+        already = await db.auto_follower_log.find_one({"user_id": u["id"], "date": today_key})
+        if already:
+            skipped += 1
+            continue
+        if dry_run:
+            sent += 1
+            continue
+        try:
+            ok = await _send_email(u["email"], "🌅 Ton combiné du matin — WinPulse", html)
+            if ok:
+                sent += 1
+                await db.auto_follower_log.insert_one({
+                    "user_id": u["id"],
+                    "date": today_key,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                })
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "skipped_already_sent": skipped, "errors": errors, "no_picks": False}
 
 
 @app.get("/api/admin/subscription-requests")
@@ -938,12 +1137,6 @@ async def get_super_combos():
 
 @app.get("/api/combos/ultra-safe")
 async def get_ultra_safe_combo():
-    """
-    Combine de 2-3 matchs DU JOUR a tres haute confiance (favoris nets
-    uniquement) — memes matchs que l'onglet "Aujourd'hui", pas une fenetre
-    de 7 jours. Voir build_ultra_safe_combo() pour les regles exactes et
-    l'avertissement obligatoire inclus dans la reponse.
-    """
     matches = await fetch_all_matches(db)
     today_matches = [m for m in matches if _is_today_match(m.get("commence_time", ""))]
     return build_ultra_safe_combo(today_matches)
@@ -959,11 +1152,6 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
             user = await db.users.find_one({"id": payload.get("sub")})
             if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
                 is_paid = True
-        # Comptes gratuits : Booster/Extra/Jackpot restent entierement caches
-        # (comme avant), et seul "Sur" applique un verrouillage par pick
-        # individuel (1er pick visible, le reste verrouille) — pour laisser
-        # entrevoir la valeur sans jamais donner l'integralite du "Sur"
-        # gratuitement, ce qui inciterait moins a l'abonnement.
         if not is_paid:
             for family in result.get("families", {}).values():
                 for tkey, tier in family.get("tiers", {}).items():
@@ -991,41 +1179,35 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
         }
 
 
-# ─── Alias de routes attendues par le frontend (memes donnees, autres noms) ──
+# ─── Alias de routes attendues par le frontend ──
 
 @app.get("/api/predictions/today-combos")
 async def get_predictions_today_combos_alias(payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """Alias de /api/combos/today, nom attendu par le frontend."""
     return await get_today_combos(payload)
 
 
 @app.get("/api/predictions/combos")
 async def get_predictions_combos_alias():
-    """Alias de /api/combos, nom attendu par le frontend."""
     return await get_combos()
 
 
 @app.get("/api/builder/matches")
 async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """
-    Comptes gratuits : seul le PREMIER pick des 2 PREMIERS MATCHS est
-    deverrouille (1 pick par match, sur 2 matchs differents au total).
-    Tous les autres picks, sur ces 2 matchs et sur tous les matchs
-    suivants, sont entierement verrouilles (marche, pick et cote caches).
-    """
     matches = await fetch_all_matches(db)
+    matches = [m for m in matches if not _match_is_finished(m)]
     if sport and sport != "all":
         matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
+    real_stats_map = await get_real_stats_map(db, matches)
     is_paid = False
     if payload:
         user = await db.users.find_one({"id": payload.get("sub")})
         if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
             is_paid = True
-    FREE_UNLOCKED_MATCHES = 2  # nombre de matchs avec 1 pick gratuit visible
+    FREE_UNLOCKED_MATCHES = 2
     result = []
     unlocked_matches_count = 0
     for m in matches:
-        analyzed = analyze_match(m)
+        analyzed = analyze_match(m, real_stats_map=real_stats_map)
         raw_picks = analyzed.get("markets", [])
         if not raw_picks:
             continue
@@ -1034,8 +1216,6 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
             unlocked_matches_count += 1
         picks = []
         for i, mk in enumerate(raw_picks):
-            # Seul le tout premier marche du match est deverrouille, et
-            # uniquement si ce match fait partie des matchs gratuits
             if is_paid:
                 locked = False
             elif this_match_gets_free_pick and i == 0:
@@ -1067,17 +1247,13 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
 
 @app.get("/api/builder/stats/{match_id}")
 async def get_builder_match_stats(match_id: str):
-    """
-    Statistiques detaillees d'un match pour le panneau deplie du Combo
-    Builder : probabilites 1X2 et pourcentages BTTS/over/clean-sheet,
-    derivees des marches deja calcules par analyze_match.
-    """
     matches = await fetch_all_matches(db)
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
     if not match:
         raise HTTPException(status_code=404, detail="Match introuvable")
 
-    analyzed = analyze_match(match)
+    real_stats_map = await get_real_stats_map(db, [match])
+    analyzed = analyze_match(match, real_stats_map=real_stats_map)
     implied = analyzed.get("implied_probs", {})
     home = analyzed.get("home_team", "")
     away = analyzed.get("away_team", "")
@@ -1116,7 +1292,6 @@ async def save_builder_combo(
     payload_in: SaveComboPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    """Sauvegarde un combo construit manuellement par l'utilisateur."""
     if not payload_in.legs:
         raise HTTPException(status_code=400, detail="Aucun pick selectionne")
 
@@ -1141,7 +1316,6 @@ async def save_builder_combo(
 
 @app.get("/api/builder/my-combos")
 async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload)):
-    """Combos personnalises sauvegardes par l'utilisateur."""
     saved = await db.user_combos.find({"user_id": payload["sub"]}).sort("created_at", -1).to_list(length=100)
     for s in saved:
         s.pop("_id", None)
@@ -1150,25 +1324,16 @@ async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload
 
 @app.delete("/api/builder/my-combos/{combo_id}")
 async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_current_user_payload)):
-    """Supprime un combo sauvegarde, uniquement s'il appartient a l'utilisateur."""
     result = await db.user_combos.delete_one({"id": combo_id, "user_id": payload["sub"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Combo introuvable")
     return {"ok": True}
 
 
-# NOTE : la route /api/predictions/history reelle (avec historique persiste)
-# est definie plus bas, apres l'implementation du suivi des predictions.
-
-
 # ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
 
 @app.get("/api/matches/{match_id}")
 async def get_single_match(match_id: str):
-    """
-    Le frontend appelle /api/matches/{id} directement (pas /analysis) pour
-    la fiche detail d'un pick. Meme logique de recherche que /analysis.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
 
@@ -1189,7 +1354,7 @@ async def get_single_match(match_id: str):
         (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
         {}
     )
-    prediction = _apply_calibration([prediction], await _get_calibration_map())[0] if prediction else {}
+    prediction = _apply_calibration([prediction], snapshot["calibration"])[0] if prediction else {}
     return _merge_match_prediction(match, prediction)
 
 
@@ -1197,14 +1362,9 @@ async def get_single_match(match_id: str):
 
 @app.get("/api/value-bets")
 async def get_value_bets():
-    """
-    Vrais value bets : edge positif (notre probabilite > probabilite
-    implicite du bookmaker), pas juste des picks a haute confiance.
-    Format attendu par le frontend : {"count": N, "bets": [...]}.
-    """
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
-    bets = find_value_bets(matches, min_edge=3.0, limit=30)
+    bets = find_value_bets(matches, min_edge=1.5, limit=30)
     return {"count": len(bets), "bets": bets}
 
 
@@ -1212,7 +1372,6 @@ async def get_value_bets():
 
 @app.get("/api/plans")
 async def get_plans_alias():
-    """Alias de /api/subscription/plans, nom attendu par le frontend."""
     return SUBSCRIPTION_PLANS
 
 
@@ -1224,17 +1383,11 @@ REFERRAL_REWARD_DAYS = 7
 
 @app.get("/api/referral/me")
 async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
-    """
-    Statut reel de parrainage : compte les comptes effectivement inscrits
-    avec le code de ce user (champ referred_by), et l'etat d'eligibilite/
-    reclamation de la recompense.
-    """
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
     code = user.get("referral_code") or user["id"][:8].upper()
-    # Migration douce : si un vieux compte n'a pas encore de referral_code stocke
     if not user.get("referral_code"):
         await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code}})
 
@@ -1262,14 +1415,6 @@ async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
 
 @app.post("/api/referral/claim")
 async def claim_referral_reward(payload: dict = Depends(get_current_user_payload)):
-    """
-    Reclame la recompense de parrainage (acces Pro) une fois le seuil
-    atteint. Ne peut etre reclamee qu'une seule fois par compte.
-
-    Fixe une date d'expiration reelle a REFERRAL_REWARD_DAYS jours — verifiee
-    automatiquement (a la connexion, sur /api/auth/me, et par balayage
-    quotidien) pour retrograder le compte en "free" une fois expire.
-    """
     user = await db.users.find_one({"id": payload["sub"]})
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
@@ -1294,8 +1439,8 @@ async def claim_referral_reward(payload: dict = Depends(get_current_user_payload
     return {"ok": True, "message": f"{REFERRAL_REWARD_DAYS} jours Pro activés ! 🎉"}
 
 
-TRACK_RECORD_BASE_BANKROLL = 100000  # FCFA, hypothese de depart pour la simulation
-TRACK_RECORD_STAKE_XOF = 1000  # FCFA, mise fixe par pick pour la simulation
+TRACK_RECORD_BASE_BANKROLL = 100000
+TRACK_RECORD_STAKE_XOF = 1000
 
 
 def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
@@ -1312,24 +1457,19 @@ def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
 
 @app.get("/api/track-record")
 async def get_track_record_public(page: int = 1, per_page: int = 20):
-    """
-    Page publique "Nos resultats. Sans triche." — stats reelles, graphique
-    de bankroll simule, et tableau paginé de tous les picks resolus
-    (gagnes/perdus), calcules a partir de db.predictions_history.
-
-    IMPORTANT — transparence sur les hypotheses de calcul :
-    - Mise fixe simulee de 1000 FCFA par pick (TRACK_RECORD_STAKE_XOF)
-    - Bankroll de depart simulee de 100 000 FCFA (TRACK_RECORD_BASE_BANKROLL)
-    - Seuls les picks avec un resultat CONFIRME (won/lost) sont comptes —
-      jamais les picks encore "pending", pour ne pas fausser les chiffres
-    - Ces statistiques ne seront representatives qu'apres accumulation de
-      suffisamment de picks resolus dans le temps (systeme de suivi recent)
-    """
-    resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}}
+    official_resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
     ).to_list(length=5000)
 
-    # Tri chronologique croissant (pour le graphique de bankroll)
+    transition_mode = len(official_resolved) < 20
+
+    if transition_mode:
+        resolved = await db.predictions_history.find(
+            {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
+        ).to_list(length=5000)
+    else:
+        resolved = official_resolved
+
     resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
 
     total = len(resolved)
@@ -1338,7 +1478,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
     odds_list = [r["pick_odds"] for r in resolved if r.get("pick_odds")]
     avg_odds = round(statistics.mean(odds_list), 2) if odds_list else 0
 
-    # ─── Simulation de bankroll (mise fixe) ──────────────────────────────────
     balance = TRACK_RECORD_BASE_BANKROLL
     daily_balance: Dict[str, float] = {}
     for r in resolved:
@@ -1351,9 +1490,8 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         daily_balance[day_key] = balance
 
     chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())]
-    chart = chart[-60:]  # 60 derniers jours avec activite
+    chart = chart[-60:]
 
-    # ─── Serie en cours (picks gagnants consecutifs les plus recents) ────────
     streak = 0
     for r in reversed(resolved):
         if r.get("result") == "won":
@@ -1361,7 +1499,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         else:
             break
 
-    # ─── ROI sur 30 jours (en unites de mise, independant du montant) ────────
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
     recent = [
         r for r in resolved
@@ -1372,6 +1509,23 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         odds = r.get("pick_odds") or 1
         profit_units_30d += (odds - 1) if r.get("result") == "won" else -1
     roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
+
+    by_label: Dict[str, Dict] = {"safe": {"wins": 0, "total": 0}, "value": {"wins": 0, "total": 0}, "risky": {"wins": 0, "total": 0}}
+    for r in resolved:
+        lbl = r.get("label")
+        if lbl not in by_label:
+            continue
+        by_label[lbl]["total"] += 1
+        if r.get("result") == "won":
+            by_label[lbl]["wins"] += 1
+    by_label_stats = {
+        lbl: {
+            "wins": d["wins"],
+            "total": d["total"],
+            "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
+        }
+        for lbl, d in by_label.items()
+    }
 
     stats = {
         "win_rate": win_rate,
@@ -1384,9 +1538,9 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         "base": TRACK_RECORD_BASE_BANKROLL,
         "balance_now": round(balance),
         "stake_xof": TRACK_RECORD_STAKE_XOF,
+        "by_label": by_label_stats,
     }
 
-    # ─── Tableau des resultats, plus recent en premier, pagine ────────────────
     results_desc = list(reversed(resolved))
     start = max(0, (page - 1) * per_page)
     page_items = results_desc[start:start + per_page]
@@ -1403,6 +1557,7 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
             "pick": r.get("pick", ""),
             "odds": odds,
             "status": r.get("result"),
+            "label": r.get("label"),
             "profit_xof": profit_xof,
         })
 
@@ -1414,16 +1569,20 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         "results": results,
         "page": page,
         "total_pages": total_pages,
+        "transition_mode": transition_mode,
+        "note": (
+            "Moins de 20 résultats officiels accumulés pour le moment "
+            "(les grands championnats reprennent progressivement) — cette "
+            "page affiche donc TOUS les picks résolus de la version "
+            "actuelle du moteur, gagnés et perdus, sans aucune sélection. "
+            "Une fois 20 résultats officiels atteints, la page basculera "
+            "automatiquement sur notre sélection stricte pré-match."
+        ) if transition_mode else None,
     }
 
 
 @app.get("/api/predictions/history")
 async def get_predictions_history(limit: int = 100, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    """
-    Historique reel des picks publies avec leur resultat (gagne/perdu/en attente).
-    Alimente par _save_predictions_to_history() a chaque refresh et reconcilie
-    avec les scores reels par _reconcile_predictions_with_scores().
-    """
     history = await db.predictions_history.find({}).sort("created_at", -1).to_list(length=limit)
     for h in history:
         h.pop("_id", None)
@@ -1432,13 +1591,6 @@ async def get_predictions_history(limit: int = 100, payload: Optional[dict] = De
 
 @app.get("/api/admin/accuracy-stats")
 async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payload)):
-    """
-    Statistiques REELLES de reussite, calculees uniquement sur les picks
-    dont le resultat a ete confirme (won/lost) — jamais sur des picks
-    encore en attente. Casse par tranche de confiance pour verifier si le
-    moteur est bien calibre (ex: les picks a 75% de confiance gagnent-ils
-    vraiment ~75% du temps ?).
-    """
     await _require_admin(payload)
 
     resolved = await db.predictions_history.find(
@@ -1490,14 +1642,59 @@ async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payl
     }
 
 
+@app.get("/api/admin/clv-stats")
+async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+
+    with_clv = await db.predictions_history.find(
+        {"clv_percent": {"$exists": True}, "market": "h2h"}
+    ).to_list(length=5000)
+
+    if not with_clv:
+        return {
+            "total_tracked": 0,
+            "detail": "Aucun pick avec CLV calcule pour le moment. Le CLV "
+                      "n'est calcule qu'une fois le match demarre — reviens "
+                      "plus tard une fois des matchs h2h en cours.",
+            "avg_clv_percent": None,
+            "positive_clv_rate": None,
+        }
+
+    clv_values = [p["clv_percent"] for p in with_clv if p.get("clv_percent") is not None]
+    positive_count = sum(1 for v in clv_values if v > 0)
+
+    by_version: Dict[str, List[float]] = {}
+    for p in with_clv:
+        v = p.get("model_version", "inconnu")
+        if p.get("clv_percent") is not None:
+            by_version.setdefault(v, []).append(p["clv_percent"])
+
+    version_breakdown = {
+        v: {
+            "count": len(vals),
+            "avg_clv_percent": round(statistics.mean(vals), 2),
+            "positive_clv_rate_percent": round(
+                (sum(1 for x in vals if x > 0) / len(vals)) * 100, 1
+            ),
+        }
+        for v, vals in by_version.items()
+    }
+
+    return {
+        "total_tracked": len(clv_values),
+        "avg_clv_percent": round(statistics.mean(clv_values), 2) if clv_values else None,
+        "positive_clv_rate_percent": round((positive_count / len(clv_values)) * 100, 1) if clv_values else None,
+        "by_model_version": version_breakdown,
+        "note": (
+            "CLV positif = notre cote au moment du pick etait meilleure que "
+            "la cote de cloture, signe de vraie valeur detectee avant que "
+            "le marche ne s'ajuste. Limite au marche h2h (1X2) pour l'instant."
+        ),
+    }
+
+
 @app.get("/api/admin/diagnose-pending-simple")
 async def admin_diagnose_pending_simple(key: str = ""):
-    """
-    Diagnostic : montre combien de picks 'pending' auraient du etre
-    reconcilies (match deja passe depuis plus de 3h), separes par source
-    (odds-api.io vs The Odds API classique), avec quelques exemples.
-    Usage : https://TON-BACKEND/api/admin/diagnose-pending-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1518,8 +1715,6 @@ async def admin_diagnose_pending_simple(key: str = ""):
     classic_stuck = [p for p in should_be_finished if not p["match_id"].startswith("oaio-")]
 
     def _sample(lst, n=5):
-        # Trie du plus recent au plus ancien pour voir les vrais blocages
-        # actuels, pas seulement les tres vieux matchs deja perdus
         sorted_lst = sorted(lst, key=lambda p: p["commence_time"], reverse=True)
         return [
             {
@@ -1544,11 +1739,6 @@ async def admin_diagnose_pending_simple(key: str = ""):
 
 @app.get("/api/admin/reconcile-results-simple")
 async def admin_reconcile_results_simple(key: str = ""):
-    """
-    Force la reconciliation manuelle des picks avec les scores reels.
-    Usage : https://TON-BACKEND/api/admin/reconcile-results-simple?key=TA_CLE
-    Normalement execute automatiquement par le worker planifie.
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1558,11 +1748,6 @@ async def admin_reconcile_results_simple(key: str = ""):
 
 @app.get("/api/admin/sweep-expired-simple")
 async def admin_sweep_expired_simple(key: str = ""):
-    """
-    Force le balayage manuel des abonnements expires (retrograde en "free").
-    Usage : https://TON-BACKEND/api/admin/sweep-expired-simple?key=TA_CLE
-    Normalement execute automatiquement chaque heure par le worker planifie.
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1582,7 +1767,6 @@ async def get_scores():
 
 @app.post("/api/admin/refresh")
 async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Force le rafraichissement du cache (consomme des credits API)."""
     result = await refresh_matches_worker(db)
     await _invalidate_prediction_cache()
     return result
@@ -1590,12 +1774,6 @@ async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/admin/activate-admin-simple")
 async def admin_activate_admin_simple(email: str = "", key: str = ""):
-    """
-    Active is_admin=true et subscription=elite pour un compte donne, en direct.
-    Contourne la logique d'auto-promotion a la connexion (utile si un compte
-    existait deja avant la configuration de ADMIN_EMAILS).
-    Usage : https://TON-BACKEND/api/admin/activate-admin-simple?email=X&key=TA_CLE_SECRETE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1620,11 +1798,6 @@ async def admin_activate_admin_simple(email: str = "", key: str = ""):
 
 @app.get("/api/admin/test-email-simple")
 async def admin_test_email_simple(to: str = "", key: str = ""):
-    """
-    Envoie un email de test pour verifier que l'integration Resend
-    fonctionne, sans passer par une vraie inscription.
-    Usage : https://TON-BACKEND/api/admin/test-email-simple?to=TON_EMAIL&key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1641,11 +1814,6 @@ async def admin_test_email_simple(to: str = "", key: str = ""):
 
 @app.get("/api/admin/whoami-simple")
 async def admin_whoami_simple(email: str = "", key: str = ""):
-    """
-    Diagnostic simple par lien navigateur, sans besoin de console/token.
-    Usage : https://TON-BACKEND/api/admin/whoami-simple?email=X&key=TA_CLE_SECRETE
-    Montre l'etat exact d'un compte en base (is_admin, subscription, etc.)
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1666,10 +1834,6 @@ async def admin_whoami_simple(email: str = "", key: str = ""):
 
 @app.get("/api/admin/refresh-simple")
 async def admin_refresh_simple(key: str = ""):
-    """
-    Rafraichissement simple via lien navigateur, protege par une cle secrete.
-    Usage : https://TON-BACKEND/api/admin/refresh-simple?key=TA_CLE_SECRETE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1679,14 +1843,6 @@ async def admin_refresh_simple(key: str = ""):
 
 @app.get("/api/admin/refresh-real-stats-simple")
 async def admin_refresh_real_stats_simple(key: str = ""):
-    """
-    Force le rafraichissement du cache de vraies stats football-data.org
-    (forme + H2H reels), independamment du cycle complet. Utile pour tester
-    l'integration sans attendre le prochain refresh planifie de 4h.
-    Retourne aussi le nombre de matchs couverts, pour verifier que le token
-    FOOTBALL_DATA_TOKEN et le mapping des equipes fonctionnent.
-    Usage : https://TON-BACKEND/api/admin/refresh-real-stats-simple?key=TA_CLE
-    """
     secret = os.environ.get("REFRESH_SECRET", "")
     if not secret or key != secret:
         raise HTTPException(status_code=403, detail="Cle invalide")
@@ -1695,21 +1851,187 @@ async def admin_refresh_real_stats_simple(key: str = ""):
     return result
 
 
+@app.get("/api/admin/probe-oaio-odds-simple")
+async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Parametre 'event_id' requis")
+    from odds_service import _fetch_odds_api_io_odds
+    result = await _fetch_odds_api_io_odds(event_id)
+    return {
+        "event_id": event_id,
+        "raw_odds_response": result,
+        "a_des_cotes_bet365": bool(result and result.get("bookmakers")),
+    }
+
+
+@app.get("/api/admin/debug-config-simple")
+async def admin_debug_config_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    return {
+        "odds_api_io_leagues_actuellement_chargees": ODDS_API_IO_LEAGUES,
+        "contient_playoff_round_champions_league": "international-clubs-uefa-champions-league-playoff-round" in ODDS_API_IO_LEAGUES,
+        "total_ligues": len(ODDS_API_IO_LEAGUES),
+    }
+
+
+@app.get("/api/admin/probe-oaio-event-simple")
+async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not match_id:
+        raise HTTPException(status_code=400, detail="Parametre 'match_id' requis (id numerique, sans 'oaio-')")
+    result = await probe_odds_api_io_event(match_id)
+    return result
+
+
+@app.get("/api/admin/probe-oaio-league-simple")
+async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sport: str = "football", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await probe_odds_api_io_league_sample(league, sport)
+    return result
+
+
+@app.get("/api/admin/diagnose-labels-simple")
+async def admin_diagnose_labels_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    all_safe = await db.predictions_history.find({"label": "safe"}).to_list(length=20000)
+
+    by_result: Dict[str, int] = {"won": 0, "lost": 0, "pending": 0, "autre": 0}
+    resolved_by_version: Dict[str, int] = {}
+    resolved_official_true = 0
+    resolved_official_false = 0
+    resolved_samples = []
+    pending_samples = []
+
+    for d in all_safe:
+        r = d.get("result", "autre")
+        by_result[r] = by_result.get(r, 0) + 1
+        if r in ("won", "lost"):
+            v = d.get("model_version", "inconnu")
+            resolved_by_version[v] = resolved_by_version.get(v, 0) + 1
+            if d.get("official_track_eligible"):
+                resolved_official_true += 1
+            else:
+                resolved_official_false += 1
+            if len(resolved_samples) < 8:
+                resolved_samples.append({
+                    "match": f"{d.get('home_team')} vs {d.get('away_team')}",
+                    "pick": d.get("pick"),
+                    "result": r,
+                    "model_version": d.get("model_version"),
+                    "official_track_eligible": d.get("official_track_eligible"),
+                    "confidence": d.get("confidence"),
+                    "created_at": d.get("created_at"),
+                })
+        elif r == "pending" and len(pending_samples) < 15:
+            pending_samples.append({
+                "match": f"{d.get('home_team')} vs {d.get('away_team')}",
+                "pick": d.get("pick"),
+                "market": d.get("market"),
+                "is_combo": d.get("is_combo"),
+                "commence_time": d.get("commence_time"),
+                "created_at": d.get("created_at"),
+                "match_id": d.get("match_id"),
+            })
+
+    return {
+        "current_model_version": MODEL_VERSION,
+        "total_label_safe_all_time": len(all_safe),
+        "by_result": by_result,
+        "resolved_by_model_version": resolved_by_version,
+        "resolved_official_track_eligible_true": resolved_official_true,
+        "resolved_official_track_eligible_false": resolved_official_false,
+        "resolved_samples": resolved_samples,
+        "pending_samples": pending_samples,
+        "explication": (
+            "Si 'resolved_by_model_version' contient une version differente "
+            "de 'current_model_version', ces picks sont exclus du mode "
+            "transition du Track Record (qui ne compte que la version "
+            "actuelle). Si 'resolved_official_track_eligible_false' est "
+            "eleve alors qu'on n'est PAS en mode transition (20+ picks "
+            "officiels), ces picks sont exclus car ils ne remplissent pas "
+            "les criteres stricts (edge>=2%, 5+ bookmakers, cote 1.20-2.20)."
+        ),
+    }
+
+
+@app.get("/api/admin/backfill-labels-simple")
+async def admin_backfill_labels_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    docs = await db.predictions_history.find({
+        "$or": [{"label": {"$exists": False}}, {"label": None}]
+    }).to_list(length=20000)
+
+    updated = 0
+    skipped_no_confidence = 0
+    for d in docs:
+        conf = d.get("confidence")
+        if conf is None:
+            skipped_no_confidence += 1
+            continue
+        try:
+            conf = float(conf)
+        except (TypeError, ValueError):
+            skipped_no_confidence += 1
+            continue
+        label = "safe" if conf >= SAFE_THRESHOLD else ("value" if conf >= VALUE_THRESHOLD else "risky")
+        await db.predictions_history.update_one(
+            {"signature": d["signature"]},
+            {"$set": {"label": label}},
+        )
+        updated += 1
+
+    return {
+        "ok": True,
+        "checked": len(docs),
+        "updated": updated,
+        "skipped_no_confidence": skipped_no_confidence,
+    }
+
+
+@app.get("/api/admin/diagnose-sport-simple")
+async def admin_diagnose_sport_simple(sport_key: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not sport_key:
+        raise HTTPException(status_code=400, detail="Parametre 'sport_key' requis")
+    result = await diagnose_sport_key(db, sport_key)
+    return result
+
+
+@app.get("/api/admin/update-closing-odds-simple")
+async def admin_update_closing_odds_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    matches = await fetch_all_matches(db)
+    result = await _update_closing_odds(matches)
+    return result
+
+
 # ─── Suivi reel des predictions (backtest continu) ──────────────────────────
 
 def _pick_signature(match_id: str, pick: str) -> str:
-    """Identifiant unique pour eviter de dupliquer le meme pick en historique."""
     import hashlib
     return hashlib.md5(f"{match_id}::{pick}".encode()).hexdigest()
 
 
 async def _save_predictions_to_history(matches: List[Dict]):
-    """
-    Sauvegarde chaque pick publie (confiance suffisante) dans l'historique,
-    UNE SEULE FOIS par match+pick — pour ensuite mesurer la vraie performance
-    dans le temps, sans jamais modifier un pick deja enregistre (integrite
-    de la mesure : on n'ajuste jamais un pick apres coup).
-    """
     try:
         real_stats_map = await get_real_stats_map(db, matches)
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
@@ -1719,7 +2041,7 @@ async def _save_predictions_to_history(matches: List[Dict]):
             sig = _pick_signature(p["match_id"], p["pick"])
             existing = await db.predictions_history.find_one({"signature": sig})
             if existing:
-                continue  # deja enregistre, on ne touche pas (integrite de la mesure)
+                continue
 
             await db.predictions_history.insert_one({
                 "signature": sig,
@@ -1732,31 +2054,96 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "market": p.get("market"),
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
+                "label": p.get("label"),
                 "model_probability": p.get("model_probability"),
+                "estimated_win_probability": p.get("estimated_win_probability"),
                 "wp_score": p.get("wp_score"),
+                "selection_score": p.get("selection_score"),
                 "stability_score": p.get("stability_score"),
-                "model_version": p.get("model_version", "8.0"),
+                "dominance_score": p.get("dominance_score"),
+                "num_books": p.get("num_books"),
+                "edge": p.get("edge"),
+                "model_version": p.get("model_version", MODEL_VERSION),
                 "is_combo": p.get("is_combo", False),
-                "result": "pending",  # pending -> won / lost apres reconciliation
+                "official_track_eligible": bool(p.get("official_track_eligible", False)),
+                "result": "pending",
                 "created_at": datetime.now(timezone.utc).isoformat(),
             })
     except Exception:
         pass
 
 
-async def _reconcile_predictions_with_scores() -> Dict:
-    """
-    Compare les picks "pending" avec les scores reels des matchs termines,
-    et met a jour leur resultat (won/lost). Ne touche jamais un pick deja
-    reconcilie — integrite de la mesure.
+def _find_current_h2h_odds(match: Dict, pick_text: str, home: str, away: str) -> Optional[float]:
+    pick_l = (pick_text or "").lower()
+    if "nul" in pick_l or pick_l.strip() == "match nul":
+        target_name = "Draw"
+    elif home.lower() in pick_l:
+        target_name = home
+    elif away.lower() in pick_l:
+        target_name = away
+    else:
+        return None
 
-    Deux sources de scores :
-    - The Odds API (fetch_all_scores) pour les match_id "classiques"
-    - odds-api.io (fetch_odds_api_io_scores_map) pour les match_id
-      prefixes "oaio-" (qualifications UEFA, ligues mineures, hockey,
-      basketball) — sans ca, ces picks restaient indefiniment "pending"
-      car The Odds API n'a aucune connaissance de ces matchs.
-    """
+    best_odds = None
+    for bm in match.get("bookmakers", []) or []:
+        for mk in bm.get("markets", []) or []:
+            if mk.get("key") != "h2h":
+                continue
+            for outcome in mk.get("outcomes", []) or []:
+                if outcome.get("name") == target_name:
+                    price = outcome.get("price")
+                    if price and (best_odds is None or price > best_odds):
+                        best_odds = float(price)
+    return best_odds
+
+
+async def _update_closing_odds(matches: List[Dict]) -> Dict:
+    now = datetime.now(timezone.utc)
+    match_by_id = {m.get("id"): m for m in matches}
+
+    pending = await db.predictions_history.find({
+        "result": "pending",
+        "closing_odds": {"$exists": False},
+        "market": "h2h",
+    }).to_list(length=1000)
+
+    updated = 0
+    for pred in pending:
+        try:
+            ct = _parse_iso(pred.get("commence_time"))
+            if not ct or ct > now:
+                continue
+
+            match = match_by_id.get(pred.get("match_id"))
+            if not match:
+                continue
+
+            closing_odds = _find_current_h2h_odds(
+                match, pred.get("pick", ""),
+                pred.get("home_team", ""), pred.get("away_team", "")
+            )
+            if closing_odds is None:
+                continue
+
+            opening_odds = pred.get("pick_odds") or closing_odds
+            clv_percent = round(((closing_odds - opening_odds) / opening_odds) * 100, 2) if opening_odds else 0.0
+
+            await db.predictions_history.update_one(
+                {"signature": pred["signature"]},
+                {"$set": {
+                    "closing_odds": closing_odds,
+                    "clv_percent": clv_percent,
+                    "clv_computed_at": now.isoformat(),
+                }},
+            )
+            updated += 1
+        except Exception:
+            continue
+
+    return {"ok": True, "checked": len(pending), "updated": updated}
+
+
+async def _reconcile_predictions_with_scores() -> Dict:
     pending = await db.predictions_history.find({"result": "pending"}).to_list(length=1000)
     if not pending:
         return {"ok": True, "checked": 0, "updated": 0}
@@ -1810,15 +2197,6 @@ async def _reconcile_predictions_with_scores() -> Dict:
 
 
 def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
-    """
-    Determine si un pick a gagne ou perdu, a partir du score final. Couvre
-    uniquement ce qui est deductible du score (buts) : h2h, totals/over-under,
-    btts, double chance, remboursement si nul, clean sheets. Retourne None
-    pour tout le reste (corners, cartons, mi-temps, combos) — ces marches
-    necessiteraient une source de donnees que nous n'avons pas (nombre reel
-    de corners/cartons), et resteront "pending" indefiniment plutot que
-    d'inventer un resultat.
-    """
     import re
 
     pick = (pred.get("pick") or "").lower()
@@ -1836,8 +2214,6 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
             return "won" if home_score == away_score else "lost"
 
     if market in ("totals", "syn_over_25", "syn_over_15") or "plus de" in pick or "moins de" in pick:
-        # Extrait le seuil numerique directement du texte (ex: "2.5" dans
-        # "Plus de 2.5 buts"), car pick_point n'est pas fiable/transmis.
         match_num = re.search(r"(\d+(?:\.\d+)?)", pick)
         if match_num:
             threshold = float(match_num.group(1))
@@ -1862,9 +2238,6 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
             return "won" if home_score != away_score else "lost"
 
     if market in ("draw_no_bet", "syn_draw_no_bet"):
-        # En cas de match nul, la mise est remboursee — ni gagne ni perdu.
-        # On laisse "pending" plutot que d'inventer un resultat force, car
-        # notre systeme ne gere pas de statut "rembourse" separe.
         if home_score == away_score:
             return None
         if home.lower() in pick:
@@ -1878,8 +2251,6 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     if market in ("syn_clean_sheet_away",):
         return "won" if home_score == 0 else "lost"
 
-    # Marches non couverts automatiquement (combo, corners, cartons, mi-temps...)
-    # restent "pending" — pas de fausse estimation.
     return None
 
 
@@ -1889,17 +2260,17 @@ scheduler = AsyncIOScheduler(timezone="UTC")
 
 
 async def _full_refresh_and_track():
-    """Refresh les donnees, sauvegarde les nouveaux picks, reconcilie les anciens."""
     matches = await refresh_matches_worker(db)
     all_matches = await fetch_all_matches(db)
-    # Vraies stats football-data.org (forme + H2H reels) pour les 12 grandes
-    # ligues couvertes par le plan gratuit — vient EN PLUS des cotes
-    # existantes (The Odds API, odds-api.io, BSD), ne les remplace jamais.
     try:
         await refresh_real_stats_cache(db, all_matches)
     except Exception:
-        pass  # ne doit jamais bloquer le refresh principal des cotes
+        pass
     await _save_predictions_to_history(all_matches)
+    try:
+        await _update_closing_odds(all_matches)
+    except Exception:
+        pass
     await _reconcile_predictions_with_scores()
     await _invalidate_prediction_cache()
     return matches
@@ -1907,25 +2278,25 @@ async def _full_refresh_and_track():
 
 @app.on_event("startup")
 async def startup_event():
-    # Refresh complet automatique toutes les 4h (00h, 04h, 08h, 12h, 16h, 20h UTC)
-    # — plus besoin de forcer manuellement, toutes les sources (The Odds API,
-    # odds-api.io, BSD) se synchronisent ensemble a chaque cycle. Frequence
-    # choisie comme compromis : suffisamment frequent pour rester a jour sans
-    # exploser la consommation de credits The Odds API (facture au volume).
     scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour="*/4", minute=0)
-    # Reconciliation supplementaire toutes les 2h pour capter les matchs
-    # termines entre deux refresh complets, sans consommer de credit odds
     scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
-    # Balayage horaire des abonnements expires (retrograde en "free")
     scheduler.add_job(lambda: _sweep_expired_subscriptions(), "cron", minute=30)
     scheduler.start()
 
-    # Premier fetch si cache vide (ne consomme des credits que si absent)
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
-    if not existing:
+    should_refresh = not existing
+    if existing:
+        try:
+            cache_status = await get_odds_cache_status(db)
+            should_refresh = bool(cache_status.get("stale") or cache_status.get("hard_stale"))
+        except Exception:
+            # En cas de doute après un déploiement, un cache présent reste
+            # préférable à une requête réseau automatique non maîtrisée.
+            should_refresh = False
+    if should_refresh:
         await _full_refresh_and_track()
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    scheduler.shutdown(wait=False)
+    scheduler.shutdown()
