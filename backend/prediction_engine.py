@@ -1,5 +1,5 @@
 """
-WNPulse Prediction Engine v8.4
+WNPulse Prediction Engine v8.2
 - Analyse uniquement des marches reels fournis par les bookmakers
 - Plusieurs propositions par match avec probabilite de consensus et score de selection
 - Pick principal simple ; combine uniquement comme suggestion secondaire si suffisamment solide
@@ -31,7 +31,7 @@ MIN_CONFIDENCE = 60.0    # Seuil minimum de score pour publication
 MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
 MIN_BOOKMAKERS = 1       # Minimum pour analyser un marche disponible
 MIN_BOOKMAKERS_STRONG = 2     # minimum pour une recommandation forte
-MODEL_VERSION = "8.4"
+MODEL_VERSION = "8.2"
 CALIBRATION_MIN_SAMPLE = 30
 
 # ─── Seuils de label et ciblage de "bonnes cotes" ────────────────────────────
@@ -724,21 +724,8 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
                 )
 
     market_results.sort(key=_market_sort_key, reverse=True)
-    # On conserve tous les marchés réellement cotés pour le diagnostic, mais
-    # le pick principal publié doit respecter le seuil de qualité. Cela évite
-    # qu'un marché très faible devienne automatiquement le pick officiel.
-    publishable = [r for r in market_results if r.get("confidence", 0) >= MIN_CONFIDENCE]
-    recommendations = _top_recommendations(publishable or market_results, limit=4)
+    recommendations = _top_recommendations(market_results, limit=4)
     best = recommendations[0]
-    if best.get("confidence", 0) < MIN_CONFIDENCE:
-        empty["markets"] = market_results
-        empty["recommendations"] = []
-        empty["bookmakers_used"] = [
-            {"key": bm.get("key"), "title": bm.get("title")}
-            for bm in bookmakers
-        ]
-        empty["best_bookmaker"] = _get_best_bookmaker_title(bookmakers)
-        return empty
 
     # Combine optionnel : jamais de remplacement du pick principal.
     combo = _build_combined_pick(market_results)
