@@ -7,7 +7,7 @@ CORRECTIONS v7.1 :
 - Inclut matchs live et terminés (24h) — ne disparaissent plus
 - Fetch scores GRATUIT (0 crédit) pour les scores live
 
-CORRECTIONS v8.3 :
+CORRECTIONS v8.4 :
 - Integration odds-api.io comme source secondaire de cotes (ligues mineures)
 - Integration BSD Sports Addon comme enrichissement (predictions ML CatBoost)
 - Parallélisation des fetchs et des scores
@@ -55,9 +55,14 @@ ODDS_API_IO_LEAGUES = [
     "denmark-superligaen",
     "brazil-brasileiro-serie-b",
     "italy-coppa-italia",
+    # UEFA : les tours de barrage sont des slugs distincts et doivent être
+    # interrogés explicitement, sinon des matchs européens actifs disparaissent.
     "international-clubs-uefa-champions-league-qualification",
+    "international-clubs-uefa-champions-league-playoff-round",
     "international-clubs-uefa-europa-league-qualification",
+    "international-clubs-uefa-europa-league-playoff-round",
     "international-clubs-uefa-conference-league-qualification",
+    "international-clubs-uefa-conference-league-playoff-round",
 ]
 
 # Hockey — sport distinct, gere separement (voir ODDS_API_IO_HOCKEY_LEAGUES)
@@ -233,7 +238,7 @@ DEEP_MARKET_SPORTS = {
     "tennis_wta_wimbledon",
 }
 
-SOCCER_MARKETS = "h2h,totals,btts,double_chance,draw_no_bet"
+SOCCER_MARKETS = "h2h,totals"
 BASKET_MARKETS = "h2h,totals,spreads"
 TENNIS_MARKETS = "h2h"
 HOCKEY_MARKETS = "h2h,totals"
@@ -411,14 +416,25 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str =
         async with httpx.AsyncClient(timeout=20.0) as http:
             r = await http.get(url, params=params)
             if r.status_code == 401:
-                return []  # Clé invalide
-            if r.status_code == 422:
-                return []  # Sport non disponible actuellement
+                logger.error("The Odds API: clé invalide (401)")
+                return []
+            # Une combinaison de marchés peut être refusée selon le sport, le plan
+            # ou la couverture du bookmaker. On retente alors en h2h seul :
+            # l'absence d'un marché enrichi ne doit jamais supprimer le match.
+            if r.status_code == 422 and markets != "h2h":
+                fallback_params = dict(params)
+                fallback_params["markets"] = "h2h"
+                r = await http.get(url, params=fallback_params)
             if r.status_code != 200:
+                logger.warning(
+                    "The Odds API %s -> HTTP %s (markets=%s)",
+                    sport_key, r.status_code, markets,
+                )
                 return []
             data = r.json()
             return data if isinstance(data, list) else []
-    except Exception:
+    except Exception as exc:
+        logger.warning("The Odds API %s -> exception: %s", sport_key, exc)
         return []
 
 
@@ -1002,13 +1018,11 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         except Exception:
             pass
 
-        # 3. Minimum 2 bookmakers — exemption pour odds-api.io dont le plan
-        # actuel limite a 1 seul bookmaker autorise (Bet365)
-        is_secondary_source = m.get("sport_key") in (
-            "soccer_minor_leagues", "icehockey_minor_leagues", "basketball_minor_leagues"
-        )
-        min_books_required = 1 if is_secondary_source else 2
-        if len(m.get("bookmakers", [])) < min_books_required:
+        # 3. Un seul bookmaker suffit pour CONSERVER le match.
+        # Le moteur de prédiction distingue ensuite les picks simples des
+        # recommandations fortes selon le nombre de bookmakers. L'ancien filtre
+        # à 2 ici supprimait des matchs réels avant même leur analyse.
+        if len(m.get("bookmakers", [])) < 1:
             continue
 
         filtered.append(m)
@@ -1037,17 +1051,21 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
     filtered.sort(key=_sort_key)
 
-    # ─── Diversification : max 15 matchs par compétition ────────────────────
+    # ─── Diversification sans masquer les grosses compétitions ───────────────
+    # 15 matchs par compétition était trop restrictif : un championnat avec
+    # beaucoup d'affiches pouvait faire disparaître précisément le match demandé.
+    # On garde une limite de sécurité beaucoup plus large.
     per_comp: Dict[str, int] = {}
     diversified = []
+    MAX_PER_COMPETITION = 50
     for m in filtered:
         key = m.get("sport_title") or "Other"
-        if per_comp.get(key, 0) >= 15:
+        if per_comp.get(key, 0) >= MAX_PER_COMPETITION:
             continue
         diversified.append(m)
         per_comp[key] = per_comp.get(key, 0) + 1
 
-    final = _annotate_bookmakers(diversified[:150])
+    final = _annotate_bookmakers(diversified[:300])
 
     await _save_to_cache(db, final)
     return final
@@ -1355,8 +1373,8 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
         except Exception:
             filtered_out_reasons["date_illisible"] = filtered_out_reasons.get("date_illisible", 0) + 1
             continue
-        if len(m.get("bookmakers", [])) < 2:
-            filtered_out_reasons["moins_de_2_bookmakers"] = filtered_out_reasons.get("moins_de_2_bookmakers", 0) + 1
+        if len(m.get("bookmakers", [])) < 1:
+            filtered_out_reasons["aucun_bookmaker"] = filtered_out_reasons.get("aucun_bookmaker", 0) + 1
             continue
         after_filters.append(m)
 
