@@ -410,7 +410,7 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str =
         "oddsFormat": "decimal",
         "dateFormat": "iso",
         "commenceTimeFrom": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "commenceTimeTo": (datetime.now(timezone.utc) + timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "commenceTimeTo": (datetime.now(timezone.utc) + timedelta(days=int(os.environ.get("ODDS_FETCH_HORIZON_DAYS", "7")))).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     try:
         async with httpx.AsyncClient(timeout=20.0) as http:
@@ -438,19 +438,43 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str =
         return []
 
 
+async def _discover_active_sport_keys() -> List[str]:
+    """Découvre automatiquement les compétitions actuellement actives.
+
+    /sports est un endpoint de découverte : il ne consomme pas le crédit
+    d'un appel /odds. Cela évite qu'un nouveau championnat (par exemple un
+    tour de qualification UEFA) soit absent simplement parce que son slug
+    n'a pas été ajouté manuellement dans REAL_SPORT_KEYS.
+    """
+    if not ODDS_API_KEY:
+        return []
+    url = f"{ODDS_API_BASE}/sports"
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as http:
+            r = await http.get(url, params={"apiKey": ODDS_API_KEY})
+            if r.status_code != 200:
+                logger.warning("The Odds API /sports -> HTTP %s", r.status_code)
+                return []
+            data = r.json()
+            if not isinstance(data, list):
+                return []
+            keys = []
+            for sport in data:
+                if not isinstance(sport, dict) or not sport.get("active"):
+                    continue
+                key = str(sport.get("key") or "").strip()
+                # Nous ne voulons pas aspirer des sports non gérés par le site.
+                if key.startswith(("soccer_", "basketball_", "tennis_", "icehockey_", "baseball_", "mma_")):
+                    keys.append(key)
+            return sorted(set(keys))
+    except Exception as exc:
+        logger.warning("The Odds API /sports -> exception: %s", exc)
+        return []
+
+
 async def _check_sport_active(sport_key: str) -> bool:
     """Vérifie si un sport est actif (0 crédit consommé)."""
-    url = f"{ODDS_API_BASE}/sports"
-    params = {"apiKey": ODDS_API_KEY}
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                return False
-            sports = r.json()
-            return any(s.get("key") == sport_key and s.get("active") for s in sports)
-    except Exception:
-        return False
+    return sport_key in set(await _discover_active_sport_keys())
 
 
 # ─── Source secondaire : odds-api.io (ligues mineures) ───────────────────────
@@ -471,7 +495,6 @@ async def _fetch_odds_api_io_events(league_slug: str, sport: str = "football") -
         "apiKey": ODDS_API_IO_KEY,
         "sport": sport,
         "league": league_slug,
-        "status": "pending",
     }
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
@@ -704,181 +727,115 @@ def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict], sport: st
 
 
 async def _fetch_odds_api_io_matches() -> List[Dict]:
-    """
-    Recupere les evenements odds-api.io sans laisser une competition en
-    supprimer une autre.
+    """Récupère les matchs à venir disposant réellement de cotes via odds-api.io.
 
-    PRINCIPES v8.5 :
-    - Les matchs du jour sont prioritaires.
-    - Chaque ligue qui possede au moins un match aujourd'hui recoit d'abord
-      son quota de matchs par rotation (round-robin).
-    - Les competitions UEFA sont explicitement prioritaires afin qu'un gros
-      volume d'une autre ligue ne puisse pas faire disparaitre les barrages.
-    - Aucun ``max(3)`` artificiel par ligue : le budget est distribue selon
-      les vrais evenements disponibles.
-    - Les budgets hockey/basketball sont separes afin de proteger le football.
-    - Si le nombre d'evenements du jour depasse le quota API, on prend les
-      matchs les plus proches de l'heure actuelle, mais on ne privilegie plus
-      arbitrairement l'ordre de la liste des ligues.
+    Important : la version précédente répartissait arbitrairement un budget par
+    championnat. Un championnat avec beaucoup de matchs pouvait donc perdre des
+    affiches pourtant disponibles dans l'API. Ici, tous les événements à venir
+    sont d'abord collectés, puis les appels de cotes sont attribués en priorité
+    aux matchs d'aujourd'hui, puis aux prochains matchs, sans quota minimum
+    artificiel par ligue.
+
+    La limite reste nécessaire car le fournisseur impose un quota d'appels /odds.
+    Elle ne supprime donc jamais un match de la source principale The Odds API;
+    elle concerne uniquement cette source secondaire.
     """
     if not ODDS_API_IO_KEY:
         return []
 
-    # Budget volontairement reserve au football : le probleme actuel concerne
-    # la couverture football. 10 appels restent disponibles pour les autres
-    # sports de cette source.
-    TOTAL_ODDS_CALLS = 65
-    HOCKEY_BUDGET = 5
-    BASKETBALL_BUDGET = 5
-    FOOTBALL_BUDGET = TOTAL_ODDS_CALLS
-
+    # Marge sous un quota courant de 100 appels/heure. Peut être augmenté par
+    # variable d'environnement si le compte dispose d'un quota supérieur.
+    MAX_TOTAL_ODDS_CALLS = int(os.environ.get("ODDS_API_IO_MAX_CALLS", "92"))
+    today = datetime.now(timezone.utc).date()
     now = datetime.now(timezone.utc)
-    local_today = (now + timedelta(hours=1)).date()  # WAT / Benin
+    horizon = now + timedelta(days=7)
 
-    def _event_dt(evt: Dict):
+    def _event_dt(evt):
         try:
             dt = datetime.fromisoformat(str(evt.get("date", "")).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-            return dt.astimezone(timezone.utc)
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
         except Exception:
             return None
 
-    def _is_today(evt: Dict) -> bool:
+    def _event_sort_key(evt):
         dt = _event_dt(evt)
-        return bool(dt and (dt + timedelta(hours=1)).date() == local_today)
+        if dt is None:
+            return (3, datetime.max.replace(tzinfo=timezone.utc))
+        if dt.date() == today:
+            return (0, dt)
+        if dt >= now:
+            return (1, dt)
+        return (2, dt)
 
-    def _priority(slug: str) -> int:
-        # 0 = Champions League, 1 = Europa/Conference, 2 = autres UEFA,
-        # 3 = autres competitions configurees.
-        if "champions-league" in slug:
-            return 0
-        if "europa-league" in slug or "conference-league" in slug:
-            return 1
-        if "uefa" in slug:
-            return 2
-        return 3
-
-    async def _fetch_sport_budget(league_slugs, sport: str, budget: int):
-        result = []
-        used = 0
-        for league_slug in league_slugs:
-            if used >= budget:
-                break
-            try:
-                events = await _fetch_odds_api_io_events(league_slug, sport=sport)
-            except Exception as exc:
-                logger.warning("odds-api.io events %s/%s -> %s", sport, league_slug, exc)
-                continue
-
-            # Aujourd'hui d'abord, puis les prochains matchs.
-            events = sorted(
-                events,
-                key=lambda e: (
-                    0 if _is_today(e) else 1,
-                    _event_dt(e) or datetime.max.replace(tzinfo=timezone.utc),
-                ),
-            )
-
-            for evt in events:
-                if used >= budget:
-                    break
-                event_id = evt.get("id")
-                if not event_id:
-                    continue
-                odds_data = await _fetch_odds_api_io_odds(event_id)
-                used += 1
-                converted = _convert_odds_api_io_event(evt, odds_data, sport=sport)
-                if converted:
-                    result.append(converted)
-        return result, used
-
-    out: List[Dict] = []
-
-    # Les autres sports ne doivent plus consommer le budget reserve au foot.
-    hockey, hockey_used = await _fetch_sport_budget(
-        ODDS_API_IO_HOCKEY_LEAGUES, "ice-hockey", HOCKEY_BUDGET
-    )
-    basketball, basketball_used = await _fetch_sport_budget(
-        ODDS_API_IO_BASKETBALL_LEAGUES, "basketball", BASKETBALL_BUDGET
-    )
-    out.extend(hockey)
-    out.extend(basketball)
-
-    # 1) Recuperer les evenements de TOUTES les competitions football
-    # configurees avant de demander leurs cotes.
-    events_by_league: Dict[str, List[Dict]] = {}
+    # 1) Collecte complète des événements à venir de toutes les ligues.
+    candidates = []
+    seen_ids = set()
+    league_errors = {}
     for league_slug in ODDS_API_IO_LEAGUES:
         try:
-            events = await _fetch_odds_api_io_events(league_slug, sport="football")
-            events_by_league[league_slug] = list(events or [])
+            events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport="football")
+            for evt in events:
+                event_id = evt.get("id")
+                dt = _event_dt(evt)
+                if not event_id or dt is None:
+                    continue
+                if dt < now or dt > horizon:
+                    continue
+                marker = ("football", str(event_id))
+                if marker in seen_ids:
+                    continue
+                seen_ids.add(marker)
+                candidates.append((league_slug, evt, "football"))
         except Exception as exc:
-            logger.warning("odds-api.io football events [%s] -> %s", league_slug, exc)
-            events_by_league[league_slug] = []
+            league_errors[league_slug] = str(exc)
 
-    # 2) Construire une file de matchs du jour par competition.
-    #    On ne prend PAS N matchs de la premiere ligue avant de passer aux
-    #    autres : rotation obligatoire entre les competitions.
-    queues: Dict[str, List[Dict]] = {}
-    for slug, events in events_by_league.items():
-        today_events = [e for e in events if _is_today(e)]
-        future_events = [e for e in events if not _is_today(e)]
-        today_events.sort(key=lambda e: _event_dt(e) or datetime.max.replace(tzinfo=timezone.utc))
-        future_events.sort(key=lambda e: _event_dt(e) or datetime.max.replace(tzinfo=timezone.utc))
-        queues[slug] = today_events + future_events
+    # Hockey et basketball suivent exactement la même logique.
+    for league_slug, sport in [
+        *((lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES),
+        *((lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES),
+    ]:
+        try:
+            events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport=sport)
+            for evt in events:
+                event_id = evt.get("id")
+                dt = _event_dt(evt)
+                if not event_id or dt is None or dt < now or dt > horizon:
+                    continue
+                marker = (sport, str(event_id))
+                if marker in seen_ids:
+                    continue
+                seen_ids.add(marker)
+                candidates.append((league_slug, evt, sport))
+        except Exception as exc:
+            league_errors[league_slug] = str(exc)
 
-    # 3) Les ligues actives aujourd'hui passent avant celles sans match du jour.
-    active = [slug for slug in queues if any(_is_today(e) for e in queues[slug])]
-    inactive = [slug for slug in queues if slug not in active]
-    active.sort(key=lambda slug: (_priority(slug), ODDS_API_IO_LEAGUES.index(slug)))
-    inactive.sort(key=lambda slug: (_priority(slug), ODDS_API_IO_LEAGUES.index(slug)))
-    league_order = active + inactive
+    # Aujourd'hui d'abord, puis les prochains jours. Cela évite qu'un gros
+    # championnat futur consomme tout le quota avant les matchs du jour.
+    candidates.sort(key=lambda item: _event_sort_key(item[1]))
 
-    # 4) Round-robin : un match par ligue, puis un deuxieme, etc.
-    #    Cela garantit qu'une competition active ne peut plus etre entierement
-    #    evincee par les nombreuses affiches d'une autre competition.
-    selected: List[tuple] = []
-    positions = {slug: 0 for slug in league_order}
-    while len(selected) < FOOTBALL_BUDGET:
-        progressed = False
-        for slug in league_order:
-            pos = positions[slug]
-            queue = queues.get(slug, [])
-            if pos >= len(queue):
-                continue
-            selected.append((slug, queue[pos]))
-            positions[slug] = pos + 1
-            progressed = True
-            if len(selected) >= FOOTBALL_BUDGET:
-                break
-        if not progressed:
+    out: List[Dict] = []
+    calls_used = 0
+    converted_ids = set()
+
+    for league_slug, evt, sport in candidates:
+        if calls_used >= MAX_TOTAL_ODDS_CALLS:
             break
-
-    # 5) Fetch des cotes. Le compteur est commun uniquement aux appels /odds;
-    #    les appels /events ci-dessus servent a connaitre la couverture reelle.
-    football_used = 0
-    for slug, evt in selected:
         event_id = evt.get("id")
-        if not event_id:
-            continue
         try:
             odds_data = await _fetch_odds_api_io_odds(event_id)
-            football_used += 1
-            converted = _convert_odds_api_io_event(evt, odds_data, sport="football")
+            calls_used += 1
+            converted = _convert_odds_api_io_event(evt, odds_data, sport=sport)
             if converted:
-                # Conserver le slug source pour le diagnostic et la fusion.
-                converted["source_league_slug"] = slug
+                converted_ids.add(str(event_id))
                 out.append(converted)
         except Exception as exc:
-            logger.warning("odds-api.io odds [%s/%s] -> %s", slug, event_id, exc)
+            calls_used += 1
+            logger.warning("odds-api.io odds event %s -> %s", event_id, exc)
 
     logger.warning(
-        "odds-api.io v8.5 : hockey=%s/%s basketball=%s/%s football=%s/%s | "
-        "ligues football actives aujourd'hui=%s | matchs convertis=%s",
-        hockey_used, HOCKEY_BUDGET,
-        basketball_used, BASKETBALL_BUDGET,
-        football_used, FOOTBALL_BUDGET,
-        active, len(out),
+        "odds-api.io : %s événement(s) candidats, %s appel(s) /odds, "
+        "%s match(s) avec cotes convertis, %s erreur(s) de ligue",
+        len(candidates), calls_used, len(out), len(league_errors),
     )
     return out
 
@@ -1018,12 +975,22 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
     matches: List[Dict] = []
 
+    # Découverte dynamique : les compétitions actives de l'API sont ajoutées
+    # automatiquement aux clés historiques. Ainsi un nouveau slug UEFA ou une
+    # nouvelle compétition n'a pas besoin d'être codé manuellement.
+    discovered = await _discover_active_sport_keys()
+    sport_keys = list(dict.fromkeys(REAL_SPORT_KEYS + discovered))
+    logger.warning(
+        "The Odds API : %s compétitions configurées + %s découvertes = %s fetchs",
+        len(REAL_SPORT_KEYS), len(discovered), len(sport_keys),
+    )
+
     async def _fetch_one(sk):
         try: return await _fetch_real_sport(sk, markets=_get_markets_for_sport(sk), regions="eu")
         except Exception as exc:
             logger.warning("The Odds API %s -> %s", sk, exc); return []
 
-    results=await asyncio.gather(*[_fetch_one(sk) for sk in REAL_SPORT_KEYS], return_exceptions=True)
+    results=await asyncio.gather(*[_fetch_one(sk) for sk in sport_keys], return_exceptions=True)
     for result in results:
         if isinstance(result,list): matches.extend(result)
 
@@ -1047,7 +1014,9 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
 
     for m in matches:
         # 1. Filtre matchs amicaux
-        if _is_friendly(m):
+        # Les matchs amicaux ne sont exclus que si le déploiement le demande.
+        # Par défaut, tout événement disposant de cotes reste visible.
+        if os.environ.get("ODDS_EXCLUDE_FRIENDLIES", "false").lower() in {"1", "true", "yes"} and _is_friendly(m):
             continue
 
         # 2. Fenêtre temporelle : 48h passées → 7 jours futurs
@@ -1102,7 +1071,7 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     # On garde une limite de sécurité beaucoup plus large.
     per_comp: Dict[str, int] = {}
     diversified = []
-    MAX_PER_COMPETITION = 50
+    MAX_PER_COMPETITION = int(os.environ.get("ODDS_MAX_PER_COMPETITION", "1000"))
     for m in filtered:
         key = m.get("sport_title") or "Other"
         if per_comp.get(key, 0) >= MAX_PER_COMPETITION:
@@ -1110,7 +1079,7 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         diversified.append(m)
         per_comp[key] = per_comp.get(key, 0) + 1
 
-    final = _annotate_bookmakers(diversified[:300])
+    final = _annotate_bookmakers(diversified)
 
     await _save_to_cache(db, final)
     return final
