@@ -1465,3 +1465,4 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
             "cache_total_matches_tous_sports": len(cached_data),
         },
         "diagnostic": diagnostic,
+    }
