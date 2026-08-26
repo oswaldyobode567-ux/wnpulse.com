@@ -1,4 +1,28 @@
-
+import { useState, useEffect } from "react";
+import { Link, useNavigate, useLocation } from "react-router-dom";
+import { useAuth } from "@/contexts/AuthContext";
+import {
+  LayoutDashboard,
+  Trophy,
+  Layers,
+  History,
+  CreditCard,
+  LogOut,
+  Zap,
+  Crown,
+  ShieldCheck,
+  Target,
+  TrendingUp,
+  User,
+  Gift,
+  Sparkles,
+  Radio,
+  Menu,
+  X,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
+import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
