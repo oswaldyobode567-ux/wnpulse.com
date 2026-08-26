@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -12,6 +12,7 @@ import {
   Crown,
   ShieldCheck,
   Target,
+  TrendingUp,
   User,
   Gift,
   Sparkles,
@@ -31,6 +32,7 @@ const NAV = [
   { to: "/app/combines", label: "Combinés", icon: Layers, testId: "nav-combos" },
   { to: "/app/builder", label: "Combo Builder", icon: Sparkles, testId: "nav-builder", badge: "New" },
   { to: "/app/value-bets", label: "Value bets", icon: Target, testId: "nav-value-bets" },
+  { to: "/app/montante", label: "Montante", icon: TrendingUp, testId: "nav-montante", badge: "10J" },
   { to: "/resultats", label: "Track record", icon: History, testId: "nav-history" },
   { to: "/app/profil", label: "Profil", icon: User, testId: "nav-profile" },
   { to: "/app/parrainage", label: "Parrainage", icon: Gift, testId: "nav-referral" },
