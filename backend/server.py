@@ -34,6 +34,7 @@ from prediction_engine import (
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
+from montante_service import MontanteService
 
 # ─── Systeme d'expiration d'abonnement ───────────────────────────────────────
 
@@ -1119,6 +1120,207 @@ async def admin_reject_subscription_request(
         }},
     )
     return {"ok": True, "detail": "Demande rejetee"}
+
+
+
+# ─── Montante 10/15 jours ────────────────────────────────────────────────────
+# Etat persiste dans MongoDB : un deploiement/restart du serveur ne remet donc
+# jamais la montante a zero. Les picks viennent exclusivement des pronostics
+# reels deja produits par prediction_engine.py.
+MONTANTE_DOC_ID = "active"
+MONTANTE_DEFAULT_DAYS = 10
+MONTANTE_MAX_PICKS = 2
+MONTANTE_MIN_CONFIDENCE = 0.70
+MONTANTE_MIN_ODDS = 1.20
+MONTANTE_MAX_ODDS = 1.50
+
+montante_selector = MontanteService(
+    days=MONTANTE_DEFAULT_DAYS,
+    max_picks_per_day=MONTANTE_MAX_PICKS,
+    min_confidence=MONTANTE_MIN_CONFIDENCE,
+    min_odds=MONTANTE_MIN_ODDS,
+    max_odds=MONTANTE_MAX_ODDS,
+    min_edge=0.0,
+    initial_bankroll=10000.0,
+)
+
+
+def _montante_public(doc: Optional[Dict]) -> Dict:
+    if not doc:
+        return {"status": "NONE", "message": "Aucune montante active."}
+    out = dict(doc)
+    out.pop("_id", None)
+    return out
+
+
+async def _montante_get() -> Optional[Dict]:
+    doc = await db.montantes.find_one({"_id": MONTANTE_DOC_ID})
+    return doc
+
+
+async def _montante_save(state: Dict) -> Dict:
+    state = dict(state)
+    state["_id"] = MONTANTE_DOC_ID
+    await db.montantes.replace_one({"_id": MONTANTE_DOC_ID}, state, upsert=True)
+    return _montante_public(state)
+
+
+async def _montante_reconcile(state: Dict) -> Dict:
+    """Met a jour automatiquement la journee avec les resultats deja reconciliés."""
+    if state.get("status") != "ACTIVE":
+        return state
+    picks = state.get("current_picks") or []
+    if not picks:
+        return state
+
+    statuses = []
+    for pick in picks:
+        match_id = str(pick.get("match_id") or "")
+        pick_text = pick.get("pick")
+        if not match_id or not pick_text:
+            statuses.append("PENDING")
+            continue
+        docs = await db.predictions_history.find({
+            "match_id": match_id,
+            "pick": pick_text,
+            "result": {"$in": ["won", "lost"]},
+        }).sort("created_at", -1).to_list(length=1)
+        if not docs:
+            statuses.append("PENDING")
+        else:
+            statuses.append("WIN" if docs[0].get("result") == "won" else "LOSS")
+
+    if "LOSS" in statuses:
+        state["status"] = "FAILED"
+        state["failed_at"] = datetime.now(timezone.utc).isoformat()
+        state["waiting_reason"] = "La montante a perdu sur le jour en cours."
+        state.setdefault("history", []).append({
+            "day": state.get("current_day", 1),
+            "status": "LOSS",
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "picks": picks,
+        })
+        await _montante_save(state)
+        return state
+
+    if statuses and all(x == "WIN" for x in statuses):
+        combined_odds = 1.0
+        for pick in picks:
+            combined_odds *= float(pick.get("odds") or 1)
+        state["theoretical_bankroll"] = round(
+            float(state.get("theoretical_bankroll", state.get("initial_bankroll", 10000))) * combined_odds, 2
+        )
+        state.setdefault("history", []).append({
+            "day": state.get("current_day", 1),
+            "status": "WIN",
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "combined_odds": round(combined_odds, 3),
+            "picks": picks,
+        })
+        if int(state.get("current_day", 1)) >= int(state.get("days", 10)):
+            state["status"] = "COMPLETED"
+            state["completed_at"] = datetime.now(timezone.utc).isoformat()
+            state["waiting_reason"] = None
+            state["current_picks"] = []
+        else:
+            state["current_day"] = int(state.get("current_day", 1)) + 1
+            state["current_picks"] = []
+            state["waiting_reason"] = "Jour gagné. Recherche des picks du prochain jour."
+        await _montante_save(state)
+    return state
+
+
+async def _montante_prepare_next_day(state: Dict) -> Dict:
+    if state.get("status") != "ACTIVE" or state.get("current_picks"):
+        return state
+    matches = await fetch_all_matches(db)
+    real_stats_map = await get_real_stats_map(db, matches)
+    predictions = analyze_all(matches, real_stats_map=real_stats_map)
+    candidates = []
+    now = datetime.now(timezone.utc)
+    current_day = now.date()
+    for p in predictions:
+        ct = p.get("commence_time")
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        # Uniquement les matchs encore jouables du jour ou a venir.
+        if dt.date() != current_day:
+            continue
+        if dt < now - timedelta(minutes=15):
+            continue
+        if not p.get("pick"):
+            continue
+        candidates.append(p)
+
+    selected = montante_selector.select_daily_picks(candidates, limit=MONTANTE_MAX_PICKS)
+    if not selected:
+        state["waiting_reason"] = "Aucun pick ne respecte actuellement les criteres de la montante (confiance >= 70%, cote 1.20-1.50)."
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await _montante_save(state)
+        return state
+
+    state["current_picks"] = selected
+    state["waiting_reason"] = None
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _montante_save(state)
+    return state
+
+
+@app.get("/api/montante")
+async def get_montante(payload: dict = Depends(get_current_user_payload)):
+    state = await _montante_get()
+    if not state:
+        return {"status": "NONE", "message": "Aucune montante active.", "can_start": False}
+    state = await _montante_reconcile(state)
+    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+        state = await _montante_prepare_next_day(state)
+    public = _montante_public(state)
+    public["progress"] = round(((int(public.get("current_day", 1)) - 1) / max(1, int(public.get("days", 10)))) * 100, 1) if public.get("status") != "NONE" else 0
+    public["can_start"] = False
+    return public
+
+
+@app.post("/api/montante/start")
+async def start_montante(
+    days: int = 10,
+    initial_bankroll: float = 10000,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    if days not in (10, 15):
+        raise HTTPException(status_code=400, detail="days doit être 10 ou 15")
+    if initial_bankroll <= 0:
+        raise HTTPException(status_code=400, detail="initial_bankroll doit être positif")
+    state = montante_selector.create(days=days, initial_bankroll=initial_bankroll)
+    state["current_picks"] = []
+    state["waiting_reason"] = "Sélection des meilleurs picks du jour..."
+    state = await _montante_save(state)
+    state = await _montante_prepare_next_day(state)
+    return _montante_public(state)
+
+
+@app.post("/api/montante/restart")
+async def restart_montante(
+    days: int = 10,
+    initial_bankroll: float = 10000,
+    payload: dict = Depends(get_current_user_payload),
+):
+    return await start_montante(days, initial_bankroll, payload)
+
+
+@app.post("/api/montante/refresh")
+async def refresh_montante(payload: dict = Depends(get_current_user_payload)):
+    state = await _montante_get()
+    if not state:
+        raise HTTPException(status_code=404, detail="Aucune montante active")
+    state = await _montante_reconcile(state)
+    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+        state = await _montante_prepare_next_day(state)
+    return _montante_public(state)
 
 
 # ─── Combos ─────────────────────────────────────────────────────────────────
@@ -2300,3 +2502,4 @@ async def startup_event():
 @app.on_event("shutdown")
 async def shutdown_event():
     scheduler.shutdown()
+
