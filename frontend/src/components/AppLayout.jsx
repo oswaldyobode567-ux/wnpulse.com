@@ -1,4 +1,3 @@
-
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
 import {
@@ -12,18 +11,14 @@ import {
   Crown,
   ShieldCheck,
   Target,
-  TrendingUp,
   User,
   Gift,
   Sparkles,
   Radio,
-  Menu,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-
 const NAV = [
   { to: "/app", label: "Dashboard", icon: LayoutDashboard, end: true, testId: "nav-dashboard" },
   { to: "/app/live", label: "Live", icon: Radio, testId: "nav-live", badge: "Live" },
@@ -32,83 +27,42 @@ const NAV = [
   { to: "/app/combines", label: "Combinés", icon: Layers, testId: "nav-combos" },
   { to: "/app/builder", label: "Combo Builder", icon: Sparkles, testId: "nav-builder", badge: "New" },
   { to: "/app/value-bets", label: "Value bets", icon: Target, testId: "nav-value-bets" },
-  { to: "/app/montante", label: "Montante", icon: TrendingUp, testId: "nav-montante", badge: "10J" },
-  { to: "/resultats", label: "Track record", icon: History, testId: "nav-history" },
+  { to: "/app/historique", label: "Track record", icon: History, testId: "nav-history" },
   { to: "/app/profil", label: "Profil", icon: User, testId: "nav-profile" },
   { to: "/app/parrainage", label: "Parrainage", icon: Gift, testId: "nav-referral" },
   { to: "/app/abonnement", label: "Abonnement", icon: CreditCard, testId: "nav-subscription" },
 ];
-
-// Sur mobile : 4 onglets essentiels + "Plus".
-// Cela évite que les 11+ entrées de navigation agrandissent la barre fixe
-// sur plusieurs lignes et recouvrent le contenu.
-const MOBILE_PRIMARY_KEYS = ["/app", "/app/live", "/app/aujourdhui", "/app/builder"];
-
 export default function AppLayout({ children }) {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
-  const [moreOpen, setMoreOpen] = useState(false);
-
-  useEffect(() => {
-    setMoreOpen(false);
-  }, [location.pathname]);
-
   const tierLabel = {
     free: { label: "Free", cls: "bg-slate-100 text-slate-700" },
     pro: { label: "Pro", cls: "bg-orange-100 text-orange-700" },
     elite: { label: "Elite", cls: "bg-rose-100 text-rose-700" },
   }[user?.subscription_tier || "free"];
-
   const navItems = [...NAV];
-
   if (user?.is_admin) {
-    navItems.push({
-      to: "/app/admin",
-      label: "Admin",
-      icon: ShieldCheck,
-      testId: "nav-admin",
-    });
+    navItems.push({ to: "/app/admin", label: "Admin", icon: ShieldCheck, testId: "nav-admin" });
   }
-
-  const isActive = (item) =>
-    item.end
-      ? location.pathname === item.to
-      : location.pathname.startsWith(item.to);
-
-  const primaryMobileItems = navItems.filter((i) =>
-    MOBILE_PRIMARY_KEYS.includes(i.to)
-  );
-  const moreMobileItems = navItems.filter(
-    (i) => !MOBILE_PRIMARY_KEYS.includes(i.to)
-  );
-
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-neutral-50">
-      {/* Sidebar desktop */}
-      <aside
-        className="hidden lg:flex fixed inset-y-0 left-0 w-64 bg-slate-950 text-slate-100 flex-col"
-        data-testid="app-sidebar"
-      >
+    <div className="min-h-screen bg-neutral-50">
+      <aside className="hidden lg:flex fixed inset-y-0 left-0 w-64 bg-slate-950 text-slate-100 flex-col" data-testid="app-sidebar">
         <div className="px-6 py-6 border-b border-slate-800/80 flex items-center gap-2.5">
           <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center shadow-lg shadow-orange-600/30">
             <Zap className="h-5 w-5 text-white" strokeWidth={2.5} fill="white" />
           </div>
           <div>
-            <div className="font-heading font-extrabold tracking-tight text-lg leading-none">
-              WinPulse
-            </div>
-            <div className="text-[10px] uppercase tracking-[0.18em] text-orange-400/70 mt-1">
-              Ton pouls de gagnant
-            </div>
+            <div className="font-heading font-extrabold tracking-tight text-lg leading-none">WinPulse</div>
+            <div className="text-[10px] uppercase tracking-[0.18em] text-orange-400/70 mt-1">Ton pouls de gagnant</div>
           </div>
         </div>
-
-        <nav className="flex-1 px-3 py-6 space-y-1 overflow-y-auto">
+        <nav className="flex-1 px-3 py-6 space-y-1">
           {navItems.map((item) => {
             const Icon = item.icon;
-            const active = isActive(item);
-
+            const active = item.end
+              ? location.pathname === item.to
+              : location.pathname.startsWith(item.to);
             return (
               <Link
                 key={item.to}
@@ -121,13 +75,8 @@ export default function AppLayout({ children }) {
                     : "text-slate-400 hover:bg-slate-800/60 hover:text-white"
                 )}
               >
-                <Icon
-                  className={cn("h-4 w-4", active && "text-orange-400")}
-                  strokeWidth={2}
-                />
-                <span className="flex-1">{item.label}</span>
-
-                {item.badge && (
+                <Icon className={cn("h-4 w-4", active && "text-orange-400")} strokeWidth={2} />
+                <span className="flex-1">{item.label}</span>    {item.badge && (
                   <span className="text-[9px] font-bold uppercase tracking-wider bg-orange-500 text-white px-1.5 py-0.5 rounded">
                     {item.badge}
                   </span>
@@ -136,38 +85,22 @@ export default function AppLayout({ children }) {
             );
           })}
         </nav>
-
         <div className="p-4 border-t border-slate-800/80">
           <div className="rounded-xl bg-slate-900/80 p-3 border border-slate-800">
             <div className="flex items-center justify-between mb-2">
               <div className="text-xs text-slate-400">Connecté</div>
-              <Badge
-                className={cn("text-[10px] font-bold", tierLabel.cls)}
-                data-testid="user-tier-badge"
-              >
-                {tierLabel.label === "Elite" && (
-                  <Crown className="h-3 w-3 mr-1" />
-                )}
+              <Badge className={cn("text-[10px] font-bold", tierLabel.cls)} data-testid="user-tier-badge">
+                {tierLabel.label === "Elite" && <Crown className="h-3 w-3 mr-1" />}
                 {tierLabel.label}
               </Badge>
             </div>
-
-            <div className="text-sm font-semibold truncate" data-testid="user-name">
-              {user?.full_name}
-            </div>
-            <div className="text-xs text-slate-400 truncate mb-2">
-              {user?.email}
-            </div>
-
+            <div className="text-sm font-semibold truncate" data-testid="user-name">{user?.full_name}</div>
+            <div className="text-xs text-slate-400 truncate mb-2">{user?.email}</div>
             <Button
               data-testid="logout-button"
               size="sm"
-              variant="ghost"
-              className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
-              onClick={() => {
-                logout();
-                navigate("/");
-              }}
+              variant="ghost"              className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
+              onClick={() => { logout(); navigate("/"); }}
             >
               <LogOut className="h-3.5 w-3.5 mr-2" />
               Déconnexion
@@ -175,185 +108,64 @@ export default function AppLayout({ children }) {
           </div>
         </div>
       </aside>
-
-      {/* Header mobile */}
-      <header className="lg:hidden sticky top-0 z-40 w-full bg-white/95 backdrop-blur-xl border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2 min-w-0">
-          <div className="h-8 w-8 shrink-0 rounded-lg wp-gradient-warm grid place-items-center text-white">
+      <header className="lg:hidden sticky top-0 z-40 bg-white/85 backdrop-blur-xl border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <div className="h-8 w-8 rounded-lg wp-gradient-warm grid place-items-center text-white">
             <Zap className="h-4 w-4" strokeWidth={2.5} fill="white" />
           </div>
-          <span className="font-heading font-extrabold truncate">WinPulse</span>
+          <span className="font-heading font-extrabold">WinPulse</span>
         </div>
-
-        <div className="flex items-center gap-1 shrink-0">
-          <Badge className={cn("text-[10px] font-bold", tierLabel.cls)}>
-            {tierLabel.label}
-          </Badge>
-
+        <div className="flex items-center gap-2">
+          <Badge className={cn("text-[10px] font-bold", tierLabel.cls)}>{tierLabel.label}</Badge>
           <Button
             data-testid="logout-button-mobile"
             size="icon"
             variant="ghost"
             className="h-8 w-8 text-slate-500 hover:text-rose-600 hover:bg-rose-50"
-            onClick={() => {
-              logout();
-              navigate("/");
-            }}
+            onClick={() => { logout(); navigate("/"); }}
           >
             <LogOut className="h-4 w-4" />
           </Button>
         </div>
       </header>
-
-      {/* Panneau "Plus" mobile */}
-      {moreOpen && (
-        <>
-          <div
-            className="lg:hidden fixed inset-0 z-40 bg-black/30"
-            onClick={() => setMoreOpen(false)}
-            data-testid="mobile-more-overlay"
-          />
-
-          <div
-            className="lg:hidden fixed bottom-[calc(4rem+env(safe-area-inset-bottom))] inset-x-0 z-50 bg-white border-t border-neutral-200 rounded-t-2xl shadow-2xl max-h-[60vh] overflow-y-auto overscroll-contain"
-            data-testid="mobile-more-panel"
-          >
-            <div className="flex items-center justify-between px-4 py-3 border-b border-neutral-100">
-              <span className="font-heading font-bold text-slate-900 text-sm">
-                Plus d'options
-              </span>
-
-              <button
-                type="button"
-                onClick={() => setMoreOpen(false)}
-                className="text-slate-400 hover:text-slate-700"
-                aria-label="Fermer"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="grid grid-cols-3 gap-1 p-3 pb-5">
-              {moreMobileItems.map((item) => {
-                const Icon = item.icon;
-                const active = isActive(item);
-
-                return (
-                  <Link
-                    key={item.to}
-                    to={item.to}
-                    data-testid={`${item.testId}-mobile-more`}
-                    className={cn(
-                      "flex flex-col items-center justify-center gap-1.5 rounded-xl py-3 text-[11px] font-medium text-center",
-                      active
-                        ? "bg-orange-50 text-orange-600"
-                        : "text-slate-600 hover:bg-neutral-50"
-                    )}
-                  >
-                    <Icon className="h-5 w-5" />
-                    <span className="leading-tight">{item.label}</span>
-                  </Link>
-                );
-              })}
-            </div>
-          </div>
-        </>
-      )}
-
-      {/* Navigation mobile : une seule ligne + zone tactile compatible iPhone */}
-      <nav
-        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-neutral-200 grid grid-cols-5 min-h-16"
-        style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
-        data-testid="mobile-bottom-nav"
-      >
-        {primaryMobileItems.map((item) => {
+      <nav className={cn("lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-neutral-200 grid", user?.is_admin ? "grid-cols-6" : "grid-cols-5")}>
+        {navItems.map((item) => {
           const Icon = item.icon;
-          const active = isActive(item);
-
+          const active = item.end
+            ? location.pathname === item.to
+            : location.pathname.startsWith(item.to);
           return (
             <Link
               key={item.to}
               to={item.to}
               data-testid={`${item.testId}-mobile`}
               className={cn(
-                "min-w-0 flex flex-col items-center justify-center py-2 text-[10px]",
+                "flex flex-col items-center justify-center py-2 text-[10px]",
                 active ? "text-orange-600" : "text-slate-500"
               )}
             >
-              <Icon className="h-5 w-5 mb-1 shrink-0" />
-              <span className="leading-none truncate max-w-[56px]">
-                {item.label.split(" ")[0]}
-              </span>
+              <Icon className="h-5 w-5 mb-1" />
+              <span className="leading-none">{item.label.split(" ")[0]}</span>
             </Link>
           );
         })}
-
-        <button
-          type="button"
-          onClick={() => setMoreOpen((v) => !v)}
-          data-testid="mobile-more-toggle"
-          aria-expanded={moreOpen}
-          className={cn(
-            "min-w-0 flex flex-col items-center justify-center py-2 text-[10px]",
-            moreOpen ? "text-orange-600" : "text-slate-500"
-          )}
-        >
-          <Menu className="h-5 w-5 mb-1 shrink-0" />
-          <span className="leading-none">Plus</span>
-        </button>
       </nav>
-
-      {/* Contenu principal.
-          Le padding-bottom tient compte de la barre mobile et de la safe-area. */}
-      <main className="lg:pl-64 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0 min-h-screen w-full flex flex-col">
-        <div className="flex-1 min-w-0 overflow-x-hidden">{children}</div>
-
+      <main className="lg:pl-64 pb-24 lg:pb-0 min-h-screen flex flex-col">
+        <div className="flex-1">{children}</div>
         <footer className="border-t border-neutral-200 bg-white py-5 px-4">
           <div className="max-w-6xl mx-auto flex flex-col items-center gap-2 text-xs">
             <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
-              <Link
-                to="/blog"
-                className="text-slate-500 hover:text-orange-600 font-semibold"
-              >
-                Blog
-              </Link>
+              <Link to="/blog" className="text-slate-500 hover:text-orange-600 font-semibold">Blog</Link>
               <span className="text-slate-300">·</span>
-
-              <Link
-                to="/legal/mentions-legales"
-                className="text-slate-500 hover:text-orange-600 font-semibold"
-              >
-                Mentions légales
-              </Link>
+              <Link to="/legal/mentions-legales" className="text-slate-500 hover:text-orange-600 font-semibold">Mentions légales</Link>
               <span className="text-slate-300">·</span>
-
-              <Link
-                to="/legal/cgv"
-                className="text-slate-500 hover:text-orange-600 font-semibold"
-              >
-                CGV
-              </Link>
+              <Link to="/legal/cgv" className="text-slate-500 hover:text-orange-600 font-semibold">CGV</Link>
               <span className="text-slate-300">·</span>
-
-              <Link
-                to="/legal/confidentialite"
-                className="text-slate-500 hover:text-orange-600 font-semibold"
-              >
-                Confidentialité
-              </Link>
+              <Link to="/legal/confidentialite" className="text-slate-500 hover:text-orange-600 font-semibold">Confidentialité</Link>
               <span className="text-slate-300">·</span>
-
-              <Link
-                to="/legal/jeu-responsable"
-                className="text-rose-600 hover:text-rose-700 font-semibold"
-              >
-                Jeu responsable · 18+
-              </Link>
+              <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold">Jeu responsable · 18+</Link>
             </div>
-
-            <div className="text-slate-400">
-              © 2026 WinPulse SARL · Cotonou, Bénin
-            </div>
+            <div className="text-slate-400">© 2026 WinPulse SARL · Cotonou, Bénin</div>
           </div>
         </footer>
       </main>
