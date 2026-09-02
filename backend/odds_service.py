@@ -1,1416 +1,2510 @@
-"""The Odds API client with MongoDB caching.
-CORRECTIONS v7.1 :
-- Cache TTL = 6 heures (au lieu de 60 min) → préserve les crédits
-- Fetch 1x/jour à 06h00 WAT via worker (voir server.py)
-- JAMAIS d'appel API sur requête utilisateur → toujours depuis le cache
-- Filtre matchs amicaux automatique
-- Inclut matchs live et terminés (24h) — ne disparaissent plus
-- Fetch scores GRATUIT (0 crédit) pour les scores live
-
-CORRECTIONS v8.4 :
-- Integration odds-api.io comme source secondaire de cotes (ligues mineures)
-- Integration BSD Sports Addon comme enrichissement (predictions ML CatBoost)
-- Parallélisation des fetchs et des scores
-- Cache utilisateur strictement MongoDB, jamais de fetch réseau
-- TTL dynamique selon la proximité du prochain match
-- Fusion multi-source robuste par équipes + horaire
-- Normalisation équipes/bookmakers et qualité pondérée
-- Correction reconciliation odds-api.io : statut settled + fallback horaire > 4h
-- Ajout des sondes de diagnostic compatibles avec server.py corrige
-- Suppression du doublon odds-api.io
-  fusionnees dans le reasoning des matchs, sans remplacer le moteur maison
+"""
+WinPulse API — server.py (v8.4)
+Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
-import random
-import hashlib
 import asyncio
-import math
-import unicodedata
-import re
-from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Optional
-
+import time
 import httpx
-import logging
-logger = logging.getLogger("winpulse.odds_service")
+import uuid
+import statistics
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Dict
 
-ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
-ODDS_API_BASE = "https://api.the-odds-api.com/v4"
+from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, EmailStr
+from motor.motor_asyncio import AsyncIOMotorClient
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# ─── Nouvelles sources secondaires ───────────────────────────────────────────
-ODDS_API_IO_KEY = os.environ.get("ODDS_API_IO_KEY", "").strip()
-ODDS_API_IO_BASE = "https://api.odds-api.io/v3"
+from auth import (
+    hash_password, verify_password, create_access_token,
+    get_current_user_payload, get_optional_user_payload,
+)
+from odds_service import (
+    fetch_all_matches, refresh_matches_worker, fetch_all_scores,
+    fetch_odds_api_io_scores_map, diagnose_sport_key,
+    probe_odds_api_io_event, probe_odds_api_io_league_sample,
+    get_odds_cache_status, ODDS_API_IO_LEAGUES,
+)
+from stats_service import refresh_real_stats_cache, get_real_stats_map
+from prediction_engine import (
+    analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
+    build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
+    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
+)
+from ai_service import generate_analysis
+from montante_service import MontanteService
 
-BSD_API_KEY = os.environ.get("BSD_API_KEY", "").strip()
-BSD_API_BASE = "https://sports.bzzoiro.com/api"
+# ─── Systeme d'expiration d'abonnement ───────────────────────────────────────
 
-# Ligues mineures d'ete a completer via odds-api.io en secours (slugs confirmes
-# depuis /v3/leagues?sport=football). Inclut les qualifications UEFA qui ne
-# sont actuellement PAS disponibles sur The Odds API (verifie le 23/07/2026 :
-# aucune competition UEFA dans /v4/sports actif), mais bien presentes ici.
-ODDS_API_IO_LEAGUES = [
-    "norway-eliteserien",
-    "sweden-allsvenskan",
-    "finland-veikkausliiga",
-    "denmark-superligaen",
-    "brazil-brasileiro-serie-b",
-    "italy-coppa-italia",
-    # UEFA : les tours de barrage sont des slugs distincts et doivent être
-    # interrogés explicitement, sinon des matchs européens actifs disparaissent.
-    "international-clubs-uefa-champions-league-qualification",
-    "international-clubs-uefa-champions-league-playoff-round",
-    "international-clubs-uefa-europa-league-qualification",
-    "international-clubs-uefa-europa-league-playoff-round",
-    "international-clubs-uefa-conference-league-qualification",
-    "international-clubs-uefa-conference-league-playoff-round",
-]
-
-# Hockey — sport distinct, gere separement (voir ODDS_API_IO_HOCKEY_LEAGUES)
-ODDS_API_IO_HOCKEY_LEAGUES = [
-    "sweden-shl",
-    "usa-nhl",
-    "russia-khl",
-]
-
-# Basketball — sport distinct. Pas d'Euroleague masculine active en juillet
-# (intersaison), mais qualifications FIBA Afrique confirmees actives et
-# pertinentes pour l'audience ouest-africaine.
-ODDS_API_IO_BASKETBALL_LEAGUES = [
-    "international-fiba-world-cup-african-qualifiers-group-e",
-    "international-fiba-world-cup-african-qualifiers-group-f",
-    "international-eurocup-group-a",
-]
-
-# Mapping des noms de marches odds-api.io -> noms internes (a confirmer/ajuster
-# une fois un exemple reel de reponse /v3/odds obtenu)
-ODDS_API_IO_MARKET_MAP = {
-    "ML": "h2h",
-    "Moneyline": "h2h",
-    "Totals": "totals",
-    "Both Teams To Score": "btts",
-    "Draw No Bet": "draw_no_bet",
-}
-
-# Cache dynamique. Les requetes utilisateur ne declenchent jamais de fetch reseau.
-CACHE_TTL_LONG_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_LONG_MINUTES", "360"))
-CACHE_TTL_DAY_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_DAY_MINUTES", "120"))
-CACHE_TTL_SOON_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_SOON_MINUTES", "30"))
-CACHE_TTL_NEAR_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_NEAR_MINUTES", "5"))
-STALE_CACHE_MAX_HOURS = int(os.environ.get("ODDS_STALE_CACHE_MAX_HOURS", "24"))
-BOOKMAKER_WEIGHTS = {"pinnacle":1.00,"bet365":0.95,"1xbet":0.90,"betway":0.88,"sportybet":0.86,"melbet":0.84,"pmu":0.82}
-
-def _normalize_bookmaker_key(name: str) -> str:
-    value = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", "", value.lower())
-
-def _cache_ttl_for_matches(matches: List[Dict]) -> int:
-    now=datetime.now(timezone.utc); nearest=None
-    for m in matches or []:
-        try:
-            ct=datetime.fromisoformat(str(m.get("commence_time","")).replace("Z","+00:00"))
-            if ct.tzinfo is None: ct=ct.replace(tzinfo=timezone.utc)
-            if ct>=now and (nearest is None or ct<nearest): nearest=ct
-        except Exception: continue
-    if nearest is None: return CACHE_TTL_LONG_MINUTES
-    hours=(nearest-now).total_seconds()/3600
-    if hours<1: return CACHE_TTL_NEAR_MINUTES
-    if hours<6: return CACHE_TTL_SOON_MINUTES
-    if hours<24: return CACHE_TTL_DAY_MINUTES
-    return CACHE_TTL_LONG_MINUTES
-
-def _bookmaker_quality(name: str) -> float:
-    return BOOKMAKER_WEIGHTS.get(_normalize_bookmaker_key(name), 0.75)
-
-def _annotate_bookmakers(matches: List[Dict]) -> List[Dict]:
-    for match in matches:
-        for bm in match.get("bookmakers", []):
-            title=bm.get("title") or bm.get("key") or ""
-            bm["key"]=_normalize_bookmaker_key(bm.get("key") or title)
-            bm["quality_weight"]=_bookmaker_quality(title)
-    return matches
-
-# Mots-clés identifiant les matchs amicaux à filtrer
-FRIENDLY_KEYWORDS = [
-    "friendly", "amical", "test match", "pre-season", "preseason",
-    "friendlies", "club friendlies", "international friendlies",
-    "exhibition", "preparation", "preparatory"
-]
-
-SUPPORTED_SPORTS = [
-    {"key": "soccer", "label": "Football", "icon": "Trophy", "group": "soccer"},
-    {"key": "basketball_nba", "label": "Basketball NBA", "icon": "Dribbble", "group": "basketball"},
-    {"key": "basketball_euroleague", "label": "Basketball Euroleague", "icon": "Dribbble", "group": "basketball"},
-    {"key": "tennis", "label": "Tennis", "icon": "CircleDot", "group": "tennis"},
-    {"key": "icehockey_nhl", "label": "Hockey NHL", "icon": "Snowflake", "group": "hockey"},
-    {"key": "baseball_mlb", "label": "Baseball MLB", "icon": "Target", "group": "baseball"},
-]
-
-# Toutes les ligues à fetcher — organisées par priorité
-REAL_SPORT_KEYS = [
-    # ═══ FOOTBALL — Priorité absolue ═══
-    # Coupe du Monde FIFA 2026
-    "soccer_fifa_world_cup",
-    # Qualifications Coupe du Monde
-    "soccer_world_wc_qualification_africa",
-    "soccer_world_wc_qualification_europe",
-    "soccer_world_wc_qualification_concacaf",
-    "soccer_world_wc_qualification_asia",
-    # Compétitions africaines
-    "soccer_africa_caf_champions_league",
-    "soccer_africa_africa_cup_of_nations",
-    # Qualifications Champions League (actives en juillet)
-    "soccer_uefa_champs_league",
-    "soccer_uefa_europa_league",
-    "soccer_uefa_europa_conference_league",
-    # Top 5 européens
-    "soccer_epl",
-    "soccer_spain_la_liga",
-    "soccer_germany_bundesliga",
-    "soccer_germany_bundesliga2",
-    "soccer_france_ligue_one",
-    "soccer_france_ligue_two",
-    "soccer_italy_serie_a",
-    # Autres ligues européennes
-    "soccer_netherlands_eredivisie",
-    "soccer_portugal_primeira_liga",
-    "soccer_turkey_super_league",
-    "soccer_belgium_first_div",
-    "soccer_efl_champ",
-    "soccer_scotland_premiership",
-    "soccer_greece_super_league",
-    # Ligues actives été (juillet-août)
-    "soccer_norway_eliteserien",
-    "soccer_sweden_allsvenskan",
-    "soccer_finland_veikkausliiga",
-    "soccer_denmark_superliga",
-    # Amérique
-    "soccer_usa_mls",
-    "soccer_brazil_campeonato",
-    "soccer_brazil_serie_b",
-    "soccer_argentina_primera_division",
-    "soccer_conmebol_copa_libertadores",
-    "soccer_conmebol_copa_america",
-    "soccer_concacaf_gold_cup",
-    "soccer_mexico_ligamx",
-    # Asie / Reste du monde
-    "soccer_china_superleague",
-    "soccer_japan_j_league",
-    "soccer_saudi_arabia_pro_league",
-    # ═══ BASKETBALL ═══
-    "basketball_nba",
-    "basketball_euroleague",
-    "basketball_nba_summer_league",
-    # ═══ TENNIS ═══
-    "tennis_atp_wimbledon",
-    "tennis_wta_wimbledon",
-    "tennis_atp",
-    "tennis_wta",
-    "tennis_atp_us_open",
-    "tennis_wta_us_open",
-    # ═══ HOCKEY ═══
-    "icehockey_nhl",
-    "icehockey_sweden_hockey_league",
-    "icehockey_ahl",
-    # ═══ BASEBALL ═══
-    "baseball_mlb",
-    # ═══ MMA ═══
-    "mma_mixed_martial_arts",
-]
-
-# Ligues pour lesquelles on fetch les marchés enrichis
-DEEP_MARKET_SPORTS = {
-    "soccer_fifa_world_cup",
-    "soccer_epl",
-    "soccer_spain_la_liga",
-    "soccer_germany_bundesliga",
-    "soccer_france_ligue_one",
-    "soccer_italy_serie_a",
-    "soccer_uefa_champs_league",
-    "soccer_uefa_europa_league",
-    "soccer_africa_caf_champions_league",
-    "soccer_africa_africa_cup_of_nations",
-    "soccer_conmebol_copa_libertadores",
-    "soccer_conmebol_copa_america",
-    "soccer_world_wc_qualification_africa",
-    "basketball_nba",
-    "icehockey_nhl",
-    "baseball_mlb",
-    "tennis_atp_wimbledon",
-    "tennis_wta_wimbledon",
-}
-
-SOCCER_MARKETS = "h2h,totals"
-BASKET_MARKETS = "h2h,totals,spreads"
-TENNIS_MARKETS = "h2h"
-HOCKEY_MARKETS = "h2h,totals"
-DEFAULT_MARKETS = "h2h"
+def _compute_expiry(days: int) -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=days)).isoformat()
 
 
-def _is_friendly(match: Dict) -> bool:
-    """Détecte si un match est amical — à filtrer sauf si évidence forte."""
-    sport_title = (match.get("sport_title") or "").lower()
-    sport_key = (match.get("sport_key") or "").lower()
-    home = (match.get("home_team") or "").lower()
-    away = (match.get("away_team") or "").lower()
-
-    # Vérification sur le titre de la ligue
-    for kw in FRIENDLY_KEYWORDS:
-        if kw in sport_title or kw in sport_key:
-            return True
-
-    # Vérification sur les noms d'équipes (U21, B teams, reserves)
-    for team in [home, away]:
-        if any(x in team for x in ["u21", "u23", "under-21", "under-23", "reserve", "b team", "ii", " b "]):
-            return True
-
-    return False
-
-
-def _get_markets_for_sport(sport_key: str) -> str:
-    """Retourne les marchés à fetcher selon le sport."""
-    if sport_key.startswith("soccer"):
-        if sport_key in DEEP_MARKET_SPORTS:
-            return SOCCER_MARKETS
-        return "h2h,totals"
-    elif sport_key.startswith("basketball"):
-        return BASKET_MARKETS
-    elif sport_key.startswith("tennis"):
-        return TENNIS_MARKETS
-    elif sport_key.startswith("icehockey"):
-        return HOCKEY_MARKETS
-    return DEFAULT_MARKETS
-
-
-# ─── Mock data (quand pas de clé API) ────────────────────────────────────────
-
-MOCK_FIXTURES = {
-    "soccer": [
-        ("Paris Saint-Germain", "Olympique Marseille", "Ligue 1"),
-        ("Real Madrid", "FC Barcelona", "La Liga"),
-        ("Manchester City", "Liverpool FC", "Premier League"),
-        ("Bayern Munich", "Borussia Dortmund", "Bundesliga"),
-        ("Inter Milan", "Juventus", "Serie A"),
-        ("Arsenal", "Chelsea", "Premier League"),
-        ("Atletico Madrid", "Sevilla FC", "La Liga"),
-        ("AC Milan", "Napoli", "Serie A"),
-        ("AS Monaco", "Olympique Lyonnais", "Ligue 1"),
-        ("FC Porto", "Benfica", "Primeira Liga"),
-    ],
-    "basketball_nba": [
-        ("Los Angeles Lakers", "Boston Celtics", "NBA"),
-        ("Golden State Warriors", "Miami Heat", "NBA"),
-        ("Denver Nuggets", "Phoenix Suns", "NBA"),
-        ("Milwaukee Bucks", "Philadelphia 76ers", "NBA"),
-        ("Dallas Mavericks", "Oklahoma City Thunder", "NBA"),
-    ],
-    "tennis": [
-        ("Carlos Alcaraz", "Jannik Sinner", "ATP Masters"),
-        ("Novak Djokovic", "Daniil Medvedev", "ATP Masters"),
-        ("Iga Swiatek", "Aryna Sabalenka", "WTA 1000"),
-        ("Coco Gauff", "Elena Rybakina", "WTA 1000"),
-    ],
-    "icehockey_nhl": [
-        ("Toronto Maple Leafs", "Boston Bruins", "NHL"),
-        ("Edmonton Oilers", "Colorado Avalanche", "NHL"),
-        ("Vegas Golden Knights", "Tampa Bay Lightning", "NHL"),
-    ],
-    "baseball_mlb": [
-        ("New York Yankees", "Boston Red Sox", "MLB"),
-        ("Los Angeles Dodgers", "San Francisco Giants", "MLB"),
-        ("Houston Astros", "Texas Rangers", "MLB"),
-    ],
-}
-
-
-def _deterministic_random(seed_str: str) -> random.Random:
-    seed = int(hashlib.md5(seed_str.encode()).hexdigest(), 16) % (2**32)
-    return random.Random(seed)
-
-
-def _generate_mock_event(sport_key: str, home: str, away: str, league: str, idx: int) -> Dict:
-    today = datetime.now(timezone.utc).date()
-    rng = _deterministic_random(f"{today}-{sport_key}-{home}-{away}")
-
-    home_strength = rng.uniform(0.30, 0.65)
-    away_strength = rng.uniform(0.30, 0.65)
-    draw_prob = rng.uniform(0.18, 0.30) if sport_key.startswith("soccer") else 0.0
-
-    total = home_strength + away_strength + draw_prob
-    p_home = home_strength / total
-    p_away = away_strength / total
-    p_draw = draw_prob / total
-
-    margin = 1.05
-    odds_home = round(margin / p_home, 2)
-    odds_away = round(margin / p_away, 2)
-    odds_draw = round(margin / p_draw, 2) if p_draw > 0 else None
-
-    hour = 14 + (idx * 2) % 9
-    minute = (idx * 15) % 60
-    commence = datetime.combine(today, datetime.min.time()).replace(
-        hour=hour, minute=minute, tzinfo=timezone.utc
-    )
-
-    event_id = hashlib.md5(f"{today}-{home}-{away}".encode()).hexdigest()[:16]
-
-    outcomes = [
-        {"name": home, "price": odds_home},
-        {"name": away, "price": odds_away},
-    ]
-    if odds_draw:
-        outcomes.append({"name": "Draw", "price": odds_draw})
-
-    bookmakers = []
-    for bm_name in ["1xBet", "Betway", "Melbet", "PMU", "SportyBet"]:
-        bm_rng = _deterministic_random(f"{event_id}-{bm_name}")
-        variation = bm_rng.uniform(-0.05, 0.05)
-        bm_outcomes = [
-            {"name": o["name"], "price": round(max(1.05, o["price"] * (1 + variation)), 2)}
-            for o in outcomes
-        ]
-        bookmakers.append({
-            "key": bm_name.lower().replace(" ", ""),
-            "title": bm_name,
-            "markets": [
-                {"key": "h2h", "outcomes": bm_outcomes},
-                {"key": "totals", "outcomes": [
-                    {"name": "Over", "price": round(1.75 + bm_rng.uniform(-0.1, 0.2), 2), "point": 2.5},
-                    {"name": "Under", "price": round(2.05 + bm_rng.uniform(-0.1, 0.2), 2), "point": 2.5},
-                ]},
-            ],
-        })
-
-    return {
-        "id": event_id,
-        "sport_key": sport_key,
-        "sport_title": league,
-        "commence_time": commence.isoformat(),
-        "home_team": home,
-        "away_team": away,
-        "bookmakers": bookmakers,
-    }
-
-
-def get_all_mock_matches() -> List[Dict]:
-    out = []
-    for sk, fixtures in MOCK_FIXTURES.items():
-        for i, (h, a, lg) in enumerate(fixtures):
-            out.append(_generate_mock_event(sk, h, a, lg, i))
-    return out
-
-
-# ─── Real API : The Odds API (source principale) ─────────────────────────────
-
-async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str = "eu") -> List[Dict]:
-    """Fetch odds pour un sport donné. Retourne [] si erreur."""
-    url = f"{ODDS_API_BASE}/sports/{sport_key}/odds"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "regions": regions,
-        "markets": markets,
-        "oddsFormat": "decimal",
-        "dateFormat": "iso",
-        # IMPORTANT : ne pas commencer a NOW. L'endpoint /odds renvoie aussi
-        # les matchs LIVE, mais un filtre commenceTimeFrom=NOW les exclut
-        # puisque leur heure de coup d'envoi est deja passee.
-        "commenceTimeFrom": (datetime.now(timezone.utc) - timedelta(hours=int(os.environ.get("ODDS_LIVE_LOOKBACK_HOURS", "4")))).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "commenceTimeTo": (datetime.now(timezone.utc) + timedelta(days=int(os.environ.get("ODDS_FETCH_HORIZON_DAYS", "7")))).strftime("%Y-%m-%dT%H:%M:%SZ"),
-    }
-    try:
-        async with httpx.AsyncClient(timeout=20.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code == 401:
-                logger.error("The Odds API: clé invalide (401)")
-                return []
-            # Une combinaison de marchés peut être refusée selon le sport, le plan
-            # ou la couverture du bookmaker. On retente alors en h2h seul :
-            # l'absence d'un marché enrichi ne doit jamais supprimer le match.
-            if r.status_code == 422 and markets != "h2h":
-                fallback_params = dict(params)
-                fallback_params["markets"] = "h2h"
-                r = await http.get(url, params=fallback_params)
-            if r.status_code != 200:
-                logger.warning(
-                    "The Odds API %s -> HTTP %s (markets=%s)",
-                    sport_key, r.status_code, markets,
-                )
-                return []
-            data = r.json()
-            return data if isinstance(data, list) else []
-    except Exception as exc:
-        logger.warning("The Odds API %s -> exception: %s", sport_key, exc)
-        return []
-
-
-async def _discover_active_sport_keys() -> List[str]:
-    """Découvre automatiquement les compétitions actuellement actives.
-
-    /sports est un endpoint de découverte : il ne consomme pas le crédit
-    d'un appel /odds. Cela évite qu'un nouveau championnat (par exemple un
-    tour de qualification UEFA) soit absent simplement parce que son slug
-    n'a pas été ajouté manuellement dans REAL_SPORT_KEYS.
+async def _check_and_downgrade_if_expired(user: dict) -> dict:
     """
-    if not ODDS_API_KEY:
-        return []
-    url = f"{ODDS_API_BASE}/sports"
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params={"apiKey": ODDS_API_KEY})
-            if r.status_code != 200:
-                logger.warning("The Odds API /sports -> HTTP %s", r.status_code)
-                return []
-            data = r.json()
-            if not isinstance(data, list):
-                return []
-            keys = []
-            for sport in data:
-                if not isinstance(sport, dict):
-                    continue
-                # /sports retourne par défaut les sports de saison (in-season).
-                # Ne pas exiger active=true ici : certaines competitions peuvent
-                # etre presentes dans le catalogue alors que le flag active est
-                # temporairement incoherent avec la disponibilite des rencontres.
-                key = str(sport.get("key") or "").strip()
-                if key.startswith(("soccer_", "basketball_", "tennis_", "icehockey_", "baseball_", "mma_")):
-                    keys.append(key)
-            return sorted(set(keys))
-    except Exception as exc:
-        logger.warning("The Odds API /sports -> exception: %s", exc)
-        return []
-
-
-async def _check_sport_active(sport_key: str) -> bool:
-    """Vérifie si un sport est actif (0 crédit consommé)."""
-    return sport_key in set(await _discover_active_sport_keys())
-
-
-# ─── Source secondaire : odds-api.io (ligues mineures) ───────────────────────
-#
-# NOTE IMPORTANTE : le schema exact de /v3/odds (structure des bookmakers et
-# marches) n'a pas encore ete verifie avec un exemple reel de reponse. Ce code
-# est ecrit de facon defensive (plusieurs noms de champs essayes, try/except
-# partout) pour ne jamais casser le site si le format ne correspond pas
-# exactement. Si aucun match n'apparait via cette source, il faudra ajuster
-# le mapping des champs ci-dessous avec un exemple reel de /v3/odds.
-
-async def _fetch_odds_api_io_events(league_slug: str, sport: str = "football") -> List[Dict]:
-    """Recupere les evenements a venir pour une ligue donnee via odds-api.io."""
-    if not ODDS_API_IO_KEY:
-        return []
-    url = f"{ODDS_API_IO_BASE}/events"
-    params = {
-        "apiKey": ODDS_API_IO_KEY,
-        "sport": sport,
-        "league": league_slug,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                logger.warning(f"odds-api.io events [{league_slug}] -> HTTP {r.status_code}: {r.text[:200]}")
-                return []
-            data = r.json()
-            return data if isinstance(data, list) else []
-    except Exception as e:
-        logger.warning(f"odds-api.io events [{league_slug}] -> exception: {e}")
-        return []
-
-
-async def _fetch_odds_api_io_all_events_unfiltered(league_slug: str, sport: str = "football") -> List[Dict]:
-    """Recupere les evenements d'une ligue sans imposer de filtre de statut.
-
-    Important : odds-api.io utilise notamment le statut ``settled`` pour les
-    evenements termines. Le filtre ``status=pending`` de _fetch_odds_api_io_events
-    ne permet donc jamais de recuperer les matchs termines.
+    Verification paresseuse (a chaque lecture d'un compte) : si la date
+    d'expiration est passee et que l'abonnement n'est pas deja "free",
+    retrograde immediatement en base et retourne le compte a jour.
+    Complementaire au balayage quotidien du scheduler (celui-ci couvre les
+    comptes qui ne se reconnectent pas avant plusieurs jours).
     """
-    if not ODDS_API_IO_KEY:
-        return []
-    url = f"{ODDS_API_IO_BASE}/events"
-    params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
+    expires_at = user.get("subscription_expires_at")
+    if not expires_at or user.get("subscription", "free") == "free":
+        return user
+
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                logger.warning(
-                    f"odds-api.io events (non filtre) [{league_slug}] -> "
-                    f"HTTP {r.status_code}: {r.text[:200]}"
-                )
-                return []
-            data = r.json()
-            return data if isinstance(data, list) else []
-    except Exception as e:
-        logger.warning(
-            f"odds-api.io events (non filtre) [{league_slug}] -> exception: {e}"
+        exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+        if exp_dt.tzinfo is None:
+            exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+    except Exception:
+        return user
+
+    if datetime.now(timezone.utc) >= exp_dt:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"subscription": "free", "subscription_expires_at": None}},
         )
-        return []
+        user["subscription"] = "free"
+        user["subscription_expires_at"] = None
+
+    return user
 
 
-async def _fetch_odds_api_io_finished_events(
-    league_slug: str, sport: str = "football"
-) -> List[Dict]:
-    """Retourne uniquement les evenements termines d'une ligue.
+async def _sweep_expired_subscriptions() -> Dict:
+    """Balayage quotidien : retrograde tous les abonnements expires en base."""
+    now_iso = datetime.now(timezone.utc).isoformat()
+    result = await db.users.update_many(
+        {
+            "subscription": {"$ne": "free"},
+            "subscription_expires_at": {"$ne": None, "$lt": now_iso},
+        },
+        {"$set": {"subscription": "free", "subscription_expires_at": None}},
+    )
+    return {"ok": True, "downgraded": result.modified_count}
 
-    Le statut reel confirme par la sonde de l'API est ``settled``. Pour les
-    valeurs de statut inconnues, on garde un filet de securite base sur le
-    temps (> 4h) et la presence d'un score.
+
+# ─── Envoi d'email (Resend) ──────────────────────────────────────────────
+
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
+EMAIL_FROM = os.environ.get("EMAIL_FROM", "WinPulse <contact@wnpulse.com>")
+
+
+async def _send_email(to: str, subject: str, html: str) -> bool:
     """
-    events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport)
-    now = datetime.now(timezone.utc)
-    finished: List[Dict] = []
-
-    for evt in events:
-        status = str(evt.get("status", "")).strip().lower()
-        if status == "settled":
-            finished.append(evt)
-            continue
-        if status == "pending":
-            continue
-
-        try:
-            commence_dt = datetime.fromisoformat(
-                str(evt.get("date", "")).replace("Z", "+00:00")
-            )
-            if commence_dt.tzinfo is None:
-                commence_dt = commence_dt.replace(tzinfo=timezone.utc)
-            scores = evt.get("scores") or {}
-            has_score = (
-                scores.get("home") is not None and scores.get("away") is not None
-            )
-            if (now - commence_dt) > timedelta(hours=4) and has_score:
-                finished.append(evt)
-        except Exception:
-            continue
-
-    return finished
-
-
-async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
+    Envoie un email via l'API Resend. Ne leve jamais d'exception — un echec
+    d'envoi ne doit jamais faire echouer l'inscription ou l'activation d'un
+    abonnement, qui restent la priorite. Retourne True/False pour log.
     """
-    Recupere les cotes pour un evenement donne via odds-api.io.
-    NOTE : le plan actuel limite a 1 bookmaker autorise (Bet365) — confirme
-    en test reel le 23/07/2026 ("Access denied... Allowed: Bet365").
-    """
-    if not ODDS_API_IO_KEY:
-        return None
-    url = f"{ODDS_API_IO_BASE}/odds"
-    params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id, "bookmakers": "Bet365"}
+    if not RESEND_API_KEY:
+        return False
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                logger.warning(f"odds-api.io odds [eventId={event_id}] -> HTTP {r.status_code}: {r.text[:200]}")
-                return None
-            return r.json()
-    except Exception as e:
-        logger.warning(f"odds-api.io odds [eventId={event_id}] -> exception: {e}")
-        return None
-
-
-# Mapping des noms de marches odds-api.io (confirmes par exemple reel du
-# 23/07/2026) -> cles internes utilisees par prediction_engine.py
-_OAIO_MARKET_NAME_MAP = {
-    "ML": "h2h",
-    "Draw No Bet": "draw_no_bet",
-    "Totals": "totals",
-    "Goals Over/Under": "totals",
-    "Both Teams To Score": "btts",
-}
-
-
-def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict], sport: str = "football") -> Optional[Dict]:
-    """
-    Convertit un evenement odds-api.io (structure reelle confirmee) au format
-    interne (id/sport_key/sport_title/commence_time/home_team/away_team/
-    bookmakers[{key,title,markets[{key,outcomes[{name,price,point}]}]}]).
-
-    Structure source reelle :
-    {
-      "id": 72179162, "home": "Qarabag FK", "away": "PFC CSKA Sofia",
-      "date": "2026-07-23T16:00:00Z",
-      "league": {"name": "...", "slug": "..."},
-      "bookmakers": {
-        "Bet365": [
-          {"name": "ML", "odds": [{"home": "1.420", "draw": "4.333", "away": "6.000"}]},
-          {"name": "Totals", "odds": [{"hdp": 2.5, "over": "1.800", "under": "2.000"}]},
-          {"name": "Both Teams To Score", "odds": [{"yes": "2.100", "no": "1.666"}]},
-          {"name": "Draw No Bet", "odds": [{"home": "1.166", "away": "4.500"}]},
-          ...
-        ]
-      }
-    }
-    """
-    try:
-        event_id = event.get("id")
-        home = event.get("home")
-        away = event.get("away")
-        commence = event.get("date")
-        league_name = (event.get("league") or {}).get("name", "Football")
-
-        if not (event_id and home and away and commence):
-            return None
-        if not odds_data:
-            return None
-
-        bookmakers_raw = odds_data.get("bookmakers", {})
-        if not isinstance(bookmakers_raw, dict):
-            return None
-
-        bookmakers = []
-        for bm_name, bm_markets in bookmakers_raw.items():
-            if not isinstance(bm_markets, list):
-                continue
-            markets = []
-            for mk in bm_markets:
-                raw_name = mk.get("name", "")
-                internal_key = _OAIO_MARKET_NAME_MAP.get(raw_name)
-                if not internal_key:
-                    continue
-                odds_list = mk.get("odds", [])
-                if not odds_list:
-                    continue
-                row = odds_list[0]  # ligne principale (hdp/point par defaut)
-                outcomes = []
-
-                if internal_key == "h2h":
-                    if row.get("home"):
-                        outcomes.append({"name": home, "price": float(row["home"])})
-                    if row.get("away"):
-                        outcomes.append({"name": away, "price": float(row["away"])})
-                    if row.get("draw"):
-                        outcomes.append({"name": "Draw", "price": float(row["draw"])})
-
-                elif internal_key == "draw_no_bet":
-                    if row.get("home"):
-                        outcomes.append({"name": home, "price": float(row["home"])})
-                    if row.get("away"):
-                        outcomes.append({"name": away, "price": float(row["away"])})
-
-                elif internal_key == "totals":
-                    point = row.get("hdp")
-                    if row.get("over"):
-                        entry = {"name": "Over", "price": float(row["over"])}
-                        if point is not None:
-                            entry["point"] = float(point)
-                        outcomes.append(entry)
-                    if row.get("under"):
-                        entry = {"name": "Under", "price": float(row["under"])}
-                        if point is not None:
-                            entry["point"] = float(point)
-                        outcomes.append(entry)
-
-                elif internal_key == "btts":
-                    if row.get("yes"):
-                        outcomes.append({"name": "Yes", "price": float(row["yes"])})
-                    if row.get("no"):
-                        outcomes.append({"name": "No", "price": float(row["no"])})
-
-                if outcomes:
-                    # Eviter les doublons de marche (ex: Totals + Goals Over/Under
-                    # mappent tous deux vers "totals" — on garde le premier trouve)
-                    if not any(m["key"] == internal_key for m in markets):
-                        markets.append({"key": internal_key, "outcomes": outcomes})
-
-            if markets:
-                bookmakers.append({
-                    "key": str(bm_name).lower().replace(" ", ""),
-                    "title": str(bm_name),
-                    "markets": markets,
-                })
-
-        if not bookmakers:
-            return None
-
-        return {
-            "id": f"oaio-{event_id}",
-            "sport_key": {"ice-hockey": "icehockey_minor_leagues", "basketball": "basketball_minor_leagues"}.get(sport, "soccer_minor_leagues"),
-            "sport_title": league_name,
-            "commence_time": commence,
-            "home_team": home,
-            "away_team": away,
-            "bookmakers": bookmakers,
-        }
+            r = await http.post(
+                "https://api.resend.com/emails",
+                headers={"Authorization": f"Bearer {RESEND_API_KEY}"},
+                json={"from": EMAIL_FROM, "to": [to], "subject": subject, "html": html},
+            )
+            return r.status_code in (200, 201)
     except Exception:
-        return None
+        return False
 
 
-async def _fetch_odds_api_io_matches() -> List[Dict]:
-    """Récupère les matchs à venir disposant réellement de cotes via odds-api.io.
-
-    Important : la version précédente répartissait arbitrairement un budget par
-    championnat. Un championnat avec beaucoup de matchs pouvait donc perdre des
-    affiches pourtant disponibles dans l'API. Ici, tous les événements à venir
-    sont d'abord collectés, puis les appels de cotes sont attribués en priorité
-    aux matchs d'aujourd'hui, puis aux prochains matchs, sans quota minimum
-    artificiel par ligue.
-
-    La limite reste nécessaire car le fournisseur impose un quota d'appels /odds.
-    Elle ne supprime donc jamais un match de la source principale The Odds API;
-    elle concerne uniquement cette source secondaire.
+def _email_layout(title: str, body_html: str) -> str:
+    return f"""
+    <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; padding: 24px;">
+      <div style="background: linear-gradient(135deg, #ea580c, #f43f5e); border-radius: 12px; padding: 20px; text-align: center; margin-bottom: 24px;">
+        <span style="color: white; font-size: 22px; font-weight: 800;">⚡ WinPulse</span>
+      </div>
+      <h2 style="color: #0f172a;">{title}</h2>
+      {body_html}
+      <p style="margin-top: 32px; font-size: 12px; color: #94a3b8; text-align: center;">
+        WinPulse SARL · Cotonou, Bénin · wnpulse.com
+      </p>
+    </div>
     """
-    if not ODDS_API_IO_KEY:
-        return []
 
-    # Marge sous un quota courant de 100 appels/heure. Peut être augmenté par
-    # variable d'environnement si le compte dispose d'un quota supérieur.
-    MAX_TOTAL_ODDS_CALLS = int(os.environ.get("ODDS_API_IO_MAX_CALLS", "92"))
-    today = datetime.now(timezone.utc).date()
-    now = datetime.now(timezone.utc)
-    horizon = now + timedelta(days=7)
 
-    def _event_dt(evt):
-        try:
-            dt = datetime.fromisoformat(str(evt.get("date", "")).replace("Z", "+00:00"))
-            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            return None
-
-    def _event_sort_key(evt):
-        dt = _event_dt(evt)
-        if dt is None:
-            return (3, datetime.max.replace(tzinfo=timezone.utc))
-        if dt.date() == today:
-            return (0, dt)
-        if dt >= now:
-            return (1, dt)
-        return (2, dt)
-
-    # 1) Collecte complète des événements à venir de toutes les ligues.
-    candidates = []
-    seen_ids = set()
-    league_errors = {}
-    for league_slug in ODDS_API_IO_LEAGUES:
-        try:
-            events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport="football")
-            for evt in events:
-                event_id = evt.get("id")
-                dt = _event_dt(evt)
-                if not event_id or dt is None:
-                    continue
-                if dt < now or dt > horizon:
-                    continue
-                marker = ("football", str(event_id))
-                if marker in seen_ids:
-                    continue
-                seen_ids.add(marker)
-                candidates.append((league_slug, evt, "football"))
-        except Exception as exc:
-            league_errors[league_slug] = str(exc)
-
-    # Hockey et basketball suivent exactement la même logique.
-    for league_slug, sport in [
-        *((lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES),
-        *((lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES),
-    ]:
-        try:
-            events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport=sport)
-            for evt in events:
-                event_id = evt.get("id")
-                dt = _event_dt(evt)
-                if not event_id or dt is None or dt < now or dt > horizon:
-                    continue
-                marker = (sport, str(event_id))
-                if marker in seen_ids:
-                    continue
-                seen_ids.add(marker)
-                candidates.append((league_slug, evt, sport))
-        except Exception as exc:
-            league_errors[league_slug] = str(exc)
-
-    # Aujourd'hui d'abord, puis les prochains jours. Cela évite qu'un gros
-    # championnat futur consomme tout le quota avant les matchs du jour.
-    candidates.sort(key=lambda item: _event_sort_key(item[1]))
-
-    out: List[Dict] = []
-    calls_used = 0
-    converted_ids = set()
-
-    for league_slug, evt, sport in candidates:
-        if calls_used >= MAX_TOTAL_ODDS_CALLS:
-            break
-        event_id = evt.get("id")
-        try:
-            odds_data = await _fetch_odds_api_io_odds(event_id)
-            calls_used += 1
-            converted = _convert_odds_api_io_event(evt, odds_data, sport=sport)
-            if converted:
-                converted_ids.add(str(event_id))
-                out.append(converted)
-        except Exception as exc:
-            calls_used += 1
-            logger.warning("odds-api.io odds event %s -> %s", event_id, exc)
-
-    logger.warning(
-        "odds-api.io : %s événement(s) candidats, %s appel(s) /odds, "
-        "%s match(s) avec cotes convertis, %s erreur(s) de ligue",
-        len(candidates), calls_used, len(out), len(league_errors),
+async def send_welcome_email(to: str, name: str):
+    html = _email_layout(
+        f"Bienvenue {name} ! 🎯",
+        """
+        <p>Ton compte WinPulse est créé. Tu as accès à 1 pronostic gratuit chaque jour.</p>
+        <p>Passe Pro ou Elite pour débloquer l'analyse complète, les combinés et le détecteur de value bets.</p>
+        <p><a href="https://www.wnpulse.com/app" style="color: #ea580c; font-weight: bold;">Voir mes pronostics →</a></p>
+        """,
     )
-    return out
+    await _send_email(to, "Bienvenue sur WinPulse 🎯", html)
 
 
-# ─── Enrichissement : BSD Sports Addon (predictions ML) ──────────────────────
-
-async def _fetch_bsd_predictions() -> List[Dict]:
-    """
-    Recupere les predictions ML (CatBoost) de BSD pour les matchs a venir.
-    Retourne [] silencieusement en cas d'erreur ou de cle absente — cette
-    source est un enrichissement optionnel, jamais un point de blocage.
-    """
-    if not BSD_API_KEY:
-        return []
-    url = f"{BSD_API_BASE}/predictions/"
-    headers = {"Authorization": f"Token {BSD_API_KEY}"}
-    params = {"upcoming": "true"}
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, headers=headers, params=params)
-            if r.status_code != 200:
-                return []
-            data = r.json()
-            results = data.get("results", data) if isinstance(data, dict) else data
-            return results if isinstance(results, list) else []
-    except Exception:
-        return []
-
-
-def _first_present(obj: Dict, keys: List[str], default=None):
-    for key in keys:
-        if isinstance(obj, dict) and obj.get(key) is not None:
-            return obj.get(key)
-    return default
-
-TEAM_ALIASES={"psg":"parissaintgermain","parissg":"parissaintgermain","parissaintgermainfc":"parissaintgermain","manutd":"manchesterunited","manchesterunitedfc":"manchesterunited","mancity":"mancity","inter":"intermilan","internazionale":"intermilan","barca":"barcelona","fcbarcelona":"barcelona"}
-
-def _normalize_team_name(name: str) -> str:
-    value=unicodedata.normalize("NFKD",str(name or "")).encode("ascii","ignore").decode().lower()
-    value=re.sub(r"[^a-z0-9]+","",value)
-    return TEAM_ALIASES.get(value,value)
-
-
-def _attach_bsd_enrichment(matches: List[Dict], bsd_predictions: List[Dict]) -> List[Dict]:
-    """
-    Associe les predictions BSD aux matchs existants par correspondance de
-    noms d'equipes (normalises), et ajoute un champ "bsd_enrichment" sans
-    toucher au reste de la structure. Le moteur maison (prediction_engine.py)
-    reste la seule source du pick officiel — BSD vient juste enrichir le
-    contexte affiche.
-    """
-    if not bsd_predictions:
-        return matches
-
-    bsd_by_teams = {}
-    for pred in bsd_predictions:
+async def send_subscription_activated_email(to: str, plan_name: str, expires_at: Optional[str]):
+    expiry_line = ""
+    if expires_at:
         try:
-            home = _first_present(pred, ["home_team", "homeTeam"], {})
-            away = _first_present(pred, ["away_team", "awayTeam"], {})
-            home_name = home.get("name") if isinstance(home, dict) else home
-            away_name = away.get("name") if isinstance(away, dict) else away
-            if not (home_name and away_name):
-                continue
-            key = (_normalize_team_name(home_name), _normalize_team_name(away_name))
-            bsd_by_teams[key] = pred
-        except Exception:
-            continue
-
-    for m in matches:
-        key = (_normalize_team_name(m.get("home_team", "")), _normalize_team_name(m.get("away_team", "")))
-        if key in bsd_by_teams:
-            m["bsd_enrichment"] = bsd_by_teams[key]
-
-    return matches
-
-
-def _event_identity(event: Dict):
-    return (_normalize_team_name(event.get("home_team","")), _normalize_team_name(event.get("away_team","")))
-
-def _event_time(event: Dict):
-    try:
-        return datetime.fromisoformat(str(event.get("commence_time","")).replace("Z","+00:00")).astimezone(timezone.utc)
-    except Exception: return None
-
-def _same_event(a: Dict,b: Dict)->bool:
-    if a.get("id") and b.get("id") and str(a["id"])==str(b["id"]): return True
-    if _event_identity(a)!=_event_identity(b): return False
-    ta,tb=_event_time(a),_event_time(b)
-    return True if ta is None or tb is None else abs((ta-tb).total_seconds())<=21600
-
-def _merge_market_list(target_markets: List[Dict], incoming_markets: List[Dict]):
-    existing={m.get("key"):m for m in target_markets}
-    for market in incoming_markets:
-        key=market.get("key")
-        if not key: continue
-        if key not in existing:
-            target_markets.append(market); existing[key]=market; continue
-        target=existing[key].setdefault("outcomes",[])
-        seen={(str(o.get("name")),str(o.get("point"))) for o in target}
-        for outcome in market.get("outcomes",[]):
-            marker=(str(outcome.get("name")),str(outcome.get("point")))
-            if marker not in seen: target.append(outcome); seen.add(marker)
-
-def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
-    merged=[dict(e) for e in events_a]
-    for e in merged: e["bookmakers"]=[dict(b) for b in e.get("bookmakers",[])]
-    for incoming in events_b:
-        existing=next((e for e in merged if _same_event(e,incoming)),None)
-        if existing is None: merged.append(incoming); continue
-        books={_normalize_bookmaker_key(b.get("key") or b.get("title")):b for b in existing.get("bookmakers",[])}
-        for bm in incoming.get("bookmakers",[]):
-            key=_normalize_bookmaker_key(bm.get("key") or bm.get("title")); bm["key"]=key; bm["quality_weight"]=_bookmaker_quality(bm.get("title") or key)
-            if key not in books: existing.setdefault("bookmakers",[]).append(bm); books[key]=bm
-            else: _merge_market_list(books[key].setdefault("markets",[]),bm.get("markets",[]))
-    return _annotate_bookmakers(merged)
-
-
-async def fetch_all_matches(db) -> List[Dict]:
-    """Lecture Mongo uniquement; aucun appel API depuis une requete utilisateur."""
-    cache=await db.odds_cache.find_one({"_id":"all_matches"})
-    if not cache: return []
-    data=cache.get("data",[])
-    return data if isinstance(data,list) else []
-
-
-async def _force_fetch_and_cache(db) -> List[Dict]:
-    """
-    Fetch réel depuis l'API. Appelé uniquement par :
-    1. Le worker planifié à 06h00 WAT
-    2. Le bouton "Force refresh" en admin
-    3. Premier démarrage si cache vide
-    """
-    if not ODDS_API_KEY:
-        matches = get_all_mock_matches()
-        await _save_to_cache(db, matches)
-        return matches
-
-    matches: List[Dict] = []
-
-    # Découverte dynamique : les compétitions actives de l'API sont ajoutées
-    # automatiquement aux clés historiques. Ainsi un nouveau slug UEFA ou une
-    # nouvelle compétition n'a pas besoin d'être codé manuellement.
-    discovered = await _discover_active_sport_keys()
-    sport_keys = list(dict.fromkeys(REAL_SPORT_KEYS + discovered))
-    logger.warning(
-        "The Odds API : %s compétitions configurées + %s découvertes = %s fetchs",
-        len(REAL_SPORT_KEYS), len(discovered), len(sport_keys),
-    )
-
-    async def _fetch_one(sk):
-        try: return await _fetch_real_sport(sk, markets=_get_markets_for_sport(sk), regions="eu")
-        except Exception as exc:
-            logger.warning("The Odds API %s -> %s", sk, exc); return []
-
-    results=await asyncio.gather(*[_fetch_one(sk) for sk in sport_keys], return_exceptions=True)
-    for result in results:
-        if isinstance(result,list): matches.extend(result)
-
-    # ─── Source secondaire : odds-api.io pour ligues mineures ────────────────
-    try:
-        secondary_matches = await _fetch_odds_api_io_matches()
-        logger.warning(f"odds-api.io : {len(secondary_matches)} match(s) recupere(s) au total")
-        if secondary_matches:
-            matches = _merge_events(matches, secondary_matches)
-    except Exception as e:
-        logger.warning(f"odds-api.io : echec global -> {e}")
-
-    # Fallback si aucun match réel
-    if not matches:
-        matches = get_all_mock_matches()
-
-    # ─── Filtres qualité ────────────────────────────────────────────────────
-
-    now = datetime.now(timezone.utc)
-    filtered = []
-
-    for m in matches:
-        # 1. Filtre matchs amicaux
-        # Les matchs amicaux ne sont exclus que si le déploiement le demande.
-        # Par défaut, tout événement disposant de cotes reste visible.
-        if os.environ.get("ODDS_EXCLUDE_FRIENDLIES", "false").lower() in {"1", "true", "yes"} and _is_friendly(m):
-            continue
-
-        # 2. Fenêtre temporelle : 48h passées → 7 jours futurs
-        # (inclut matchs live et récemment terminés)
-        try:
-            ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
-            # Exclure les matchs terminés depuis plus de 24h
-            if (now - ct) > timedelta(hours=24):
-                continue
-            # Exclure les matchs trop lointains (plus de 7 jours)
-            if (ct - now) > timedelta(days=7):
-                continue
+            exp_dt = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+            expiry_line = f"<p>Valable jusqu'au <strong>{exp_dt.strftime('%d/%m/%Y')}</strong>.</p>"
         except Exception:
             pass
-
-        # 3. Un seul bookmaker suffit pour CONSERVER le match.
-        # Le moteur de prédiction distingue ensuite les picks simples des
-        # recommandations fortes selon le nombre de bookmakers. L'ancien filtre
-        # à 2 ici supprimait des matchs réels avant même leur analyse.
-        if len(m.get("bookmakers", [])) < 1:
-            continue
-
-        filtered.append(m)
-
-    # ─── Enrichissement BSD (predictions ML) ─────────────────────────────────
-    try:
-        bsd_predictions = await _fetch_bsd_predictions()
-        if bsd_predictions:
-            filtered = _attach_bsd_enrichment(filtered, bsd_predictions)
-    except Exception:
-        pass
-
-    # ─── Tri : LIVE → À venir → Terminés ────────────────────────────────────
-    def _sort_key(m):
-        try:
-            ct = datetime.fromisoformat(m["commence_time"].replace("Z", "+00:00"))
-            elapsed = (now - ct).total_seconds()
-            if 0 <= elapsed <= 14400:  # LIVE (0-4h)
-                return (0, ct)
-            elif elapsed < 0:  # À venir
-                return (1, ct)
-            else:  # Terminé
-                return (2, ct)
-        except Exception:
-            return (1, datetime.max.replace(tzinfo=timezone.utc))
-
-    filtered.sort(key=_sort_key)
-
-    # ─── Diversification sans masquer les grosses compétitions ───────────────
-    # 15 matchs par compétition était trop restrictif : un championnat avec
-    # beaucoup d'affiches pouvait faire disparaître précisément le match demandé.
-    # On garde une limite de sécurité beaucoup plus large.
-    per_comp: Dict[str, int] = {}
-    diversified = []
-    MAX_PER_COMPETITION = int(os.environ.get("ODDS_MAX_PER_COMPETITION", "1000"))
-    for m in filtered:
-        key = m.get("sport_title") or "Other"
-        if per_comp.get(key, 0) >= MAX_PER_COMPETITION:
-            continue
-        diversified.append(m)
-        per_comp[key] = per_comp.get(key, 0) + 1
-
-    final = _annotate_bookmakers(diversified)
-
-    await _save_to_cache(db, final)
-    return final
-
-
-async def _save_to_cache(db, matches: List[Dict]):
-    """Sauvegarde les matchs en cache MongoDB."""
-    await db.odds_cache.update_one(
-        {"_id": "all_matches"},
-        {"$set": {
-            "data": matches,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "count": len(matches),
-        }},
-        upsert=True,
+    html = _email_layout(
+        f"Ton plan {plan_name} est actif ! 🚀",
+        f"""
+        <p>Ton paiement a été vérifié et ton abonnement <strong>{plan_name}</strong> est maintenant actif.</p>
+        {expiry_line}
+        <p><a href="https://www.wnpulse.com/app" style="color: #ea580c; font-weight: bold;">Voir tous mes pronostics →</a></p>
+        """,
     )
+    await _send_email(to, f"Ton plan {plan_name} est actif 🚀", html)
 
 
-async def refresh_matches_worker(db) -> Dict:
-    """
-    Worker planifié : appelé par server.py à 06h00 WAT et 13h00 WAT.
-    C'est le SEUL endroit où l'API est appelée automatiquement.
-    """
-    matches = await _force_fetch_and_cache(db)
+# ─── DB setup ─────────────────────────────────────────────────────────────
+MONGO_URL = os.environ.get("MONGO_URL", "mongodb://localhost:27017")
+DB_NAME = os.environ.get("DB_NAME", "winpulse")
+client = AsyncIOMotorClient(MONGO_URL)
+db = client[DB_NAME]
+
+# Emails auto-promus admin + abonnement Elite a chaque connexion
+ADMIN_EMAILS = {
+    e.strip().lower()
+    for e in os.environ.get("ADMIN_EMAILS", "").split(",")
+    if e.strip()
+}
+
+# ─── App setup ────────────────────────────────────────────────────────────
+app = FastAPI(title="WinPulse API")
+
+PREDICTION_CACHE_TTL = int(os.environ.get("PREDICTION_CACHE_TTL", "300"))
+_prediction_cache = {
+    "timestamp": 0.0,
+    "matches": [],
+    "predictions": [],
+    "real_stats_map": {},
+    "calibration": {},
+}
+_prediction_cache_lock = asyncio.Lock()
+
+CORS_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.environ.get(
+        "CORS_ORIGINS",
+        "https://wnpulse.com,https://www.wnpulse.com,http://localhost:3000,http://localhost:5173"
+    ).split(",")
+    if origin.strip()
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=CORS_ORIGINS,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type"],
+    allow_credentials=True,
+)
+
+
+@app.get("/api/")
+async def racine():
+    return {"application": "WinPulse", "statut": "OK", "version": MODEL_VERSION}
+
+
+@app.get("/api/sante")
+async def sante():
+    return {"statut": "en bonne sante"}
+
+
+# ─── Auth models ──────────────────────────────────────────────────────────
+
+class RegisterPayload(BaseModel):
+    email: EmailStr
+    password: str
+    name: Optional[str] = None
+    referral_code: Optional[str] = None
+
+
+class LoginPayload(BaseModel):
+    email: EmailStr
+    password: str
+
+
+@app.post("/api/auth/register")
+async def register(payload: RegisterPayload):
+    existing = await db.users.find_one({"email": payload.email.lower()})
+    if existing:
+        raise HTTPException(status_code=400, detail="Email deja utilise")
+
+    is_admin = payload.email.lower() in ADMIN_EMAILS
+    user_id = str(uuid.uuid4())
+
+    referred_by = None
+    if payload.referral_code:
+        referrer = await db.users.find_one({"referral_code": payload.referral_code.strip().upper()})
+        if referrer:
+            referred_by = referrer["id"]
+
+    user_doc = {
+        "id": user_id,
+        "email": payload.email.lower(),
+        "name": payload.name or payload.email.split("@")[0],
+        "full_name": payload.name or payload.email.split("@")[0],
+        "password_hash": hash_password(payload.password),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "subscription": "elite" if is_admin else "free",
+        "is_admin": is_admin,
+        "referral_code": user_id[:8].upper(),
+        "referred_by": referred_by,
+        "referral_reward_claimed": False,
+    }
+    await db.users.insert_one(user_doc)
+    await send_welcome_email(user_doc["email"], user_doc["name"])
+    token = create_access_token(user_id, payload.email.lower())
     return {
-        "ok": True,
-        "count": len(matches),
-        "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "access_token": token,
+        "user": {
+            "id": user_id, "email": user_doc["email"], "name": user_doc["name"],
+            "full_name": user_doc["full_name"], "subscription": user_doc["subscription"],
+            "subscription_tier": user_doc["subscription"],
+            "is_admin": user_doc["is_admin"],
+        },
     }
 
 
-async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dict]:
-    """Fetch scores live/terminés. Endpoint GRATUIT (0 crédit)."""
-    if not ODDS_API_KEY:
-        return []
-    url = f"{ODDS_API_BASE}/sports/{sport_key}/scores"
-    params = {
-        "apiKey": ODDS_API_KEY,
-        "daysFrom": days_from,
-        "dateFormat": "iso",
+@app.post("/api/auth/login")
+async def login(payload: LoginPayload):
+    user = await db.users.find_one({"email": payload.email.lower()})
+    if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+
+    if user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"is_admin": True, "subscription": "elite"}},
+        )
+        user["is_admin"] = True
+        user["subscription"] = "elite"
+
+    user = await _check_and_downgrade_if_expired(user)
+
+    token = create_access_token(user["id"], user["email"])
+    return {
+        "access_token": token,
+        "user": {
+            "id": user["id"], "email": user["email"], "name": user.get("name", ""),
+            "full_name": user.get("full_name", user.get("name", "")),
+            "subscription": user.get("subscription", "free"),
+            "subscription_tier": user.get("subscription", "free"),
+            "is_admin": user.get("is_admin", False),
+        },
     }
+
+
+@app.get("/api/auth/me")
+async def me(payload: dict = Depends(get_current_user_payload)):
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user = await _check_and_downgrade_if_expired(user)
+    return {
+        "id": user["id"], "email": user["email"],
+        "name": user.get("name", ""), "full_name": user.get("full_name", user.get("name", "")),
+        "subscription": user.get("subscription", "free"),
+        "subscription_tier": user.get("subscription", "free"),
+        "subscription_expires_at": user.get("subscription_expires_at"),
+        "is_admin": user.get("is_admin", False),
+    }
+
+
+# ─── Prediction cache + calibration empirique ───────────────────────────────
+
+async def _invalidate_prediction_cache():
+    async with _prediction_cache_lock:
+        _prediction_cache["timestamp"] = 0.0
+        _prediction_cache["matches"] = []
+        _prediction_cache["predictions"] = []
+        _prediction_cache["real_stats_map"] = {}
+        _prediction_cache["calibration"] = {}
+        _prediction_cache["source_cache_updated_at"] = None
+
+
+async def _compute_calibration_map() -> Dict[int, Dict]:
+    resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION},
+        {"confidence": 1, "result": 1}
+    ).to_list(length=10000)
+    buckets: Dict[int, Dict[str, int]] = {}
+    for row in resolved:
+        try:
+            c = float(row.get("confidence", 0))
+        except (TypeError, ValueError):
+            continue
+        bucket = max(0, min(95, int(c // 5) * 5))
+        item = buckets.setdefault(bucket, {"wins": 0, "total": 0})
+        item["total"] += 1
+        if row.get("result") == "won":
+            item["wins"] += 1
+
+    out = {}
+    for bucket, item in buckets.items():
+        total = item["total"]
+        if total < 30:
+            continue
+        prior = (bucket + 2.5) / 100.0
+        calibrated = (item["wins"] + prior * 20.0) / (total + 20.0)
+        out[bucket] = {
+            "probability": round(calibrated * 100.0, 1),
+            "wins": item["wins"],
+            "total": total,
+        }
+    return out
+
+
+async def _get_prediction_snapshot(force: bool = False) -> Dict:
+    now = time.monotonic()
+    async with _prediction_cache_lock:
+        source_cache_updated_at = None
+        try:
+            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1})
+            source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
+        except Exception:
+            pass
+        same_source_snapshot = (
+            source_cache_updated_at == _prediction_cache.get("source_cache_updated_at")
+        )
+        if (not force and _prediction_cache["matches"] and same_source_snapshot and
+                now - _prediction_cache["timestamp"] < PREDICTION_CACHE_TTL):
+            return _prediction_cache
+
+        matches = await fetch_all_matches(db)
+        real_stats_map = await get_real_stats_map(db, matches)
+        predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        calibration = await _compute_calibration_map()
+        # Le cache des prédictions doit suivre immédiatement le cache Mongo des
+        # matchs. Sans ce contrôle, un refresh du flux pouvait laisser l'API
+        # servir pendant 300 s l'ancienne liste de matchs.
+        source_cache_updated_at = None
+        try:
+            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1})
+            source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
+        except Exception:
+            pass
+        _prediction_cache.update({
+            "timestamp": now,
+            "matches": matches,
+            "predictions": predictions,
+            "real_stats_map": real_stats_map,
+            "calibration": calibration,
+            "source_cache_updated_at": source_cache_updated_at,
+        })
+        return _prediction_cache
+
+
+async def _get_calibration_map() -> Dict[int, Dict]:
+    snapshot = await _get_prediction_snapshot()
+    return snapshot["calibration"]
+
+
+def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) -> List[Dict]:
+    for p in predictions:
+        try:
+            c = float(p.get("confidence", 0))
+        except (TypeError, ValueError):
+            c = 0.0
+        bucket = max(0, min(95, int(c // 5) * 5))
+        cal = calibration.get(bucket)
+        if cal:
+            p["calibrated_probability"] = cal["probability"]
+            p["calibration_sample"] = cal["total"]
+            p["calibration_status"] = "empirique"
+            p["effective_score"] = round(
+                float(p.get("wp_score", c)) * 0.70 + cal["probability"] * 0.30, 1
+            )
+        else:
+            p["calibrated_probability"] = None
+            p["calibration_sample"] = 0
+            p["calibration_status"] = "insuffisant"
+            p["effective_score"] = round(float(p.get("wp_score", c)), 1)
+    return predictions
+
+
+# ─── Matches & predictions ──────────────────────────────────────────────────
+
+def _merge_match_prediction(match: dict, prediction: dict) -> dict:
+    merged = dict(match)
+    merged["prediction"] = prediction
+    return merged
+
+
+def _match_is_finished(match: dict) -> bool:
+    ct = match.get("commence_time", "")
+    if not ct:
+        return False
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                return []
-            return r.json()
+        dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - dt) > timedelta(hours=4)
     except Exception:
-        return []
+        return False
 
 
-async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
-    """Recupere les scores termines odds-api.io pour la reconciliation.
-
-    On ne depend plus d'une valeur hypothetique de ``status`` :
-    - ``settled`` est traite comme termine ;
-    - ``pending`` est ignore ;
-    - un statut inconnu est accepte comme termine seulement si le match date
-      de plus de 4 heures et qu'un score complet est present.
-    """
-    if not ODDS_API_IO_KEY:
-        return {}
-
-    scores_map: Dict[str, Dict] = {}
-    all_leagues = (
-        [(lg, "football") for lg in ODDS_API_IO_LEAGUES]
-        + [(lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES]
-        + [(lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES]
+@app.get("/api/matches")
+async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    snapshot = await _get_prediction_snapshot()
+    matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
+    predictions = _apply_calibration(
+        [dict(p) for p in snapshot["predictions"]],
+        snapshot["calibration"],
     )
+    pred_by_id = {p.get("match_id"): p for p in predictions}
+    is_paid = False
+    if payload:
+        user = await db.users.find_one({"id": payload.get("sub")})
+        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+            is_paid = True
+    merged = []
+    for i, m in enumerate(matches):
+        pred = dict(pred_by_id.get(m.get("id"), {}))
+        if not is_paid and i > 0:
+            pred["locked"] = True
+            pred["pick"] = None
+            pred["pick_odds"] = None
+            pred["markets"] = []
+            pred["recommendations"] = []
+            pred["combo_suggestion"] = None
+        else:
+            pred["locked"] = False
+        merged.append(_merge_match_prediction(m, pred))
+    return merged
+
+
+@app.get("/api/predictions")
+async def get_predictions():
+    snapshot = await _get_prediction_snapshot()
+    predictions = _apply_calibration(
+        [dict(p) for p in snapshot["predictions"]],
+        snapshot["calibration"],
+    )
+    return predictions
+
+
+@app.get("/api/predictions/model-status")
+async def get_prediction_model_status():
+    snapshot = await _get_prediction_snapshot()
+    calibration = snapshot["calibration"]
+    resolved = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION})
+    pending = await db.predictions_history.count_documents({"result": "pending", "model_version": MODEL_VERSION})
+    return {
+        "model_version": MODEL_VERSION,
+        "cache_ttl_seconds": PREDICTION_CACHE_TTL,
+        "resolved_picks": resolved,
+        "pending_picks": pending,
+        "calibration_buckets": calibration,
+        "calibration_ready": bool(calibration),
+        "note": "La probabilité calibrée n'est affichée qu'après accumulation d'au moins 30 résultats dans une tranche de confiance.",
+    }
+
+
+@app.get("/api/predictions/top")
+async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends(get_optional_user_payload)):
+    snapshot = await _get_prediction_snapshot()
+    preds = _apply_calibration(
+        [dict(p) for p in snapshot["predictions"] if p.get("pick") and not p.get("is_finished")],
+        snapshot["calibration"],
+    )
+    preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
+    preds = preds[:max(1, min(limit, 50))]
+
+    is_paid = False
+    if payload:
+        user = await db.users.find_one({"id": payload.get("sub")})
+        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+            is_paid = True
+
+    if not is_paid:
+        for i, p in enumerate(preds):
+            if i == 0:
+                p["locked"] = False
+            else:
+                p["locked"] = True
+                p["pick"] = None
+                p["pick_odds"] = None
+                p["markets"] = []
+                p["recommendations"] = []
+                p["combo_suggestion"] = None
+    else:
+        for p in preds:
+            p["locked"] = False
+
+    return preds
+
+
+@app.get("/api/matches/{match_id}/analysis")
+async def get_match_analysis(match_id: str):
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
+
+    match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
+
+    if not match:
+        match = next(
+            (m for m in matches if str(m.get("match_id", "")) == str(match_id)),
+            None,
+        )
+
+    if not match:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
+        )
+
+    prediction = next(
+        (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
+        {}
+    )
+    ai_analysis = await generate_analysis(match, prediction)
+    return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
+
+
+@app.get("/api/data/status")
+async def get_data_status():
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    if not cached:
+        return {"odds_updated_at": None, "count": 0}
+    return {
+        "odds_updated_at": cached.get("updated_at"),
+        "count": cached.get("count", 0),
+    }
+
+
+@app.post("/api/data/refresh")
+async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
+    result = await refresh_matches_worker(db)
+    await _invalidate_prediction_cache()
+    return result
+
+
+@app.get("/api/data/source-audit")
+async def get_data_source_audit():
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    return {
+        "updated_at": cached.get("updated_at") if cached else None,
+        "count": cached.get("count", 0) if cached else 0,
+        "sources": ["The Odds API"],
+    }
+
+
+# ─── Abonnement ───────────────────────────────────────────────────────────
+
+SUBSCRIPTION_PLANS = [
+    {
+        "id": "pro",
+        "name": "WinPulse Pro",
+        "price": 6500,
+        "price_fcfa": 6500,
+        "price_xof": 6500,
+        "duration_days": 30,
+        "period": "mois",
+        "features": [
+            "Accès illimité à tous les pronostics, tous les jours, sur 7 sports",
+            "Tous les combinés (Sûr, Booster, Extra, Jackpot) débloqués",
+            "Chaque match analysé sur tous ses marchés — pas juste le favori évident",
+            "Combo Builder : construis tes propres combinés à partir de nos analyses",
+            "Détecteur de value bets : les cotes où le marché sous-estime nos calculs",
+            "Analyse IA experte sur chaque match, avec verdict et facteurs clés",
+            "Track Record public et vérifiable — aucun résultat caché",
+            "Support prioritaire par WhatsApp",
+        ],
+        "highlighted": True,
+        "tagline": "Un seul prix. Tout WinPulse. Sans compromis.",
+    },
+]
+
+
+@app.get("/api/subscription/plans")
+async def get_subscription_plans():
+    return SUBSCRIPTION_PLANS
+
+
+@app.get("/api/subscription/status")
+async def get_subscription_status(payload: dict = Depends(get_current_user_payload)):
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    user = await _check_and_downgrade_if_expired(user)
+    return {
+        "subscription": user.get("subscription", "free"),
+        "subscription_expires_at": user.get("subscription_expires_at"),
+        "is_admin": user.get("is_admin", False),
+    }
+
+
+# ─── Paiement manuel MoMo + validation admin ─────────────────────────────
+
+MOMO_NUMBER = "+229 01 66 28 06 03"
+MOMO_RECIPIENT_NAME = "KOUKPAKI VIANEY"
+PAYMENT_WHATSAPP_NUMBER = "+33 7 67 97 17 52"
+
+
+class CheckoutPayload(BaseModel):
+    tier: str
+    phone: str
+    payer_name: str
+
+
+@app.post("/api/subscription/checkout")
+async def subscription_checkout(
+    payload_in: CheckoutPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.tier.lower()), None)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan inconnu")
+
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    reference = _generate_reference()
+    await db.subscription_requests.insert_one({
+        "reference": reference,
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "amount_fcfa": plan["price_fcfa"],
+        "payer_phone": payload_in.phone.strip(),
+        "payer_name": payload_in.payer_name.strip(),
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+
+    return {"reference": reference, "plan": plan}
+
+
+class UpgradeRequestPayload(BaseModel):
+    plan_id: str
+
+
+def _generate_reference() -> str:
+    return f"PE-{uuid.uuid4().hex[:8].upper()}"
+
+
+@app.post("/api/subscription/request-upgrade")
+async def request_subscription_upgrade(
+    payload_in: UpgradeRequestPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.plan_id), None)
+    if not plan:
+        raise HTTPException(status_code=400, detail="Plan inconnu")
+
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    reference = _generate_reference()
+    request_doc = {
+        "reference": reference,
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "amount_fcfa": plan["price_fcfa"],
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.subscription_requests.insert_one(request_doc)
+
+    whatsapp_message = (
+        f"Bonjour WinPulse !\n"
+        f"Je viens d'effectuer le paiement pour activer mon plan *{plan['name']}*.\n\n"
+        f"• Référence : *{reference}*\n"
+        f"• Montant : *{plan['price_fcfa']:,} FCFA*".replace(",", " ") + "\n"
+        f"• Numéro MTN MoMo utilisé : *[TON NUMERO]*\n"
+        f"• Destinataire payé : *{MOMO_RECIPIENT_NAME}*\n"
+        f"• Nom : *[TON NOM]*\n"
+        f"• Email du compte : *{user['email']}*\n\n"
+        f"Voici la capture du SMS de confirmation MTN. Merci d'activer mon accès 🚀"
+    )
+    whatsapp_link = (
+        f"https://wa.me/{PAYMENT_WHATSAPP_NUMBER.replace('+', '').replace(' ', '')}"
+        f"?text={whatsapp_message}"
+    )
+
+    return {
+        "reference": reference,
+        "plan": plan,
+        "payment_instructions": {
+            "momo_number": MOMO_NUMBER,
+            "momo_recipient_name": MOMO_RECIPIENT_NAME,
+            "amount_fcfa": plan["price_fcfa"],
+            "steps": [
+                f"Compose *165# sur ton telephone MTN (ou l'app MoMo).",
+                f"Envoie {plan['price_fcfa']:,} FCFA".replace(",", " ")
+                + f" au {MOMO_NUMBER} ({MOMO_RECIPIENT_NAME}).",
+                "Garde le SMS de confirmation MTN.",
+                "Envoie la confirmation sur WhatsApp avec le bouton ci-dessous.",
+                "Ton acces est active des reception et verification du paiement.",
+            ],
+        },
+        "whatsapp_number": PAYMENT_WHATSAPP_NUMBER,
+        "whatsapp_message": whatsapp_message,
+        "whatsapp_link": whatsapp_link,
+    }
+
+
+@app.post("/api/subscription/upgrade")
+async def request_subscription_upgrade_alias(
+    payload_in: UpgradeRequestPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    return await request_subscription_upgrade(payload_in, payload)
+
+
+async def _require_admin(payload: dict) -> dict:
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403, detail="Acces reserve aux administrateurs")
+    return user
+
+
+@app.get("/api/admin/stats")
+async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+
+    total_users = await db.users.count_documents({})
+    free_users = await db.users.count_documents({"subscription": "free"})
+    paid_users = total_users - free_users
+    pending_payments = await db.subscription_requests.count_documents({"status": "pending"})
+    approved_payments = await db.subscription_requests.count_documents({"status": "approved"})
+
+    cached = await db.odds_cache.find_one({"_id": "all_matches"})
+    matches_count = cached.get("count", 0) if cached else 0
+
+    return {
+        "total_users": total_users,
+        "free_users": free_users,
+        "paid_users": paid_users,
+        "pending_payments": pending_payments,
+        "approved_payments": approved_payments,
+        "matches_in_cache": matches_count,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/admin/users")
+async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    users = await db.users.find({}).sort("created_at", -1).to_list(length=500)
+    result = []
+    for u in users:
+        result.append({
+            "id": u.get("id"),
+            "email": u.get("email"),
+            "name": u.get("name", ""),
+            "subscription": u.get("subscription", "free"),
+            "is_admin": u.get("is_admin", False),
+            "created_at": u.get("created_at"),
+        })
+    return result
+
+
+_PAYMENT_STATUS_MAP_FR_TO_EN = {
+    "en attente": "pending",
+    "approuve": "approved",
+    "approuvee": "approved",
+    "rejete": "rejected",
+    "rejetee": "rejected",
+    "tout": "all",
+    "tous": "all",
+}
+
+
+@app.get("/api/admin/payments")
+async def admin_get_payments(
+    status_filter: str = "en attente",
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    internal_status = _PAYMENT_STATUS_MAP_FR_TO_EN.get(
+        status_filter.lower().strip(), status_filter
+    )
+    query = {} if internal_status == "all" else {"status": internal_status}
+    requests = await db.subscription_requests.find(query).sort("created_at", -1).to_list(length=200)
+    for r in requests:
+        r.pop("_id", None)
+    return requests
+
+
+# ─── Helpers pour l'envoi de picks (email + WhatsApp) ────────────────────
+
+async def _get_combo_by_tier(tier_key: str) -> Optional[Dict]:
+    matches = await fetch_all_matches(db)
+    combos = build_multi_combos(matches)
+    return combos.get(tier_key)
+
+
+def _combo_display_name(tier_key: str) -> str:
+    return {"safe": "Sécurité", "balanced": "Équilibre", "jackpot": "Jackpot"}.get(tier_key, tier_key.capitalize())
+
+
+def _build_combo_email_html(combo: Dict, tier_key: str) -> str:
+    legs = combo.get("legs", [])
+    rows = "".join(
+        f"""
+        <tr>
+          <td style="padding:8px 0;border-bottom:1px solid #eee;">
+            <div style="font-weight:700;color:#0f172a;">{leg.get('home_team','')} vs {leg.get('away_team','')}</div>
+            <div style="color:#ea580c;font-weight:600;">{leg.get('pick','')}</div>
+          </td>
+          <td style="padding:8px 0;border-bottom:1px solid #eee;text-align:right;font-family:monospace;font-weight:700;">
+            {leg.get('pick_odds','')}
+          </td>
+        </tr>
+        """
+        for leg in legs
+    )
+    body = f"""
+    <p>Voici le combiné <strong>{_combo_display_name(tier_key)}</strong> du jour, sélectionné par le moteur WinPulse :</p>
+    <table style="width:100%;border-collapse:collapse;margin:16px 0;">{rows}</table>
+    <p style="font-size:18px;font-weight:800;color:#0f172a;">
+      Cote totale : <span style="color:#ea580c;">{combo.get('total_odds', '—')}</span>
+    </p>
+    <p><a href="https://www.wnpulse.com/app" style="color:#ea580c;font-weight:bold;">Voir l'analyse complète →</a></p>
+    <p style="font-size:11px;color:#94a3b8;margin-top:24px;">
+      Aucun pari sportif n'est garanti. Joue de façon responsable.
+    </p>
+    """
+    return _email_layout(f"Ton combiné {_combo_display_name(tier_key)} du jour", body)
+
+
+def _build_teaser_email_html(combo: Dict) -> str:
+    legs = combo.get("legs", [])
+    if not legs:
+        return _email_layout("Pari de la semaine", "<p>Aucun pick disponible pour le moment.</p>")
+    first = legs[0]
+    blurred_count = max(0, len(legs) - 1)
+    body = f"""
+    <p>Voici un aperçu de notre sélection de la semaine :</p>
+    <div style="padding:12px;border:1px solid #e5e7eb;border-radius:10px;margin:12px 0;">
+      <div style="font-weight:700;color:#0f172a;">{first.get('home_team','')} vs {first.get('away_team','')}</div>
+      <div style="color:#ea580c;font-weight:700;font-size:18px;">{first.get('pick','')} @ {first.get('pick_odds','')}</div>
+    </div>
+    {f'<p style="color:#94a3b8;">+ {blurred_count} autre(s) pick(s) réservé(s) aux abonnés Pro 🔒</p>' if blurred_count else ''}
+    <p><a href="https://www.wnpulse.com/app/abonnement" style="color:#ea580c;font-weight:bold;">Débloquer tous les picks →</a></p>
+    """
+    return _email_layout("🎁 Pari de la semaine — 1 pick offert", body)
+
+
+def _build_whatsapp_blast_text(combo: Dict, now_local: datetime) -> str:
+    legs = combo.get("legs", [])
+    lines = [
+        f"🔥 *WinPulse — Combiné du {now_local.strftime('%d/%m/%Y')}*",
+        "",
+    ]
+    for leg in legs:
+        lines.append(f"⚽ {leg.get('home_team','')} vs {leg.get('away_team','')}")
+        lines.append(f"👉 {leg.get('pick','')} @ *{leg.get('pick_odds','')}*")
+        lines.append("")
+    lines.append(f"💰 Cote totale : *{combo.get('total_odds', '—')}*")
+    lines.append("")
+    lines.append("📲 Analyse complète : https://wnpulse.com/app")
+    lines.append("18+ · Jeu responsable")
+    return "\n".join(lines)
+
+
+@app.get("/api/admin/whatsapp-blast")
+async def admin_whatsapp_blast(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    now_local = datetime.now(timezone.utc) + timedelta(hours=1)
+    active_subscribers = await db.users.count_documents({"subscription": {"$ne": "free"}})
+    combo = await _get_combo_by_tier("balanced")
+
+    if not combo or not combo.get("legs"):
+        return {
+            "date": now_local.strftime("%d/%m/%Y"),
+            "active_subscribers": active_subscribers,
+            "combo_total_odds": None,
+            "legs_count": 0,
+            "blast_text": None,
+        }
+
+    return {
+        "date": now_local.strftime("%d/%m/%Y"),
+        "active_subscribers": active_subscribers,
+        "combo_total_odds": combo.get("total_odds"),
+        "legs_count": len(combo.get("legs", [])),
+        "blast_text": _build_whatsapp_blast_text(combo, now_local),
+    }
+
+
+class BroadcastPicksPayload(BaseModel):
+    tier: str = "pro"
+    combo_tier: str = "balanced"
+
+
+@app.post("/api/admin/broadcast/picks")
+async def admin_broadcast_picks(
+    payload_in: BroadcastPicksPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier(payload_in.combo_tier)
+    if not combo or not combo.get("legs"):
+        raise HTTPException(status_code=400, detail="Aucun combiné disponible pour ce niveau aujourd'hui")
+
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=2000)
+    html = _build_combo_email_html(combo, payload_in.combo_tier)
+    subject = f"🎯 Ton combiné {_combo_display_name(payload_in.combo_tier)} du jour"
+
+    sent = drafted = errors = 0
+    for u in paid_users:
+        try:
+            ok = await _send_email(u["email"], subject, html)
+            if ok:
+                sent += 1
+            elif not RESEND_API_KEY:
+                drafted += 1
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "drafted": drafted, "errors": errors, "total_recipients": len(paid_users)}
+
+
+@app.post("/api/admin/broadcast/free-weekly-teaser")
+async def admin_broadcast_free_teaser(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier("safe")
+    if not combo or not combo.get("legs"):
+        raise HTTPException(status_code=400, detail="Aucun pick disponible pour le teaser aujourd'hui")
+
+    free_users = await db.users.find({"subscription": "free"}).to_list(length=5000)
+    html = _build_teaser_email_html(combo)
+
+    sent = errors = 0
+    for u in free_users:
+        try:
+            ok = await _send_email(u["email"], "🎁 Pari de la semaine — 1 pick offert", html)
+            sent += 1 if ok else 0
+            errors += 0 if ok else 1
+        except Exception:
+            errors += 1
+
+    return {"users": len(free_users), "sent": sent, "errors": errors}
+
+
+@app.post("/api/admin/test-email")
+async def admin_test_email(payload: dict = Depends(get_current_user_payload)):
+    user = await _require_admin(payload)
+    combo = await _get_combo_by_tier("balanced")
+    html = (
+        _build_combo_email_html(combo, "balanced")
+        if combo and combo.get("legs")
+        else _email_layout("Test WinPulse", "<p>Aucun combiné disponible actuellement, mais l'envoi d'email fonctionne.</p>")
+    )
+
+    if not RESEND_API_KEY:
+        return {"status": "draft", "email_id": None, "error": None}
+
+    ok = await _send_email(user["email"], "🧪 Test WinPulse", html)
+    return {
+        "status": "sent" if ok else "error",
+        "email_id": None,
+        "error": None if ok else "Échec de l'envoi (verifie RESEND_API_KEY)",
+    }
+
+
+@app.post("/api/admin/auto-follower/run")
+async def admin_auto_follower_run(
+    dry_run: bool = False,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    combo = await _get_combo_by_tier("balanced")
+    if not combo or not combo.get("legs"):
+        return {"no_picks": True, "sent": 0, "skipped_already_sent": 0, "errors": 0}
+
+    paid_users = await db.users.find({"subscription": {"$ne": "free"}}).to_list(length=2000)
+    today_key = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    html = _build_combo_email_html(combo, "balanced")
+
+    sent = skipped = errors = 0
+    for u in paid_users:
+        already = await db.auto_follower_log.find_one({"user_id": u["id"], "date": today_key})
+        if already:
+            skipped += 1
+            continue
+        if dry_run:
+            sent += 1
+            continue
+        try:
+            ok = await _send_email(u["email"], "🌅 Ton combiné du matin — WinPulse", html)
+            if ok:
+                sent += 1
+                await db.auto_follower_log.insert_one({
+                    "user_id": u["id"],
+                    "date": today_key,
+                    "sent_at": datetime.now(timezone.utc).isoformat(),
+                })
+            else:
+                errors += 1
+        except Exception:
+            errors += 1
+
+    return {"sent": sent, "skipped_already_sent": skipped, "errors": errors, "no_picks": False}
+
+
+@app.get("/api/admin/subscription-requests")
+async def admin_list_subscription_requests(
+    status_filter: str = "pending",
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    query = {} if status_filter == "all" else {"status": status_filter}
+    requests = await db.subscription_requests.find(query).sort("created_at", -1).to_list(length=200)
+    for r in requests:
+        r.pop("_id", None)
+    return requests
+
+
+@app.post("/api/admin/subscription-requests/{reference}/approve")
+async def admin_approve_subscription_request(
+    reference: str,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    req = await db.subscription_requests.find_one({"reference": reference})
+    if not req:
+        raise HTTPException(status_code=404, detail="Demande introuvable")
+    if req["status"] == "approved":
+        return {"ok": True, "detail": "Deja approuvee"}
+
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == req["plan_id"]), None)
+    duration_days = plan["duration_days"] if plan else 30
+    expires_at = _compute_expiry(duration_days)
+
+    await db.users.update_one(
+        {"id": req["user_id"]},
+        {"$set": {
+            "subscription": req["plan_id"],
+            "subscription_expires_at": expires_at,
+        }},
+    )
+    await db.subscription_requests.update_one(
+        {"reference": reference},
+        {"$set": {
+            "status": "approved",
+            "approved_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    await send_subscription_activated_email(
+        req["user_email"], plan["name"] if plan else req["plan_id"], expires_at
+    )
+    return {"ok": True, "detail": f"Abonnement {req['plan_id']} active pour {req['user_email']} ({duration_days} jours)"}
+
+
+@app.post("/api/admin/subscription-requests/{reference}/reject")
+async def admin_reject_subscription_request(
+    reference: str,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    req = await db.subscription_requests.find_one({"reference": reference})
+    if not req:
+        raise HTTPException(status_code=404, detail="Demande introuvable")
+    await db.subscription_requests.update_one(
+        {"reference": reference},
+        {"$set": {
+            "status": "rejected",
+            "rejected_at": datetime.now(timezone.utc).isoformat(),
+        }},
+    )
+    return {"ok": True, "detail": "Demande rejetee"}
+
+
+
+# ─── Montante 10/15 jours ────────────────────────────────────────────────────
+# Etat persiste dans MongoDB : un deploiement/restart du serveur ne remet donc
+# jamais la montante a zero. Les picks viennent exclusivement des pronostics
+# reels deja produits par prediction_engine.py.
+MONTANTE_DOC_ID = "active"
+MONTANTE_DEFAULT_DAYS = 10
+MONTANTE_MAX_PICKS = 2
+MONTANTE_MIN_CONFIDENCE = 0.70
+MONTANTE_MIN_ODDS = 1.20
+MONTANTE_MAX_ODDS = 1.50
+
+montante_selector = MontanteService(
+    days=MONTANTE_DEFAULT_DAYS,
+    max_picks_per_day=MONTANTE_MAX_PICKS,
+    min_confidence=MONTANTE_MIN_CONFIDENCE,
+    min_odds=MONTANTE_MIN_ODDS,
+    max_odds=MONTANTE_MAX_ODDS,
+    min_edge=0.0,
+    initial_bankroll=10000.0,
+)
+
+
+def _montante_public(doc: Optional[Dict]) -> Dict:
+    if not doc:
+        return {"status": "NONE", "message": "Aucune montante active."}
+    out = dict(doc)
+    out.pop("_id", None)
+    return out
+
+
+async def _montante_get() -> Optional[Dict]:
+    doc = await db.montantes.find_one({"_id": MONTANTE_DOC_ID})
+    return doc
+
+
+async def _montante_save(state: Dict) -> Dict:
+    state = dict(state)
+    state["_id"] = MONTANTE_DOC_ID
+    await db.montantes.replace_one({"_id": MONTANTE_DOC_ID}, state, upsert=True)
+    return _montante_public(state)
+
+
+async def _montante_reconcile(state: Dict) -> Dict:
+    """Met a jour automatiquement la journee avec les resultats deja reconciliés."""
+    if state.get("status") != "ACTIVE":
+        return state
+    picks = state.get("current_picks") or []
+    if not picks:
+        return state
+
+    statuses = []
+    for pick in picks:
+        match_id = str(pick.get("match_id") or "")
+        pick_text = pick.get("pick")
+        if not match_id or not pick_text:
+            statuses.append("PENDING")
+            continue
+        docs = await db.predictions_history.find({
+            "match_id": match_id,
+            "pick": pick_text,
+            "result": {"$in": ["won", "lost"]},
+        }).sort("created_at", -1).to_list(length=1)
+        if not docs:
+            statuses.append("PENDING")
+        else:
+            statuses.append("WIN" if docs[0].get("result") == "won" else "LOSS")
+
+    if "LOSS" in statuses:
+        state["status"] = "FAILED"
+        state["failed_at"] = datetime.now(timezone.utc).isoformat()
+        state["waiting_reason"] = "La montante a perdu sur le jour en cours."
+        state.setdefault("history", []).append({
+            "day": state.get("current_day", 1),
+            "status": "LOSS",
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "picks": picks,
+        })
+        await _montante_save(state)
+        return state
+
+    if statuses and all(x == "WIN" for x in statuses):
+        combined_odds = 1.0
+        for pick in picks:
+            combined_odds *= float(pick.get("odds") or 1)
+        state["theoretical_bankroll"] = round(
+            float(state.get("theoretical_bankroll", state.get("initial_bankroll", 10000))) * combined_odds, 2
+        )
+        state.setdefault("history", []).append({
+            "day": state.get("current_day", 1),
+            "status": "WIN",
+            "settled_at": datetime.now(timezone.utc).isoformat(),
+            "combined_odds": round(combined_odds, 3),
+            "picks": picks,
+        })
+        if int(state.get("current_day", 1)) >= int(state.get("days", 10)):
+            state["status"] = "COMPLETED"
+            state["completed_at"] = datetime.now(timezone.utc).isoformat()
+            state["waiting_reason"] = None
+            state["current_picks"] = []
+        else:
+            state["current_day"] = int(state.get("current_day", 1)) + 1
+            state["current_picks"] = []
+            state["waiting_reason"] = "Jour gagné. Recherche des picks du prochain jour."
+        await _montante_save(state)
+    return state
+
+
+async def _montante_prepare_next_day(state: Dict) -> Dict:
+    if state.get("status") != "ACTIVE" or state.get("current_picks"):
+        return state
+    matches = await fetch_all_matches(db)
+    real_stats_map = await get_real_stats_map(db, matches)
+    predictions = analyze_all(matches, real_stats_map=real_stats_map)
+    candidates = []
+    now = datetime.now(timezone.utc)
+    current_day = now.date()
+    for p in predictions:
+        ct = p.get("commence_time")
+        try:
+            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            continue
+        # Uniquement les matchs encore jouables du jour ou a venir.
+        if dt.date() != current_day:
+            continue
+        if dt < now - timedelta(minutes=15):
+            continue
+        if not p.get("pick"):
+            continue
+        candidates.append(p)
+
+    selected = montante_selector.select_daily_picks(candidates, limit=MONTANTE_MAX_PICKS)
+    if not selected:
+        state["waiting_reason"] = "Aucun pick ne respecte actuellement les criteres de la montante (confiance >= 70%, cote 1.20-1.50)."
+        state["updated_at"] = datetime.now(timezone.utc).isoformat()
+        await _montante_save(state)
+        return state
+
+    state["current_picks"] = selected
+    state["waiting_reason"] = None
+    state["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await _montante_save(state)
+    return state
+
+
+@app.get("/api/montante")
+async def get_montante(payload: dict = Depends(get_current_user_payload)):
+    state = await _montante_get()
+    if not state:
+        return {"status": "NONE", "message": "Aucune montante active.", "can_start": False}
+    state = await _montante_reconcile(state)
+    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+        state = await _montante_prepare_next_day(state)
+    public = _montante_public(state)
+    public["progress"] = round(((int(public.get("current_day", 1)) - 1) / max(1, int(public.get("days", 10)))) * 100, 1) if public.get("status") != "NONE" else 0
+    public["can_start"] = False
+    return public
+
+
+@app.post("/api/montante/start")
+async def start_montante(
+    days: int = 10,
+    initial_bankroll: float = 10000,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    if days not in (10, 15):
+        raise HTTPException(status_code=400, detail="days doit être 10 ou 15")
+    if initial_bankroll <= 0:
+        raise HTTPException(status_code=400, detail="initial_bankroll doit être positif")
+    state = montante_selector.create(days=days, initial_bankroll=initial_bankroll)
+    state["current_picks"] = []
+    state["waiting_reason"] = "Sélection des meilleurs picks du jour..."
+    state = await _montante_save(state)
+    state = await _montante_prepare_next_day(state)
+    return _montante_public(state)
+
+
+@app.post("/api/montante/restart")
+async def restart_montante(
+    days: int = 10,
+    initial_bankroll: float = 10000,
+    payload: dict = Depends(get_current_user_payload),
+):
+    return await start_montante(days, initial_bankroll, payload)
+
+
+@app.post("/api/montante/refresh")
+async def refresh_montante(payload: dict = Depends(get_current_user_payload)):
+    state = await _montante_get()
+    if not state:
+        raise HTTPException(status_code=404, detail="Aucune montante active")
+    state = await _montante_reconcile(state)
+    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+        state = await _montante_prepare_next_day(state)
+    return _montante_public(state)
+
+
+# ─── Combos ─────────────────────────────────────────────────────────────────
+
+@app.get("/api/combos")
+async def get_combos():
+    matches = await fetch_all_matches(db)
+    return build_multi_combos(matches)
+
+
+@app.get("/api/combos/super")
+async def get_super_combos():
+    matches = await fetch_all_matches(db)
+    return build_super_combos(matches)
+
+
+@app.get("/api/combos/ultra-safe")
+async def get_ultra_safe_combo():
+    matches = await fetch_all_matches(db)
+    today_matches = [m for m in matches if _is_today_match(m.get("commence_time", ""))]
+    return build_ultra_safe_combo(today_matches)
+
+
+@app.get("/api/combos/today")
+async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    try:
+        matches = await fetch_all_matches(db)
+        result = build_today_combos_by_sport(matches)
+        is_paid = False
+        if payload:
+            user = await db.users.find_one({"id": payload.get("sub")})
+            if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+                is_paid = True
+        if not is_paid:
+            for family in result.get("families", {}).values():
+                for tkey, tier in family.get("tiers", {}).items():
+                    if tkey == "sure":
+                        legs = tier.get("legs", [])
+                        for i, leg in enumerate(legs):
+                            if i == 0:
+                                leg["locked"] = False
+                            else:
+                                leg["locked"] = True
+                                leg["pick"] = None
+                                leg["pick_odds"] = None
+                                leg["market_label"] = None
+                        tier["locked"] = len(legs) > 1
+                    else:
+                        tier["locked"] = True
+                        tier["legs"] = []
+        return result
+    except Exception as e:
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "total_matches_today": 0,
+            "families": {},
+            "error": str(e),
+        }
+
+
+# ─── Alias de routes attendues par le frontend ──
+
+@app.get("/api/predictions/today-combos")
+async def get_predictions_today_combos_alias(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    return await get_today_combos(payload)
+
+
+@app.get("/api/predictions/combos")
+async def get_predictions_combos_alias():
+    return await get_combos()
+
+
+@app.get("/api/builder/matches")
+async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
+    matches = await fetch_all_matches(db)
+    matches = [m for m in matches if not _match_is_finished(m)]
+    if sport and sport != "all":
+        matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
+    real_stats_map = await get_real_stats_map(db, matches)
+    is_paid = False
+    if payload:
+        user = await db.users.find_one({"id": payload.get("sub")})
+        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
+            is_paid = True
+    FREE_UNLOCKED_MATCHES = 2
+    result = []
+    unlocked_matches_count = 0
+    for m in matches:
+        analyzed = analyze_match(m, real_stats_map=real_stats_map)
+        raw_picks = analyzed.get("markets", [])
+        if not raw_picks:
+            continue
+        this_match_gets_free_pick = (not is_paid) and (unlocked_matches_count < FREE_UNLOCKED_MATCHES)
+        if this_match_gets_free_pick:
+            unlocked_matches_count += 1
+        picks = []
+        for i, mk in enumerate(raw_picks):
+            if is_paid:
+                locked = False
+            elif this_match_gets_free_pick and i == 0:
+                locked = False
+            else:
+                locked = True
+            picks.append({
+                "market": None if locked else mk.get("market"),
+                "market_label": "Marché verrouillé" if locked else mk.get("market_label"),
+                "pick": None if locked else mk.get("pick"),
+                "pick_odds": None if locked else mk.get("pick_odds"),
+                "confidence": None if locked else mk.get("confidence"),
+                "label": None if locked else mk.get("label"),
+                "edge": None if locked else mk.get("edge", 0),
+                "synthetic": mk.get("synthetic", False),
+                "locked": locked,
+            })
+        result.append({
+            "match_id": analyzed.get("match_id"),
+            "sport_key": analyzed.get("sport_key"),
+            "sport_title": analyzed.get("sport_title"),
+            "home_team": analyzed.get("home_team"),
+            "away_team": analyzed.get("away_team"),
+            "commence_time": analyzed.get("commence_time"),
+            "picks": picks,
+        })
+    return {"matches": result}
+
+
+@app.get("/api/builder/stats/{match_id}")
+async def get_builder_match_stats(match_id: str):
+    matches = await fetch_all_matches(db)
+    match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
+    if not match:
+        raise HTTPException(status_code=404, detail="Match introuvable")
+
+    real_stats_map = await get_real_stats_map(db, [match])
+    analyzed = analyze_match(match, real_stats_map=real_stats_map)
+    implied = analyzed.get("implied_probs", {})
+    home = analyzed.get("home_team", "")
+    away = analyzed.get("away_team", "")
+
+    probs = {
+        "home_win": implied.get(home, 0),
+        "draw": implied.get("Draw", 0),
+        "away_win": implied.get(away, 0),
+    }
+
+    def _pct_for(market_key: str, pick_contains: str) -> float:
+        for mk in analyzed.get("markets", []):
+            if mk.get("market") == market_key and pick_contains.lower() in (mk.get("pick") or "").lower():
+                odds = mk.get("pick_odds")
+                return round(100 / odds, 1) if odds else 0
+        return 0
+
+    expectations = {
+        "btts_yes_pct": _pct_for("syn_btts", "oui") or _pct_for("btts", "oui"),
+        "over_2_5_pct": _pct_for("syn_over_25", "plus de"),
+        "over_1_5_pct": _pct_for("syn_over_15", "plus de"),
+        "clean_sheet_home_pct": _pct_for("syn_clean_sheet_home", home),
+        "clean_sheet_away_pct": _pct_for("syn_clean_sheet_away", away),
+    }
+
+    return {"probs": probs, "expectations": expectations}
+
+
+class SaveComboPayload(BaseModel):
+    name: Optional[str] = ""
+    legs: List[Dict]
+
+
+@app.post("/api/builder/save")
+async def save_builder_combo(
+    payload_in: SaveComboPayload,
+    payload: dict = Depends(get_current_user_payload),
+):
+    if not payload_in.legs:
+        raise HTTPException(status_code=400, detail="Aucun pick selectionne")
+
+    total_odds = 1.0
+    for leg in payload_in.legs:
+        total_odds *= leg.get("pick_odds") or 1
+
+    combo_id = str(uuid.uuid4())
+    combo_doc = {
+        "id": combo_id,
+        "user_id": payload["sub"],
+        "name": payload_in.name or f"Combo {len(payload_in.legs)} picks",
+        "legs": payload_in.legs,
+        "total_odds": round(total_odds, 2),
+        "num_legs": len(payload_in.legs),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    await db.user_combos.insert_one(combo_doc)
+
+    return {"ok": True, "id": combo_id, "total_odds": combo_doc["total_odds"]}
+
+
+@app.get("/api/builder/my-combos")
+async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload)):
+    saved = await db.user_combos.find({"user_id": payload["sub"]}).sort("created_at", -1).to_list(length=100)
+    for s in saved:
+        s.pop("_id", None)
+    return {"combos": saved}
+
+
+@app.delete("/api/builder/my-combos/{combo_id}")
+async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_current_user_payload)):
+    result = await db.user_combos.delete_one({"id": combo_id, "user_id": payload["sub"]})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Combo introuvable")
+    return {"ok": True}
+
+
+# ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
+
+@app.get("/api/matches/{match_id}")
+async def get_single_match(match_id: str):
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
+
+    match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
+    if not match:
+        match = next(
+            (m for m in matches if str(m.get("match_id", "")) == str(match_id)),
+            None,
+        )
+
+    if not match:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
+        )
+
+    prediction = next(
+        (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
+        {}
+    )
+    prediction = _apply_calibration([prediction], snapshot["calibration"])[0] if prediction else {}
+    return _merge_match_prediction(match, prediction)
+
+
+# ─── Value bets ───────────────────────────────────────────────────────────
+
+@app.get("/api/value-bets")
+async def get_value_bets():
+    snapshot = await _get_prediction_snapshot()
+    matches = snapshot["matches"]
+    bets = find_value_bets(matches, min_edge=1.5, limit=30)
+    return {"count": len(bets), "bets": bets}
+
+
+# ─── Plans (alias) ────────────────────────────────────────────────────────
+
+@app.get("/api/plans")
+async def get_plans_alias():
+    return SUBSCRIPTION_PLANS
+
+
+# ─── Parrainage ───────────────────────────────────────────────────────────
+
+REFERRAL_THRESHOLD = 3
+REFERRAL_REWARD_DAYS = 7
+
+
+@app.get("/api/referral/me")
+async def get_referral_me(payload: dict = Depends(get_current_user_payload)):
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    code = user.get("referral_code") or user["id"][:8].upper()
+    if not user.get("referral_code"):
+        await db.users.update_one({"id": user["id"]}, {"$set": {"referral_code": code}})
+
+    count = await db.users.count_documents({"referred_by": user["id"]})
+    claimed = user.get("referral_reward_claimed", False)
+    eligible = count >= REFERRAL_THRESHOLD and not claimed
+
+    share_url = f"https://www.wnpulse.com/register?ref={code}"
+    whatsapp_message = (
+        f"Salut ! Je viens de découvrir WinPulse, une IA qui décrypte les "
+        f"pronostics sportifs. Inscris-toi gratuitement avec mon code : {share_url}"
+    )
+
+    return {
+        "code": code,
+        "share_url": share_url,
+        "whatsapp_share": f"https://wa.me/?text={whatsapp_message}",
+        "count": count,
+        "threshold": REFERRAL_THRESHOLD,
+        "reward_days": REFERRAL_REWARD_DAYS,
+        "eligible": eligible,
+        "claimed": claimed,
+    }
+
+
+@app.post("/api/referral/claim")
+async def claim_referral_reward(payload: dict = Depends(get_current_user_payload)):
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+
+    if user.get("referral_reward_claimed"):
+        raise HTTPException(status_code=400, detail="Récompense déjà réclamée")
+
+    count = await db.users.count_documents({"referred_by": user["id"]})
+    if count < REFERRAL_THRESHOLD:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Il te faut encore {REFERRAL_THRESHOLD - count} filleul(s) pour réclamer",
+        )
+
+    update_fields = {"referral_reward_claimed": True}
+    if user.get("subscription", "free") == "free":
+        update_fields["subscription"] = "pro"
+        update_fields["subscription_expires_at"] = _compute_expiry(REFERRAL_REWARD_DAYS)
+
+    await db.users.update_one({"id": user["id"]}, {"$set": update_fields})
+
+    return {"ok": True, "message": f"{REFERRAL_REWARD_DAYS} jours Pro activés ! 🎉"}
+
+
+TRACK_RECORD_BASE_BANKROLL = 100000
+TRACK_RECORD_STAKE_XOF = 1000
+
+
+def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
+    if not dt_str:
+        return None
+    try:
+        dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except Exception:
+        return None
+
+
+@app.get("/api/track-record")
+async def get_track_record_public(page: int = 1, per_page: int = 20):
+    official_resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
+    ).to_list(length=5000)
+
+    transition_mode = len(official_resolved) < 20
+
+    if transition_mode:
+        resolved = await db.predictions_history.find(
+            {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
+        ).to_list(length=5000)
+    else:
+        resolved = official_resolved
+
+    resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+
+    total = len(resolved)
+    wins = sum(1 for r in resolved if r.get("result") == "won")
+    win_rate = round((wins / total) * 100, 1) if total else 0
+    odds_list = [r["pick_odds"] for r in resolved if r.get("pick_odds")]
+    avg_odds = round(statistics.mean(odds_list), 2) if odds_list else 0
+
+    balance = TRACK_RECORD_BASE_BANKROLL
+    daily_balance: Dict[str, float] = {}
+    for r in resolved:
+        stake = TRACK_RECORD_STAKE_XOF
+        odds = r.get("pick_odds") or 1
+        profit = stake * (odds - 1) if r.get("result") == "won" else -stake
+        balance += profit
+        dt = _parse_iso(r.get("reconciled_at") or r.get("created_at"))
+        day_key = dt.strftime("%Y-%m-%d") if dt else "inconnu"
+        daily_balance[day_key] = balance
+
+    chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())]
+    chart = chart[-60:]
+
+    streak = 0
+    for r in reversed(resolved):
+        if r.get("result") == "won":
+            streak += 1
+        else:
+            break
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    recent = [
+        r for r in resolved
+        if (_parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+    ]
+    profit_units_30d = 0.0
+    for r in recent:
+        odds = r.get("pick_odds") or 1
+        profit_units_30d += (odds - 1) if r.get("result") == "won" else -1
+    roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
+
+    by_label: Dict[str, Dict] = {"safe": {"wins": 0, "total": 0}, "value": {"wins": 0, "total": 0}, "risky": {"wins": 0, "total": 0}}
+    for r in resolved:
+        lbl = r.get("label")
+        if lbl not in by_label:
+            continue
+        by_label[lbl]["total"] += 1
+        if r.get("result") == "won":
+            by_label[lbl]["wins"] += 1
+    by_label_stats = {
+        lbl: {
+            "wins": d["wins"],
+            "total": d["total"],
+            "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
+        }
+        for lbl, d in by_label.items()
+    }
+
+    stats = {
+        "win_rate": win_rate,
+        "wins": wins,
+        "total": total,
+        "roi_percent": roi_percent,
+        "profit_units_30d": round(profit_units_30d, 2),
+        "current_streak": streak,
+        "avg_odds": avg_odds,
+        "base": TRACK_RECORD_BASE_BANKROLL,
+        "balance_now": round(balance),
+        "stake_xof": TRACK_RECORD_STAKE_XOF,
+        "by_label": by_label_stats,
+    }
+
+    results_desc = list(reversed(resolved))
+    start = max(0, (page - 1) * per_page)
+    page_items = results_desc[start:start + per_page]
+
+    results = []
+    for r in page_items:
+        odds = r.get("pick_odds") or 1
+        profit_xof = round(TRACK_RECORD_STAKE_XOF * (odds - 1)) if r.get("result") == "won" else -TRACK_RECORD_STAKE_XOF
+        results.append({
+            "id": r.get("signature"),
+            "date": r.get("reconciled_at") or r.get("created_at"),
+            "league": r.get("sport_title", ""),
+            "match": f"{r.get('home_team', '')} vs {r.get('away_team', '')}",
+            "pick": r.get("pick", ""),
+            "odds": odds,
+            "status": r.get("result"),
+            "label": r.get("label"),
+            "profit_xof": profit_xof,
+        })
+
+    total_pages = max(1, (total + per_page - 1) // per_page)
+
+    return {
+        "stats": stats,
+        "chart": chart,
+        "results": results,
+        "page": page,
+        "total_pages": total_pages,
+        "transition_mode": transition_mode,
+        "note": (
+            "Moins de 20 résultats officiels accumulés pour le moment "
+            "(les grands championnats reprennent progressivement) — cette "
+            "page affiche donc TOUS les picks résolus de la version "
+            "actuelle du moteur, gagnés et perdus, sans aucune sélection. "
+            "Une fois 20 résultats officiels atteints, la page basculera "
+            "automatiquement sur notre sélection stricte pré-match."
+        ) if transition_mode else None,
+    }
+
+
+@app.get("/api/predictions/history")
+async def get_predictions_history(limit: int = 100, payload: Optional[dict] = Depends(get_optional_user_payload)):
+    history = await db.predictions_history.find({}).sort("created_at", -1).to_list(length=limit)
+    for h in history:
+        h.pop("_id", None)
+    return history
+
+
+@app.get("/api/admin/accuracy-stats")
+async def admin_get_accuracy_stats(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+
+    resolved = await db.predictions_history.find(
+        {"result": {"$in": ["won", "lost"]}}
+    ).to_list(length=5000)
+
+    if not resolved:
+        return {
+            "total_resolved": 0,
+            "detail": "Aucun pick avec resultat confirme pour le moment. "
+                      "Les statistiques deviendront fiables au fur et a mesure "
+                      "que les matchs se terminent et sont reconcilies.",
+            "brackets": [],
+        }
+
+    def _bracket(conf):
+        if conf >= 80:
+            return "80-100%"
+        if conf >= 70:
+            return "70-79%"
+        if conf >= 60:
+            return "60-69%"
+        return "< 60%"
+
+    brackets: Dict[str, Dict] = {}
+    for p in resolved:
+        b = _bracket(p.get("confidence", 0))
+        brackets.setdefault(b, {"total": 0, "won": 0})
+        brackets[b]["total"] += 1
+        if p.get("result") == "won":
+            brackets[b]["won"] += 1
+
+    bracket_stats = []
+    for b, d in sorted(brackets.items()):
+        win_rate = round((d["won"] / d["total"]) * 100, 1) if d["total"] else 0
+        bracket_stats.append({
+            "bracket": b, "total": d["total"], "won": d["won"],
+            "win_rate_percent": win_rate,
+        })
+
+    total_won = sum(1 for p in resolved if p.get("result") == "won")
+    global_win_rate = round((total_won / len(resolved)) * 100, 1)
+
+    return {
+        "total_resolved": len(resolved),
+        "total_won": total_won,
+        "global_win_rate_percent": global_win_rate,
+        "brackets": bracket_stats,
+    }
+
+
+@app.get("/api/admin/clv-stats")
+async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+
+    with_clv = await db.predictions_history.find(
+        {"clv_percent": {"$exists": True}, "market": "h2h"}
+    ).to_list(length=5000)
+
+    if not with_clv:
+        return {
+            "total_tracked": 0,
+            "detail": "Aucun pick avec CLV calcule pour le moment. Le CLV "
+                      "n'est calcule qu'une fois le match demarre — reviens "
+                      "plus tard une fois des matchs h2h en cours.",
+            "avg_clv_percent": None,
+            "positive_clv_rate": None,
+        }
+
+    clv_values = [p["clv_percent"] for p in with_clv if p.get("clv_percent") is not None]
+    positive_count = sum(1 for v in clv_values if v > 0)
+
+    by_version: Dict[str, List[float]] = {}
+    for p in with_clv:
+        v = p.get("model_version", "inconnu")
+        if p.get("clv_percent") is not None:
+            by_version.setdefault(v, []).append(p["clv_percent"])
+
+    version_breakdown = {
+        v: {
+            "count": len(vals),
+            "avg_clv_percent": round(statistics.mean(vals), 2),
+            "positive_clv_rate_percent": round(
+                (sum(1 for x in vals if x > 0) / len(vals)) * 100, 1
+            ),
+        }
+        for v, vals in by_version.items()
+    }
+
+    return {
+        "total_tracked": len(clv_values),
+        "avg_clv_percent": round(statistics.mean(clv_values), 2) if clv_values else None,
+        "positive_clv_rate_percent": round((positive_count / len(clv_values)) * 100, 1) if clv_values else None,
+        "by_model_version": version_breakdown,
+        "note": (
+            "CLV positif = notre cote au moment du pick etait meilleure que "
+            "la cote de cloture, signe de vraie valeur detectee avant que "
+            "le marche ne s'ajuste. Limite au marche h2h (1X2) pour l'instant."
+        ),
+    }
+
+
+@app.get("/api/admin/diagnose-pending-simple")
+async def admin_diagnose_pending_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=2000)
     now = datetime.now(timezone.utc)
 
-    for league_slug, sport in all_leagues:
+    should_be_finished = []
+    for p in pending:
         try:
-            events = await _fetch_odds_api_io_finished_events(
-                league_slug, sport=sport
-            )
-            for evt in events:
-                commence = evt.get("date")
-                if not commence:
-                    continue
-                try:
-                    commence_dt = datetime.fromisoformat(
-                        str(commence).replace("Z", "+00:00")
-                    )
-                    if commence_dt.tzinfo is None:
-                        commence_dt = commence_dt.replace(tzinfo=timezone.utc)
-                except Exception:
-                    continue
-
-                # Ne jamais reconciler un match pas encore suffisamment ancien.
-                if (now - commence_dt) < timedelta(hours=4):
-                    continue
-
-                scores = evt.get("scores") or {}
-                home_score = scores.get("home")
-                away_score = scores.get("away")
-                if home_score is None or away_score is None:
-                    continue
-
-                event_id = evt.get("id")
-                if event_id is None:
-                    continue
-
-                scores_map[str(event_id)] = {
-                    "status": evt.get("status", "termine_estime_par_horaire"),
-                    "home_score": home_score,
-                    "away_score": away_score,
-                }
-        except Exception as exc:
-            logger.warning(
-                "odds-api.io scores %s/%s -> %s", sport, league_slug, exc
-            )
+            ct = datetime.fromisoformat(p["commence_time"].replace("Z", "+00:00"))
+            if (now - ct).total_seconds() > 3 * 3600:
+                should_be_finished.append(p)
+        except Exception:
             continue
 
-    return scores_map
+    oaio_stuck = [p for p in should_be_finished if p["match_id"].startswith("oaio-")]
+    classic_stuck = [p for p in should_be_finished if not p["match_id"].startswith("oaio-")]
+
+    def _sample(lst, n=5):
+        sorted_lst = sorted(lst, key=lambda p: p["commence_time"], reverse=True)
+        return [
+            {
+                "match_id": p["match_id"],
+                "home_team": p["home_team"],
+                "away_team": p["away_team"],
+                "sport_title": p.get("sport_title"),
+                "commence_time": p["commence_time"],
+            }
+            for p in sorted_lst[:n]
+        ]
+
+    return {
+        "total_pending": len(pending),
+        "should_be_finished_total": len(should_be_finished),
+        "oaio_stuck_count": len(oaio_stuck),
+        "classic_stuck_count": len(classic_stuck),
+        "oaio_stuck_samples": _sample(oaio_stuck),
+        "classic_stuck_samples": _sample(classic_stuck),
+    }
 
 
-async def fetch_all_scores(db) -> List[Dict]:
-    """Scores avec cache 60 secondes. Endpoint GRATUIT."""
-    cached = await db.scores_cache.find_one({"_id": "all_scores"})
-    if cached:
-        updated = cached.get("updated_at")
-        if updated:
-            try:
-                updated_dt = datetime.fromisoformat(updated) if isinstance(updated, str) else updated
-                if updated_dt.tzinfo is None:
-                    updated_dt = updated_dt.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) - updated_dt < timedelta(seconds=60):
-                    return cached.get("data", [])
-            except Exception:
-                pass
+@app.get("/api/admin/reconcile-results-simple")
+async def admin_reconcile_results_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await _reconcile_predictions_with_scores()
+    return result
 
-    scores: List[Dict] = []
-    # Découverte dynamique des competitions de saison. On conserve aussi les
-    # clés historiques pour ne jamais perdre une competition connue du site.
-    # Cela corrige notamment Championship/Belgian First Div qui etaient absents
-    # du flux /api/scores car la liste ci-dessous etait figée sur les competitions
-    # de juillet.
-    discovered = await _discover_active_sport_keys()
-    active_sports = list(dict.fromkeys(REAL_SPORT_KEYS + discovered))
-    logger.info("Scores: %s sports/competitions interrogés", len(active_sports))
 
-    async def _scores_one(sk):
-        try: return await fetch_scores_for_sport(sk)
-        except Exception as exc:
-            logger.warning("scores %s -> %s", sk, exc); return []
+@app.get("/api/admin/sweep-expired-simple")
+async def admin_sweep_expired_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await _sweep_expired_subscriptions()
+    return result
 
-    results=await asyncio.gather(*[_scores_one(sk) for sk in active_sports], return_exceptions=True)
-    for result in results:
-        if isinstance(result,list): scores.extend(result)
 
-    await db.scores_cache.update_one(
-        {"_id": "all_scores"},
-        {"$set": {"data": scores, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
-    )
+# ─── Scores ───────────────────────────────────────────────────────────────
+
+@app.get("/api/scores")
+async def get_scores():
+    scores = await fetch_all_scores(db)
     return scores
 
 
-async def get_odds_cache_status(db) -> Dict:
-    cache=await db.odds_cache.find_one({"_id":"all_matches"})
-    if not cache: return {"cached":False,"count":0,"updated_at":None,"stale":True}
-    data=cache.get("data",[]); updated=cache.get("updated_at")
-    try:
-        dt=datetime.fromisoformat(str(updated).replace("Z","+00:00")); dt=dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        age=max(0,(datetime.now(timezone.utc)-dt).total_seconds())
-    except Exception: age=float("inf")
-    ttl=_cache_ttl_for_matches(data if isinstance(data,list) else [])
-    return {"cached":True,"count":len(data) if isinstance(data,list) else 0,"updated_at":updated,"age_seconds":int(age) if math.isfinite(age) else None,"ttl_minutes":ttl,"stale":age>ttl*60,"hard_stale":age>STALE_CACHE_MAX_HOURS*3600}
+# ─── Admin ────────────────────────────────────────────────────────────────
+
+@app.post("/api/admin/refresh")
+async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
+    result = await refresh_matches_worker(db)
+    await _invalidate_prediction_cache()
+    return result
 
 
-async def get_match_by_id(db, match_id: str) -> Optional[Dict]:
-    matches = await fetch_all_matches(db)
-    for m in matches:
-        if m.get("id") == match_id:
-            return m
-    return None
+@app.get("/api/admin/activate-admin-simple")
+async def admin_activate_admin_simple(email: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
 
-async def probe_odds_api_io_event(numeric_id: str) -> Dict:
-    """Sonde un evenement odds-api.io par son identifiant numerique.
+    email_norm = email.lower().strip()
+    user = await db.users.find_one({"email": email_norm})
+    if not user:
+        raise HTTPException(status_code=404, detail=f"Aucun compte pour {email_norm}")
 
-    L'appel est volontairement effectue sans filtre de statut afin d'observer
-    la reponse brute et le vrai champ ``status`` renvoye par l'API.
-    """
-    if not ODDS_API_IO_KEY:
-        return {"error": "ODDS_API_IO_KEY absente"}
-
-    all_leagues = (
-        [(lg, "football") for lg in ODDS_API_IO_LEAGUES]
-        + [(lg, "ice-hockey") for lg in ODDS_API_IO_HOCKEY_LEAGUES]
-        + [(lg, "basketball") for lg in ODDS_API_IO_BASKETBALL_LEAGUES]
+    await db.users.update_one(
+        {"email": email_norm},
+        {"$set": {"is_admin": True, "subscription": "elite"}},
     )
-    results: Dict[str, object] = {}
-
-    for league_slug, sport in all_leagues:
-        url = f"{ODDS_API_IO_BASE}/events"
-        params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
-        try:
-            async with httpx.AsyncClient(timeout=15.0) as http:
-                r = await http.get(url, params=params)
-                if r.status_code != 200:
-                    results[league_slug] = f"HTTP {r.status_code}"
-                    continue
-                data = r.json()
-                if not isinstance(data, list):
-                    results[league_slug] = "reponse non-liste"
-                    continue
-                for evt in data:
-                    if str(evt.get("id")) == str(numeric_id):
-                        return {
-                            "found_in_league": league_slug,
-                            "sport": sport,
-                            "raw_event": evt,
-                            "total_events_returned_for_this_league_no_status_filter": len(data),
-                        }
-                results[league_slug] = len(data)
-        except Exception as e:
-            results[league_slug] = f"erreur: {e}"
-
+    updated = await db.users.find_one({"email": email_norm})
     return {
-        "found": False,
-        "detail": "Match non trouve dans aucune ligue suivie, meme sans filtre de statut.",
-        "events_count_per_league_no_status_filter": results,
+        "ok": True,
+        "email": updated.get("email"),
+        "is_admin": updated.get("is_admin"),
+        "subscription": updated.get("subscription"),
     }
 
 
-async def probe_odds_api_io_league_sample(
-    league_slug: str, sport: str = "football"
-) -> Dict:
-    """Retourne un echantillon brut d'une ligue sans filtre de statut."""
-    if not ODDS_API_IO_KEY:
-        return {"error": "ODDS_API_IO_KEY absente"}
+@app.get("/api/admin/test-email-simple")
+async def admin_test_email_simple(to: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not to:
+        raise HTTPException(status_code=400, detail="Parametre 'to' requis")
 
-    url = f"{ODDS_API_IO_BASE}/events"
-    params = {"apiKey": ODDS_API_IO_KEY, "sport": sport, "league": league_slug}
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(url, params=params)
-            if r.status_code != 200:
-                return {"error": f"HTTP {r.status_code}", "body": r.text[:500]}
-            data = r.json()
-            if not isinstance(data, list):
-                return {"error": "reponse non-liste", "raw": data}
-            statuses_seen: Dict[str, int] = {}
-            for evt in data:
-                status = evt.get("status", "(absent)")
-                statuses_seen[status] = statuses_seen.get(status, 0) + 1
-            return {
-                "total_events": len(data),
-                "statuses_seen": statuses_seen,
-                "sample_events": data[:5],
-            }
-    except Exception as e:
-        return {"error": str(e)}
+    sent = await _send_email(
+        to,
+        "Test WinPulse ✅",
+        _email_layout("Email de test", "<p>Si tu vois ceci, l'integration Resend fonctionne correctement.</p>"),
+    )
+    return {"ok": sent, "resend_configured": bool(RESEND_API_KEY)}
 
 
-async def diagnose_sport_key(db, sport_key: str) -> Dict:
-    """Diagnostic complet d'un sport_key de The Odds API.
+@app.get("/api/admin/whoami-simple")
+async def admin_whoami_simple(email: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
 
-    Compare le fetch brut, les filtres de qualite et le cache MongoDB afin de
-    localiser precisement la cause d'un championnat absent du site.
-    """
-    markets = _get_markets_for_sport(sport_key)
-    raw = await _fetch_real_sport(sport_key, markets=markets, regions="eu")
-    now = datetime.now(timezone.utc)
-    after_filters: List[Dict] = []
-    filtered_out_reasons: Dict[str, int] = {}
-
-    for m in raw:
-        if _is_friendly(m):
-            filtered_out_reasons["match_amical"] = filtered_out_reasons.get("match_amical", 0) + 1
-            continue
-        try:
-            ct = datetime.fromisoformat(str(m["commence_time"]).replace("Z", "+00:00"))
-            if ct.tzinfo is None:
-                ct = ct.replace(tzinfo=timezone.utc)
-            if (now - ct) > timedelta(hours=24):
-                filtered_out_reasons["deja_termine_+24h"] = filtered_out_reasons.get("deja_termine_+24h", 0) + 1
-                continue
-            if (ct - now) > timedelta(days=7):
-                filtered_out_reasons["trop_lointain_+7j"] = filtered_out_reasons.get("trop_lointain_+7j", 0) + 1
-                continue
-        except Exception:
-            filtered_out_reasons["date_illisible"] = filtered_out_reasons.get("date_illisible", 0) + 1
-            continue
-        if len(m.get("bookmakers", [])) < 1:
-            filtered_out_reasons["aucun_bookmaker"] = filtered_out_reasons.get("aucun_bookmaker", 0) + 1
-            continue
-        after_filters.append(m)
-
-    cached = await db.odds_cache.find_one({"_id": "all_matches"})
-    cached_data = cached.get("data", []) if cached else []
-    in_final_cache = [m for m in cached_data if m.get("sport_key") == sport_key]
-
-    if len(raw) == 0:
-        diagnostic = "Le match n'existe pas cote The Odds API pour ce sport_key en ce moment."
-    elif len(after_filters) == 0:
-        diagnostic = "Aucun match ne passe les filtres qualite (voir 'elimines_par_filtre')."
-    elif len(in_final_cache) == 0:
-        diagnostic = (
-            "Les matchs passent les filtres mais n'apparaissent pas dans le cache final : "
-            "le cache n'a probablement pas ete regenere depuis le dernier fetch, ou une "
-            "erreur survient pendant _force_fetch_and_cache."
-        )
-    else:
-        diagnostic = "Tout semble en ordre : le match devrait etre visible sur /api/matches."
+    user = await db.users.find_one({"email": email.lower().strip()})
+    if not user:
+        return {"found": False, "email_recherche": email.lower().strip()}
 
     return {
-        "sport_key": sport_key,
-        "1_fetch_brut_the_odds_api": {
-            "count": len(raw),
-            "sample": [
-                {
-                    "id": m.get("id"),
-                    "home": m.get("home_team"),
-                    "away": m.get("away_team"),
-                    "commence_time": m.get("commence_time"),
-                    "num_bookmakers": len(m.get("bookmakers", [])),
-                }
-                for m in raw[:5]
-            ],
-        },
-        "2_apres_filtres_qualite": {
-            "count": len(after_filters),
-            "elimines_par_filtre": filtered_out_reasons,
-        },
-        "3_dans_cache_final_actuel": {
+        "found": True,
+        "id": user.get("id"),
+        "email": user.get("email"),
+        "is_admin": user.get("is_admin", False),
+        "subscription": user.get("subscription", "free"),
+        "created_at": user.get("created_at"),
+    }
+
+
+@app.get("/api/admin/refresh-simple")
+async def admin_refresh_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await _full_refresh_and_track()
+    return result
+
+
+@app.get("/api/admin/refresh-real-stats-simple")
+async def admin_refresh_real_stats_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    matches = await fetch_all_matches(db)
+    result = await refresh_real_stats_cache(db, matches)
+    return result
+
+
+@app.get("/api/admin/probe-oaio-odds-simple")
+async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not event_id:
+        raise HTTPException(status_code=400, detail="Parametre 'event_id' requis")
+    from odds_service import _fetch_odds_api_io_odds
+    result = await _fetch_odds_api_io_odds(event_id)
+    return {
+        "event_id": event_id,
+        "raw_odds_response": result,
+        "a_des_cotes_bet365": bool(result and result.get("bookmakers")),
+    }
+
+
+@app.get("/api/admin/debug-config-simple")
+async def admin_debug_config_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    return {
+        "odds_api_io_leagues_actuellement_chargees": ODDS_API_IO_LEAGUES,
+        "contient_playoff_round_champions_league": "international-clubs-uefa-champions-league-playoff-round" in ODDS_API_IO_LEAGUES,
+        "total_ligues": len(ODDS_API_IO_LEAGUES),
+    }
+
+
+@app.get("/api/admin/probe-oaio-event-simple")
+async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not match_id:
+        raise HTTPException(status_code=400, detail="Parametre 'match_id' requis (id numerique, sans 'oaio-')")
+    result = await probe_odds_api_io_event(match_id)
+    return result
+
+
+@app.get("/api/admin/probe-oaio-league-simple")
+async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sport: str = "football", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    result = await probe_odds_api_io_league_sample(league, sport)
+    return result
+
+
+@app.get("/api/admin/diagnose-labels-simple")
+async def admin_diagnose_labels_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    all_safe = await db.predictions_history.find({"label": "safe"}).to_list(length=20000)
+
+    by_result: Dict[str, int] = {"won": 0, "lost": 0, "pending": 0, "autre": 0}
+    resolved_by_version: Dict[str, int] = {}
+    resolved_official_true = 0
+    resolved_official_false = 0
+    resolved_samples = []
+    pending_samples = []
+
+    for d in all_safe:
+        r = d.get("result", "autre")
+        by_result[r] = by_result.get(r, 0) + 1
+        if r in ("won", "lost"):
+            v = d.get("model_version", "inconnu")
+            resolved_by_version[v] = resolved_by_version.get(v, 0) + 1
+            if d.get("official_track_eligible"):
+                resolved_official_true += 1
+            else:
+                resolved_official_false += 1
+            if len(resolved_samples) < 8:
+                resolved_samples.append({
+                    "match": f"{d.get('home_team')} vs {d.get('away_team')}",
+                    "pick": d.get("pick"),
+                    "result": r,
+                    "model_version": d.get("model_version"),
+                    "official_track_eligible": d.get("official_track_eligible"),
+                    "confidence": d.get("confidence"),
+                    "created_at": d.get("created_at"),
+                })
+        elif r == "pending" and len(pending_samples) < 15:
+            pending_samples.append({
+                "match": f"{d.get('home_team')} vs {d.get('away_team')}",
+                "pick": d.get("pick"),
+                "market": d.get("market"),
+                "is_combo": d.get("is_combo"),
+                "commence_time": d.get("commence_time"),
+                "created_at": d.get("created_at"),
+                "match_id": d.get("match_id"),
+            })
+
+    return {
+        "current_model_version": MODEL_VERSION,
+        "total_label_safe_all_time": len(all_safe),
+        "by_result": by_result,
+        "resolved_by_model_version": resolved_by_version,
+        "resolved_official_track_eligible_true": resolved_official_true,
+        "resolved_official_track_eligible_false": resolved_official_false,
+        "resolved_samples": resolved_samples,
+        "pending_samples": pending_samples,
+        "explication": (
+            "Si 'resolved_by_model_version' contient une version differente "
+            "de 'current_model_version', ces picks sont exclus du mode "
+            "transition du Track Record (qui ne compte que la version "
+            "actuelle). Si 'resolved_official_track_eligible_false' est "
+            "eleve alors qu'on n'est PAS en mode transition (20+ picks "
+            "officiels), ces picks sont exclus car ils ne remplissent pas "
+            "les criteres stricts (edge>=2%, 5+ bookmakers, cote 1.20-2.20)."
+        ),
+    }
+
+
+@app.get("/api/admin/backfill-labels-simple")
+async def admin_backfill_labels_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+
+    docs = await db.predictions_history.find({
+        "$or": [{"label": {"$exists": False}}, {"label": None}]
+    }).to_list(length=20000)
+
+    updated = 0
+    skipped_no_confidence = 0
+    for d in docs:
+        conf = d.get("confidence")
+        if conf is None:
+            skipped_no_confidence += 1
+            continue
+        try:
+            conf = float(conf)
+        except (TypeError, ValueError):
+            skipped_no_confidence += 1
+            continue
+        label = "safe" if conf >= SAFE_THRESHOLD else ("value" if conf >= VALUE_THRESHOLD else "risky")
+        await db.predictions_history.update_one(
+            {"signature": d["signature"]},
+            {"$set": {"label": label}},
+        )
+        updated += 1
+
+    return {
+        "ok": True,
+        "checked": len(docs),
+        "updated": updated,
+        "skipped_no_confidence": skipped_no_confidence,
+    }
+
+
+@app.get("/api/admin/diagnose-sport-simple")
+async def admin_diagnose_sport_simple(sport_key: str = "", key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    if not sport_key:
+        raise HTTPException(status_code=400, detail="Parametre 'sport_key' requis")
+    result = await diagnose_sport_key(db, sport_key)
+    return result
+
+
+@app.get("/api/admin/update-closing-odds-simple")
+async def admin_update_closing_odds_simple(key: str = ""):
+    secret = os.environ.get("REFRESH_SECRET", "")
+    if not secret or key != secret:
+        raise HTTPException(status_code=403, detail="Cle invalide")
+    matches = await fetch_all_matches(db)
+    result = await _update_closing_odds(matches)
+    return result
+
+
+# ─── Suivi reel des predictions (backtest continu) ──────────────────────────
+
+def _pick_signature(match_id: str, pick: str) -> str:
+    import hashlib
+    return hashlib.md5(f"{match_id}::{pick}".encode()).hexdigest()
+
+
+async def _save_predictions_to_history(matches: List[Dict]):
+    try:
+        real_stats_map = await get_real_stats_map(db, matches)
+        predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        for p in predictions:
+            if not p.get("pick") or not p.get("match_id"):
+                continue
+            sig = _pick_signature(p["match_id"], p["pick"])
+            existing = await db.predictions_history.find_one({"signature": sig})
+            if existing:
+                continue
+
+            await db.predictions_history.insert_one({
+                "signature": sig,
+                "match_id": p["match_id"],
+                "home_team": p.get("home_team"),
+                "away_team": p.get("away_team"),
+                "sport_title": p.get("sport_title"),
+                "commence_time": p.get("commence_time"),
+                "pick": p["pick"],
+                "market": p.get("market"),
+                "pick_odds": p.get("pick_odds"),
+                "confidence": p.get("confidence"),
+                "label": p.get("label"),
+                "model_probability": p.get("model_probability"),
+                "estimated_win_probability": p.get("estimated_win_probability"),
+                "wp_score": p.get("wp_score"),
+                "selection_score": p.get("selection_score"),
+                "stability_score": p.get("stability_score"),
+                "dominance_score": p.get("dominance_score"),
+                "num_books": p.get("num_books"),
+                "edge": p.get("edge"),
+                "model_version": p.get("model_version", MODEL_VERSION),
+                "is_combo": p.get("is_combo", False),
+                "official_track_eligible": bool(p.get("official_track_eligible", False)),
+                "result": "pending",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+    except Exception:
+        pass
+
+
+def _find_current_h2h_odds(match: Dict, pick_text: str, home: str, away: str) -> Optional[float]:
+    pick_l = (pick_text or "").lower()
+    if "nul" in pick_l or pick_l.strip() == "match nul":
+        target_name = "Draw"
+    elif home.lower() in pick_l:
+        target_name = home
+    elif away.lower() in pick_l:
+        target_name = away
+    else:
+        return None
+
+    best_odds = None
+    for bm in match.get("bookmakers", []) or []:
+        for mk in bm.get("markets", []) or []:
+            if mk.get("key") != "h2h":
+                continue
+            for outcome in mk.get("outcomes", []) or []:
+                if outcome.get("name") == target_name:
+                    price = outcome.get("price")
+                    if price and (best_odds is None or price > best_odds):
+                        best_odds = float(price)
+    return best_odds
+
+
+async def _update_closing_odds(matches: List[Dict]) -> Dict:
+    now = datetime.now(timezone.utc)
+    match_by_id = {m.get("id"): m for m in matches}
+
+    pending = await db.predictions_history.find({
+        "result": "pending",
+        "closing_odds": {"$exists": False},
+        "market": "h2h",
+    }).to_list(length=1000)
+
+    updated = 0
+    for pred in pending:
+        try:
+            ct = _parse_iso(pred.get("commence_time"))
+            if not ct or ct > now:
+                continue
+
+            match = match_by_id.get(pred.get("match_id"))
+            if not match:
+                continue
+
+            closing_odds = _find_current_h2h_odds(
+                match, pred.get("pick", ""),
+                pred.get("home_team", ""), pred.get("away_team", "")
+            )
+            if closing_odds is None:
+                continue
+
+            opening_odds = pred.get("pick_odds") or closing_odds
+            clv_percent = round(((closing_odds - opening_odds) / opening_odds) * 100, 2) if opening_odds else 0.0
+
+            await db.predictions_history.update_one(
+                {"signature": pred["signature"]},
+                {"$set": {
+                    "closing_odds": closing_odds,
+                    "clv_percent": clv_percent,
+                    "clv_computed_at": now.isoformat(),
+                }},
+            )
+            updated += 1
+        except Exception:
+            continue
+
+    return {"ok": True, "checked": len(pending), "updated": updated}
+
+
+async def _reconcile_predictions_with_scores() -> Dict:
+    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=1000)
+    if not pending:
+        return {"ok": True, "checked": 0, "updated": 0}
+
+    scores = await fetch_all_scores(db)
+    scores_by_match = {s.get("id"): s for s in scores if s.get("id")}
+
+    oaio_scores_map = await fetch_odds_api_io_scores_map()
+
+    updated = 0
+    for pred in pending:
+        match_id = pred.get("match_id", "")
+
+        try:
+            if match_id.startswith("oaio-"):
+                numeric_id = match_id[len("oaio-"):]
+                entry = oaio_scores_map.get(numeric_id)
+                if not entry:
+                    continue
+                home_score = entry["home_score"]
+                away_score = entry["away_score"]
+            else:
+                score_entry = scores_by_match.get(match_id)
+                if not score_entry or not score_entry.get("completed"):
+                    continue
+                score_data = score_entry.get("scores") or []
+                home_score = away_score = None
+                for s in score_data:
+                    if s.get("name") == pred.get("home_team"):
+                        home_score = int(s.get("score", 0))
+                    elif s.get("name") == pred.get("away_team"):
+                        away_score = int(s.get("score", 0))
+                if home_score is None or away_score is None:
+                    continue
+
+            result = _evaluate_pick_result(pred, home_score, away_score)
+            if result:
+                await db.predictions_history.update_one(
+                    {"signature": pred["signature"]},
+                    {"$set": {
+                        "result": result,
+                        "final_score": f"{home_score}-{away_score}",
+                        "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                updated += 1
+        except Exception:
+            continue
+
+    return {"ok": True, "checked": len(pending), "updated": updated}
+
+
+def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
+    import re
+
+    pick = (pred.get("pick") or "").lower()
+    market = pred.get("market", "")
+    home = (pred.get("home_team") or "")
+    away = (pred.get("away_team") or "")
+    total_goals = home_score + away_score
+
+    if market == "h2h":
+        if pick == home.lower():
+            return "won" if home_score > away_score else "lost"
+        if pick == away.lower():
+            return "won" if away_score > home_score else "lost"
+        if "nul" in pick or pick == "draw":
+            return "won" if home_score == away_score else "lost"
+
+    if market in ("totals", "syn_over_25", "syn_over_15") or "plus de" in pick or "moins de" in pick:
+        match_num = re.search(r"(\d+(?:\.\d+)?)", pick)
+        if match_num:
+            threshold = float(match_num.group(1))
+            if "plus de" in pick:
+                return "won" if total_goals > threshold else "lost"
+            if "moins de" in pick:
+                return "won" if total_goals < threshold else "lost"
+
+    if market in ("btts", "syn_btts"):
+        both_scored = home_score > 0 and away_score > 0
+        if "oui" in pick:
+            return "won" if both_scored else "lost"
+        if "non" in pick:
+            return "won" if not both_scored else "lost"
+
+    if market in ("double_chance", "syn_double_chance"):
+        if "victoire domicile ou nul" in pick or "1x" in pick:
+            return "won" if home_score >= away_score else "lost"
+        if "nul ou victoire extérieure" in pick or "x2" in pick:
+            return "won" if away_score >= home_score else "lost"
+        if "victoire domicile ou extérieure" in pick or pick.strip() == "12" or " 12 " in f" {pick} ":
+            return "won" if home_score != away_score else "lost"
+
+    if market in ("draw_no_bet", "syn_draw_no_bet"):
+        if home_score == away_score:
+            return None
+        if home.lower() in pick:
+            return "won" if home_score > away_score else "lost"
+        if away.lower() in pick:
+            return "won" if away_score > home_score else "lost"
+
+    if market in ("syn_clean_sheet_home",):
+        return "won" if away_score == 0 else "lost"
+
+    if market in ("syn_clean_sheet_away",):
+        return "won" if home_score == 0 else "lost"
+
+    return None
+
+
+# ─── Workers automatiques : refresh des matchs + reconciliation ───────────────
+
+scheduler = AsyncIOScheduler(timezone="UTC")
+
+
+async def _full_refresh_and_track():
+    matches = await refresh_matches_worker(db)
+    all_matches = await fetch_all_matches(db)
+    try:
+        await refresh_real_stats_cache(db, all_matches)
+    except Exception:
+        pass
+    await _save_predictions_to_history(all_matches)
+    try:
+        await _update_closing_odds(all_matches)
+    except Exception:
+        pass
+    await _reconcile_predictions_with_scores()
+    await _invalidate_prediction_cache()
+    return matches
+
+
+@app.on_event("startup")
+async def startup_event():
+    # Les competitions et cotes peuvent apparaitre plusieurs fois dans la
+    # journee. Un refresh toutes les heures evite qu un championnat nouvellement
+    # cote reste absent pendant plusieurs heures. La route utilisateur ne fait
+    # toujours aucun appel API direct.
+    refresh_hours = int(os.environ.get("ODDS_AUTO_REFRESH_HOURS", "1"))
+    scheduler.add_job(lambda: _full_refresh_and_track(), "interval", hours=max(1, refresh_hours), id="odds_full_refresh", replace_existing=True)
+    scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
+    scheduler.add_job(lambda: _sweep_expired_subscriptions(), "cron", minute=30)
+    scheduler.start()
+
+    existing = await db.odds_cache.find_one({"_id": "all_matches"})
+    should_refresh = not existing
+    if existing:
+        try:
+            cache_status = await get_odds_cache_status(db)
+            should_refresh = bool(cache_status.get("stale") or cache_status.get("hard_stale"))
+        except Exception:
+            # En cas de doute après un déploiement, un cache présent reste
+            # préférable à une requête réseau automatique non maîtrisée.
+            should_refresh = False
+    if should_refresh:
+        await _full_refresh_and_track()
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    scheduler.shutdown()
+
