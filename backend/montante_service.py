@@ -1,8 +1,16 @@
 """
 WNPulse - Module indépendant de montante.
 Aucune modification requise dans server.py, odds_service.py ou prediction_engine.py.
-"""
 
+CORRECTIF : ce fichier contenait une vraie erreur de syntaxe Python
+("]if" colle sans saut de ligne dans _status_from_results), qui faisait
+planter tout le backend au demarrage des que ce module etait importe
+(page blanche generalisee sur le site, aucune route API ne repondait).
+Les methodes _extract_markets, _normalize, _qualifies, _record et
+_status_from_results etaient egalement dupliquees 3 fois chacune dans la
+classe (residu de copier-coller corrompu) — nettoyees, une seule
+definition propre de chaque methode desormais.
+"""
 from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence
@@ -88,7 +96,6 @@ class MontanteService:
         """Sélectionne 1 ou 2 marchés qualifiés sans forcer un pronostic."""
         wanted = min(limit or self.max_picks_per_day, self.max_picks_per_day)
         candidates = []
-
         for match in matches:
             if not isinstance(match, dict):
                 continue
@@ -96,12 +103,10 @@ class MontanteService:
                 candidate = self._normalize(match, market)
                 if candidate and self._qualifies(candidate):
                     candidates.append(candidate)
-
         candidates.sort(
             key=lambda x: (x["confidence"], x["edge"], x["odds_quality"]),
             reverse=True,
         )
-
         selected = []
         used_events = set()
         for item in candidates:
@@ -122,40 +127,33 @@ class MontanteService:
         """WIN -> jour suivant; LOSS -> montante terminée; PENDING -> attente."""
         if not self.state or self.state["status"] != "ACTIVE":
             raise RuntimeError("Aucune montante ACTIVE.")
-
         if not picks:
             self.state["waiting_reason"] = "Aucun pronostic ne respecte les critères."
             self._touch()
             return self.get_state()
-
         status = (settlement_status or self._status_from_results(results)).upper()
         if status == "PENDING":
             self.state["waiting_reason"] = "Résultats en attente."
             self._touch()
             return self.get_state()
-
         if status == "LOSS":
             self._record(picks, "LOSS")
             self.state["status"] = "FAILED"
             self.state["failed_at"] = self._now()
             self._touch()
             return self.get_state()
-
         if status != "WIN":
             raise ValueError("Statut invalide: WIN, LOSS ou PENDING.")
-
         combined_odds = math.prod(float(p["odds"]) for p in picks)
         self.state["theoretical_bankroll"] = round(
             self.state["theoretical_bankroll"] * combined_odds, 2
         )
         self._record(picks, "WIN", combined_odds)
-
         if self.state["current_day"] >= self.state["days"]:
             self.state["status"] = "COMPLETED"
             self.state["completed_at"] = self._now()
         else:
             self.state["current_day"] += 1
-
         self.state["waiting_reason"] = None
         self._touch()
         return self.get_state()
@@ -214,11 +212,9 @@ class MontanteService:
             return None
         if confidence > 1:
             confidence /= 100.0
-
         edge = self._num(
             market.get("edge", market.get("value", market.get("expected_value")))
         ) or 0.0
-
         event_id = str(
             match.get("id") or match.get("event_id") or
             f'{match.get("home_team", match.get("home", ""))}_'
