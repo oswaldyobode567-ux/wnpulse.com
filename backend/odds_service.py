@@ -175,6 +175,7 @@ REAL_SPORT_KEYS = [
     "soccer_portugal_primeira_liga",
     "soccer_turkey_super_league",
     "soccer_belgium_first_div",
+    "soccer_efl_champ",
     "soccer_scotland_premiership",
     "soccer_greece_super_league",
     # Ligues actives été (juillet-août)
@@ -409,7 +410,10 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: str =
         "markets": markets,
         "oddsFormat": "decimal",
         "dateFormat": "iso",
-        "commenceTimeFrom": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        # IMPORTANT : ne pas commencer a NOW. L'endpoint /odds renvoie aussi
+        # les matchs LIVE, mais un filtre commenceTimeFrom=NOW les exclut
+        # puisque leur heure de coup d'envoi est deja passee.
+        "commenceTimeFrom": (datetime.now(timezone.utc) - timedelta(hours=int(os.environ.get("ODDS_LIVE_LOOKBACK_HOURS", "4")))).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "commenceTimeTo": (datetime.now(timezone.utc) + timedelta(days=int(os.environ.get("ODDS_FETCH_HORIZON_DAYS", "7")))).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     try:
@@ -460,10 +464,13 @@ async def _discover_active_sport_keys() -> List[str]:
                 return []
             keys = []
             for sport in data:
-                if not isinstance(sport, dict) or not sport.get("active"):
+                if not isinstance(sport, dict):
                     continue
+                # /sports retourne par défaut les sports de saison (in-season).
+                # Ne pas exiger active=true ici : certaines competitions peuvent
+                # etre presentes dans le catalogue alors que le flag active est
+                # temporairement incoherent avec la disponibilite des rencontres.
                 key = str(sport.get("key") or "").strip()
-                # Nous ne voulons pas aspirer des sports non gérés par le site.
                 if key.startswith(("soccer_", "basketball_", "tennis_", "icehockey_", "baseball_", "mma_")):
                     keys.append(key)
             return sorted(set(keys))
@@ -1213,36 +1220,14 @@ async def fetch_all_scores(db) -> List[Dict]:
                 pass
 
     scores: List[Dict] = []
-    active_sports = [
-        # Football — competitions realistes en cours en juillet
-        "soccer_uefa_champs_league",
-        "soccer_uefa_europa_league",
-        "soccer_uefa_europa_conference_league",
-        "soccer_africa_caf_champions_league",
-        "soccer_africa_africa_cup_of_nations",
-        "soccer_world_wc_qualification_africa",
-        "soccer_world_wc_qualification_concacaf",
-        "soccer_conmebol_copa_libertadores",
-        "soccer_norway_eliteserien",
-        "soccer_sweden_allsvenskan",
-        "soccer_finland_veikkausliiga",
-        "soccer_denmark_superliga",
-        "soccer_usa_mls",
-        "soccer_brazil_campeonato",
-        "soccer_brazil_serie_b",
-        "soccer_argentina_primera_division",
-        "soccer_japan_j_league",
-        "soccer_china_superleague",
-        "soccer_mexico_ligamx",
-        # Basketball — NBA hors saison en juillet, Summer League active
-        "basketball_nba_summer_league",
-        # Baseball — seul sport majeur US actif en juillet
-        "baseball_mlb",
-        # Hockey — NHL hors saison, garde par securite si reprise anticipee
-        "icehockey_nhl",
-        # MMA — actif toute l'annee
-        "mma_mixed_martial_arts",
-    ]
+    # Découverte dynamique des competitions de saison. On conserve aussi les
+    # clés historiques pour ne jamais perdre une competition connue du site.
+    # Cela corrige notamment Championship/Belgian First Div qui etaient absents
+    # du flux /api/scores car la liste ci-dessous etait figée sur les competitions
+    # de juillet.
+    discovered = await _discover_active_sport_keys()
+    active_sports = list(dict.fromkeys(REAL_SPORT_KEYS + discovered))
+    logger.info("Scores: %s sports/competitions interrogés", len(active_sports))
 
     async def _scores_one(sk):
         try: return await fetch_scores_for_sport(sk)
@@ -1429,9 +1414,3 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
             "elimines_par_filtre": filtered_out_reasons,
         },
         "3_dans_cache_final_actuel": {
-            "count": len(in_final_cache),
-            "cache_updated_at": cached.get("updated_at") if cached else None,
-            "cache_total_matches_tous_sports": len(cached_data),
-        },
-        "diagnostic": diagnostic,
-    }
