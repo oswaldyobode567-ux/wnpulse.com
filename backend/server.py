@@ -2456,7 +2456,7 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     return None
 
 
-# ─── Worker planifie (06h00 et 13h00 WAT = UTC+1) ───────────────────────────
+# ─── Workers automatiques : refresh des matchs + reconciliation ───────────────
 
 scheduler = AsyncIOScheduler(timezone="UTC")
 
@@ -2480,7 +2480,12 @@ async def _full_refresh_and_track():
 
 @app.on_event("startup")
 async def startup_event():
-    scheduler.add_job(lambda: _full_refresh_and_track(), "cron", hour="*/4", minute=0)
+    # Les competitions et cotes peuvent apparaitre plusieurs fois dans la
+    # journee. Un refresh toutes les heures evite qu un championnat nouvellement
+    # cote reste absent pendant plusieurs heures. La route utilisateur ne fait
+    # toujours aucun appel API direct.
+    refresh_hours = int(os.environ.get("ODDS_AUTO_REFRESH_HOURS", "1"))
+    scheduler.add_job(lambda: _full_refresh_and_track(), "interval", hours=max(1, refresh_hours), id="odds_full_refresh", replace_existing=True)
     scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
     scheduler.add_job(lambda: _sweep_expired_subscriptions(), "cron", minute=30)
     scheduler.start()
