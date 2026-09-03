@@ -5,7 +5,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Activity, Trophy, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap, Info } from "lucide-react";
+import { Activity, Trophy, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap, Info, CircleDot } from "lucide-react";
 import dayjs from "dayjs";
 
 const LABEL_META = {
@@ -18,12 +18,37 @@ export default function TrackRecordPage() {
   const [data, setData] = useState(null);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [sport, setSport] = useState("all");
+
   useEffect(() => {
+    let mounted = true;
     setLoading(true);
-    api.get(`/track-record?page=${page}&per_page=20`)
-      .then((r) => setData(r.data))
-      .finally(() => setLoading(false));
-  }, [page]);
+    setError("");
+
+    const sportParam = sport !== "all" ? `&sport=${encodeURIComponent(sport)}` : "";
+
+    api.get(`/track-record?page=${page}&per_page=20${sportParam}`)
+      .then((r) => {
+        if (mounted) setData(r.data);
+      })
+      .catch((err) => {
+        if (mounted) {
+          setData(null);
+          setError(err?.response?.data?.detail || "Impossible de charger le Track Record.");
+        }
+      })
+      .finally(() => {
+        if (mounted) setLoading(false);
+      });
+
+    return () => { mounted = false; };
+  }, [page, sport]);
+
+  const changeSport = (value) => {
+    setSport(value);
+    setPage(1);
+  };
   return (
     <div className="min-h-screen bg-neutral-50">
       <header className="sticky top-0 z-50 bg-white/85 backdrop-blur-xl border-b border-neutral-200">
@@ -61,11 +86,23 @@ export default function TrackRecordPage() {
             </p>
           </div>
         </div>
-        {loading || !data ? (
+        {loading ? (
           <div className="space-y-6">
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4">{[1,2,3].map(i => <Skeleton key={i} className="h-28" />)}</div>
             <Skeleton className="h-96" />
           </div>
+        ) : error ? (
+          <Card className="p-8 text-center border-rose-200 bg-rose-50">
+            <div className="font-heading font-bold text-rose-800 mb-2">Erreur de chargement</div>
+            <p className="text-sm text-rose-700">{error}</p>
+            <Button className="mt-4" variant="outline" onClick={() => window.location.reload()}>
+              Réessayer
+            </Button>
+          </Card>
+        ) : !data ? (
+          <Card className="p-8 text-center">
+            <p className="text-slate-500">Aucun résultat disponible.</p>
+          </Card>
         ) : (
           <>
             {/* Bandeau mode transition — explique pourquoi l'ensemble complet est affiche */}
@@ -88,6 +125,62 @@ export default function TrackRecordPage() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {/* Filtres par sport.
+                Le backend doit renvoyer `sport` sur chaque résultat et,
+                idéalement, `stats.by_sport`. Aucun sport n'est inventé côté frontend. */}
+            <Card className="bg-white border-neutral-200 p-4 mb-6" data-testid="sport-filters">
+              <div className="flex items-center gap-2 mb-3">
+                <CircleDot className="h-4 w-4 text-orange-600" />
+                <h2 className="font-heading font-bold text-slate-900">Filtrer par sport</h2>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  ["all", "Tous"],
+                  ["football", "⚽ Football"],
+                  ["basketball", "🏀 Basketball"],
+                  ["tennis", "🎾 Tennis"],
+                  ["hockey", "🏒 Hockey"],
+                  ["baseball", "⚾ Baseball"],
+                  ["mma", "🥊 MMA"],
+                ].map(([value, label]) => (
+                  <Button
+                    key={value}
+                    type="button"
+                    size="sm"
+                    variant={sport === value ? "default" : "outline"}
+                    onClick={() => changeSport(value)}
+                    className={sport === value ? "wp-gradient-warm text-white border-0" : ""}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </Card>
+
+            {data.stats.by_sport && (
+              <Card className="bg-white border-neutral-200 p-5 mb-6" data-testid="by-sport-stats">
+                <h2 className="font-heading font-bold text-slate-900 mb-4">Résultats par sport</h2>
+                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+                  {Object.entries(data.stats.by_sport).map(([key, d]) => (
+                    <button
+                      key={key}
+                      type="button"
+                      onClick={() => changeSport(key)}
+                      className={`text-left rounded-xl border p-3 transition ${
+                        sport === key ? "border-orange-400 ring-2 ring-orange-100" : "border-neutral-200 hover:border-neutral-300"
+                      }`}
+                    >
+                      <div className="text-xs font-bold uppercase text-slate-500">{formatSport(key)}</div>
+                      <div className="font-heading text-2xl font-black text-slate-900 mt-1">
+                        {d?.win_rate != null ? `${d.win_rate}%` : "—"}
+                      </div>
+                      <div className="text-xs text-slate-500">{d?.wins ?? 0}/{d?.total ?? 0} picks</div>
+                    </button>
+                  ))}
+                </div>
+              </Card>
             )}
 
             {/* KPIs globaux */}
@@ -136,6 +229,7 @@ export default function TrackRecordPage() {
                   <thead className="bg-neutral-50 text-xs uppercase tracking-wider text-slate-500">
                     <tr>
                       <th className="px-4 py-2.5 text-left">Date</th>
+                      <th className="px-4 py-2.5 text-left">Sport</th>
                       <th className="px-4 py-2.5 text-left">Compétition</th>
                       <th className="px-4 py-2.5 text-left">Match</th>
                       <th className="px-4 py-2.5 text-left">Pick</th>
@@ -150,6 +244,9 @@ export default function TrackRecordPage() {
                       return (
                         <tr key={r.id} className="hover:bg-neutral-50">
                           <td className="px-4 py-3 text-slate-500 font-mono text-xs">{dayjs(r.date).format("DD/MM")}</td>
+                          <td className="px-4 py-3 text-slate-700 text-xs font-semibold">
+                            {formatSport(r.sport)}
+                          </td>
                           <td className="px-4 py-3 text-slate-700 text-xs">{r.league}</td>
                           <td className="px-4 py-3 font-medium text-slate-900 text-xs">{r.match}</td>
                           <td className="px-4 py-3 font-bold text-orange-600 text-xs">{r.pick}</td>
@@ -194,6 +291,20 @@ export default function TrackRecordPage() {
     </div>
   );
 }
+function formatSport(value) {
+  const key = String(value || "").toLowerCase().trim();
+  const labels = {
+    football: "⚽ Football",
+    soccer: "⚽ Football",
+    basketball: "🏀 Basketball",
+    tennis: "🎾 Tennis",
+    hockey: "🏒 Hockey",
+    baseball: "⚾ Baseball",
+    mma: "🥊 MMA",
+  };
+  return labels[key] || (value ? String(value) : "—");
+}
+
 function Kpi({ icon: Icon, label, value, sub, accent, mono }) {
   const cls = { emerald: "bg-emerald-50 text-emerald-700 border-emerald-200", rose: "bg-rose-50 text-rose-700 border-rose-200", orange: "bg-orange-50 text-orange-700 border-orange-200", amber: "bg-amber-50 text-amber-700 border-amber-200" }[accent];
   return (
