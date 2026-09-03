@@ -9,7 +9,6 @@ import httpx
 import uuid
 import statistics
 from datetime import datetime, timezone, timedelta
-from zoneinfo import ZoneInfo
 from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -1134,14 +1133,6 @@ MONTANTE_MAX_PICKS = 2
 MONTANTE_MIN_CONFIDENCE = 0.70
 MONTANTE_MIN_ODDS = 1.20
 MONTANTE_MAX_ODDS = 1.50
-# Fuseau du site pour definir la journee de la Montante.
-# Par defaut : Afrique de l'Ouest (UTC+1). Peut etre surcharge par
-# MONTANTE_TIMEZONE, par exemple Europe/Paris.
-MONTANTE_TIMEZONE = os.environ.get("MONTANTE_TIMEZONE", "Africa/Porto-Novo")
-try:
-    MONTANTE_TZ = ZoneInfo(MONTANTE_TIMEZONE)
-except Exception:
-    MONTANTE_TZ = timezone(timedelta(hours=1))
 
 montante_selector = MontanteService(
     days=MONTANTE_DEFAULT_DAYS,
@@ -1240,75 +1231,34 @@ async def _montante_reconcile(state: Dict) -> Dict:
 
 
 async def _montante_prepare_next_day(state: Dict) -> Dict:
-    """Construit les picks du jour a partir des pronostics reels.
-
-    Important : on utilise le fuseau du site, pas UTC, afin de ne pas
-    perdre les rencontres de la journee autour de minuit.
-    Aucun pick n'est invente : s'il n'y a pas de candidat qualifie,
-    la Montante reste en attente et sera re-evaluee au prochain refresh.
-    """
     if state.get("status") != "ACTIVE" or state.get("current_picks"):
         return state
-
     matches = await fetch_all_matches(db)
-    if not matches:
-        state["waiting_reason"] = "Aucun match disponible dans le cache des cotes."
-        state["updated_at"] = datetime.now(timezone.utc).isoformat()
-        await _montante_save(state)
-        return state
-
-    try:
-        real_stats_map = await get_real_stats_map(db, matches)
-    except Exception:
-        real_stats_map = {}
-
+    real_stats_map = await get_real_stats_map(db, matches)
     predictions = analyze_all(matches, real_stats_map=real_stats_map)
     candidates = []
-    now_utc = datetime.now(timezone.utc)
-    today_local = now_utc.astimezone(MONTANTE_TZ).date()
-
+    now = datetime.now(timezone.utc)
+    current_day = now.date()
     for p in predictions:
-        if not isinstance(p, dict) or not p.get("pick"):
-            continue
-
-        ct = p.get("commence_time") or p.get("start_time")
-        if not ct:
-            continue
+        ct = p.get("commence_time")
         try:
             dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            dt_utc = dt.astimezone(timezone.utc)
         except Exception:
             continue
-
-        # Journee locale du site + matchs pas encore termines.
-        if dt_utc.astimezone(MONTANTE_TZ).date() != today_local:
+        # Uniquement les matchs encore jouables du jour ou a venir.
+        if dt.date() != current_day:
             continue
-        if dt_utc < now_utc - timedelta(minutes=15):
+        if dt < now - timedelta(minutes=15):
             continue
-
-        # Une cote reelle est indispensable pour une Montante.
-        odds = p.get("pick_odds", p.get("odds", p.get("odd")))
-        try:
-            if odds is None or float(odds) <= 1.0:
-                continue
-        except (TypeError, ValueError):
+        if not p.get("pick"):
             continue
-
         candidates.append(p)
 
-    selected = montante_selector.select_daily_picks(
-        candidates, limit=MONTANTE_MAX_PICKS
-    )
-
+    selected = montante_selector.select_daily_picks(candidates, limit=MONTANTE_MAX_PICKS)
     if not selected:
-        state["current_picks"] = []
-        state["waiting_reason"] = (
-            "Aucun pick ne respecte actuellement les criteres de securite "
-            "(confiance >= 70 %, cote 1.20-1.50). La selection sera "
-            "reevaluee automatiquement au prochain refresh."
-        )
+        state["waiting_reason"] = "Aucun pick ne respecte actuellement les criteres de la montante (confiance >= 70%, cote 1.20-1.50)."
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         await _montante_save(state)
         return state
@@ -2449,79 +2399,58 @@ async def _reconcile_predictions_with_scores() -> Dict:
 
 
 def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
-    """Evalue les principaux marches utilises par le moteur.
-
-    Retourne won/lost, ou None lorsque le marche ne peut pas etre determine
-    avec les seuls scores finaux disponibles.
-    """
     import re
 
-    pick = str(pred.get("pick") or "").lower().strip()
-    market = str(pred.get("market") or "").lower().strip()
-    home = str(pred.get("home_team") or "").lower().strip()
-    away = str(pred.get("away_team") or "").lower().strip()
+    pick = (pred.get("pick") or "").lower()
+    market = pred.get("market", "")
+    home = (pred.get("home_team") or "")
+    away = (pred.get("away_team") or "")
     total_goals = home_score + away_score
 
-    # 1X2 : contrairement a l'ancien code, un pick equipe ne gagne pas
-    # simplement parce que le match n'est pas nul.
     if market == "h2h":
-        if "nul" in pick or "draw" in pick or "match nul" in pick:
-            return "won" if home_score == away_score else "lost"
-        if home and home in pick:
+        if pick == home.lower():
             return "won" if home_score > away_score else "lost"
-        if away and away in pick:
+        if pick == away.lower():
             return "won" if away_score > home_score else "lost"
-        return None
+        if "nul" in pick or pick == "draw":
+            return "won" if home_score == away_score else "lost"
 
-    # Double chance / variantes textuelles.
-    if market in ("double_chance", "double-chance", "dc"):
-        is_home = home and home in pick
-        is_away = away and away in pick
-        is_draw = "nul" in pick or "draw" in pick or "x" in pick
-        if is_home and is_away:
-            return "won" if home_score != away_score else "lost"
-        if is_home and is_draw:
+    if market in ("totals", "syn_over_25", "syn_over_15") or "plus de" in pick or "moins de" in pick:
+        match_num = re.search(r"(\d+(?:\.\d+)?)", pick)
+        if match_num:
+            threshold = float(match_num.group(1))
+            if "plus de" in pick:
+                return "won" if total_goals > threshold else "lost"
+            if "moins de" in pick:
+                return "won" if total_goals < threshold else "lost"
+
+    if market in ("btts", "syn_btts"):
+        both_scored = home_score > 0 and away_score > 0
+        if "oui" in pick:
+            return "won" if both_scored else "lost"
+        if "non" in pick:
+            return "won" if not both_scored else "lost"
+
+    if market in ("double_chance", "syn_double_chance"):
+        if "victoire domicile ou nul" in pick or "1x" in pick:
             return "won" if home_score >= away_score else "lost"
-        if is_away and is_draw:
+        if "nul ou victoire extérieure" in pick or "x2" in pick:
             return "won" if away_score >= home_score else "lost"
-        return None
+        if "victoire domicile ou extérieure" in pick or pick.strip() == "12" or " 12 " in f" {pick} ":
+            return "won" if home_score != away_score else "lost"
 
-    # Draw No Bet.
     if market in ("draw_no_bet", "syn_draw_no_bet"):
         if home_score == away_score:
             return None
-        if home and home in pick:
+        if home.lower() in pick:
             return "won" if home_score > away_score else "lost"
-        if away and away in pick:
+        if away.lower() in pick:
             return "won" if away_score > home_score else "lost"
-        return None
 
-    # Over/Under buts. Supporte notamment "Plus de 2.5" / "Moins de 2.5"
-    # et leurs variantes anglaises.
-    threshold_match = re.search(r"(\d+(?:[.,]\d+)?)", pick)
-    if market in ("totals", "over_under", "goals", "syn_over_under", "total_goals") or threshold_match:
-        if threshold_match:
-            threshold = float(threshold_match.group(1).replace(",", "."))
-            is_over = any(token in pick for token in ("plus de", "over", "plus", ">"))
-            is_under = any(token in pick for token in ("moins de", "under", "moins", "<"))
-            if is_over:
-                return "won" if total_goals > threshold else "lost"
-            if is_under:
-                return "won" if total_goals < threshold else "lost"
-
-    # BTTS / Les deux equipes marquent.
-    if market in ("btts", "both_teams_to_score", "syn_btts") or "deux equipes" in pick or "btts" in pick:
-        both = home_score > 0 and away_score > 0
-        wants_yes = any(x in pick for x in ("oui", "yes", "both", "btts"))
-        wants_no = any(x in pick for x in ("non", "no"))
-        if wants_yes and not wants_no:
-            return "won" if both else "lost"
-        if wants_no:
-            return "won" if not both else "lost"
-
-    if market == "syn_clean_sheet_home":
+    if market in ("syn_clean_sheet_home",):
         return "won" if away_score == 0 else "lost"
-    if market == "syn_clean_sheet_away":
+
+    if market in ("syn_clean_sheet_away",):
         return "won" if home_score == 0 else "lost"
 
     return None
