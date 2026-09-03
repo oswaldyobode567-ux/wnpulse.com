@@ -1,7 +1,5 @@
 
-WNPulse - Module indépendant de montante.
-Aucune modification requise dans server.py, odds_service.py ou prediction_engine.py.
-"""
+# Les états sont persistés par server.py dans MongoDB.
 
 from __future__ import annotations
 from datetime import datetime, timezone
@@ -11,7 +9,7 @@ import uuid
 
 
 class MontanteService:
-    VERSION = "1.1.0"
+    VERSION = "1.0.0"
 
     def __init__(
         self,
@@ -85,7 +83,7 @@ class MontanteService:
     def select_daily_picks(
         self, matches: Iterable[Dict[str, Any]], limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:
-        """Sélectionne 1 ou 2 marchés qualifiés sans forcer un pronostic."""
+        # Sélectionne 1 ou 2 marchés qualifiés sans forcer un pronostic.
         wanted = min(limit or self.max_picks_per_day, self.max_picks_per_day)
         candidates = []
 
@@ -104,15 +102,11 @@ class MontanteService:
 
         selected = []
         used_events = set()
-        used_signatures = set()
         for item in candidates:
-            event_id = item["event_id"]
-            signature = (event_id, str(item.get("market", "")), str(item.get("pick", "")))
-            if event_id in used_events or signature in used_signatures:
+            if item["event_id"] in used_events:
                 continue
             selected.append(item)
-            used_events.add(event_id)
-            used_signatures.add(signature)
+            used_events.add(item["event_id"])
             if len(selected) >= wanted:
                 break
         return selected
@@ -123,7 +117,7 @@ class MontanteService:
         results: Optional[Sequence[str]] = None,
         settlement_status: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """WIN -> jour suivant; LOSS -> montante terminée; PENDING -> attente."""
+        # WIN -> jour suivant; LOSS -> montante terminée; PENDING -> attente.
         if not self.state or self.state["status"] != "ACTIVE":
             raise RuntimeError("Aucune montante ACTIVE.")
 
@@ -248,8 +242,6 @@ class MontanteService:
         }
 
     def _qualifies(self, item: Dict[str, Any]) -> bool:
-        # La cote et la confiance sont des garde-fous obligatoires.
-        # On ne force jamais un pick simplement pour remplir la journee.
         return (
             self.min_odds <= item["odds"] <= self.max_odds and
             item["confidence"] >= self.min_confidence and
