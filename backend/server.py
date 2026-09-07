@@ -9,6 +9,8 @@ import httpx
 import uuid
 import statistics
 import secrets
+import re
+import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
@@ -665,10 +667,13 @@ async def get_data_status():
 
 @app.post("/api/data/refresh")
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Refresh manuel du dashboard, conservé pour compatibilité avec l'interface existante."""
-    # L'authentification reste obligatoire, mais on ne casse pas le bouton historique
-    # en exigeant le rôle admin sur cette route utilisateur.
-    return await _full_refresh_and_track()
+    """Refresh manuel du dashboard avec verrou anti-double-clic."""
+    if _manual_refresh_lock.locked():
+        raise HTTPException(status_code=409, detail="Un refresh est déjà en cours")
+    async with _manual_refresh_lock:
+        result = await _full_refresh_and_track()
+        cache_status = await get_odds_cache_status(db)
+        return {"refresh": result, "cache": cache_status}
 
 
 @app.get("/api/manual-refresh", response_class=HTMLResponse)
@@ -700,6 +705,39 @@ async def manual_refresh_run(key: str = Header(default="", alias="X-Refresh-Key"
         result = await _full_refresh_and_track()
         cache_status = await get_odds_cache_status(db)
         return {"ok": True, "refresh": result, "cache": cache_status}
+
+
+@app.get("/api/manual-track-sync", response_class=HTMLResponse)
+async def manual_track_sync_page():
+    """Page de maintenance dédiée à la réconciliation du Track Record."""
+    return HTMLResponse(
+        """<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WinPulse — Synchronisation Track Record</title>
+<style>body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:40px 20px}.box{max-width:760px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px;box-shadow:0 12px 40px #0f172a12}h1{margin:0 0 8px;font-size:26px}p{color:#475569}input,button{width:100%;box-sizing:border-box;border-radius:10px;padding:12px 14px;font-size:15px}input{border:1px solid #cbd5e1;margin:12px 0}button{border:0;background:#f97316;color:#fff;font-weight:800;cursor:pointer}button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:16px;min-height:120px;margin-top:18px}.hint{font-size:13px}</style></head>
+<body><div class="box"><h1>Synchroniser le Track Record</h1><p>Récupère les scores des pronostics encore en attente, archive les résultats et transforme automatiquement les picks terminés en GAGNÉ / PERDU / REMBOURSÉ.</p><label for="key"><strong>REFRESH_SECRET</strong></label><input id="key" type="password" autocomplete="off" placeholder="Secret configuré dans l'environnement serveur"><button id="run">Synchroniser les résultats maintenant</button><p class="hint">Cette action ne recrée pas de pronostic : elle met uniquement à jour ceux qui existent déjà dans predictions_history.</p><pre id="out">Prêt.</pre></div>
+<script>const btn=document.getElementById('run'),out=document.getElementById('out'),key=document.getElementById('key');btn.onclick=async()=>{if(!key.value){out.textContent='REFRESH_SECRET requis.';return;}btn.disabled=true;out.textContent='Synchronisation en cours…';try{const r=await fetch('/api/manual-track-sync/run',{method:'POST',headers:{'X-Refresh-Key':key.value}});const data=await r.json();out.textContent=JSON.stringify(data,null,2);if(!r.ok)throw new Error(data.detail||('HTTP '+r.status));}catch(e){out.textContent='Erreur : '+e.message+'\n\n'+out.textContent;}finally{btn.disabled=false;}};</script></body></html>"""
+    )
+
+
+@app.post("/api/manual-track-sync/run")
+async def manual_track_sync_run(key: str = Header(default="", alias="X-Refresh-Key")):
+    secret = os.environ.get("REFRESH_SECRET", "").strip()
+    if not secret or not key or not secrets.compare_digest(key, secret):
+        raise HTTPException(status_code=403, detail="REFRESH_SECRET invalide ou non configuré")
+
+    before = await db.predictions_history.count_documents({"result": "pending"})
+    result = await _reconcile_predictions_with_scores(force_score_refresh=True)
+    after = await db.predictions_history.count_documents({"result": "pending"})
+    resolved_total = await db.predictions_history.count_documents({"result": {"$in": ["won", "lost", "void"]}})
+    return {
+        "ok": True,
+        "pending_before": before,
+        "pending_after": after,
+        "resolved_total": resolved_total,
+        "reconciliation": result,
+    }
 
 
 @app.get("/api/data/source-audit")
@@ -2174,7 +2212,7 @@ async def admin_diagnose_pending_simple(key: str = Header(default="", alias="X-A
 @app.post("/api/admin/reconcile-results-simple")
 async def admin_reconcile_results_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
     _require_simple_admin_secret(key)
-    result = await _reconcile_predictions_with_scores()
+    result = await _reconcile_predictions_with_scores(force_score_refresh=True)
     return result
 
 
@@ -2547,41 +2585,188 @@ async def _update_closing_odds(matches: List[Dict]) -> Dict:
     return {"ok": True, "checked": len(pending), "updated": updated}
 
 
-async def _reconcile_predictions_with_scores() -> Dict:
-    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=1000)
+def _norm_team_for_reconcile(value: str) -> str:
+    """Normalisation souple pour rapprocher un score d'un pronostic."""
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
+    text = re.sub(r"\b(fc|cf|sc|afc|bc|hc|club|women|w)\b", "", text)
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _score_pair(score_entry: Dict) -> tuple:
+    home_score = away_score = None
+    for row in score_entry.get("scores") or []:
+        name = row.get("name")
+        try:
+            value = int(row.get("score"))
+        except Exception:
+            continue
+        if name == score_entry.get("home_team"):
+            home_score = value
+        elif name == score_entry.get("away_team"):
+            away_score = value
+    return home_score, away_score
+
+
+def _find_score_fallback(pred: Dict, scores: List[Dict]) -> Optional[Dict]:
+    """Retrouve un score par équipes + horaire si l'identifiant ne correspond plus."""
+    ph = _norm_team_for_reconcile(pred.get("home_team"))
+    pa = _norm_team_for_reconcile(pred.get("away_team"))
+    if not ph or not pa:
+        return None
+    pred_dt = _parse_iso(pred.get("commence_time"))
+    sport_key = str(pred.get("sport_key") or "").strip()
+
+    best = None
+    best_delta = None
+    for score in scores:
+        if not score.get("completed"):
+            continue
+        score_sport = str(score.get("sport_key") or "").strip()
+        if sport_key and score_sport and sport_key != score_sport:
+            continue
+
+        sh = _norm_team_for_reconcile(score.get("home_team"))
+        sa = _norm_team_for_reconcile(score.get("away_team"))
+        direct = sh == ph and sa == pa
+        reversed_pair = sh == pa and sa == ph
+        if not (direct or reversed_pair):
+            continue
+
+        score_dt = _parse_iso(score.get("commence_time"))
+        if pred_dt and score_dt:
+            delta = abs((score_dt - pred_dt).total_seconds())
+            # Les fournisseurs peuvent différer légèrement sur l'heure, mais pas d'un jour.
+            if delta > 12 * 3600:
+                continue
+        else:
+            delta = 0
+
+        if best is None or delta < best_delta:
+            best = dict(score)
+            best["_teams_reversed"] = bool(reversed_pair)
+            best_delta = delta
+    return best
+
+
+async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) -> Dict:
+    """Synchronise les pronostics terminés avec leurs scores finaux.
+
+    Correction Track Record :
+    - cible exactement les ``sport_key`` des pronostics pending ;
+    - force au besoin un fetch scores sur la fenêtre maximale de 3 jours ;
+    - fusionne une archive durable des scores pour ne plus perdre les résultats ;
+    - rapproche par ID puis par équipes + heure lorsque l'ID fournisseur diffère ;
+    - fournit un diagnostic explicite pour les anciens pending hors fenêtre.
+    """
+    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=5000)
     if not pending:
-        return {"ok": True, "checked": 0, "updated": 0}
+        return {
+            "ok": True, "checked": 0, "updated": 0, "pending_remaining": 0,
+            "recovered_by_team_time": 0, "outside_provider_window": 0,
+        }
 
-    scores = await fetch_all_scores(db)
-    scores_by_match = {s.get("id"): s for s in scores if s.get("id")}
+    now = datetime.now(timezone.utc)
+    classic_pending = [p for p in pending if not str(p.get("match_id") or "").startswith("oaio-")]
+    required_sport_keys = sorted({
+        str(p.get("sport_key") or "").strip()
+        for p in classic_pending
+        if str(p.get("sport_key") or "").strip()
+    })
 
+    scores = await fetch_all_scores(
+        db,
+        sport_keys=required_sport_keys or None,
+        force_refresh=force_score_refresh,
+        days_from=3,
+        include_archive=True,
+        archive_days=30,
+    )
+    scores_by_match = {str(s.get("id")): s for s in scores if s.get("id")}
     oaio_scores_map = await fetch_odds_api_io_scores_map()
 
     updated = 0
+    recovered_by_team_time = 0
+    no_score = 0
+    not_completed = 0
+    unsupported_market = 0
+    outside_provider_window = 0
+    errors = 0
+
     for pred in pending:
-        match_id = pred.get("match_id", "")
+        match_id = str(pred.get("match_id") or "")
+        commence_dt = _parse_iso(pred.get("commence_time"))
+        age_days = ((now - commence_dt).total_seconds() / 86400.0) if commence_dt else None
 
         try:
+            score_entry = None
+            teams_reversed = False
+
             if match_id.startswith("oaio-"):
                 numeric_id = match_id[len("oaio-"):]
                 entry = oaio_scores_map.get(numeric_id)
-                if not entry:
-                    continue
-                home_score = entry["home_score"]
-                away_score = entry["away_score"]
+                if entry:
+                    home_score = int(entry["home_score"])
+                    away_score = int(entry["away_score"])
+                else:
+                    # Secours OAIO : rapprochement par équipes/heure dans la carte
+                    # des événements terminés, utile si l'identifiant a changé.
+                    ph = _norm_team_for_reconcile(pred.get("home_team"))
+                    pa = _norm_team_for_reconcile(pred.get("away_team"))
+                    found = None
+                    for candidate in oaio_scores_map.values():
+                        if _norm_team_for_reconcile(candidate.get("home_team")) != ph:
+                            continue
+                        if _norm_team_for_reconcile(candidate.get("away_team")) != pa:
+                            continue
+                        cdt = _parse_iso(candidate.get("commence_time"))
+                        if commence_dt and cdt and abs((cdt - commence_dt).total_seconds()) > 12 * 3600:
+                            continue
+                        found = candidate
+                        break
+                    if not found:
+                        no_score += 1
+                        if age_days is not None and age_days > 3:
+                            outside_provider_window += 1
+                        continue
+                    home_score = int(found["home_score"])
+                    away_score = int(found["away_score"])
+                    recovered_by_team_time += 1
             else:
                 score_entry = scores_by_match.get(match_id)
-                if not score_entry or not score_entry.get("completed"):
+                if not score_entry:
+                    score_entry = _find_score_fallback(pred, scores)
+                    if score_entry:
+                        recovered_by_team_time += 1
+                        teams_reversed = bool(score_entry.get("_teams_reversed"))
+
+                if not score_entry:
+                    no_score += 1
+                    if age_days is not None and age_days > 3:
+                        outside_provider_window += 1
                     continue
-                score_data = score_entry.get("scores") or []
-                home_score = away_score = None
-                for s in score_data:
-                    if s.get("name") == pred.get("home_team"):
-                        home_score = int(s.get("score", 0))
-                    elif s.get("name") == pred.get("away_team"):
-                        away_score = int(s.get("score", 0))
+                if not score_entry.get("completed"):
+                    not_completed += 1
+                    continue
+
+                home_score, away_score = _score_pair(score_entry)
                 if home_score is None or away_score is None:
+                    # Fallback sur les noms du pronostic si la réponse score n'a pas
+                    # exactement les mêmes home_team/away_team au niveau racine.
+                    for row in score_entry.get("scores") or []:
+                        name = _norm_team_for_reconcile(row.get("name"))
+                        try:
+                            value = int(row.get("score"))
+                        except Exception:
+                            continue
+                        if name == _norm_team_for_reconcile(pred.get("home_team")):
+                            home_score = value
+                        elif name == _norm_team_for_reconcile(pred.get("away_team")):
+                            away_score = value
+                if home_score is None or away_score is None:
+                    no_score += 1
                     continue
+                if teams_reversed:
+                    home_score, away_score = away_score, home_score
 
             result = _evaluate_pick_result(pred, home_score, away_score)
             if result:
@@ -2591,13 +2776,40 @@ async def _reconcile_predictions_with_scores() -> Dict:
                         "result": result,
                         "final_score": f"{home_score}-{away_score}",
                         "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                        "reconciliation_source": (
+                            "team_time_fallback" if score_entry and score_entry.get("_teams_reversed") is not None
+                            else "scores_api"
+                        ),
                     }},
                 )
                 updated += 1
+            else:
+                unsupported_market += 1
         except Exception:
+            errors += 1
             continue
 
-    return {"ok": True, "checked": len(pending), "updated": updated}
+    pending_remaining = await db.predictions_history.count_documents({"result": "pending"})
+    return {
+        "ok": True,
+        "checked": len(pending),
+        "updated": updated,
+        "pending_remaining": pending_remaining,
+        "required_sport_keys": required_sport_keys,
+        "scores_available": len(scores),
+        "recovered_by_team_time": recovered_by_team_time,
+        "no_score": no_score,
+        "not_completed": not_completed,
+        "unsupported_market": unsupported_market,
+        "outside_provider_window": outside_provider_window,
+        "errors": errors,
+        "note": (
+            "Les scores de The Odds API ne remontent que 3 jours. Les scores vus "
+            "désormais sont archivés durablement. Les anciens pending de plus de 3 "
+            "jours ne peuvent être récupérés que si leur score existe déjà dans "
+            "l'archive ou via la source secondaire."
+        ),
+    }
 
 
 def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
@@ -2677,7 +2889,7 @@ async def _full_refresh_and_track():
         await _update_closing_odds(all_matches)
     except Exception:
         pass
-    await _reconcile_predictions_with_scores()
+    await _reconcile_predictions_with_scores(force_score_refresh=True)
     await _invalidate_prediction_cache()
     return matches
 
@@ -2730,7 +2942,7 @@ async def _scheduled_full_refresh():
 
 
 async def _scheduled_reconcile():
-    return await _run_with_scheduler_lease("results_reconcile", _reconcile_predictions_with_scores, lease_seconds=6600)
+    return await _run_with_scheduler_lease("results_reconcile", lambda: _reconcile_predictions_with_scores(force_score_refresh=True), lease_seconds=6600)
 
 
 async def _scheduled_subscription_sweep():
@@ -2739,11 +2951,33 @@ async def _scheduled_subscription_sweep():
 
 @app.on_event("startup")
 async def startup_event():
+    # Archive Track Record : un score final doit être enregistré une seule fois
+    # et rester retrouvable après expiration de la fenêtre fournisseur.
+    try:
+        await db.scores_archive.create_index("event_id", unique=True)
+        await db.scores_archive.create_index("commence_time")
+    except Exception:
+        # Un problème d'index ne doit jamais empêcher le démarrage de l'API.
+        pass
+
     if ENABLE_INTERNAL_SCHEDULER:
-        refresh_hours = int(os.environ.get("ODDS_AUTO_REFRESH_HOURS", "1"))
-        scheduler.add_job(_scheduled_full_refresh, "interval", hours=max(1, refresh_hours), id="odds_full_refresh", replace_existing=True)
-        scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True)
-        scheduler.add_job(_scheduled_subscription_sweep, "cron", minute=30, id="subscription_sweep", replace_existing=True)
+        # Deux refresh complets par jour par défaut (06:05 et 13:05 WAT = 05:05
+        # et 12:05 UTC). L'ancien refresh horaire pouvait épuiser très vite le
+        # quota The Odds API puisque chaque marché/région consomme des crédits.
+        refresh_utc_hours = os.environ.get("ODDS_AUTO_REFRESH_UTC_HOURS", "5,12").strip() or "5,12"
+        refresh_minute = max(0, min(int(os.environ.get("ODDS_AUTO_REFRESH_MINUTE", "5")), 59))
+        scheduler.add_job(
+            _scheduled_full_refresh,
+            "cron",
+            hour=refresh_utc_hours,
+            minute=refresh_minute,
+            id="odds_full_refresh",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
+        scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
+        scheduler.add_job(_scheduled_subscription_sweep, "cron", minute=30, id="subscription_sweep", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.start()
 
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
@@ -2751,7 +2985,10 @@ async def startup_event():
     if existing:
         try:
             cache_status = await get_odds_cache_status(db)
-            should_refresh = bool(cache_status.get("stale") or cache_status.get("hard_stale"))
+            # Un simple TTL court ne doit pas déclencher un appel payant à chaque
+            # redémarrage/déploiement. On auto-refresh au démarrage uniquement si
+            # le cache est réellement ancien.
+            should_refresh = bool(cache_status.get("hard_stale"))
         except Exception:
             should_refresh = False
     if should_refresh:
