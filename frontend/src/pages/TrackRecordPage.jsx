@@ -1,354 +1,226 @@
-
-import { Link } from "react-router-dom";
+import { useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
-import { Skeleton } from "@/components/ui/skeleton";
-import { Activity, Trophy, Target, Flame, ChevronLeft, ChevronRight as ChevR, Zap, Info, CircleDot } from "lucide-react";
-import dayjs from "dayjs";
 
-const LABEL_META = {
-  safe: { text: "SÛR", cls: "bg-emerald-100 text-emerald-700 border-emerald-200" },
-  value: { text: "MODÉRÉ", cls: "bg-amber-100 text-amber-700 border-amber-200" },
-  risky: { text: "RISQUÉ", cls: "bg-rose-100 text-rose-700 border-rose-200" },
-};
-
-const SPORT_OPTIONS = [
+const SPORTS = [
   ["all", "Tous"],
-  ["football", "⚽ Football"],
-  ["basketball", "🏀 Basketball"],
-  ["tennis", "🎾 Tennis"],
-  ["hockey", "🏒 Hockey"],
-  ["baseball", "⚾ Baseball"],
-  ["mma", "🥊 MMA"],
-  ["american_football", "🏈 Football américain"],
+  ["football", "Football"],
+  ["basketball", "Basketball"],
+  ["tennis", "Tennis"],
+  ["hockey", "Hockey"],
+  ["baseball", "Baseball"],
+  ["mma", "MMA"],
+  ["american_football", "Football américain"],
 ];
 
-export default function TrackRecordPage() {
-  const [data, setData] = useState(null);
-  const [page, setPage] = useState(1);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [sport, setSport] = useState("all");
+const SPORT_LABELS = Object.fromEntries(SPORTS);
 
-  const loadTrackRecord = () => {
-    let active = true;
-    setLoading(true);
-    setError("");
-
-    const sportParam = sport !== "all" ? `&sport=${encodeURIComponent(sport)}` : "";
-
-    api.get(`/track-record?page=${page}&per_page=20${sportParam}`)
-      .then((r) => {
-        if (!active) return;
-        const payload = r?.data && typeof r.data === "object" ? r.data : {};
-        setData({
-          stats: payload.stats && typeof payload.stats === "object" ? payload.stats : {},
-          results: Array.isArray(payload.results) ? payload.results : [],
-          page: Number(payload.page) || 1,
-          total_pages: Math.max(1, Number(payload.total_pages) || 1),
-          transition_mode: Boolean(payload.transition_mode),
-          note: payload.note || "",
-          available_sports: Array.isArray(payload.available_sports) ? payload.available_sports : [],
-        });
-      })
-      .catch((err) => {
-        if (!active) return;
-        setData(null);
-        setError(err?.response?.data?.detail || err?.message || "Impossible de charger le Track Record.");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-
-    return () => {
-      active = false;
-    };
-  };
-
-  useEffect(() => {
-    const cancel = loadTrackRecord();
-    return cancel;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, sport]);
-
-  const changeSport = (value) => {
-    setSport(value);
-    setPage(1);
-  };
-
-  const stats = data?.stats || {};
-  const bySport = stats?.by_sport && typeof stats.by_sport === "object" ? stats.by_sport : {};
-  const byLabel = stats?.by_label && typeof stats.by_label === "object" ? stats.by_label : {};
-  const results = Array.isArray(data?.results) ? data.results : [];
-  const currentPage = Number(data?.page) || page || 1;
-  const totalPages = Math.max(1, Number(data?.total_pages) || 1);
-
-  return (
-    <div className="min-h-screen bg-neutral-50">
-      <header className="sticky top-0 z-50 bg-white/85 backdrop-blur-xl border-b border-neutral-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2.5">
-            <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center text-white shadow-lg">
-              <Zap className="h-5 w-5" fill="white" />
-            </div>
-            <span className="font-heading font-extrabold text-lg">WinPulse</span>
-          </Link>
-          <div className="flex items-center gap-2">
-            <Link to="/login"><Button variant="ghost">Connexion</Button></Link>
-            <Link to="/register"><Button className="wp-gradient-warm text-white border-0">Démarrer gratuit</Button></Link>
-          </div>
-        </div>
-      </header>
-
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
-        <div className="relative overflow-hidden rounded-3xl bg-gradient-to-br from-emerald-900 via-slate-900 to-orange-900 text-white p-8 sm:p-12 mb-10 ring-1 ring-white/10">
-          <div className="absolute -top-24 -right-24 h-72 w-72 rounded-full bg-emerald-400/30 blur-3xl pointer-events-none" />
-          <div className="absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-orange-400/30 blur-3xl pointer-events-none" />
-          <div className="relative text-center">
-            <div className="inline-flex items-center gap-2 rounded-full bg-emerald-400/20 border border-emerald-400/40 px-3 py-1 text-xs font-bold text-emerald-200 mb-4 backdrop-blur-sm">
-              <span className="h-2 w-2 rounded-full bg-emerald-400 live-dot" />
-              Track Record officiel · vérifiable
-            </div>
-            <h1 className="font-heading text-4xl sm:text-6xl font-black tracking-tighter leading-[0.95]">
-              Nos résultats.<br />
-              <span className="bg-gradient-to-r from-emerald-300 via-orange-300 to-rose-300 bg-clip-text text-transparent">
-                Sans triche.
-              </span>
-            </h1>
-            <p className="mt-4 text-slate-300 max-w-2xl mx-auto text-base">
-              Les picks officiels sont sélectionnés avant le match selon des critères fixes. Les résultats confirmés restent affichés, gagnés comme perdus.
-            </p>
-          </div>
-        </div>
-
-        {loading ? (
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4">{[1,2,3].map(i => <Skeleton key={i} className="h-28" />)}</div>
-            <Skeleton className="h-96" />
-          </div>
-        ) : error ? (
-          <Card className="p-8 text-center border-rose-200 bg-rose-50">
-            <div className="font-heading font-bold text-rose-800 mb-2">Erreur de chargement</div>
-            <p className="text-sm text-rose-700">{error}</p>
-            <Button className="mt-4" variant="outline" onClick={() => window.location.reload()}>
-              Réessayer
-            </Button>
-          </Card>
-        ) : !data ? (
-          <Card className="p-8 text-center">
-            <p className="text-slate-500">Aucun résultat disponible.</p>
-          </Card>
-        ) : (
-          <>
-            {data.transition_mode && data.note && (
-              <div className="mb-6 rounded-2xl bg-blue-50 border border-blue-200 p-4 flex items-start gap-3" data-testid="transition-mode-banner">
-                <Info className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
-                <p className="text-sm text-blue-900">{data.note}</p>
-              </div>
-            )}
-
-            {Number(stats.current_streak || 0) >= 3 && (
-              <div className="mb-6 rounded-2xl bg-gradient-to-r from-orange-500 to-rose-500 p-5 text-white flex items-center gap-4 shadow-lg shadow-orange-500/20" data-testid="streak-banner">
-                <div className="text-4xl">🔥</div>
-                <div>
-                  <div className="font-heading text-2xl font-black">
-                    {stats.current_streak} victoires d&apos;affilée !
-                  </div>
-                  <div className="text-sm text-white/90">Notre série en cours — vérifiable dans le tableau ci-dessous</div>
-                </div>
-              </div>
-            )}
-
-            <Card className="bg-white border-neutral-200 p-4 mb-6" data-testid="sport-filters">
-              <div className="flex items-center gap-2 mb-3">
-                <CircleDot className="h-4 w-4 text-orange-600" />
-                <h2 className="font-heading font-bold text-slate-900">Filtrer par sport</h2>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {SPORT_OPTIONS.map(([value, label]) => (
-                  <Button
-                    key={value}
-                    type="button"
-                    size="sm"
-                    variant={sport === value ? "default" : "outline"}
-                    onClick={() => changeSport(value)}
-                    className={sport === value ? "wp-gradient-warm text-white border-0" : ""}
-                  >
-                    {label}
-                  </Button>
-                ))}
-              </div>
-            </Card>
-
-            {Object.keys(bySport).length > 0 && (
-              <Card className="bg-white border-neutral-200 p-5 mb-6" data-testid="by-sport-stats">
-                <h2 className="font-heading font-bold text-slate-900 mb-4">Résultats par sport</h2>
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7 gap-3">
-                  {Object.entries(bySport).map(([key, d]) => (
-                    <button
-                      key={key}
-                      type="button"
-                      onClick={() => changeSport(key)}
-                      className={`text-left rounded-xl border p-3 transition ${sport === key ? "border-orange-400 ring-2 ring-orange-100" : "border-neutral-200 hover:border-neutral-300"}`}
-                    >
-                      <div className="text-xs font-bold uppercase text-slate-500">{formatSport(key)}</div>
-                      <div className="font-heading text-2xl font-black text-slate-900 mt-1">
-                        {d?.win_rate != null ? `${d.win_rate}%` : "—"}
-                      </div>
-                      <div className="text-xs text-slate-500">{d?.wins ?? 0}/{d?.total ?? 0} picks</div>
-                    </button>
-                  ))}
-                </div>
-              </Card>
-            )}
-
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6" data-testid="kpis">
-              <Kpi icon={Target} label="Taux de réussite (global)" value={`${stats.win_rate ?? 0}%`} sub={`${stats.wins ?? 0}/${stats.total ?? 0} picks`} accent="emerald" />
-              <Kpi icon={Flame} label="Série en cours" value={`${stats.current_streak ?? 0}`} sub="picks gagnants" accent="orange" />
-              <Kpi icon={Trophy} label="Cote moyenne" value={formatOdds(stats.avg_odds)} sub="par pick" accent="amber" mono />
-            </div>
-
-            <Card className="bg-white border-neutral-200 p-5 mb-8" data-testid="by-label-stats">
-              <h2 className="font-heading font-bold text-slate-900 mb-4">Taux de réussite par niveau de confiance</h2>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {Object.keys(LABEL_META).map((lbl) => {
-                  const d = byLabel[lbl] || { wins: 0, total: 0, win_rate: null };
-                  const meta = LABEL_META[lbl];
-                  return (
-                    <div key={lbl} className="rounded-xl border border-neutral-200 p-4">
-                      <Badge className={`text-[10px] font-bold border mb-2 ${meta.cls}`}>{meta.text}</Badge>
-                      <div className="font-heading text-3xl font-black text-slate-900">
-                        {d.win_rate != null ? `${d.win_rate}%` : "—"}
-                      </div>
-                      <div className="text-xs text-slate-500 mt-1">
-                        {d.total > 0 ? `${d.wins}/${d.total} picks résolus` : "Pas encore de résultat"}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-              <p className="text-xs text-slate-400 mt-4">
-                Le niveau de confiance (Sûr / Modéré / Risqué) est déterminé avant chaque match selon des critères fixes.
-              </p>
-            </Card>
-
-            <Card className="bg-white border-neutral-200 overflow-hidden">
-              <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between">
-                <h2 className="font-heading font-bold text-slate-900 flex items-center gap-2"><Activity className="h-5 w-5 text-orange-600" /> Track Record officiel</h2>
-                <Badge variant="outline" className="text-xs">Sélection pré-match · résultats non modifiés</Badge>
-              </div>
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-neutral-50 text-xs uppercase tracking-wider text-slate-500">
-                    <tr>
-                      <th className="px-4 py-2.5 text-left">Date</th>
-                      <th className="px-4 py-2.5 text-left">Sport</th>
-                      <th className="px-4 py-2.5 text-left">Compétition</th>
-                      <th className="px-4 py-2.5 text-left">Match</th>
-                      <th className="px-4 py-2.5 text-left">Pick</th>
-                      <th className="px-4 py-2.5 text-center">Niveau</th>
-                      <th className="px-4 py-2.5 text-center">Cote</th>
-                      <th className="px-4 py-2.5 text-center">Résultat</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-neutral-100" data-testid="results-table">
-                    {results.length > 0 ? results.map((r, index) => {
-                      const meta = LABEL_META[r?.label] || null;
-                      const status = String(r?.status || "").toLowerCase();
-                      const statusText = status === "won" ? "GAGNÉ" : status === "void" ? "REMBOURSÉ" : "PERDU";
-                      const statusClass = status === "won"
-                        ? "bg-emerald-100 text-emerald-700 border-emerald-200"
-                        : status === "void"
-                          ? "bg-slate-100 text-slate-700 border-slate-200"
-                          : "bg-rose-100 text-rose-700 border-rose-200";
-                      return (
-                        <tr key={r?.id || `${r?.match || "result"}-${r?.date || index}`} className="hover:bg-neutral-50">
-                          <td className="px-4 py-3 text-slate-500 font-mono text-xs whitespace-nowrap">{r?.date ? dayjs(r.date).format("DD/MM/YYYY") : "—"}</td>
-                          <td className="px-4 py-3 text-slate-700 text-xs font-semibold whitespace-nowrap">{formatSport(r?.sport)}</td>
-                          <td className="px-4 py-3 text-slate-700 text-xs">{r?.league || "—"}</td>
-                          <td className="px-4 py-3 font-medium text-slate-900 text-xs">{r?.match || "—"}</td>
-                          <td className="px-4 py-3 font-bold text-orange-600 text-xs">{r?.pick || "—"}</td>
-                          <td className="px-4 py-3 text-center">
-                            {meta ? <Badge className={`text-[10px] font-bold border ${meta.cls}`}>{meta.text}</Badge> : <span className="text-slate-300 text-xs">—</span>}
-                          </td>
-                          <td className="px-4 py-3 text-center font-mono text-xs">{formatOdds(r?.odds)}</td>
-                          <td className="px-4 py-3 text-center"><Badge className={statusClass}>{statusText}</Badge></td>
-                        </tr>
-                      );
-                    }) : (
-                      <tr>
-                        <td colSpan={8} className="px-4 py-10 text-center text-slate-500">
-                          Aucun résultat disponible pour ce sport pour le moment.
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-              <div className="px-5 py-3 border-t border-neutral-200 flex items-center justify-between text-xs">
-                <span className="text-slate-500">Page {currentPage} sur {totalPages}</span>
-                <div className="flex gap-2">
-                  <Button size="sm" variant="outline" disabled={currentPage <= 1} onClick={() => setPage(Math.max(1, currentPage - 1))}>
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </Button>
-                  <Button size="sm" variant="outline" disabled={currentPage >= totalPages} onClick={() => setPage(Math.min(totalPages, currentPage + 1))}>
-                    <ChevR className="h-3.5 w-3.5" />
-                  </Button>
-                </div>
-              </div>
-            </Card>
-
-            <div className="mt-10 text-center">
-              <h3 className="font-heading text-2xl font-extrabold text-slate-900 mb-2">Découvre les picks officiels</h3>
-              <p className="text-slate-600 mb-4">Rejoins les abonnés Pro pour avoir tous nos picks chaque jour.</p>
-              <Link to="/register"><Button className="wp-gradient-warm text-white border-0 h-12 px-8 text-base">Démarrer gratuit</Button></Link>
-            </div>
-          </>
-        )}
-      </div>
-    </div>
-  );
+function fmtDate(value) {
+  if (!value) return "—";
+  try {
+    return new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" }).format(new Date(value));
+  } catch {
+    return "—";
+  }
 }
 
-function formatSport(value) {
-  const key = String(value || "").toLowerCase().trim();
-  const labels = {
-    football: "⚽ Football",
-    soccer: "⚽ Football",
-    basketball: "🏀 Basketball",
-    tennis: "🎾 Tennis",
-    hockey: "🏒 Hockey",
-    ice_hockey: "🏒 Hockey",
-    icehockey: "🏒 Hockey",
-    baseball: "⚾ Baseball",
-    mma: "🥊 MMA",
-    american_football: "🏈 Football américain",
-    americanfootball: "🏈 Football américain",
-  };
-  return labels[key] || (value ? String(value) : "—");
-}
-
-function formatOdds(value) {
+function fmtOdds(value) {
   const n = Number(value);
   return Number.isFinite(n) && n > 0 ? n.toFixed(2) : "—";
 }
 
-function Kpi({ icon: Icon, label, value, sub, accent, mono }) {
-  const cls = {
-    emerald: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    rose: "bg-rose-50 text-rose-700 border-rose-200",
-    orange: "bg-orange-50 text-orange-700 border-orange-200",
-    amber: "bg-amber-50 text-amber-700 border-amber-200",
-  }[accent] || "bg-neutral-50 text-neutral-700 border-neutral-200";
+function safeObject(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+export default function TrackRecordPage() {
+  const [data, setData] = useState({ stats: {}, results: [], page: 1, total_pages: 1 });
+  const [page, setPage] = useState(1);
+  const [sport, setSport] = useState("all");
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function load() {
+      setLoading(true);
+      setError("");
+      try {
+        const params = { page, per_page: 20 };
+        if (sport !== "all") params.sport = sport;
+        const response = await api.get("/track-record", { params });
+        if (cancelled) return;
+
+        const payload = safeObject(response?.data);
+        setData({
+          ...payload,
+          stats: safeObject(payload.stats),
+          results: Array.isArray(payload.results) ? payload.results : [],
+          page: Math.max(1, Number(payload.page) || 1),
+          total_pages: Math.max(1, Number(payload.total_pages) || 1),
+        });
+      } catch (e) {
+        if (cancelled) return;
+        const detail = e?.response?.data?.detail;
+        setError(typeof detail === "string" ? detail : (e?.message || "Impossible de charger le Track Record."));
+        setData({ stats: {}, results: [], page: 1, total_pages: 1 });
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+
+    load();
+    return () => { cancelled = true; };
+  }, [page, sport]);
+
+  const stats = safeObject(data.stats);
+  const bySport = safeObject(stats.by_sport);
+  const byLabel = safeObject(stats.by_label);
+  const results = Array.isArray(data.results) ? data.results : [];
+
+  const sportCards = useMemo(() => Object.entries(bySport), [bySport]);
+
+  const selectSport = (value) => {
+    setSport(value);
+    setPage(1);
+  };
 
   return (
-    <Card className="bg-white border-neutral-200 p-4">
-      <div className={`h-8 w-8 rounded-lg grid place-items-center border ${cls} mb-3`}><Icon className="h-4 w-4" /></div>
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-0.5">{label}</div>
-      <div className={`font-heading text-2xl font-extrabold text-slate-900 ${mono ? "font-mono" : ""}`}>{value}</div>
-      <div className="text-xs text-slate-500 mt-0.5">{sub}</div>
-    </Card>
+    <main className="min-h-screen bg-slate-50 text-slate-900">
+      <section className="max-w-6xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
+        <div className="rounded-3xl bg-slate-950 text-white p-7 sm:p-10 mb-7 shadow-xl">
+          <p className="text-sm font-bold text-orange-300 uppercase tracking-wider">WinPulse · Track Record officiel</p>
+          <h1 className="mt-2 text-3xl sm:text-5xl font-black">Nos résultats, gagnés comme perdus.</h1>
+          <p className="mt-3 text-slate-300 max-w-3xl">Les résultats résolus restent visibles. Si aucune donnée officielle n'est encore disponible, la page doit afficher un état vide explicite et jamais un écran blanc.</p>
+        </div>
+
+        {loading && (
+          <div className="rounded-2xl border border-slate-200 bg-white p-8 text-center shadow-sm">
+            <div className="text-lg font-bold">Chargement du Track Record…</div>
+            <div className="text-sm text-slate-500 mt-2">Lecture de l'historique des picks résolus.</div>
+          </div>
+        )}
+
+        {!loading && error && (
+          <div className="rounded-2xl border border-rose-200 bg-rose-50 p-6 mb-6">
+            <div className="font-black text-rose-800">Le Track Record n'a pas pu être chargé</div>
+            <p className="mt-2 text-sm text-rose-700 break-words">{error}</p>
+            <button className="mt-4 rounded-xl bg-rose-700 px-4 py-2 text-sm font-bold text-white" onClick={() => window.location.reload()}>Réessayer</button>
+          </div>
+        )}
+
+        {!loading && !error && (
+          <>
+            {data.note && (
+              <div className="rounded-2xl border border-blue-200 bg-blue-50 p-4 mb-6 text-sm text-blue-900">{String(data.note)}</div>
+            )}
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 mb-6 shadow-sm">
+              <div className="font-black mb-3">Filtrer par sport</div>
+              <div className="flex flex-wrap gap-2">
+                {SPORTS.map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => selectSport(value)}
+                    className={`rounded-xl border px-3 py-2 text-sm font-bold ${sport === value ? "border-orange-500 bg-orange-500 text-white" : "border-slate-200 bg-white text-slate-700"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-6">
+              <Stat label="Taux de réussite" value={`${Number(stats.win_rate || 0).toFixed(1)}%`} sub={`${Number(stats.wins || 0)}/${Number(stats.total || 0)} picks`} />
+              <Stat label="Série en cours" value={String(Number(stats.current_streak || 0))} sub="victoires" />
+              <Stat label="Cote moyenne" value={fmtOdds(stats.avg_odds)} sub="par pick" />
+              <Stat label="ROI 30 jours" value={`${Number(stats.roi_percent || 0).toFixed(1)}%`} sub={`${Number(stats.profit_units_30d || 0).toFixed(2)} unités`} />
+            </div>
+
+            {sportCards.length > 0 && (
+              <div className="rounded-2xl border border-slate-200 bg-white p-5 mb-6 shadow-sm">
+                <h2 className="font-black mb-4">Résultats par sport</h2>
+                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                  {sportCards.map(([key, raw]) => {
+                    const item = safeObject(raw);
+                    return (
+                      <button key={key} type="button" onClick={() => selectSport(key)} className="rounded-xl border border-slate-200 p-3 text-left hover:border-orange-300">
+                        <div className="text-xs uppercase font-black text-slate-500">{SPORT_LABELS[key] || key}</div>
+                        <div className="text-2xl font-black mt-1">{item.win_rate == null ? "—" : `${Number(item.win_rate).toFixed(1)}%`}</div>
+                        <div className="text-xs text-slate-500">{Number(item.wins || 0)}/{Number(item.total || 0)} picks</div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            <div className="rounded-2xl border border-slate-200 bg-white p-5 mb-6 shadow-sm">
+              <h2 className="font-black mb-4">Résultats par niveau</h2>
+              <div className="grid sm:grid-cols-3 gap-3">
+                {[['safe','SÛR'],['value','MODÉRÉ'],['risky','RISQUÉ']].map(([key,label]) => {
+                  const item = safeObject(byLabel[key]);
+                  return <Stat key={key} label={label} value={item.win_rate == null ? "—" : `${Number(item.win_rate).toFixed(1)}%`} sub={`${Number(item.wins || 0)}/${Number(item.total || 0)} picks`} />;
+                })}
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-slate-200 bg-white overflow-hidden shadow-sm">
+              <div className="p-5 border-b border-slate-200">
+                <h2 className="font-black text-lg">Historique officiel</h2>
+                <p className="text-sm text-slate-500 mt-1">{results.length ? `${results.length} résultat(s) affiché(s)` : `Aucun résultat résolu pour ${SPORT_LABELS[sport] || sport}.`}</p>
+              </div>
+
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-slate-50 text-slate-500 text-xs uppercase">
+                    <tr>
+                      <th className="p-3 text-left">Date</th><th className="p-3 text-left">Sport</th><th className="p-3 text-left">Compétition</th><th className="p-3 text-left">Match</th><th className="p-3 text-left">Pick</th><th className="p-3 text-center">Cote</th><th className="p-3 text-center">Résultat</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {results.length === 0 ? (
+                      <tr><td colSpan={7} className="p-10 text-center text-slate-500">Aucun résultat disponible pour le moment. Le prochain pick réconcilié apparaîtra ici automatiquement.</td></tr>
+                    ) : results.map((r, i) => {
+                      const status = String(r?.status || "").toLowerCase();
+                      return (
+                        <tr key={r?.id || `${r?.date || 'row'}-${i}`}>
+                          <td className="p-3 whitespace-nowrap">{fmtDate(r?.date)}</td>
+                          <td className="p-3 whitespace-nowrap font-bold">{SPORT_LABELS[r?.sport] || r?.sport || "—"}</td>
+                          <td className="p-3">{r?.league || "—"}</td>
+                          <td className="p-3 font-semibold">{r?.match || "—"}</td>
+                          <td className="p-3 text-orange-600 font-black">{r?.pick || "—"}</td>
+                          <td className="p-3 text-center">{fmtOdds(r?.odds)}</td>
+                          <td className="p-3 text-center"><span className={`rounded-full px-2.5 py-1 text-xs font-black ${status === 'won' ? 'bg-emerald-100 text-emerald-700' : status === 'void' ? 'bg-slate-100 text-slate-700' : 'bg-rose-100 text-rose-700'}`}>{status === 'won' ? 'GAGNÉ' : status === 'void' ? 'REMBOURSÉ' : 'PERDU'}</span></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+                <span className="text-sm text-slate-500">Page {Number(data.page || 1)} / {Number(data.total_pages || 1)}</span>
+                <div className="flex gap-2">
+                  <button type="button" disabled={Number(data.page || 1) <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="rounded-lg border border-slate-200 px-3 py-2 disabled:opacity-40">Précédent</button>
+                  <button type="button" disabled={Number(data.page || 1) >= Number(data.total_pages || 1)} onClick={() => setPage((p) => p + 1)} className="rounded-lg border border-slate-200 px-3 py-2 disabled:opacity-40">Suivant</button>
+                </div>
+              </div>
+            </div>
+          </>
+        )}
+      </section>
+    </main>
+  );
+}
+
+function Stat({ label, value, sub }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="text-xs uppercase tracking-wide font-black text-slate-500">{label}</div>
+      <div className="mt-1 text-2xl sm:text-3xl font-black text-slate-950">{value}</div>
+      <div className="text-xs text-slate-500 mt-1">{sub}</div>
+    </div>
   );
 }
