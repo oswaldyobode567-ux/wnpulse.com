@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import LandingPage from "@/pages/LandingPage";
@@ -15,6 +15,7 @@ import TopPicksPage from "@/pages/TopPicksPage";
 import AdminPage from "@/pages/AdminPage";
 import TrackRecordPage from "@/pages/TrackRecordPage";
 import ValueBetsPage from "@/pages/ValueBetsPage";
+import MontantePage from "@/pages/MontantePage";
 import ProfilePage from "@/pages/ProfilePage";
 import ParrainagePage from "@/pages/ParrainagePage";
 import ComboBuilderPage from "@/pages/ComboBuilderPage";
@@ -28,6 +29,7 @@ import PageTracker from "@/components/PageTracker";
 
 function RequireAuth({ children, admin = false }) {
   const { user, loading } = useAuth();
+
   if (loading) {
     return (
       <div className="min-h-screen grid place-items-center bg-neutral-50">
@@ -35,8 +37,10 @@ function RequireAuth({ children, admin = false }) {
       </div>
     );
   }
+
   if (!user) return <Navigate to="/login" replace />;
   if (admin && !user.is_admin) return <Navigate to="/app" replace />;
+
   return children;
 }
 
@@ -50,26 +54,132 @@ export default function App() {
           <Route path="/register" element={<RegisterPage />} />
           <Route path="/forgot-password" element={<ForgotPasswordPage />} />
           <Route path="/reset-password/:token" element={<ResetPasswordPage />} />
+
           <Route path="/resultats" element={<TrackRecordPage />} />
           <Route path="/blog" element={<BlogPage />} />
           <Route path="/blog/:slug" element={<BlogPostPage />} />
           <Route path="/legal/:slug" element={<LegalPage />} />
-          <Route path="/legal" element={<Navigate to="/legal/mentions-legales" replace />} />
-          <Route path="/app" element={<RequireAuth><DashboardPage /></RequireAuth>} />
-          <Route path="/app/top" element={<RequireAuth><TopPicksPage /></RequireAuth>} />
-          <Route path="/app/value-bets" element={<RequireAuth><ValueBetsPage /></RequireAuth>} />
-          <Route path="/app/profil" element={<RequireAuth><ProfilePage /></RequireAuth>} />
-          <Route path="/app/parrainage" element={<RequireAuth><ParrainagePage /></RequireAuth>} />
-          <Route path="/app/match/:matchId" element={<RequireAuth><MatchDetailPage /></RequireAuth>} />
-          <Route path="/app/combines" element={<RequireAuth><CombosPage /></RequireAuth>} />
-          <Route path="/app/builder" element={<RequireAuth><ComboBuilderPage /></RequireAuth>} />
-          <Route path="/app/aujourdhui" element={<RequireAuth><TodayCombosPage /></RequireAuth>} />
-          <Route path="/app/live" element={<RequireAuth><LivePage /></RequireAuth>} />
-          <Route path="/app/historique" element={<RequireAuth><HistoryPage /></RequireAuth>} />
-          <Route path="/app/abonnement" element={<RequireAuth><SubscriptionPage /></RequireAuth>} />
-          <Route path="/app/admin" element={<RequireAuth admin><AdminPage /></RequireAuth>} />
+          <Route
+            path="/legal"
+            element={<Navigate to="/legal/mentions-legales" replace />}
+          />
+
+          <Route
+            path="/app"
+            element={
+              <RequireAuth>
+                <DashboardPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/top"
+            element={
+              <RequireAuth>
+                <TopPicksPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/value-bets"
+            element={
+              <RequireAuth>
+                <ValueBetsPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/montante"
+            element={
+              <RequireAuth>
+                <MontantePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/profil"
+            element={
+              <RequireAuth>
+                <ProfilePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/parrainage"
+            element={
+              <RequireAuth>
+                <ParrainagePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/match/:matchId"
+            element={
+              <RequireAuth>
+                <MatchDetailPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/combines"
+            element={
+              <RequireAuth>
+                <CombosPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/builder"
+            element={
+              <RequireAuth>
+                <ComboBuilderPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/aujourdhui"
+            element={
+              <RequireAuth>
+                <TodayCombosPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/live"
+            element={
+              <RequireAuth>
+                <LivePage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/historique"
+            element={
+              <RequireAuth>
+                <HistoryPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/abonnement"
+            element={
+              <RequireAuth>
+                <SubscriptionPage />
+              </RequireAuth>
+            }
+          />
+          <Route
+            path="/app/admin"
+            element={
+              <RequireAuth admin>
+                <AdminPage />
+              </RequireAuth>
+            }
+          />
+
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
+
         <PageTracker />
         <WhatsAppWidget />
         <Toaster position="top-right" richColors />
