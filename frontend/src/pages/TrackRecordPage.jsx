@@ -145,6 +145,7 @@ export default function TrackRecordPage() {
   const sync = safeObject(data.sync);
   const bySport = safeObject(stats.by_sport);
   const byLabel = safeObject(stats.by_label);
+  const sportScope = safeObject(stats.sport_scope);
   const results = safeArray(data.results);
 
   const sportCards = useMemo(() => {
@@ -164,6 +165,7 @@ export default function TrackRecordPage() {
   };
 
   const overduePending = toNumber(sync.overdue_pending);
+  const outsideWindow = toNumber(sync.outside_provider_window);
   const pendingTotal = toNumber(sync.pending_total);
   const totalPages = Math.max(1, toNumber(data.total_pages, 1));
   const currentPage = Math.min(totalPages, Math.max(1, toNumber(data.page, page)));
@@ -240,6 +242,16 @@ export default function TrackRecordPage() {
                   {overduePending} pronostic(s) dont l'événement a commencé depuis plus de 6 heures sont encore en attente de résultat.
                   Le serveur les resynchronise automatiquement ; ils rejoindront l'historique dès qu'un score final sera confirmé.
                 </p>
+                {outsideWindow > 0 && (
+                  <p className="mt-2 text-sm font-bold text-rose-700">
+                    {outsideWindow} résultat(s) ont plus de 3 jours : le moteur tente l'archive puis la source secondaire par équipes/heure.
+                  </p>
+                )}
+                {sync.last_sync_attempt_at && (
+                  <p className="mt-2 text-xs text-amber-700">
+                    Dernière tentative : {fmtDate(sync.last_sync_attempt_at, true)} · {toNumber(sync.last_sync_updated)} résolu(s) · {toNumber(sync.last_sync_no_score)} sans score · {toNumber(sync.last_sync_unsupported_market)} marché(s) non évalué(s).
+                  </p>
+                )}
               </div>
             )}
 
