@@ -37,6 +37,71 @@ logger = logging.getLogger("winpulse.odds_service")
 ODDS_API_KEY = os.environ.get("ODDS_API_KEY", "").strip()
 ODDS_API_BASE = "https://api.the-odds-api.com/v4"
 
+# Etat de consommation The Odds API. Il est mis a jour a chaque reponse afin que
+# le dashboard/refresh manuel puisse distinguer une vraie absence de matchs d'un
+# quota epuise, d'une cle invalide ou d'un rate limit.
+ODDS_API_USAGE_STATE: Dict[str, object] = {
+    "remaining": None,
+    "used": None,
+    "last_cost": None,
+    "quota_exhausted": False,
+    "rate_limited": False,
+    "last_http_status": None,
+    "last_error_code": None,
+    "last_error": None,
+    "last_checked_at": None,
+    "last_successful_fetch_at": None,
+}
+
+
+def _header_int(headers, name: str):
+    try:
+        value = headers.get(name)
+        return int(value) if value is not None and str(value).strip() != "" else None
+    except Exception:
+        return None
+
+
+def _record_odds_api_response(response, context: str = "") -> None:
+    """Memorise le quota et les erreurs fournisseur sans exposer la cle API."""
+    ODDS_API_USAGE_STATE["remaining"] = _header_int(response.headers, "x-requests-remaining")
+    ODDS_API_USAGE_STATE["used"] = _header_int(response.headers, "x-requests-used")
+    ODDS_API_USAGE_STATE["last_cost"] = _header_int(response.headers, "x-requests-last")
+    ODDS_API_USAGE_STATE["last_http_status"] = int(response.status_code)
+    ODDS_API_USAGE_STATE["last_checked_at"] = datetime.now(timezone.utc).isoformat()
+
+    if response.status_code == 429:
+        ODDS_API_USAGE_STATE["rate_limited"] = True
+
+    if response.status_code >= 400:
+        code = None
+        message = None
+        try:
+            payload = response.json()
+            if isinstance(payload, dict):
+                code = payload.get("error_code") or payload.get("code")
+                message = payload.get("message") or payload.get("error")
+        except Exception:
+            message = (response.text or "")[:300]
+        ODDS_API_USAGE_STATE["last_error_code"] = code
+        ODDS_API_USAGE_STATE["last_error"] = message or f"HTTP {response.status_code} ({context})"
+        text = f"{code or ''} {message or ''}".upper()
+        if "OUT_OF_USAGE_CREDITS" in text or "USAGE CREDIT" in text:
+            ODDS_API_USAGE_STATE["quota_exhausted"] = True
+
+
+def _provider_status_snapshot() -> Dict[str, object]:
+    return dict(ODDS_API_USAGE_STATE)
+
+
+def _reset_refresh_transient_state() -> None:
+    # On reteste a chaque nouveau refresh : le quota peut avoir ete recharge ou
+    # remis a zero depuis le precedent appel.
+    ODDS_API_USAGE_STATE["quota_exhausted"] = False
+    ODDS_API_USAGE_STATE["rate_limited"] = False
+    ODDS_API_USAGE_STATE["last_error_code"] = None
+    ODDS_API_USAGE_STATE["last_error"] = None
+
 # ─── Nouvelles sources secondaires ───────────────────────────────────────────
 ODDS_API_IO_KEY = os.environ.get("ODDS_API_IO_KEY", "").strip()
 ODDS_API_IO_BASE = "https://api.odds-api.io/v3"
@@ -324,17 +389,21 @@ def _regions_for_sport(sport_key: str) -> str:
 
 
 def _get_markets_for_sport(sport_key: str) -> str:
-    """Retourne les marchés à fetcher selon le sport."""
-    if sport_key.startswith("soccer"):
-        if sport_key in DEEP_MARKET_SPORTS:
+    """Retourne les marchés à fetcher en maîtrisant le coût du quota.
+
+    Les marchés enrichis sont réservés aux compétitions principales. Toutes les
+    autres compétitions restent disponibles en h2h au lieu de doubler/tripler le
+    coût de chaque appel sans nécessité.
+    """
+    if sport_key in DEEP_MARKET_SPORTS:
+        if sport_key.startswith("soccer"):
             return SOCCER_MARKETS
-        return "h2h,totals"
-    elif sport_key.startswith("basketball"):
-        return BASKET_MARKETS
-    elif sport_key.startswith("tennis"):
+        if sport_key.startswith("basketball"):
+            return BASKET_MARKETS
+        if sport_key.startswith("icehockey"):
+            return HOCKEY_MARKETS
+    if sport_key.startswith("tennis"):
         return TENNIS_MARKETS
-    elif sport_key.startswith("icehockey"):
-        return HOCKEY_MARKETS
     return DEFAULT_MARKETS
 
 
@@ -490,6 +559,7 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: Optio
             while True:
                 try:
                     r = await http.get(url, params=params)
+                    _record_odds_api_response(r, context=sport_key)
                 except (httpx.TimeoutException, httpx.NetworkError) as exc:
                     if attempt >= max_retries:
                         logger.warning("The Odds API %s -> réseau après %s tentative(s): %s", sport_key, attempt + 1, exc)
@@ -500,10 +570,22 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: Optio
 
                 if r.status_code == 200:
                     data = r.json()
+                    if isinstance(data, list) and data:
+                        ODDS_API_USAGE_STATE["last_successful_fetch_at"] = datetime.now(timezone.utc).isoformat()
                     return data if isinstance(data, list) else []
 
                 if r.status_code == 401:
-                    logger.error("The Odds API: clé invalide (401)")
+                    if ODDS_API_USAGE_STATE.get("quota_exhausted"):
+                        logger.error(
+                            "The Odds API: quota de crédits épuisé (OUT_OF_USAGE_CREDITS). "
+                            "Les anciennes données sont conservées jusqu'au prochain quota disponible."
+                        )
+                    else:
+                        logger.error(
+                            "The Odds API: accès refusé (401), code=%s, message=%s",
+                            ODDS_API_USAGE_STATE.get("last_error_code"),
+                            ODDS_API_USAGE_STATE.get("last_error"),
+                        )
                     return []
 
                 if r.status_code == 422 and params.get("markets") != "h2h" and not fallback_used:
@@ -551,6 +633,7 @@ async def _discover_active_sport_keys() -> List[str]:
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params={"apiKey": ODDS_API_KEY})
+            _record_odds_api_response(r, context="sports-discovery")
             if r.status_code != 200:
                 logger.warning("The Odds API /sports -> HTTP %s", r.status_code)
                 return []
@@ -1075,6 +1158,7 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     - si un sport échoue temporairement, ses événements encore valides du cache
       précédent sont conservés au lieu d'être effacés.
     """
+    _reset_refresh_transient_state()
     previous_cache = await db.odds_cache.find_one({"_id": "all_matches"})
     previous_matches = previous_cache.get("data", []) if previous_cache else []
     if not isinstance(previous_matches, list):
@@ -1116,30 +1200,36 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         len(ordered_keys), len(discovered),
     )
 
-    concurrency = max(1, min(int(os.environ.get("ODDS_FETCH_CONCURRENCY", "4")), 8))
+    concurrency = max(1, min(int(os.environ.get("ODDS_FETCH_CONCURRENCY", "2")), 4))
     semaphore = asyncio.Semaphore(concurrency)
     fetched_by_key: Dict[str, List[Dict]] = {}
 
     async def _fetch_one(sk: str):
         async with semaphore:
+            if ODDS_API_USAGE_STATE.get("quota_exhausted"):
+                fetched_by_key[sk] = []
+                return
             result = await _fetch_real_sport(
                 sk, markets=_get_markets_for_sport(sk), regions=_regions_for_sport(sk)
             )
             fetched_by_key[sk] = result if isinstance(result, list) else []
-            # Petit espacement entre appels pour lisser les rafales.
-            await asyncio.sleep(max(0.0, float(os.environ.get("ODDS_FETCH_SPACING_SECONDS", "0.15"))))
+            # Espacement volontaire pour éviter les rafales 429.
+            await asyncio.sleep(max(0.0, float(os.environ.get("ODDS_FETCH_SPACING_SECONDS", "0.75"))))
 
     await asyncio.gather(*[_fetch_one(sk) for sk in ordered_keys], return_exceptions=True)
 
     matches: List[Dict] = []
     for sk in ordered_keys:
         matches.extend(fetched_by_key.get(sk, []))
+    primary_fresh_count = len(matches)
+    secondary_fresh_count = 0
 
     # Source secondaire odds-api.io pour certaines ligues football/basket/hockey.
     try:
         secondary_matches = await _fetch_odds_api_io_matches()
         logger.warning("odds-api.io : %s match(s) recupere(s) au total", len(secondary_matches))
         if secondary_matches:
+            secondary_fresh_count = len(secondary_matches)
             matches = _merge_events(matches, secondary_matches)
     except Exception as exc:
         logger.warning("odds-api.io : echec global -> %s", exc)
@@ -1220,7 +1310,15 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         per_comp[key] = per_comp.get(key, 0) + 1
 
     final = _annotate_bookmakers(diversified)
-    await _save_to_cache(db, final)
+    await _save_to_cache(
+        db,
+        final,
+        refresh_meta={
+            "primary_fresh_count": primary_fresh_count,
+            "secondary_fresh_count": secondary_fresh_count,
+            "fresh_network_count": primary_fresh_count + secondary_fresh_count,
+        },
+    )
 
     counts: Dict[str, int] = {}
     for m in final:
@@ -1230,41 +1328,64 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     return final
 
 
-async def _save_to_cache(db, matches: List[Dict]):
-    """Sauvegarde les matchs en cache MongoDB avec ventilation par sport."""
+async def _save_to_cache(db, matches: List[Dict], refresh_meta: Optional[Dict] = None):
+    """Sauvegarde le cache avec ventilation et diagnostic fournisseur."""
     by_sport: Dict[str, int] = {}
     for match in matches or []:
         group = _sport_group_from_match(match)
         by_sport[group] = by_sport.get(group, 0) + 1
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    payload = {
+        "data": matches,
+        "updated_at": now_iso,
+        "count": len(matches),
+        "by_sport": by_sport,
+        "provider_status": _provider_status_snapshot(),
+        "refresh_meta": refresh_meta or {},
+    }
+    if refresh_meta and int(refresh_meta.get("fresh_network_count", 0) or 0) > 0:
+        payload["last_successful_network_refresh_at"] = now_iso
+
     await db.odds_cache.update_one(
         {"_id": "all_matches"},
-        {"$set": {
-            "data": matches,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "count": len(matches),
-            "by_sport": by_sport,
-        }},
+        {"$set": payload},
         upsert=True,
     )
 
 
 async def refresh_matches_worker(db) -> Dict:
-    """
-    Worker planifié : appelé par server.py à 06h00 WAT et 13h00 WAT.
-    C'est le SEUL endroit où l'API est appelée automatiquement.
-    """
+    """Worker de refresh avec état du quota et ventilation par sport."""
     matches = await _force_fetch_and_cache(db)
+    cache_status = await get_odds_cache_status(db)
+    provider = cache_status.get("provider_status") or _provider_status_snapshot()
     return {
-        "ok": True,
+        "ok": not bool(provider.get("quota_exhausted")),
         "count": len(matches),
+        "by_sport": cache_status.get("by_sport", {}),
         "refreshed_at": datetime.now(timezone.utc).isoformat(),
+        "last_successful_network_refresh_at": cache_status.get("last_successful_network_refresh_at"),
+        "provider_status": provider,
+        "message": (
+            "Quota The Odds API épuisé : le cache existant a été conservé."
+            if provider.get("quota_exhausted")
+            else "Refresh terminé."
+        ),
     }
 
 
 async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dict]:
-    """Fetch scores live/terminés. Endpoint GRATUIT (0 crédit)."""
-    if not ODDS_API_KEY:
+    """Fetch scores live/terminés depuis The Odds API.
+
+    The Odds API limite ``daysFrom`` aux valeurs 1..3. On borne donc toujours
+    explicitement la valeur et on journalise les erreurs au lieu de les masquer.
+    L'endpoint scores ne consomme pas les crédits d'odds, il peut donc être utilisé
+    régulièrement pour fiabiliser le Track Record.
+    """
+    if not ODDS_API_KEY or not sport_key:
         return []
+
+    days_from = max(1, min(int(days_from or 3), 3))
     url = f"{ODDS_API_BASE}/sports/{sport_key}/scores"
     params = {
         "apiKey": ODDS_API_KEY,
@@ -1272,12 +1393,18 @@ async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dic
         "dateFormat": "iso",
     }
     try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
+        async with httpx.AsyncClient(timeout=20.0) as http:
             r = await http.get(url, params=params)
             if r.status_code != 200:
+                logger.warning(
+                    "The Odds API scores %s -> HTTP %s: %s",
+                    sport_key, r.status_code, r.text[:200],
+                )
                 return []
-            return r.json()
-    except Exception:
+            data = r.json()
+            return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning("The Odds API scores %s -> exception: %s", sport_key, exc)
         return []
 
 
@@ -1333,10 +1460,16 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
                 if event_id is None:
                     continue
 
+                league = evt.get("league") or {}
                 scores_map[str(event_id)] = {
                     "status": evt.get("status", "termine_estime_par_horaire"),
                     "home_score": home_score,
                     "away_score": away_score,
+                    "home_team": evt.get("home"),
+                    "away_team": evt.get("away"),
+                    "commence_time": commence,
+                    "sport": sport,
+                    "sport_title": league.get("name") if isinstance(league, dict) else str(league or ""),
                 }
         except Exception as exc:
             logger.warning(
@@ -1347,71 +1480,274 @@ async def fetch_odds_api_io_scores_map() -> Dict[str, Dict]:
     return scores_map
 
 
-async def fetch_all_scores(db) -> List[Dict]:
-    """Scores avec cache 60 secondes et concurrence bornée."""
+async def _archive_scores(db, scores: List[Dict]) -> int:
+    """Archive durablement les scores terminés pour le Track Record.
+
+    Le cache ``all_scores`` est volontairement court (temps réel). Sans archive,
+    un score disparaît après 3 jours de la fenêtre The Odds API et un pronostic
+    resté pending ne peut plus être réconcilié. Cette collection persistante
+    élimine ce point de fragilité.
+    """
+    archived = 0
+    now_iso = datetime.now(timezone.utc).isoformat()
+    for score in scores or []:
+        try:
+            event_id = str(score.get("id") or "").strip()
+            if not event_id or not score.get("completed"):
+                continue
+            doc = {
+                "event_id": event_id,
+                "sport_key": score.get("sport_key"),
+                "sport_title": score.get("sport_title"),
+                "commence_time": score.get("commence_time"),
+                "home_team": score.get("home_team"),
+                "away_team": score.get("away_team"),
+                "completed": True,
+                "scores": score.get("scores") or [],
+                "last_seen_at": now_iso,
+            }
+            await db.scores_archive.update_one(
+                {"event_id": event_id},
+                {"$set": doc, "$setOnInsert": {"first_archived_at": now_iso}},
+                upsert=True,
+            )
+            archived += 1
+        except Exception as exc:
+            logger.warning("Archive score impossible: %s", exc)
+    return archived
+
+
+async def _read_scores_archive(
+    db,
+    sport_keys: Optional[List[str]] = None,
+    archive_days: int = 30,
+) -> List[Dict]:
+    """Relit les scores archivés récents, au format de l'endpoint /scores."""
+    archive_days = max(3, min(int(archive_days or 30), 180))
+    cutoff = datetime.now(timezone.utc) - timedelta(days=archive_days)
+    query: Dict = {"completed": True}
+    if sport_keys:
+        query["sport_key"] = {"$in": list(dict.fromkeys([str(k) for k in sport_keys if k]))}
+
+    docs = await db.scores_archive.find(query).to_list(length=20000)
+    out: List[Dict] = []
+    for d in docs:
+        try:
+            commence = d.get("commence_time")
+            if commence:
+                dt = datetime.fromisoformat(str(commence).replace("Z", "+00:00"))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                if dt < cutoff:
+                    continue
+            out.append({
+                "id": d.get("event_id"),
+                "sport_key": d.get("sport_key"),
+                "sport_title": d.get("sport_title"),
+                "commence_time": d.get("commence_time"),
+                "completed": True,
+                "home_team": d.get("home_team"),
+                "away_team": d.get("away_team"),
+                "scores": d.get("scores") or [],
+                "_from_archive": True,
+            })
+        except Exception:
+            continue
+    return out
+
+
+async def fetch_all_scores(
+    db,
+    sport_keys: Optional[List[str]] = None,
+    force_refresh: bool = False,
+    days_from: int = 3,
+    include_archive: bool = False,
+    archive_days: int = 30,
+) -> List[Dict]:
+    """Récupère les scores et les archive durablement.
+
+    ``sport_keys`` permet au moteur Track Record d'interroger exactement les
+    compétitions présentes dans les pronostics pending, même si ces compétitions
+    ne sont plus marquées actives par ``/sports``. C'est essentiel lorsqu'un
+    tournoi vient de se terminer.
+
+    ``include_archive=True`` fusionne les scores archivés avec les données
+    courantes afin de pouvoir réconcilier des pronostics plus anciens que la
+    fenêtre de 3 jours du fournisseur.
+    """
+    days_from = max(1, min(int(days_from or 3), 3))
+    requested_keys = list(dict.fromkeys([str(k).strip() for k in (sport_keys or []) if str(k).strip()]))
+
     cached = await db.scores_cache.find_one({"_id": "all_scores"})
-    if cached:
-        updated = cached.get("updated_at")
-        if updated:
-            try:
-                updated_dt = datetime.fromisoformat(updated) if isinstance(updated, str) else updated
-                if updated_dt.tzinfo is None:
-                    updated_dt = updated_dt.replace(tzinfo=timezone.utc)
-                if datetime.now(timezone.utc) - updated_dt < timedelta(seconds=60):
-                    return cached.get("data", [])
-            except Exception:
-                pass
+    cached_data = cached.get("data", []) if cached and isinstance(cached.get("data", []), list) else []
 
-    discovered = await _discover_active_sport_keys()
-    if discovered:
-        discovered_set = set(discovered)
-        active_sports = list(dict.fromkeys([k for k in REAL_SPORT_KEYS if k in discovered_set] + discovered))
+    # Sauvegarder d'abord l'ancien cache : si le cache contient encore les scores
+    # du 3 septembre, ils deviennent ainsi récupérables avant tout nouvel écrasement.
+    if cached_data:
+        await _archive_scores(db, cached_data)
+
+    cache_keys = set(cached.get("sport_keys", []) if cached else [])
+    cache_days_from = int(cached.get("days_from", 0) or 0) if cached else 0
+    cache_fresh = False
+    if cached and cached.get("updated_at"):
+        try:
+            updated_dt = datetime.fromisoformat(str(cached.get("updated_at")).replace("Z", "+00:00"))
+            if updated_dt.tzinfo is None:
+                updated_dt = updated_dt.replace(tzinfo=timezone.utc)
+            cache_fresh = datetime.now(timezone.utc) - updated_dt < timedelta(seconds=60)
+        except Exception:
+            cache_fresh = False
+
+    requested_covered = not requested_keys or set(requested_keys).issubset(cache_keys)
+    if not force_refresh and cache_fresh and requested_covered and cache_days_from >= days_from:
+        current_scores = cached_data
     else:
-        active_sports = list(dict.fromkeys(REAL_SPORT_KEYS))
-    logger.info("Scores: %s compétitions interrogées", len(active_sports))
+        if requested_keys:
+            # Réconciliation : la liste des pronostics pending est la source de
+            # vérité. Ne jamais filtrer ces clés par les sports actuellement actifs.
+            active_sports = requested_keys
+        else:
+            discovered = await _discover_active_sport_keys()
+            if discovered:
+                discovered_set = set(discovered)
+                active_sports = list(dict.fromkeys(
+                    [k for k in REAL_SPORT_KEYS if k in discovered_set] + discovered
+                ))
+            else:
+                active_sports = list(dict.fromkeys(REAL_SPORT_KEYS))
 
-    concurrency = max(1, min(int(os.environ.get("ODDS_SCORE_CONCURRENCY", "5")), 10))
-    semaphore = asyncio.Semaphore(concurrency)
-    results_by_key: Dict[str, List[Dict]] = {}
+        logger.info(
+            "Scores: %s compétition(s) interrogée(s), ciblées=%s, daysFrom=%s",
+            len(active_sports), bool(requested_keys), days_from,
+        )
 
-    async def _scores_one(sk: str):
-        async with semaphore:
-            try:
-                results_by_key[sk] = await fetch_scores_for_sport(sk)
-            except Exception as exc:
-                logger.warning("scores %s -> %s", sk, exc)
-                results_by_key[sk] = []
-            await asyncio.sleep(0.05)
+        concurrency = max(1, min(int(os.environ.get("ODDS_SCORE_CONCURRENCY", "5")), 10))
+        semaphore = asyncio.Semaphore(concurrency)
+        results_by_key: Dict[str, List[Dict]] = {}
 
-    await asyncio.gather(*[_scores_one(sk) for sk in active_sports], return_exceptions=True)
-    scores: List[Dict] = []
-    for sk in active_sports:
-        scores.extend(results_by_key.get(sk, []))
+        async def _scores_one(sk: str):
+            async with semaphore:
+                try:
+                    rows = await fetch_scores_for_sport(sk, days_from=days_from)
+                    # Certains fournisseurs omettent sport_key sur des réponses
+                    # marginales; on le restaure pour l'archivage/diagnostic.
+                    for row in rows or []:
+                        if isinstance(row, dict) and not row.get("sport_key"):
+                            row["sport_key"] = sk
+                    results_by_key[sk] = rows if isinstance(rows, list) else []
+                except Exception as exc:
+                    logger.warning("scores %s -> %s", sk, exc)
+                    results_by_key[sk] = []
+                await asyncio.sleep(0.05)
 
-    await db.scores_cache.update_one(
-        {"_id": "all_scores"},
-        {"$set": {"data": scores, "updated_at": datetime.now(timezone.utc).isoformat()}},
-        upsert=True,
+        await asyncio.gather(*[_scores_one(sk) for sk in active_sports], return_exceptions=True)
+        current_scores: List[Dict] = []
+        for sk in active_sports:
+            current_scores.extend(results_by_key.get(sk, []))
+
+        await _archive_scores(db, current_scores)
+
+        # Une réconciliation ciblée ne doit pas écraser le cache global des autres
+        # sports. On fusionne alors les nouvelles réponses avec le cache existant.
+        cache_payload = current_scores
+        cache_sport_keys = list(active_sports)
+        if requested_keys and cached_data:
+            merged_cache: Dict[str, Dict] = {}
+            for row in cached_data + current_scores:
+                event_id = str(row.get("id") or "").strip()
+                if event_id:
+                    merged_cache[event_id] = row
+            cache_payload = list(merged_cache.values())
+            cache_sport_keys = sorted(set(cache_keys).union(active_sports))
+
+        await db.scores_cache.update_one(
+            {"_id": "all_scores"},
+            {"$set": {
+                "data": cache_payload,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "sport_keys": cache_sport_keys,
+                "days_from": max(days_from, cache_days_from),
+            }},
+            upsert=True,
+        )
+
+    if not include_archive:
+        return current_scores
+
+    archived_scores = await _read_scores_archive(
+        db,
+        sport_keys=requested_keys or None,
+        archive_days=archive_days,
     )
-    return scores
+    merged: Dict[str, Dict] = {}
+    for score in archived_scores + current_scores:
+        event_id = str(score.get("id") or "").strip()
+        if event_id:
+            # Les données courantes passent après l'archive et prennent priorité.
+            merged[event_id] = score
+    return list(merged.values())
 
 
 async def get_odds_cache_status(db) -> Dict:
-    cache=await db.odds_cache.find_one({"_id":"all_matches"})
-    if not cache: return {"cached":False,"count":0,"updated_at":None,"stale":True}
-    data=cache.get("data",[]); updated=cache.get("updated_at")
+    cache = await db.odds_cache.find_one({"_id": "all_matches"})
+    if not cache:
+        return {
+            "cached": False, "count": 0, "updated_at": None, "stale": True,
+            "hard_stale": True, "by_sport": {},
+            "provider_status": _provider_status_snapshot(),
+        }
+
+    data = cache.get("data", [])
+    updated = cache.get("updated_at")
     try:
-        dt=datetime.fromisoformat(str(updated).replace("Z","+00:00")); dt=dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-        age=max(0,(datetime.now(timezone.utc)-dt).total_seconds())
-    except Exception: age=float("inf")
-    ttl=_cache_ttl_for_matches(data if isinstance(data,list) else [])
+        dt = datetime.fromisoformat(str(updated).replace("Z", "+00:00"))
+        dt = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        age = max(0, (datetime.now(timezone.utc) - dt).total_seconds())
+    except Exception:
+        age = float("inf")
+
+    ttl = _cache_ttl_for_matches(data if isinstance(data, list) else [])
     by_sport = cache.get("by_sport")
     if not isinstance(by_sport, dict):
         by_sport = {}
         for match in data if isinstance(data, list) else []:
             group = _sport_group_from_match(match)
             by_sport[group] = by_sport.get(group, 0) + 1
-    return {"cached":True,"count":len(data) if isinstance(data,list) else 0,"updated_at":updated,"age_seconds":int(age) if math.isfinite(age) else None,"ttl_minutes":ttl,"stale":age>ttl*60,"hard_stale":age>STALE_CACHE_MAX_HOURS*3600,"by_sport":by_sport}
+
+    event_dates = []
+    now = datetime.now(timezone.utc)
+    future_count = 0
+    for match in data if isinstance(data, list) else []:
+        try:
+            event_dt = datetime.fromisoformat(str(match.get("commence_time", "")).replace("Z", "+00:00"))
+            if event_dt.tzinfo is None:
+                event_dt = event_dt.replace(tzinfo=timezone.utc)
+            event_dates.append(event_dt)
+            if event_dt >= now:
+                future_count += 1
+        except Exception:
+            continue
+
+    provider_status = cache.get("provider_status")
+    if not isinstance(provider_status, dict):
+        provider_status = _provider_status_snapshot()
+
+    return {
+        "cached": True,
+        "count": len(data) if isinstance(data, list) else 0,
+        "updated_at": updated,
+        "last_successful_network_refresh_at": cache.get("last_successful_network_refresh_at"),
+        "age_seconds": int(age) if math.isfinite(age) else None,
+        "ttl_minutes": ttl,
+        "stale": age > ttl * 60,
+        "hard_stale": age > STALE_CACHE_MAX_HOURS * 3600,
+        "by_sport": by_sport,
+        "future_event_count": future_count,
+        "oldest_event_at": min(event_dates).isoformat() if event_dates else None,
+        "newest_event_at": max(event_dates).isoformat() if event_dates else None,
+        "provider_status": provider_status,
+        "refresh_meta": cache.get("refresh_meta") or {},
+    }
 
 
 async def get_match_by_id(db, match_id: str) -> Optional[Dict]:
