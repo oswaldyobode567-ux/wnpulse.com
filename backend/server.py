@@ -14,6 +14,7 @@ from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -223,6 +224,8 @@ ALLOW_ADMIN_EMAIL_BOOTSTRAP = os.environ.get("ALLOW_ADMIN_EMAIL_BOOTSTRAP", "fal
 
 # ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
+
+_manual_refresh_lock = asyncio.Lock()
 
 PREDICTION_CACHE_TTL = int(os.environ.get("PREDICTION_CACHE_TTL", "300"))
 _prediction_cache = {
@@ -666,6 +669,37 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
     # L'authentification reste obligatoire, mais on ne casse pas le bouton historique
     # en exigeant le rôle admin sur cette route utilisateur.
     return await _full_refresh_and_track()
+
+
+@app.get("/api/manual-refresh", response_class=HTMLResponse)
+async def manual_refresh_page():
+    """Petite page de maintenance permettant un refresh depuis un navigateur.
+
+    Le secret n'est jamais placé dans l'URL : il est envoyé uniquement dans un
+    en-tête HTTP vers /api/manual-refresh/run.
+    """
+    return HTMLResponse(
+        """<!doctype html>
+<html lang="fr">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WinPulse — Refresh manuel</title>
+<style>body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:40px 20px}.box{max-width:680px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px;box-shadow:0 12px 40px #0f172a12}h1{margin:0 0 8px;font-size:26px}p{color:#475569}input,button{width:100%;box-sizing:border-box;border-radius:10px;padding:12px 14px;font-size:15px}input{border:1px solid #cbd5e1;margin:12px 0}button{border:0;background:#f97316;color:#fff;font-weight:800;cursor:pointer}button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:16px;min-height:72px;margin-top:18px}.hint{font-size:13px}</style></head>
+<body><div class="box"><h1>Refresh manuel WinPulse</h1><p>Recharge les événements disponibles auprès des APIs, recalcule les statistiques et met à jour le cache.</p><label for="key"><strong>REFRESH_SECRET</strong></label><input id="key" type="password" autocomplete="off" placeholder="Secret configuré dans l'environnement serveur"><button id="run">Lancer le refresh maintenant</button><p class="hint">Le secret n'apparaît pas dans l'URL ni dans l'historique du navigateur.</p><pre id="out">Prêt.</pre></div>
+<script>const btn=document.getElementById('run'),out=document.getElementById('out'),key=document.getElementById('key');btn.onclick=async()=>{if(!key.value){out.textContent='REFRESH_SECRET requis.';return;}btn.disabled=true;out.textContent='Refresh en cours…';try{const r=await fetch('/api/manual-refresh/run',{method:'POST',headers:{'X-Refresh-Key':key.value}});const data=await r.json();out.textContent=JSON.stringify(data,null,2);if(!r.ok) throw new Error(data.detail||('HTTP '+r.status));}catch(e){out.textContent='Erreur : '+e.message+'\n\n'+out.textContent;}finally{btn.disabled=false;}};</script></body></html>"""
+    )
+
+
+@app.post("/api/manual-refresh/run")
+async def manual_refresh_run(key: str = Header(default="", alias="X-Refresh-Key")):
+    secret = os.environ.get("REFRESH_SECRET", "").strip()
+    if not secret or not key or not secrets.compare_digest(key, secret):
+        raise HTTPException(status_code=403, detail="REFRESH_SECRET invalide ou non configuré")
+    if _manual_refresh_lock.locked():
+        raise HTTPException(status_code=409, detail="Un refresh est déjà en cours")
+    async with _manual_refresh_lock:
+        result = await _full_refresh_and_track()
+        cache_status = await get_odds_cache_status(db)
+        return {"ok": True, "refresh": result, "cache": cache_status}
 
 
 @app.get("/api/data/source-audit")
@@ -1778,15 +1812,29 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
     aliases = {"soccer": "football", "ice_hockey": "hockey", "icehockey": "hockey", "americanfootball": "american_football"}
     sport = aliases.get(sport, sport)
 
+    # Track Record : ne jamais produire une page vide uniquement parce que la
+    # version courante du moteur vient de changer. Les picks officiels restent
+    # prioritaires; en phase de transition on utilise d'abord la version courante,
+    # puis on retombe sur tout l'historique resolu si cette version n'a encore
+    # aucun resultat.
     official_resolved = await db.predictions_history.find(
         {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
     ).to_list(length=5000)
 
     transition_mode = len(official_resolved) < 20
+    transition_source = "official"
     if transition_mode:
-        resolved_all = await db.predictions_history.find(
+        current_model_resolved = await db.predictions_history.find(
             {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
         ).to_list(length=5000)
+        if current_model_resolved:
+            resolved_all = current_model_resolved
+            transition_source = "current_model"
+        else:
+            resolved_all = await db.predictions_history.find(
+                {"result": {"$in": ["won", "lost"]}}
+            ).to_list(length=5000)
+            transition_source = "all_resolved_fallback"
     else:
         resolved_all = official_resolved
 
@@ -1945,8 +1993,9 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
         "selected_sport": sport,
         "available_sports": available_sports,
         "transition_mode": transition_mode,
+        "transition_source": transition_source,
         "note": (
-            "Moins de 20 résultats officiels accumulés pour le moment : cette page affiche donc tous les picks résolus de la version actuelle du moteur, gagnés et perdus, sans sélection a posteriori. Une fois 20 résultats officiels atteints, elle basculera automatiquement sur la sélection stricte pré-match."
+            "Moins de 20 résultats officiels accumulés pour le moment : le Track Record affiche les résultats résolus disponibles sans masquer les pertes. Il basculera automatiquement sur la sélection officielle stricte dès que l'échantillon sera suffisant."
         ) if transition_mode else None,
     }
 
