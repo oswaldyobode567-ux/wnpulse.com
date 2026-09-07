@@ -1,5 +1,5 @@
 """
-WinPulse API — server.py (v8.4)
+WinPulse API — server.py (v8.5 hardened)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
@@ -8,14 +8,17 @@ import time
 import httpx
 import uuid
 import statistics
+import secrets
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, status, Header
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from auth import (
     hash_password, verify_password, create_access_token,
@@ -163,12 +166,60 @@ DB_NAME = os.environ.get("DB_NAME", "winpulse")
 client = AsyncIOMotorClient(MONGO_URL)
 db = client[DB_NAME]
 
-# Emails auto-promus admin + abonnement Elite a chaque connexion
+
+async def _get_user_from_payload(payload: Optional[dict]) -> Optional[dict]:
+    """Charge l'utilisateur et applique immédiatement une éventuelle expiration."""
+    if not payload or not payload.get("sub"):
+        return None
+    user = await db.users.find_one({"id": payload["sub"]})
+    if not user:
+        return None
+    return await _check_and_downgrade_if_expired(user)
+
+
+async def _has_paid_access(payload: Optional[dict]) -> bool:
+    user = await _get_user_from_payload(payload)
+    return bool(user and (user.get("is_admin") or user.get("subscription", "free") != "free"))
+
+
+async def _require_paid_access(payload: dict) -> dict:
+    user = await _get_user_from_payload(payload)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    if not user.get("is_admin") and user.get("subscription", "free") == "free":
+        raise HTTPException(status_code=403, detail="Fonction réservée aux abonnés Pro")
+    return user
+
+
+_PREMIUM_PREDICTION_FIELDS = (
+    "pick", "pick_odds", "markets", "recommendations", "combo_suggestion",
+    "confidence", "calibrated_probability", "effective_score", "wp_score",
+    "model_probability", "estimated_win_probability", "selection_score",
+    "stability_score", "dominance_score", "edge",
+)
+
+
+def _lock_prediction_for_free(prediction: Dict) -> Dict:
+    """Masque côté serveur les informations permettant de reconstituer un pick premium."""
+    locked = dict(prediction or {})
+    for field in _PREMIUM_PREDICTION_FIELDS:
+        if field in ("markets", "recommendations"):
+            locked[field] = []
+        else:
+            locked[field] = None
+    locked["locked"] = True
+    return locked
+
+
+# Bootstrap administrateur : désactivé par défaut. Les droits admin doivent
+# normalement être persistés en base. Pour une initialisation ponctuelle,
+# activer ALLOW_ADMIN_EMAIL_BOOTSTRAP=true puis le désactiver aussitôt.
 ADMIN_EMAILS = {
     e.strip().lower()
     for e in os.environ.get("ADMIN_EMAILS", "").split(",")
     if e.strip()
 }
+ALLOW_ADMIN_EMAIL_BOOTSTRAP = os.environ.get("ALLOW_ADMIN_EMAIL_BOOTSTRAP", "false").strip().lower() in ("1", "true", "yes")
 
 # ─── App setup ────────────────────────────────────────────────────────────
 app = FastAPI(title="WinPulse API")
@@ -215,9 +266,9 @@ async def sante():
 
 class RegisterPayload(BaseModel):
     email: EmailStr
-    password: str
-    name: Optional[str] = None
-    referral_code: Optional[str] = None
+    password: str = Field(min_length=10, max_length=128)
+    name: Optional[str] = Field(default=None, max_length=120)
+    referral_code: Optional[str] = Field(default=None, max_length=64)
 
 
 class LoginPayload(BaseModel):
@@ -231,7 +282,9 @@ async def register(payload: RegisterPayload):
     if existing:
         raise HTTPException(status_code=400, detail="Email deja utilise")
 
-    is_admin = payload.email.lower() in ADMIN_EMAILS
+    # Ne jamais accorder un rôle admin sur la seule possession d'une adresse email.
+    # Sans vérification d'email forte, cela permettrait une prise de contrôle au premier inscrit.
+    is_admin = False
     user_id = str(uuid.uuid4())
 
     referred_by = None
@@ -273,7 +326,7 @@ async def login(payload: LoginPayload):
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
 
-    if user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
+    if ALLOW_ADMIN_EMAIL_BOOTSTRAP and user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
         await db.users.update_one(
             {"id": user["id"]},
             {"$set": {"is_admin": True, "subscription": "elite"}},
@@ -454,21 +507,12 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
         snapshot["calibration"],
     )
     pred_by_id = {p.get("match_id"): p for p in predictions}
-    is_paid = False
-    if payload:
-        user = await db.users.find_one({"id": payload.get("sub")})
-        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
-            is_paid = True
+    is_paid = await _has_paid_access(payload)
     merged = []
     for i, m in enumerate(matches):
         pred = dict(pred_by_id.get(m.get("id"), {}))
         if not is_paid and i > 0:
-            pred["locked"] = True
-            pred["pick"] = None
-            pred["pick_odds"] = None
-            pred["markets"] = []
-            pred["recommendations"] = []
-            pred["combo_suggestion"] = None
+            pred = _lock_prediction_for_free(pred)
         else:
             pred["locked"] = False
         merged.append(_merge_match_prediction(m, pred))
@@ -476,13 +520,19 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
 
 
 @app.get("/api/predictions")
-async def get_predictions():
+async def get_predictions(payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
     predictions = _apply_calibration(
         [dict(p) for p in snapshot["predictions"]],
         snapshot["calibration"],
     )
-    return predictions
+    if await _has_paid_access(payload):
+        for pred in predictions:
+            pred["locked"] = False
+        return predictions
+
+    # Offre gratuite : un seul pronostic complet, le reste est réellement masqué côté API.
+    return [pred if i == 0 else _lock_prediction_for_free(pred) for i, pred in enumerate(predictions)]
 
 
 @app.get("/api/predictions/model-status")
@@ -512,23 +562,14 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
     preds = preds[:max(1, min(limit, 50))]
 
-    is_paid = False
-    if payload:
-        user = await db.users.find_one({"id": payload.get("sub")})
-        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
-            is_paid = True
+    is_paid = await _has_paid_access(payload)
 
     if not is_paid:
         for i, p in enumerate(preds):
             if i == 0:
                 p["locked"] = False
             else:
-                p["locked"] = True
-                p["pick"] = None
-                p["pick_odds"] = None
-                p["markets"] = []
-                p["recommendations"] = []
-                p["combo_suggestion"] = None
+                preds[i] = _lock_prediction_for_free(p)
     else:
         for p in preds:
             p["locked"] = False
@@ -537,9 +578,9 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
 
 
 @app.get("/api/matches/{match_id}/analysis")
-async def get_match_analysis(match_id: str):
+async def get_match_analysis(match_id: str, payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
-    matches = snapshot["matches"]
+    matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
 
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
 
@@ -559,6 +600,13 @@ async def get_match_analysis(match_id: str):
         (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
         {}
     )
+
+    is_paid = await _has_paid_access(payload)
+    free_match_id = str(matches[0].get("id") or matches[0].get("match_id")) if matches else None
+    requested_id = str(match.get("id") or match.get("match_id"))
+    if not is_paid and requested_id != free_match_id:
+        raise HTTPException(status_code=403, detail="Analyse complète réservée aux abonnés Pro")
+
     ai_analysis = await generate_analysis(match, prediction)
     return {"match": match, "prediction": prediction, "ai_analysis": ai_analysis}
 
@@ -576,6 +624,7 @@ async def get_data_status():
 
 @app.post("/api/data/refresh")
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
     result = await refresh_matches_worker(db)
     await _invalidate_prediction_cache()
     return result
@@ -760,9 +809,9 @@ async def request_subscription_upgrade_alias(
 
 
 async def _require_admin(payload: dict) -> dict:
-    user = await db.users.find_one({"id": payload["sub"]})
+    user = await _get_user_from_payload(payload)
     if not user or not user.get("is_admin"):
-        raise HTTPException(status_code=403, detail="Acces reserve aux administrateurs")
+        raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
     return user
 
 
@@ -1183,12 +1232,13 @@ async def _montante_reconcile(state: Dict) -> Dict:
         docs = await db.predictions_history.find({
             "match_id": match_id,
             "pick": pick_text,
-            "result": {"$in": ["won", "lost"]},
+            "result": {"$in": ["won", "lost", "void"]},
         }).sort("created_at", -1).to_list(length=1)
         if not docs:
             statuses.append("PENDING")
         else:
-            statuses.append("WIN" if docs[0].get("result") == "won" else "LOSS")
+            result = docs[0].get("result")
+            statuses.append("WIN" if result == "won" else "LOSS" if result == "lost" else "VOID")
 
     if "LOSS" in statuses:
         state["status"] = "FAILED"
@@ -1203,16 +1253,18 @@ async def _montante_reconcile(state: Dict) -> Dict:
         await _montante_save(state)
         return state
 
-    if statuses and all(x == "WIN" for x in statuses):
+    if statuses and all(x in ("WIN", "VOID") for x in statuses):
+        # Un pari void/push est remboursé : multiplicateur 1.00 dans la montante.
         combined_odds = 1.0
-        for pick in picks:
-            combined_odds *= float(pick.get("odds") or 1)
+        for pick, pick_status in zip(picks, statuses):
+            if pick_status == "WIN":
+                combined_odds *= float(pick.get("odds") or 1)
         state["theoretical_bankroll"] = round(
             float(state.get("theoretical_bankroll", state.get("initial_bankroll", 10000))) * combined_odds, 2
         )
         state.setdefault("history", []).append({
             "day": state.get("current_day", 1),
-            "status": "WIN",
+            "status": "WIN" if any(x == "WIN" for x in statuses) else "VOID",
             "settled_at": datetime.now(timezone.utc).isoformat(),
             "combined_odds": round(combined_odds, 3),
             "picks": picks,
@@ -1314,6 +1366,7 @@ async def restart_montante(
 
 @app.post("/api/montante/refresh")
 async def refresh_montante(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
     state = await _montante_get()
     if not state:
         raise HTTPException(status_code=404, detail="Aucune montante active")
@@ -1326,19 +1379,22 @@ async def refresh_montante(payload: dict = Depends(get_current_user_payload)):
 # ─── Combos ─────────────────────────────────────────────────────────────────
 
 @app.get("/api/combos")
-async def get_combos():
+async def get_combos(payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
     return build_multi_combos(matches)
 
 
 @app.get("/api/combos/super")
-async def get_super_combos():
+async def get_super_combos(payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
     return build_super_combos(matches)
 
 
 @app.get("/api/combos/ultra-safe")
-async def get_ultra_safe_combo():
+async def get_ultra_safe_combo(payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
     today_matches = [m for m in matches if _is_today_match(m.get("commence_time", ""))]
     return build_ultra_safe_combo(today_matches)
@@ -1389,8 +1445,8 @@ async def get_predictions_today_combos_alias(payload: Optional[dict] = Depends(g
 
 
 @app.get("/api/predictions/combos")
-async def get_predictions_combos_alias():
-    return await get_combos()
+async def get_predictions_combos_alias(payload: dict = Depends(get_current_user_payload)):
+    return await get_combos(payload)
 
 
 @app.get("/api/builder/matches")
@@ -1400,11 +1456,7 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
     if sport and sport != "all":
         matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
     real_stats_map = await get_real_stats_map(db, matches)
-    is_paid = False
-    if payload:
-        user = await db.users.find_one({"id": payload.get("sub")})
-        if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
-            is_paid = True
+    is_paid = await _has_paid_access(payload)
     FREE_UNLOCKED_MATCHES = 2
     result = []
     unlocked_matches_count = 0
@@ -1448,7 +1500,8 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
 
 
 @app.get("/api/builder/stats/{match_id}")
-async def get_builder_match_stats(match_id: str):
+async def get_builder_match_stats(match_id: str, payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
     if not match:
@@ -1494,6 +1547,7 @@ async def save_builder_combo(
     payload_in: SaveComboPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
+    await _require_paid_access(payload)
     if not payload_in.legs:
         raise HTTPException(status_code=400, detail="Aucun pick selectionne")
 
@@ -1518,6 +1572,7 @@ async def save_builder_combo(
 
 @app.get("/api/builder/my-combos")
 async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     saved = await db.user_combos.find({"user_id": payload["sub"]}).sort("created_at", -1).to_list(length=100)
     for s in saved:
         s.pop("_id", None)
@@ -1526,6 +1581,7 @@ async def get_builder_my_combos(payload: dict = Depends(get_current_user_payload
 
 @app.delete("/api/builder/my-combos/{combo_id}")
 async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     result = await db.user_combos.delete_one({"id": combo_id, "user_id": payload["sub"]})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Combo introuvable")
@@ -1535,9 +1591,9 @@ async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_curren
 # ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
 
 @app.get("/api/matches/{match_id}")
-async def get_single_match(match_id: str):
+async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
-    matches = snapshot["matches"]
+    matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
 
     match = next((m for m in matches if str(m.get("id")) == str(match_id)), None)
     if not match:
@@ -1557,13 +1613,23 @@ async def get_single_match(match_id: str):
         {}
     )
     prediction = _apply_calibration([prediction], snapshot["calibration"])[0] if prediction else {}
+    if not await _has_paid_access(payload):
+        free_match_id = str(matches[0].get("id") or matches[0].get("match_id")) if matches else None
+        requested_id = str(match.get("id") or match.get("match_id"))
+        if requested_id != free_match_id:
+            prediction = _lock_prediction_for_free(prediction)
+        else:
+            prediction["locked"] = False
+    else:
+        prediction["locked"] = False
     return _merge_match_prediction(match, prediction)
 
 
 # ─── Value bets ───────────────────────────────────────────────────────────
 
 @app.get("/api/value-bets")
-async def get_value_bets():
+async def get_value_bets(payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
     snapshot = await _get_prediction_snapshot()
     matches = snapshot["matches"]
     bets = find_value_bets(matches, min_edge=1.5, limit=30)
@@ -1658,41 +1724,77 @@ def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
 
 
 @app.get("/api/track-record")
-async def get_track_record_public(page: int = 1, per_page: int = 20):
+async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str = "all"):
+    page = max(1, page)
+    per_page = max(1, min(per_page, 100))
+
+    def _sport_of(row: Dict) -> str:
+        raw_key = str(row.get("sport_key") or "").lower().strip()
+        raw_title = str(row.get("sport_title") or "").lower().strip()
+        text = f"{raw_key} {raw_title}"
+
+        if any(x in text for x in ("americanfootball", "american_football", "nfl", "ncaaf")):
+            return "american_football"
+        if any(x in text for x in ("soccer", "football", "premier league", "la liga", "bundesliga", "ligue 1", "serie a", "uefa", "champions league")):
+            return "football"
+        if any(x in text for x in ("basketball", "nba", "ncaab", "euroleague")):
+            return "basketball"
+        if any(x in text for x in ("tennis", "atp", "wta")):
+            return "tennis"
+        if any(x in text for x in ("icehockey", "ice_hockey", "hockey", "nhl")):
+            return "hockey"
+        if any(x in text for x in ("baseball", "mlb")):
+            return "baseball"
+        if any(x in text for x in ("mma", "ufc", "mixed martial")):
+            return "mma"
+        return raw_key.split("_")[0] if raw_key else "unknown"
+
+    sport = (sport or "all").lower().strip()
+    aliases = {"soccer": "football", "ice_hockey": "hockey", "icehockey": "hockey", "americanfootball": "american_football"}
+    sport = aliases.get(sport, sport)
+
     official_resolved = await db.predictions_history.find(
         {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
     ).to_list(length=5000)
 
     transition_mode = len(official_resolved) < 20
-
     if transition_mode:
-        resolved = await db.predictions_history.find(
+        resolved_all = await db.predictions_history.find(
             {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
         ).to_list(length=5000)
     else:
-        resolved = official_resolved
+        resolved_all = official_resolved
+
+    for row in resolved_all:
+        row["_normalized_sport"] = _sport_of(row)
+
+    available_sports = sorted({r["_normalized_sport"] for r in resolved_all if r["_normalized_sport"] != "unknown"})
+    if sport != "all" and sport not in available_sports:
+        # Un filtre sans résultat reste valide : il renvoie simplement un Track Record vide.
+        resolved = []
+    else:
+        resolved = resolved_all if sport == "all" else [r for r in resolved_all if r["_normalized_sport"] == sport]
 
     resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
 
     total = len(resolved)
     wins = sum(1 for r in resolved if r.get("result") == "won")
     win_rate = round((wins / total) * 100, 1) if total else 0
-    odds_list = [r["pick_odds"] for r in resolved if r.get("pick_odds")]
+    odds_list = [float(r["pick_odds"]) for r in resolved if r.get("pick_odds")]
     avg_odds = round(statistics.mean(odds_list), 2) if odds_list else 0
 
     balance = TRACK_RECORD_BASE_BANKROLL
     daily_balance: Dict[str, float] = {}
     for r in resolved:
         stake = TRACK_RECORD_STAKE_XOF
-        odds = r.get("pick_odds") or 1
+        odds = float(r.get("pick_odds") or 1)
         profit = stake * (odds - 1) if r.get("result") == "won" else -stake
         balance += profit
         dt = _parse_iso(r.get("reconciled_at") or r.get("created_at"))
         day_key = dt.strftime("%Y-%m-%d") if dt else "inconnu"
         daily_balance[day_key] = balance
 
-    chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())]
-    chart = chart[-60:]
+    chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())][-60:]
 
     streak = 0
     for r in reversed(resolved):
@@ -1706,20 +1808,23 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         r for r in resolved
         if (_parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
     ]
-    profit_units_30d = 0.0
-    for r in recent:
-        odds = r.get("pick_odds") or 1
-        profit_units_30d += (odds - 1) if r.get("result") == "won" else -1
+    profit_units_30d = sum(
+        (float(r.get("pick_odds") or 1) - 1) if r.get("result") == "won" else -1
+        for r in recent
+    )
     roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
 
-    by_label: Dict[str, Dict] = {"safe": {"wins": 0, "total": 0}, "value": {"wins": 0, "total": 0}, "risky": {"wins": 0, "total": 0}}
+    by_label: Dict[str, Dict] = {
+        "safe": {"wins": 0, "total": 0},
+        "value": {"wins": 0, "total": 0},
+        "risky": {"wins": 0, "total": 0},
+    }
     for r in resolved:
         lbl = r.get("label")
-        if lbl not in by_label:
-            continue
-        by_label[lbl]["total"] += 1
-        if r.get("result") == "won":
-            by_label[lbl]["wins"] += 1
+        if lbl in by_label:
+            by_label[lbl]["total"] += 1
+            if r.get("result") == "won":
+                by_label[lbl]["wins"] += 1
     by_label_stats = {
         lbl: {
             "wins": d["wins"],
@@ -1727,6 +1832,26 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
             "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
         }
         for lbl, d in by_label.items()
+    }
+
+    # Les tuiles par sport restent calculées sur tout le corpus officiel/transition,
+    # même lorsqu'un sport est sélectionné, afin de permettre la comparaison.
+    by_sport: Dict[str, Dict] = {}
+    for r in resolved_all:
+        key = r.get("_normalized_sport", "unknown")
+        if key == "unknown":
+            continue
+        item = by_sport.setdefault(key, {"wins": 0, "total": 0})
+        item["total"] += 1
+        if r.get("result") == "won":
+            item["wins"] += 1
+    by_sport_stats = {
+        key: {
+            "wins": d["wins"],
+            "total": d["total"],
+            "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
+        }
+        for key, d in sorted(by_sport.items())
     }
 
     stats = {
@@ -1741,19 +1866,23 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
         "balance_now": round(balance),
         "stake_xof": TRACK_RECORD_STAKE_XOF,
         "by_label": by_label_stats,
+        "by_sport": by_sport_stats,
     }
 
+    total_pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, total_pages)
     results_desc = list(reversed(resolved))
-    start = max(0, (page - 1) * per_page)
+    start = (page - 1) * per_page
     page_items = results_desc[start:start + per_page]
 
     results = []
     for r in page_items:
-        odds = r.get("pick_odds") or 1
+        odds = float(r.get("pick_odds") or 1)
         profit_xof = round(TRACK_RECORD_STAKE_XOF * (odds - 1)) if r.get("result") == "won" else -TRACK_RECORD_STAKE_XOF
         results.append({
             "id": r.get("signature"),
             "date": r.get("reconciled_at") or r.get("created_at"),
+            "sport": r.get("_normalized_sport", "unknown"),
             "league": r.get("sport_title", ""),
             "match": f"{r.get('home_team', '')} vs {r.get('away_team', '')}",
             "pick": r.get("pick", ""),
@@ -1763,28 +1892,26 @@ async def get_track_record_public(page: int = 1, per_page: int = 20):
             "profit_xof": profit_xof,
         })
 
-    total_pages = max(1, (total + per_page - 1) // per_page)
-
     return {
         "stats": stats,
         "chart": chart,
         "results": results,
         "page": page,
+        "per_page": per_page,
         "total_pages": total_pages,
+        "selected_sport": sport,
+        "available_sports": available_sports,
         "transition_mode": transition_mode,
         "note": (
-            "Moins de 20 résultats officiels accumulés pour le moment "
-            "(les grands championnats reprennent progressivement) — cette "
-            "page affiche donc TOUS les picks résolus de la version "
-            "actuelle du moteur, gagnés et perdus, sans aucune sélection. "
-            "Une fois 20 résultats officiels atteints, la page basculera "
-            "automatiquement sur notre sélection stricte pré-match."
+            "Moins de 20 résultats officiels accumulés pour le moment : cette page affiche donc tous les picks résolus de la version actuelle du moteur, gagnés et perdus, sans sélection a posteriori. Une fois 20 résultats officiels atteints, elle basculera automatiquement sur la sélection stricte pré-match."
         ) if transition_mode else None,
     }
 
 
 @app.get("/api/predictions/history")
-async def get_predictions_history(limit: int = 100, payload: Optional[dict] = Depends(get_optional_user_payload)):
+async def get_predictions_history(limit: int = 100, payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    limit = max(1, min(limit, 500))
     history = await db.predictions_history.find({}).sort("created_at", -1).to_list(length=limit)
     for h in history:
         h.pop("_id", None)
@@ -1895,11 +2022,24 @@ async def admin_get_clv_stats(payload: dict = Depends(get_current_user_payload))
     }
 
 
+# ─── Outils de diagnostic temporaires ───────────────────────────────────────
+# Désactivés par défaut en production. Pour une maintenance ponctuelle, définir
+# ENABLE_SIMPLE_ADMIN_ROUTES=true et envoyer REFRESH_SECRET dans l'en-tête
+# X-Admin-Debug-Key. Ces routes restent hors du frontend public.
+ENABLE_SIMPLE_ADMIN_ROUTES = os.environ.get("ENABLE_SIMPLE_ADMIN_ROUTES", "false").strip().lower() in ("1", "true", "yes")
+
+
+def _require_simple_admin_secret(key: str) -> None:
+    if not ENABLE_SIMPLE_ADMIN_ROUTES:
+        raise HTTPException(status_code=404, detail="Route de diagnostic désactivée")
+    expected = os.environ.get("REFRESH_SECRET", "").strip()
+    if not expected or not key or not secrets.compare_digest(key, expected):
+        raise HTTPException(status_code=403, detail="Clé invalide")
+
+
 @app.get("/api/admin/diagnose-pending-simple")
-async def admin_diagnose_pending_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_diagnose_pending_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
 
     pending = await db.predictions_history.find({"result": "pending"}).to_list(length=2000)
     now = datetime.now(timezone.utc)
@@ -1939,20 +2079,16 @@ async def admin_diagnose_pending_simple(key: str = ""):
     }
 
 
-@app.get("/api/admin/reconcile-results-simple")
-async def admin_reconcile_results_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/reconcile-results-simple")
+async def admin_reconcile_results_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     result = await _reconcile_predictions_with_scores()
     return result
 
 
-@app.get("/api/admin/sweep-expired-simple")
-async def admin_sweep_expired_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/sweep-expired-simple")
+async def admin_sweep_expired_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     result = await _sweep_expired_subscriptions()
     return result
 
@@ -1969,16 +2105,15 @@ async def get_scores():
 
 @app.post("/api/admin/refresh")
 async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
     result = await refresh_matches_worker(db)
     await _invalidate_prediction_cache()
     return result
 
 
-@app.get("/api/admin/activate-admin-simple")
-async def admin_activate_admin_simple(email: str = "", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/activate-admin-simple")
+async def admin_activate_admin_simple(email: str = "", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
 
     email_norm = email.lower().strip()
     user = await db.users.find_one({"email": email_norm})
@@ -1998,11 +2133,9 @@ async def admin_activate_admin_simple(email: str = "", key: str = ""):
     }
 
 
-@app.get("/api/admin/test-email-simple")
-async def admin_test_email_simple(to: str = "", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/test-email-simple")
+async def admin_test_email_simple(to: str = "", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     if not to:
         raise HTTPException(status_code=400, detail="Parametre 'to' requis")
 
@@ -2015,10 +2148,8 @@ async def admin_test_email_simple(to: str = "", key: str = ""):
 
 
 @app.get("/api/admin/whoami-simple")
-async def admin_whoami_simple(email: str = "", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_whoami_simple(email: str = "", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
 
     user = await db.users.find_one({"email": email.lower().strip()})
     if not user:
@@ -2034,30 +2165,24 @@ async def admin_whoami_simple(email: str = "", key: str = ""):
     }
 
 
-@app.get("/api/admin/refresh-simple")
-async def admin_refresh_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/refresh-simple")
+async def admin_refresh_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     result = await _full_refresh_and_track()
     return result
 
 
-@app.get("/api/admin/refresh-real-stats-simple")
-async def admin_refresh_real_stats_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/refresh-real-stats-simple")
+async def admin_refresh_real_stats_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     matches = await fetch_all_matches(db)
     result = await refresh_real_stats_cache(db, matches)
     return result
 
 
 @app.get("/api/admin/probe-oaio-odds-simple")
-async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     if not event_id:
         raise HTTPException(status_code=400, detail="Parametre 'event_id' requis")
     from odds_service import _fetch_odds_api_io_odds
@@ -2070,10 +2195,8 @@ async def admin_probe_oaio_odds_simple(event_id: str = "", key: str = ""):
 
 
 @app.get("/api/admin/debug-config-simple")
-async def admin_debug_config_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_debug_config_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     return {
         "odds_api_io_leagues_actuellement_chargees": ODDS_API_IO_LEAGUES,
         "contient_playoff_round_champions_league": "international-clubs-uefa-champions-league-playoff-round" in ODDS_API_IO_LEAGUES,
@@ -2082,10 +2205,8 @@ async def admin_debug_config_simple(key: str = ""):
 
 
 @app.get("/api/admin/probe-oaio-event-simple")
-async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_probe_oaio_event_simple(match_id: str = "", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     if not match_id:
         raise HTTPException(status_code=400, detail="Parametre 'match_id' requis (id numerique, sans 'oaio-')")
     result = await probe_odds_api_io_event(match_id)
@@ -2093,19 +2214,15 @@ async def admin_probe_oaio_event_simple(match_id: str = "", key: str = ""):
 
 
 @app.get("/api/admin/probe-oaio-league-simple")
-async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sport: str = "football", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_probe_oaio_league_simple(league: str = "denmark-superligaen", sport: str = "football", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     result = await probe_odds_api_io_league_sample(league, sport)
     return result
 
 
 @app.get("/api/admin/diagnose-labels-simple")
-async def admin_diagnose_labels_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_diagnose_labels_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
 
     all_safe = await db.predictions_history.find({"label": "safe"}).to_list(length=20000)
 
@@ -2168,11 +2285,9 @@ async def admin_diagnose_labels_simple(key: str = ""):
     }
 
 
-@app.get("/api/admin/backfill-labels-simple")
-async def admin_backfill_labels_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/backfill-labels-simple")
+async def admin_backfill_labels_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
 
     docs = await db.predictions_history.find({
         "$or": [{"label": {"$exists": False}}, {"label": None}]
@@ -2206,21 +2321,17 @@ async def admin_backfill_labels_simple(key: str = ""):
 
 
 @app.get("/api/admin/diagnose-sport-simple")
-async def admin_diagnose_sport_simple(sport_key: str = "", key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+async def admin_diagnose_sport_simple(sport_key: str = "", key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     if not sport_key:
         raise HTTPException(status_code=400, detail="Parametre 'sport_key' requis")
     result = await diagnose_sport_key(db, sport_key)
     return result
 
 
-@app.get("/api/admin/update-closing-odds-simple")
-async def admin_update_closing_odds_simple(key: str = ""):
-    secret = os.environ.get("REFRESH_SECRET", "")
-    if not secret or key != secret:
-        raise HTTPException(status_code=403, detail="Cle invalide")
+@app.post("/api/admin/update-closing-odds-simple")
+async def admin_update_closing_odds_simple(key: str = Header(default="", alias="X-Admin-Debug-Key")):
+    _require_simple_admin_secret(key)
     matches = await fetch_all_matches(db)
     result = await _update_closing_odds(matches)
     return result
@@ -2251,6 +2362,7 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "home_team": p.get("home_team"),
                 "away_team": p.get("away_team"),
                 "sport_title": p.get("sport_title"),
+                "sport_key": p.get("sport_key"),
                 "commence_time": p.get("commence_time"),
                 "pick": p["pick"],
                 "market": p.get("market"),
@@ -2328,7 +2440,7 @@ async def _update_closing_odds(matches: List[Dict]) -> Dict:
                 continue
 
             opening_odds = pred.get("pick_odds") or closing_odds
-            clv_percent = round(((closing_odds - opening_odds) / opening_odds) * 100, 2) if opening_odds else 0.0
+            clv_percent = round(((opening_odds / closing_odds) - 1.0) * 100, 2) if opening_odds and closing_odds else 0.0
 
             await db.predictions_history.update_one(
                 {"signature": pred["signature"]},
@@ -2441,7 +2553,7 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
 
     if market in ("draw_no_bet", "syn_draw_no_bet"):
         if home_score == away_score:
-            return None
+            return "void"
         if home.lower() in pick:
             return "won" if home_score > away_score else "lost"
         if away.lower() in pick:
@@ -2459,6 +2571,8 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
 # ─── Workers automatiques : refresh des matchs + reconciliation ───────────────
 
 scheduler = AsyncIOScheduler(timezone="UTC")
+SCHEDULER_INSTANCE_ID = os.environ.get("INSTANCE_ID", uuid.uuid4().hex)
+ENABLE_INTERNAL_SCHEDULER = os.environ.get("ENABLE_INTERNAL_SCHEDULER", "true").strip().lower() in ("1", "true", "yes")
 
 
 async def _full_refresh_and_track():
@@ -2478,17 +2592,69 @@ async def _full_refresh_and_track():
     return matches
 
 
+async def _run_with_scheduler_lease(job_name: str, job_func, lease_seconds: int = 3300):
+    """Empêche plusieurs workers/replicas d'exécuter simultanément le même job."""
+    now = datetime.now(timezone.utc)
+    lease_until = now + timedelta(seconds=max(60, lease_seconds))
+    try:
+        lock = await db.scheduler_locks.find_one_and_update(
+            {
+                "_id": job_name,
+                "$or": [
+                    {"lease_until": {"$lte": now.isoformat()}},
+                    {"lease_until": {"$exists": False}},
+                    {"owner": SCHEDULER_INSTANCE_ID},
+                ],
+            },
+            {
+                "$set": {
+                    "owner": SCHEDULER_INSTANCE_ID,
+                    "lease_until": lease_until.isoformat(),
+                    "acquired_at": now.isoformat(),
+                }
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+    except DuplicateKeyError:
+        return None
+
+    if not lock or lock.get("owner") != SCHEDULER_INSTANCE_ID:
+        return None
+
+    try:
+        result = await job_func()
+        await db.scheduler_locks.update_one(
+            {"_id": job_name, "owner": SCHEDULER_INSTANCE_ID},
+            {"$set": {"last_completed_at": datetime.now(timezone.utc).isoformat()}},
+        )
+        return result
+    except Exception:
+        # Le lease reste actif jusqu'à son expiration pour éviter qu'un second
+        # worker relance immédiatement le même job pendant une défaillance.
+        raise
+
+
+async def _scheduled_full_refresh():
+    return await _run_with_scheduler_lease("odds_full_refresh", _full_refresh_and_track, lease_seconds=3500)
+
+
+async def _scheduled_reconcile():
+    return await _run_with_scheduler_lease("results_reconcile", _reconcile_predictions_with_scores, lease_seconds=6600)
+
+
+async def _scheduled_subscription_sweep():
+    return await _run_with_scheduler_lease("subscription_sweep", _sweep_expired_subscriptions, lease_seconds=3300)
+
+
 @app.on_event("startup")
 async def startup_event():
-    # Les competitions et cotes peuvent apparaitre plusieurs fois dans la
-    # journee. Un refresh toutes les heures evite qu un championnat nouvellement
-    # cote reste absent pendant plusieurs heures. La route utilisateur ne fait
-    # toujours aucun appel API direct.
-    refresh_hours = int(os.environ.get("ODDS_AUTO_REFRESH_HOURS", "1"))
-    scheduler.add_job(lambda: _full_refresh_and_track(), "interval", hours=max(1, refresh_hours), id="odds_full_refresh", replace_existing=True)
-    scheduler.add_job(lambda: _reconcile_predictions_with_scores(), "cron", minute=0, hour="*/2")
-    scheduler.add_job(lambda: _sweep_expired_subscriptions(), "cron", minute=30)
-    scheduler.start()
+    if ENABLE_INTERNAL_SCHEDULER:
+        refresh_hours = int(os.environ.get("ODDS_AUTO_REFRESH_HOURS", "1"))
+        scheduler.add_job(_scheduled_full_refresh, "interval", hours=max(1, refresh_hours), id="odds_full_refresh", replace_existing=True)
+        scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True)
+        scheduler.add_job(_scheduled_subscription_sweep, "cron", minute=30, id="subscription_sweep", replace_existing=True)
+        scheduler.start()
 
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
     should_refresh = not existing
@@ -2497,14 +2663,9 @@ async def startup_event():
             cache_status = await get_odds_cache_status(db)
             should_refresh = bool(cache_status.get("stale") or cache_status.get("hard_stale"))
         except Exception:
-            # En cas de doute après un déploiement, un cache présent reste
-            # préférable à une requête réseau automatique non maîtrisée.
             should_refresh = False
     if should_refresh:
-        await _full_refresh_and_track()
+        await _run_with_scheduler_lease("startup_refresh", _full_refresh_and_track, lease_seconds=900)
 
 
 @app.on_event("shutdown")
-async def shutdown_event():
-    scheduler.shutdown()
-
