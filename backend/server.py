@@ -756,9 +756,9 @@ SUBSCRIPTION_PLANS = [
     {
         "id": "pro",
         "name": "WinPulse Pro",
-        "price": 6500,
-        "price_fcfa": 6500,
-        "price_xof": 6500,
+        "price": 10500,
+        "price_fcfa": 10500,
+        "price_xof": 10500,
         "duration_days": 30,
         "period": "mois",
         "features": [
