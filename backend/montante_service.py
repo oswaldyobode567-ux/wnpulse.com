@@ -139,8 +139,18 @@ class MontanteService:
             self._touch()
             return self.get_state()
 
+        if status == "VOID":
+            # Une journée entièrement remboursée ne doit ni faire perdre la
+            # montante ni valider artificiellement un jour supplémentaire.
+            self._record(picks, "VOID", 1.0)
+            self.state["waiting_reason"] = (
+                "Journée remboursée : nouvelle sélection nécessaire pour ce jour."
+            )
+            self._touch()
+            return self.get_state()
+
         if status != "WIN":
-            raise ValueError("Statut invalide: WIN, LOSS ou PENDING.")
+            raise ValueError("Statut invalide: WIN, LOSS, VOID ou PENDING.")
 
         combined_odds = math.prod(float(p["odds"]) for p in picks)
         self.state["theoretical_bankroll"] = round(
@@ -171,7 +181,11 @@ class MontanteService:
             "status": s["status"],
             "days": s["days"],
             "current_day": s["current_day"],
-            "progress": round(((s["current_day"] - 1) / s["days"]) * 100, 1),
+            "progress": (
+                100.0
+                if s["status"] == "COMPLETED"
+                else round(((s["current_day"] - 1) / s["days"]) * 100, 1)
+            ),
             "initial_bankroll": s["initial_bankroll"],
             "theoretical_bankroll": s["theoretical_bankroll"],
             "started_at": s["started_at"],
@@ -197,16 +211,42 @@ class MontanteService:
                 result.extend(x for x in value if isinstance(x, dict))
         if isinstance(match.get("pick"), dict):
             result.append(match["pick"])
-        if any(k in match for k in ("odds", "odd", "confidence", "probability")):
+        # Les prédictions WinPulse exposent principalement ``pick_odds`` +
+        # ``confidence``. Les inclure ici évite qu'un pick pourtant qualifié soit
+        # ignoré par la Montante faute de clé générique ``odds``.
+        if any(
+            k in match
+            for k in (
+                "pick_odds", "odds", "odd", "price",
+                "confidence", "probability", "win_probability",
+                "estimated_win_probability", "model_probability",
+            )
+        ):
             result.append(match)
         return result
 
     def _normalize(self, match: Dict[str, Any],
                    market: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        odds = self._num(market.get("odds", market.get("odd", market.get("price"))))
+        odds = self._num(
+            market.get(
+                "pick_odds",
+                market.get("odds", market.get("odd", market.get("price"))),
+            )
+        )
         confidence = self._num(
-            market.get("confidence",
-                       market.get("probability", market.get("win_probability")))
+            market.get(
+                "confidence",
+                market.get(
+                    "probability",
+                    market.get(
+                        "win_probability",
+                        market.get(
+                            "estimated_win_probability",
+                            market.get("model_probability"),
+                        ),
+                    ),
+                ),
+            )
         )
         if odds is None or confidence is None:
             return None
@@ -231,7 +271,13 @@ class MontanteService:
             "match_id": match.get("id") or match.get("event_id"),
             "home_team": match.get("home_team") or match.get("home") or "",
             "away_team": match.get("away_team") or match.get("away") or "",
-            "league": match.get("league") or match.get("competition"),
+            "league": (
+                match.get("league")
+                or match.get("competition")
+                or match.get("sport_title")
+            ),
+            "sport_key": match.get("sport_key"),
+            "sport_title": match.get("sport_title"),
             "start_time": match.get("commence_time") or match.get("start_time"),
             "market": market_name,
             "pick": market.get("pick", market.get("selection", market_name)),
@@ -265,8 +311,13 @@ class MontanteService:
         values = [str(x).upper().strip() for x in results]
         if "LOSS" in values:
             return "LOSS"
-        if all(x == "WIN" for x in values):
-            return "WIN"
+
+        normalized = [
+            "VOID" if x in {"VOID", "PUSH", "REFUNDED", "REMBOURSE"} else x
+            for x in values
+        ]
+        if normalized and all(x in {"WIN", "VOID"} for x in normalized):
+            return "WIN" if any(x == "WIN" for x in normalized) else "VOID"
         return "PENDING"
 
     def _touch(self) -> None:
