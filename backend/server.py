@@ -2669,3 +2669,6 @@ async def startup_event():
 
 
 @app.on_event("shutdown")
+async def shutdown_event():
+    if scheduler.running:
+        scheduler.shutdown(wait=False)
