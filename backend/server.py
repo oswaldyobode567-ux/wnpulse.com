@@ -1878,29 +1878,20 @@ async def get_track_record_public(
 
     resolved_statuses = ["won", "lost", "void"]
 
-    # Sélection officielle : on garde les remboursements dans l'historique, mais
-    # le seuil de 20 est évalué uniquement sur les décisions gagnées/perdues.
-    official_all = await db.predictions_history.find(
-        {"result": {"$in": resolved_statuses}, "official_track_eligible": True}
-    ).to_list(length=10000)
-    official_graded_count = sum(1 for r in official_all if r.get("result") in ("won", "lost"))
-
+    # Historique continu : le Track Record ne doit jamais se "réinitialiser" lors
+    # d'un changement de version du modèle. Tous les pronostics réellement résolus
+    # restent visibles et alimentent les statistiques. Le marqueur
+    # ``official_track_eligible`` reste disponible pour les diagnostics, mais il ne
+    # supprime plus les résultats historiques du Track Record public.
+    resolved_all = await db.predictions_history.find(
+        {"result": {"$in": resolved_statuses}}
+    ).to_list(length=20000)
+    official_graded_count = sum(
+        1 for r in resolved_all
+        if r.get("official_track_eligible") and r.get("result") in ("won", "lost")
+    )
     transition_mode = official_graded_count < 20
-    transition_source = "official"
-    if transition_mode:
-        current_model_all = await db.predictions_history.find(
-            {"result": {"$in": resolved_statuses}, "model_version": MODEL_VERSION}
-        ).to_list(length=10000)
-        if current_model_all:
-            resolved_all = current_model_all
-            transition_source = "current_model"
-        else:
-            resolved_all = await db.predictions_history.find(
-                {"result": {"$in": resolved_statuses}}
-            ).to_list(length=10000)
-            transition_source = "all_resolved_fallback"
-    else:
-        resolved_all = official_all
+    transition_source = "continuous_history"
 
     for row in resolved_all:
         row["_normalized_sport"] = _normalize_sport(row)
@@ -1933,6 +1924,8 @@ async def get_track_record_public(
             "resolved_total": graded_ + voids_,
             "win_rate": round((wins_ / graded_) * 100, 1) if graded_ else None,
         }
+
+    sport_scope_stats = _result_stats(sport_scope)
 
     # Statistiques par niveau dans le sport courant.
     by_label_stats: Dict[str, Dict] = {}
@@ -2028,6 +2021,8 @@ async def get_track_record_public(
         "stake_xof": TRACK_RECORD_STAKE_XOF,
         "by_label": by_label_stats,
         "by_sport": by_sport_stats,
+        "sport_scope": sport_scope_stats,
+        "all_history": _result_stats(resolved_all),
     }
 
     # État de conciliation : permet au frontend de signaler immédiatement un
@@ -2055,6 +2050,7 @@ async def get_track_record_public(
     ]
     latest_event_dates = [d for d in latest_event_dates if d]
 
+    track_sync_meta = await db.system_meta.find_one({"_id": "track_sync"}) or {}
     sync = {
         "pending_total": len(pending_docs),
         "overdue_pending": overdue_pending,
@@ -2062,6 +2058,11 @@ async def get_track_record_public(
         "pending_by_sport": pending_by_sport,
         "last_reconciled_at": max(reconciled_dates).isoformat() if reconciled_dates else None,
         "latest_resolved_event_at": max(latest_event_dates).isoformat() if latest_event_dates else None,
+        "last_sync_attempt_at": track_sync_meta.get("last_run_at"),
+        "last_sync_updated": int(track_sync_meta.get("updated", 0) or 0),
+        "last_sync_no_score": int(track_sync_meta.get("no_score", 0) or 0),
+        "last_sync_unsupported_market": int(track_sync_meta.get("unsupported_market", 0) or 0),
+        "last_sync_errors": int(track_sync_meta.get("errors", 0) or 0),
     }
 
     total_rows = len(view_rows)
@@ -2117,9 +2118,9 @@ async def get_track_record_public(
         "transition_mode": transition_mode,
         "transition_source": transition_source,
         "note": (
-            "Moins de 20 résultats officiels gagnés/perdus sont encore disponibles. "
-            "Le Track Record affiche donc les résultats résolus du moteur courant sans "
-            "masquer les pertes; il basculera automatiquement sur la sélection officielle stricte."
+            "Le Track Record conserve l'historique continu de tous les pronostics réellement "
+            "résolus, même après un changement de version du moteur. Les gains, pertes et "
+            "remboursements passés ne sont jamais masqués."
         ) if transition_mode else None,
     }
 
@@ -2734,22 +2735,66 @@ def _find_score_fallback(pred: Dict, scores: List[Dict]) -> Optional[Dict]:
     return best
 
 
-async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) -> Dict:
-    """Synchronise les pronostics terminés avec leurs scores finaux.
+def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Optional[Dict]:
+    """Secours historique via odds-api.io, par équipes + horaire.
 
-    Correction Track Record :
-    - cible exactement les ``sport_key`` des pronostics pending ;
-    - force au besoin un fetch scores sur la fenêtre maximale de 3 jours ;
-    - fusionne une archive durable des scores pour ne plus perdre les résultats ;
-    - rapproche par ID puis par équipes + heure lorsque l'ID fournisseur diffère ;
-    - fournit un diagnostic explicite pour les anciens pending hors fenêtre.
+    Ce rapprochement s'applique aussi aux pronostics créés depuis The Odds API :
+    un ancien match peut ne plus être disponible dans la fenêtre ``daysFrom=3``
+    de la source principale tout en restant visible comme événement ``settled``
+    chez la source secondaire.
     """
-    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=5000)
+    ph = _norm_team_for_reconcile(pred.get("home_team"))
+    pa = _norm_team_for_reconcile(pred.get("away_team"))
+    if not ph or not pa:
+        return None
+    pred_dt = _parse_iso(pred.get("commence_time"))
+    best = None
+    best_delta = None
+    for candidate in (scores_map or {}).values():
+        sh = _norm_team_for_reconcile(candidate.get("home_team"))
+        sa = _norm_team_for_reconcile(candidate.get("away_team"))
+        direct = sh == ph and sa == pa
+        reversed_pair = sh == pa and sa == ph
+        if not (direct or reversed_pair):
+            continue
+        cdt = _parse_iso(candidate.get("commence_time"))
+        if pred_dt and cdt:
+            delta = abs((cdt - pred_dt).total_seconds())
+            if delta > 12 * 3600:
+                continue
+        else:
+            delta = 0
+        if best is None or delta < best_delta:
+            best = dict(candidate)
+            best["_teams_reversed"] = bool(reversed_pair)
+            best_delta = delta
+    return best
+
+
+async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) -> Dict:
+    """Synchronise tous les pronostics terminés avec leurs scores finaux.
+
+    Le moteur cible les ``sport_key`` réellement présents dans les pronostics en
+    attente, relit l'archive durable, puis tente trois niveaux de rapprochement :
+    identifiant fournisseur, équipes+horaire dans The Odds API, puis secours
+    équipes+horaire via odds-api.io. Le diagnostic de chaque exécution est persisté
+    pour être visible directement dans le Track Record.
+    """
+    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=10000)
+    run_at = datetime.now(timezone.utc).isoformat()
     if not pending:
-        return {
+        result = {
             "ok": True, "checked": 0, "updated": 0, "pending_remaining": 0,
-            "recovered_by_team_time": 0, "outside_provider_window": 0,
+            "recovered_by_team_time": 0, "recovered_by_secondary": 0,
+            "outside_provider_window": 0, "no_score": 0,
+            "not_completed": 0, "unsupported_market": 0, "errors": 0,
         }
+        await db.system_meta.update_one(
+            {"_id": "track_sync"},
+            {"$set": {"last_run_at": run_at, **result}},
+            upsert=True,
+        )
+        return result
 
     now = datetime.now(timezone.utc)
     classic_pending = [p for p in pending if not str(p.get("match_id") or "").startswith("oaio-")]
@@ -2765,13 +2810,14 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
         force_refresh=force_score_refresh,
         days_from=3,
         include_archive=True,
-        archive_days=30,
+        archive_days=60,
     )
     scores_by_match = {str(s.get("id")): s for s in scores if s.get("id")}
     oaio_scores_map = await fetch_odds_api_io_scores_map()
 
     updated = 0
     recovered_by_team_time = 0
+    recovered_by_secondary = 0
     no_score = 0
     not_completed = 0
     unsupported_market = 0
@@ -2785,7 +2831,8 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
 
         try:
             score_entry = None
-            teams_reversed = False
+            home_score = away_score = None
+            reconciliation_source = "unknown"
 
             if match_id.startswith("oaio-"):
                 numeric_id = match_id[len("oaio-"):]
@@ -2793,79 +2840,71 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
                 if entry:
                     home_score = int(entry["home_score"])
                     away_score = int(entry["away_score"])
+                    reconciliation_source = "odds_api_io_id"
                 else:
-                    # Secours OAIO : rapprochement par équipes/heure dans la carte
-                    # des événements terminés, utile si l'identifiant a changé.
-                    ph = _norm_team_for_reconcile(pred.get("home_team"))
-                    pa = _norm_team_for_reconcile(pred.get("away_team"))
-                    found = None
-                    for candidate in oaio_scores_map.values():
-                        if _norm_team_for_reconcile(candidate.get("home_team")) != ph:
-                            continue
-                        if _norm_team_for_reconcile(candidate.get("away_team")) != pa:
-                            continue
-                        cdt = _parse_iso(candidate.get("commence_time"))
-                        if commence_dt and cdt and abs((cdt - commence_dt).total_seconds()) > 12 * 3600:
-                            continue
-                        found = candidate
-                        break
-                    if not found:
-                        no_score += 1
-                        if age_days is not None and age_days > 3:
-                            outside_provider_window += 1
-                        continue
-                    home_score = int(found["home_score"])
-                    away_score = int(found["away_score"])
-                    recovered_by_team_time += 1
+                    found = _find_oaio_score_fallback(pred, oaio_scores_map)
+                    if found:
+                        home_score = int(found["home_score"])
+                        away_score = int(found["away_score"])
+                        if found.get("_teams_reversed"):
+                            home_score, away_score = away_score, home_score
+                        recovered_by_team_time += 1
+                        recovered_by_secondary += 1
+                        reconciliation_source = "odds_api_io_team_time"
             else:
                 score_entry = scores_by_match.get(match_id)
-                if not score_entry:
+                if score_entry:
+                    reconciliation_source = "scores_api_id"
+                else:
                     score_entry = _find_score_fallback(pred, scores)
                     if score_entry:
                         recovered_by_team_time += 1
-                        teams_reversed = bool(score_entry.get("_teams_reversed"))
+                        reconciliation_source = "scores_api_team_time"
 
-                if not score_entry:
-                    no_score += 1
-                    if age_days is not None and age_days > 3:
-                        outside_provider_window += 1
-                    continue
-                if not score_entry.get("completed"):
-                    not_completed += 1
-                    continue
+                if score_entry:
+                    if not score_entry.get("completed"):
+                        not_completed += 1
+                        continue
+                    home_score, away_score = _score_pair(score_entry)
+                    if home_score is None or away_score is None:
+                        for row in score_entry.get("scores") or []:
+                            name = _norm_team_for_reconcile(row.get("name"))
+                            try:
+                                value = int(row.get("score"))
+                            except Exception:
+                                continue
+                            if name == _norm_team_for_reconcile(pred.get("home_team")):
+                                home_score = value
+                            elif name == _norm_team_for_reconcile(pred.get("away_team")):
+                                away_score = value
+                    if score_entry.get("_teams_reversed") and home_score is not None and away_score is not None:
+                        home_score, away_score = away_score, home_score
+                else:
+                    secondary = _find_oaio_score_fallback(pred, oaio_scores_map)
+                    if secondary:
+                        home_score = int(secondary["home_score"])
+                        away_score = int(secondary["away_score"])
+                        if secondary.get("_teams_reversed"):
+                            home_score, away_score = away_score, home_score
+                        recovered_by_team_time += 1
+                        recovered_by_secondary += 1
+                        reconciliation_source = "odds_api_io_team_time"
 
-                home_score, away_score = _score_pair(score_entry)
-                if home_score is None or away_score is None:
-                    # Fallback sur les noms du pronostic si la réponse score n'a pas
-                    # exactement les mêmes home_team/away_team au niveau racine.
-                    for row in score_entry.get("scores") or []:
-                        name = _norm_team_for_reconcile(row.get("name"))
-                        try:
-                            value = int(row.get("score"))
-                        except Exception:
-                            continue
-                        if name == _norm_team_for_reconcile(pred.get("home_team")):
-                            home_score = value
-                        elif name == _norm_team_for_reconcile(pred.get("away_team")):
-                            away_score = value
-                if home_score is None or away_score is None:
-                    no_score += 1
-                    continue
-                if teams_reversed:
-                    home_score, away_score = away_score, home_score
+            if home_score is None or away_score is None:
+                no_score += 1
+                if age_days is not None and age_days > 3:
+                    outside_provider_window += 1
+                continue
 
-            result = _evaluate_pick_result(pred, home_score, away_score)
-            if result:
+            result_value = _evaluate_pick_result(pred, int(home_score), int(away_score))
+            if result_value:
                 await db.predictions_history.update_one(
                     {"signature": pred["signature"]},
                     {"$set": {
-                        "result": result,
+                        "result": result_value,
                         "final_score": f"{home_score}-{away_score}",
                         "reconciled_at": datetime.now(timezone.utc).isoformat(),
-                        "reconciliation_source": (
-                            "team_time_fallback" if score_entry and score_entry.get("_teams_reversed") is not None
-                            else "scores_api"
-                        ),
+                        "reconciliation_source": reconciliation_source,
                     }},
                 )
                 updated += 1
@@ -2876,7 +2915,7 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
             continue
 
     pending_remaining = await db.predictions_history.count_documents({"result": "pending"})
-    return {
+    result = {
         "ok": True,
         "checked": len(pending),
         "updated": updated,
@@ -2884,73 +2923,101 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
         "required_sport_keys": required_sport_keys,
         "scores_available": len(scores),
         "recovered_by_team_time": recovered_by_team_time,
+        "recovered_by_secondary": recovered_by_secondary,
         "no_score": no_score,
         "not_completed": not_completed,
         "unsupported_market": unsupported_market,
         "outside_provider_window": outside_provider_window,
         "errors": errors,
-        "note": (
-            "Les scores de The Odds API ne remontent que 3 jours. Les scores vus "
-            "désormais sont archivés durablement. Les anciens pending de plus de 3 "
-            "jours ne peuvent être récupérés que si leur score existe déjà dans "
-            "l'archive ou via la source secondaire."
-        ),
     }
+    await db.system_meta.update_one(
+        {"_id": "track_sync"},
+        {"$set": {"last_run_at": run_at, **result}},
+        upsert=True,
+    )
+    return result
 
 
 def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optional[str]:
+    """Évalue les marchés courants sans dépendre d'une seule langue d'affichage."""
     import re
 
-    pick = (pred.get("pick") or "").lower()
-    market = pred.get("market", "")
-    home = (pred.get("home_team") or "")
-    away = (pred.get("away_team") or "")
-    total_goals = home_score + away_score
+    def norm(value: str) -> str:
+        text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
+        return re.sub(r"\s+", " ", text).strip()
 
-    if market == "h2h":
-        if pick == home.lower():
+    pick = norm(pred.get("pick"))
+    market = norm(pred.get("market"))
+    home = norm(pred.get("home_team"))
+    away = norm(pred.get("away_team"))
+    total_points = home_score + away_score
+
+    # 1X2 / Moneyline
+    if market in ("h2h", "moneyline", "ml", "syn_home_win", "syn_away_win"):
+        if home and (pick == home or home in pick):
             return "won" if home_score > away_score else "lost"
-        if pick == away.lower():
+        if away and (pick == away or away in pick):
             return "won" if away_score > home_score else "lost"
-        if "nul" in pick or pick == "draw":
+        if any(token in pick for token in ("nul", "draw", "tie")):
             return "won" if home_score == away_score else "lost"
 
-    if market in ("totals", "syn_over_25", "syn_over_15") or "plus de" in pick or "moins de" in pick:
-        match_num = re.search(r"(\d+(?:\.\d+)?)", pick)
+    # Totaux : français ou anglais (Plus de / Moins de / Over / Under)
+    if market in ("totals", "total", "syn_over_25", "syn_over_15") or any(
+        token in pick for token in ("plus de", "moins de", "over", "under")
+    ):
+        match_num = re.search(r"(\d+(?:[.,]\d+)?)", pick)
         if match_num:
-            threshold = float(match_num.group(1))
-            if "plus de" in pick:
-                return "won" if total_goals > threshold else "lost"
-            if "moins de" in pick:
-                return "won" if total_goals < threshold else "lost"
+            threshold = float(match_num.group(1).replace(",", "."))
+            if "plus de" in pick or "over" in pick:
+                if total_points == threshold:
+                    return "void"
+                return "won" if total_points > threshold else "lost"
+            if "moins de" in pick or "under" in pick:
+                if total_points == threshold:
+                    return "void"
+                return "won" if total_points < threshold else "lost"
 
-    if market in ("btts", "syn_btts"):
+    # Both Teams To Score
+    if market in ("btts", "syn_btts") or "both teams" in pick or "les deux equipes" in pick:
         both_scored = home_score > 0 and away_score > 0
-        if "oui" in pick:
+        if any(token in pick for token in ("oui", "yes", "btts yes")):
             return "won" if both_scored else "lost"
-        if "non" in pick:
+        if any(token in pick for token in ("non", "no", "btts no")):
             return "won" if not both_scored else "lost"
 
+    # Double chance
     if market in ("double_chance", "syn_double_chance"):
-        if "victoire domicile ou nul" in pick or "1x" in pick:
+        if "1x" in pick or "domicile ou nul" in pick or "home or draw" in pick:
             return "won" if home_score >= away_score else "lost"
-        if "nul ou victoire extérieure" in pick or "x2" in pick:
+        if "x2" in pick or "nul ou victoire exterieure" in pick or "draw or away" in pick:
             return "won" if away_score >= home_score else "lost"
-        if "victoire domicile ou extérieure" in pick or pick.strip() == "12" or " 12 " in f" {pick} ":
+        if pick == "12" or "home or away" in pick or "domicile ou exterieur" in pick:
             return "won" if home_score != away_score else "lost"
 
-    if market in ("draw_no_bet", "syn_draw_no_bet"):
+    # Draw No Bet
+    if market in ("draw_no_bet", "syn_draw_no_bet", "dnb"):
         if home_score == away_score:
             return "void"
-        if home.lower() in pick:
+        if home and home in pick:
             return "won" if home_score > away_score else "lost"
-        if away.lower() in pick:
+        if away and away in pick:
             return "won" if away_score > home_score else "lost"
 
-    if market in ("syn_clean_sheet_home",):
-        return "won" if away_score == 0 else "lost"
+    # Handicap / spread simple : ex. "Lakers -4.5" ou "Team +1.5"
+    if market in ("spreads", "spread", "handicap", "asian_handicap"):
+        line_match = re.search(r"([+-]\s*\d+(?:[.,]\d+)?)", pick)
+        if line_match:
+            line = float(line_match.group(1).replace(" ", "").replace(",", "."))
+            if home and home in pick:
+                adjusted = home_score + line
+                return "void" if adjusted == away_score else ("won" if adjusted > away_score else "lost")
+            if away and away in pick:
+                adjusted = away_score + line
+                return "void" if adjusted == home_score else ("won" if adjusted > home_score else "lost")
 
-    if market in ("syn_clean_sheet_away",):
+    if market == "syn_clean_sheet_home":
+        return "won" if away_score == 0 else "lost"
+    if market == "syn_clean_sheet_away":
         return "won" if home_score == 0 else "lost"
 
     return None
