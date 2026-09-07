@@ -1,4 +1,4 @@
-
+import { useCallback, useEffect, useState } from "react";
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -21,16 +21,21 @@ export default function MontantePage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
   const [days, setDays] = useState(10);
   const [bankroll, setBankroll] = useState(10000);
   const isAdmin = Boolean(user?.is_admin);
 
   const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
     try {
       const r = await api.get("/montante");
-      setData(r.data);
+      setData(r?.data || { status: "NONE", message: "Aucune montante active." });
     } catch (e) {
-      setData({ status: "NONE", message: "Impossible de charger la montante." });
+      const detail = e?.response?.data?.detail || e?.message || "Impossible de charger la montante.";
+      setError(String(detail));
+      setData({ status: "NONE", message: String(detail) });
     } finally {
       setLoading(false);
     }
@@ -40,30 +45,43 @@ export default function MontantePage() {
 
   const refresh = async () => {
     setRefreshing(true);
+    setError("");
     try {
       const r = await api.post("/montante/refresh");
-      setData(r.data);
+      setData(r?.data || { status: "NONE", message: "Aucune montante active." });
+    } catch (e) {
+      const detail = e?.response?.data?.detail || e?.message || "Impossible d'actualiser la montante.";
+      setError(String(detail));
     } finally {
       setRefreshing(false);
     }
   };
 
   const start = async (restart = false) => {
+    const capital = Number(bankroll);
+    if (!Number.isFinite(capital) || capital <= 0) {
+      setError("Le capital initial doit être un nombre positif.");
+      return;
+    }
+
     setStarting(true);
+    setError("");
     try {
       const endpoint = restart ? "/montante/restart" : "/montante/start";
-      const r = await api.post(endpoint, null, { params: { days, initial_bankroll: Number(bankroll) } });
-      setData(r.data);
+      const r = await api.post(endpoint, null, {
+        params: { days, initial_bankroll: capital },
+      });
+      setData(r?.data || null);
     } catch (e) {
-      const detail = e?.response?.data?.detail || "Impossible de démarrer la montante.";
-      alert(detail);
+      const detail = e?.response?.data?.detail || e?.message || "Impossible de démarrer la montante.";
+      setError(String(detail));
     } finally {
       setStarting(false);
     }
   };
 
   const st = statusLabel(data?.status);
-  const progress = Number(data?.progress || 0);
+  const progress = data?.status === "COMPLETED" ? 100 : Number(data?.progress || 0);
 
   return (
     <AppLayout>
@@ -89,6 +107,13 @@ export default function MontantePage() {
             </div>
           </div>
         </Card>
+
+        {error && (
+          <Card className="border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
+            <div className="font-bold">Montante indisponible</div>
+            <div className="mt-1">{error}</div>
+          </Card>
+        )}
 
         {isAdmin && (
           <Card className="p-5 bg-white border-neutral-200">
@@ -188,9 +213,17 @@ export default function MontantePage() {
                   {[...data.history].reverse().map((h, i) => (
                     <div key={`${h.day}-${i}`} className="px-5 py-4 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-3">
-                        {h.status === "WIN" ? <CheckCircle2 className="h-5 w-5 text-emerald-500" /> : <XCircle className="h-5 w-5 text-rose-500" />}
+                        {h.status === "WIN" ? (
+                          <CheckCircle2 className="h-5 w-5 text-emerald-500" />
+                        ) : h.status === "VOID" ? (
+                          <Clock3 className="h-5 w-5 text-slate-500" />
+                        ) : (
+                          <XCircle className="h-5 w-5 text-rose-500" />
+                        )}
                         <div>
-                          <div className="font-semibold text-sm">Jour {h.day} · {h.status === "WIN" ? "GAGNÉ" : "PERDU"}</div>
+                          <div className="font-semibold text-sm">
+                            Jour {h.day} · {h.status === "WIN" ? "GAGNÉ" : h.status === "VOID" ? "REMBOURSÉ" : "PERDU"}
+                          </div>
                           <div className="text-xs text-slate-500">{h.picks?.map(p => `${p.pick} @ ${p.odds}`).join(" · ")}</div>
                         </div>
                       </div>
