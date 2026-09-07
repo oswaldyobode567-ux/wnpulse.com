@@ -1,5 +1,5 @@
 """
-WinPulse API — server.py (v8.5 hardened)
+WinPulse API — server.py (v8.6 stability)
 Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
@@ -485,6 +485,32 @@ def _merge_match_prediction(match: dict, prediction: dict) -> dict:
     return merged
 
 
+def _normalize_sport(match_or_row: Dict) -> str:
+    """Normalise les clés/titres de sport provenant des différents fournisseurs."""
+    raw_key = str(match_or_row.get("sport_key") or "").lower().strip()
+    raw_title = str(match_or_row.get("sport_title") or "").lower().strip()
+    text = f"{raw_key} {raw_title}"
+
+    if any(x in text for x in ("americanfootball", "american_football", "nfl", "ncaaf")):
+        return "american_football"
+    if any(x in text for x in ("soccer", "football", "premier league", "la liga", "bundesliga", "ligue 1", "serie a", "uefa", "champions league")):
+        return "football"
+    if any(x in text for x in ("basketball", "nba", "ncaab", "euroleague")):
+        return "basketball"
+    if any(x in text for x in ("tennis", "atp", "wta")):
+        return "tennis"
+    if any(x in text for x in ("icehockey", "ice_hockey", "ice hockey", "hockey", "nhl")):
+        return "hockey"
+    if any(x in text for x in ("baseball", "mlb")):
+        return "baseball"
+    if any(x in text for x in ("mma", "ufc", "mixed martial")):
+        return "mma"
+
+    if raw_key:
+        return raw_key.replace("-", "_").split("_")[0]
+    return "unknown"
+
+
 def _match_is_finished(match: dict) -> bool:
     ct = match.get("commence_time", "")
     if not ct:
@@ -615,19 +641,31 @@ async def get_match_analysis(match_id: str, payload: Optional[dict] = Depends(ge
 async def get_data_status():
     cached = await db.odds_cache.find_one({"_id": "all_matches"})
     if not cached:
-        return {"odds_updated_at": None, "count": 0}
+        return {"odds_updated_at": None, "count": 0, "by_sport": {}}
+
+    by_sport: Dict[str, int] = {}
+    try:
+        matches = await fetch_all_matches(db)
+        for match in matches:
+            key = _normalize_sport(match)
+            if key != "unknown":
+                by_sport[key] = by_sport.get(key, 0) + 1
+    except Exception:
+        by_sport = {}
+
     return {
         "odds_updated_at": cached.get("updated_at"),
         "count": cached.get("count", 0),
+        "by_sport": by_sport,
     }
 
 
 @app.post("/api/data/refresh")
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
-    await _require_admin(payload)
-    result = await refresh_matches_worker(db)
-    await _invalidate_prediction_cache()
-    return result
+    """Refresh manuel du dashboard, conservé pour compatibilité avec l'interface existante."""
+    # L'authentification reste obligatoire, mais on ne casse pas le bouton historique
+    # en exigeant le rôle admin sur cette route utilisateur.
+    return await _full_refresh_and_track()
 
 
 @app.get("/api/data/source-audit")
@@ -1454,7 +1492,15 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
     matches = await fetch_all_matches(db)
     matches = [m for m in matches if not _match_is_finished(m)]
     if sport and sport != "all":
-        matches = [m for m in matches if (m.get("sport_key") or "").startswith(sport)]
+        wanted_sport = str(sport).lower().strip()
+        aliases = {
+            "soccer": "football",
+            "ice_hockey": "hockey",
+            "icehockey": "hockey",
+            "americanfootball": "american_football",
+        }
+        wanted_sport = aliases.get(wanted_sport, wanted_sport)
+        matches = [m for m in matches if _normalize_sport(m) == wanted_sport]
     real_stats_map = await get_real_stats_map(db, matches)
     is_paid = await _has_paid_access(payload)
     FREE_UNLOCKED_MATCHES = 2
@@ -1728,27 +1774,6 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
     page = max(1, page)
     per_page = max(1, min(per_page, 100))
 
-    def _sport_of(row: Dict) -> str:
-        raw_key = str(row.get("sport_key") or "").lower().strip()
-        raw_title = str(row.get("sport_title") or "").lower().strip()
-        text = f"{raw_key} {raw_title}"
-
-        if any(x in text for x in ("americanfootball", "american_football", "nfl", "ncaaf")):
-            return "american_football"
-        if any(x in text for x in ("soccer", "football", "premier league", "la liga", "bundesliga", "ligue 1", "serie a", "uefa", "champions league")):
-            return "football"
-        if any(x in text for x in ("basketball", "nba", "ncaab", "euroleague")):
-            return "basketball"
-        if any(x in text for x in ("tennis", "atp", "wta")):
-            return "tennis"
-        if any(x in text for x in ("icehockey", "ice_hockey", "hockey", "nhl")):
-            return "hockey"
-        if any(x in text for x in ("baseball", "mlb")):
-            return "baseball"
-        if any(x in text for x in ("mma", "ufc", "mixed martial")):
-            return "mma"
-        return raw_key.split("_")[0] if raw_key else "unknown"
-
     sport = (sport or "all").lower().strip()
     aliases = {"soccer": "football", "ice_hockey": "hockey", "icehockey": "hockey", "americanfootball": "american_football"}
     sport = aliases.get(sport, sport)
@@ -1766,7 +1791,7 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
         resolved_all = official_resolved
 
     for row in resolved_all:
-        row["_normalized_sport"] = _sport_of(row)
+        row["_normalized_sport"] = _normalize_sport(row)
 
     available_sports = sorted({r["_normalized_sport"] for r in resolved_all if r["_normalized_sport"] != "unknown"})
     if sport != "all" and sport not in available_sports:
@@ -1780,14 +1805,24 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
     total = len(resolved)
     wins = sum(1 for r in resolved if r.get("result") == "won")
     win_rate = round((wins / total) * 100, 1) if total else 0
-    odds_list = [float(r["pick_odds"]) for r in resolved if r.get("pick_odds")]
+    odds_list = []
+    for r in resolved:
+        try:
+            value = float(r.get("pick_odds"))
+            if value > 0:
+                odds_list.append(value)
+        except (TypeError, ValueError):
+            continue
     avg_odds = round(statistics.mean(odds_list), 2) if odds_list else 0
 
     balance = TRACK_RECORD_BASE_BANKROLL
     daily_balance: Dict[str, float] = {}
     for r in resolved:
         stake = TRACK_RECORD_STAKE_XOF
-        odds = float(r.get("pick_odds") or 1)
+        try:
+            odds = float(r.get("pick_odds") or 1)
+        except (TypeError, ValueError):
+            odds = 1.0
         profit = stake * (odds - 1) if r.get("result") == "won" else -stake
         balance += profit
         dt = _parse_iso(r.get("reconciled_at") or r.get("created_at"))
@@ -1808,10 +1843,15 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
         r for r in resolved
         if (_parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
     ]
-    profit_units_30d = sum(
-        (float(r.get("pick_odds") or 1) - 1) if r.get("result") == "won" else -1
-        for r in recent
-    )
+    profit_units_30d = 0.0
+    for r in recent:
+        if r.get("result") == "won":
+            try:
+                profit_units_30d += float(r.get("pick_odds") or 1) - 1
+            except (TypeError, ValueError):
+                profit_units_30d += 0.0
+        else:
+            profit_units_30d -= 1
     roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
 
     by_label: Dict[str, Dict] = {
@@ -1877,7 +1917,10 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
 
     results = []
     for r in page_items:
-        odds = float(r.get("pick_odds") or 1)
+        try:
+            odds = float(r.get("pick_odds") or 1)
+        except (TypeError, ValueError):
+            odds = 1.0
         profit_xof = round(TRACK_RECORD_STAKE_XOF * (odds - 1)) if r.get("result") == "won" else -TRACK_RECORD_STAKE_XOF
         results.append({
             "id": r.get("signature"),
@@ -2106,9 +2149,7 @@ async def get_scores():
 @app.post("/api/admin/refresh")
 async def admin_refresh(payload: dict = Depends(get_current_user_payload)):
     await _require_admin(payload)
-    result = await refresh_matches_worker(db)
-    await _invalidate_prediction_cache()
-    return result
+    return await _full_refresh_and_track()
 
 
 @app.post("/api/admin/activate-admin-simple")
