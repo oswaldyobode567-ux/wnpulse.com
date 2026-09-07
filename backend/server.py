@@ -1842,57 +1842,123 @@ def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
 
 
 @app.get("/api/track-record")
-async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str = "all"):
+async def get_track_record_public(
+    page: int = 1,
+    per_page: int = 20,
+    sport: str = "all",
+    label: str = "all",
+):
+    """Track Record public, filtrable par sport puis par niveau de confiance.
+
+    Les statistiques reposent uniquement sur les picks effectivement résolus.
+    Les VOID/REMBOURSÉS restent visibles dans l'historique mais sont exclus du
+    taux de réussite et du calcul du ROI, puisqu'ils ne sont ni gagnés ni perdus.
+    """
     page = max(1, page)
     per_page = max(1, min(per_page, 100))
 
     sport = (sport or "all").lower().strip()
-    aliases = {"soccer": "football", "ice_hockey": "hockey", "icehockey": "hockey", "americanfootball": "american_football"}
-    sport = aliases.get(sport, sport)
+    sport_aliases = {
+        "soccer": "football",
+        "ice_hockey": "hockey",
+        "icehockey": "hockey",
+        "americanfootball": "american_football",
+    }
+    sport = sport_aliases.get(sport, sport)
 
-    # Track Record : ne jamais produire une page vide uniquement parce que la
-    # version courante du moteur vient de changer. Les picks officiels restent
-    # prioritaires; en phase de transition on utilise d'abord la version courante,
-    # puis on retombe sur tout l'historique resolu si cette version n'a encore
-    # aucun resultat.
-    official_resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}, "official_track_eligible": True}
-    ).to_list(length=5000)
+    label = (label or "all").lower().strip()
+    label_aliases = {
+        "sur": "safe", "sûr": "safe", "safe": "safe",
+        "modere": "value", "modéré": "value", "moderate": "value", "value": "value",
+        "risque": "risky", "risqué": "risky", "risky": "risky",
+    }
+    label = label_aliases.get(label, label)
+    if label not in {"all", "safe", "value", "risky"}:
+        label = "all"
 
-    transition_mode = len(official_resolved) < 20
+    resolved_statuses = ["won", "lost", "void"]
+
+    # Sélection officielle : on garde les remboursements dans l'historique, mais
+    # le seuil de 20 est évalué uniquement sur les décisions gagnées/perdues.
+    official_all = await db.predictions_history.find(
+        {"result": {"$in": resolved_statuses}, "official_track_eligible": True}
+    ).to_list(length=10000)
+    official_graded_count = sum(1 for r in official_all if r.get("result") in ("won", "lost"))
+
+    transition_mode = official_graded_count < 20
     transition_source = "official"
     if transition_mode:
-        current_model_resolved = await db.predictions_history.find(
-            {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION}
-        ).to_list(length=5000)
-        if current_model_resolved:
-            resolved_all = current_model_resolved
+        current_model_all = await db.predictions_history.find(
+            {"result": {"$in": resolved_statuses}, "model_version": MODEL_VERSION}
+        ).to_list(length=10000)
+        if current_model_all:
+            resolved_all = current_model_all
             transition_source = "current_model"
         else:
             resolved_all = await db.predictions_history.find(
-                {"result": {"$in": ["won", "lost"]}}
-            ).to_list(length=5000)
+                {"result": {"$in": resolved_statuses}}
+            ).to_list(length=10000)
             transition_source = "all_resolved_fallback"
     else:
-        resolved_all = official_resolved
+        resolved_all = official_all
 
     for row in resolved_all:
         row["_normalized_sport"] = _normalize_sport(row)
 
-    available_sports = sorted({r["_normalized_sport"] for r in resolved_all if r["_normalized_sport"] != "unknown"})
-    if sport != "all" and sport not in available_sports:
-        # Un filtre sans résultat reste valide : il renvoie simplement un Track Record vide.
-        resolved = []
-    else:
-        resolved = resolved_all if sport == "all" else [r for r in resolved_all if r["_normalized_sport"] == sport]
+    available_sports = sorted({
+        r.get("_normalized_sport") for r in resolved_all
+        if r.get("_normalized_sport") and r.get("_normalized_sport") != "unknown"
+    })
 
-    resolved.sort(key=lambda r: _parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc))
+    # 1) Sport sélectionné. Les cartes de niveau se recalculent dans ce sport.
+    sport_scope = resolved_all if sport == "all" else [
+        r for r in resolved_all if r.get("_normalized_sport") == sport
+    ]
 
-    total = len(resolved)
-    wins = sum(1 for r in resolved if r.get("result") == "won")
-    win_rate = round((wins / total) * 100, 1) if total else 0
-    odds_list = []
-    for r in resolved:
+    # 2) Niveau sélectionné. L'historique et les KPI principaux suivent ce filtre.
+    view_rows = sport_scope if label == "all" else [
+        r for r in sport_scope if str(r.get("label") or "").lower() == label
+    ]
+
+    def _result_stats(rows: List[Dict]) -> Dict:
+        wins_ = sum(1 for r in rows if r.get("result") == "won")
+        losses_ = sum(1 for r in rows if r.get("result") == "lost")
+        voids_ = sum(1 for r in rows if r.get("result") == "void")
+        graded_ = wins_ + losses_
+        return {
+            "wins": wins_,
+            "losses": losses_,
+            "voids": voids_,
+            "total": graded_,
+            "resolved_total": graded_ + voids_,
+            "win_rate": round((wins_ / graded_) * 100, 1) if graded_ else None,
+        }
+
+    # Statistiques par niveau dans le sport courant.
+    by_label_stats: Dict[str, Dict] = {}
+    for key in ("safe", "value", "risky"):
+        rows = [r for r in sport_scope if str(r.get("label") or "").lower() == key]
+        by_label_stats[key] = _result_stats(rows)
+
+    # Statistiques par sport sur l'ensemble du corpus, afin que les tuiles restent
+    # comparables même lorsqu'un sport précis est sélectionné.
+    by_sport_stats: Dict[str, Dict] = {}
+    for key in available_sports:
+        by_sport_stats[key] = _result_stats([
+            r for r in resolved_all if r.get("_normalized_sport") == key
+        ])
+
+    # KPI principaux du filtre Sport + Niveau.
+    view_rows.sort(
+        key=lambda r: _parse_iso(
+            r.get("commence_time") or r.get("reconciled_at") or r.get("created_at")
+        ) or datetime.min.replace(tzinfo=timezone.utc)
+    )
+    graded_rows = [r for r in view_rows if r.get("result") in ("won", "lost")]
+    main_stats = _result_stats(view_rows)
+
+    odds_list: List[float] = []
+    for r in graded_rows:
         try:
             value = float(r.get("pick_odds"))
             if value > 0:
@@ -1903,87 +1969,56 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
 
     balance = TRACK_RECORD_BASE_BANKROLL
     daily_balance: Dict[str, float] = {}
-    for r in resolved:
+    for r in view_rows:
         stake = TRACK_RECORD_STAKE_XOF
         try:
             odds = float(r.get("pick_odds") or 1)
         except (TypeError, ValueError):
             odds = 1.0
-        profit = stake * (odds - 1) if r.get("result") == "won" else -stake
+
+        if r.get("result") == "won":
+            profit = stake * (odds - 1)
+        elif r.get("result") == "lost":
+            profit = -stake
+        else:
+            profit = 0
         balance += profit
-        dt = _parse_iso(r.get("reconciled_at") or r.get("created_at"))
+
+        dt = _parse_iso(r.get("commence_time") or r.get("reconciled_at") or r.get("created_at"))
         day_key = dt.strftime("%Y-%m-%d") if dt else "inconnu"
         daily_balance[day_key] = balance
 
     chart = [{"date": d, "balance": round(v)} for d, v in sorted(daily_balance.items())][-60:]
 
+    # Une annulation/remboursement est neutre : elle ne casse pas une série.
     streak = 0
-    for r in reversed(resolved):
+    for r in reversed(view_rows):
+        if r.get("result") == "void":
+            continue
         if r.get("result") == "won":
             streak += 1
         else:
             break
 
     cutoff = datetime.now(timezone.utc) - timedelta(days=30)
-    recent = [
-        r for r in resolved
-        if (_parse_iso(r.get("reconciled_at") or r.get("created_at")) or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
+    recent_graded = [
+        r for r in graded_rows
+        if (_parse_iso(r.get("commence_time") or r.get("reconciled_at") or r.get("created_at"))
+            or datetime.min.replace(tzinfo=timezone.utc)) >= cutoff
     ]
     profit_units_30d = 0.0
-    for r in recent:
+    for r in recent_graded:
         if r.get("result") == "won":
             try:
                 profit_units_30d += float(r.get("pick_odds") or 1) - 1
             except (TypeError, ValueError):
-                profit_units_30d += 0.0
-        else:
+                pass
+        elif r.get("result") == "lost":
             profit_units_30d -= 1
-    roi_percent = round((profit_units_30d / len(recent)) * 100, 1) if recent else 0
-
-    by_label: Dict[str, Dict] = {
-        "safe": {"wins": 0, "total": 0},
-        "value": {"wins": 0, "total": 0},
-        "risky": {"wins": 0, "total": 0},
-    }
-    for r in resolved:
-        lbl = r.get("label")
-        if lbl in by_label:
-            by_label[lbl]["total"] += 1
-            if r.get("result") == "won":
-                by_label[lbl]["wins"] += 1
-    by_label_stats = {
-        lbl: {
-            "wins": d["wins"],
-            "total": d["total"],
-            "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
-        }
-        for lbl, d in by_label.items()
-    }
-
-    # Les tuiles par sport restent calculées sur tout le corpus officiel/transition,
-    # même lorsqu'un sport est sélectionné, afin de permettre la comparaison.
-    by_sport: Dict[str, Dict] = {}
-    for r in resolved_all:
-        key = r.get("_normalized_sport", "unknown")
-        if key == "unknown":
-            continue
-        item = by_sport.setdefault(key, {"wins": 0, "total": 0})
-        item["total"] += 1
-        if r.get("result") == "won":
-            item["wins"] += 1
-    by_sport_stats = {
-        key: {
-            "wins": d["wins"],
-            "total": d["total"],
-            "win_rate": round((d["wins"] / d["total"]) * 100, 1) if d["total"] else None,
-        }
-        for key, d in sorted(by_sport.items())
-    }
+    roi_percent = round((profit_units_30d / len(recent_graded)) * 100, 1) if recent_graded else 0
 
     stats = {
-        "win_rate": win_rate,
-        "wins": wins,
-        "total": total,
+        **main_stats,
         "roi_percent": roi_percent,
         "profit_units_30d": round(profit_units_30d, 2),
         "current_streak": streak,
@@ -1995,22 +2030,65 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
         "by_sport": by_sport_stats,
     }
 
-    total_pages = max(1, (total + per_page - 1) // per_page)
+    # État de conciliation : permet au frontend de signaler immédiatement un
+    # Track Record figé sans déclencher de requête fournisseur sur une page publique.
+    pending_docs = await db.predictions_history.find({"result": "pending"}).to_list(length=10000)
+    now = datetime.now(timezone.utc)
+    overdue_pending = 0
+    outside_provider_window = 0
+    pending_by_sport: Dict[str, int] = {}
+    for p in pending_docs:
+        key = _normalize_sport(p)
+        pending_by_sport[key] = pending_by_sport.get(key, 0) + 1
+        dt = _parse_iso(p.get("commence_time"))
+        if dt and now - dt > timedelta(hours=6):
+            overdue_pending += 1
+        if dt and now - dt > timedelta(days=3):
+            outside_provider_window += 1
+
+    reconciled_dates = [
+        _parse_iso(r.get("reconciled_at")) for r in resolved_all if r.get("reconciled_at")
+    ]
+    reconciled_dates = [d for d in reconciled_dates if d]
+    latest_event_dates = [
+        _parse_iso(r.get("commence_time")) for r in resolved_all if r.get("commence_time")
+    ]
+    latest_event_dates = [d for d in latest_event_dates if d]
+
+    sync = {
+        "pending_total": len(pending_docs),
+        "overdue_pending": overdue_pending,
+        "outside_provider_window": outside_provider_window,
+        "pending_by_sport": pending_by_sport,
+        "last_reconciled_at": max(reconciled_dates).isoformat() if reconciled_dates else None,
+        "latest_resolved_event_at": max(latest_event_dates).isoformat() if latest_event_dates else None,
+    }
+
+    total_rows = len(view_rows)
+    total_pages = max(1, (total_rows + per_page - 1) // per_page)
     page = min(page, total_pages)
-    results_desc = list(reversed(resolved))
+    results_desc = list(reversed(view_rows))
     start = (page - 1) * per_page
     page_items = results_desc[start:start + per_page]
 
-    results = []
+    results: List[Dict] = []
     for r in page_items:
         try:
             odds = float(r.get("pick_odds") or 1)
         except (TypeError, ValueError):
             odds = 1.0
-        profit_xof = round(TRACK_RECORD_STAKE_XOF * (odds - 1)) if r.get("result") == "won" else -TRACK_RECORD_STAKE_XOF
+        if r.get("result") == "won":
+            profit_xof = round(TRACK_RECORD_STAKE_XOF * (odds - 1))
+        elif r.get("result") == "lost":
+            profit_xof = -TRACK_RECORD_STAKE_XOF
+        else:
+            profit_xof = 0
+
         results.append({
             "id": r.get("signature"),
-            "date": r.get("reconciled_at") or r.get("created_at"),
+            # Date réelle du match, pas date de réconciliation.
+            "date": r.get("commence_time") or r.get("created_at"),
+            "reconciled_at": r.get("reconciled_at"),
             "sport": r.get("_normalized_sport", "unknown"),
             "league": r.get("sport_title", ""),
             "match": f"{r.get('home_team', '')} vs {r.get('away_team', '')}",
@@ -2018,22 +2096,30 @@ async def get_track_record_public(page: int = 1, per_page: int = 20, sport: str 
             "odds": odds,
             "status": r.get("result"),
             "label": r.get("label"),
+            "confidence": r.get("confidence"),
+            "final_score": r.get("final_score"),
             "profit_xof": profit_xof,
         })
 
     return {
         "stats": stats,
+        "sync": sync,
         "chart": chart,
         "results": results,
         "page": page,
         "per_page": per_page,
         "total_pages": total_pages,
+        "total_results": total_rows,
         "selected_sport": sport,
+        "selected_label": label,
         "available_sports": available_sports,
+        "available_labels": ["safe", "value", "risky"],
         "transition_mode": transition_mode,
         "transition_source": transition_source,
         "note": (
-            "Moins de 20 résultats officiels accumulés pour le moment : le Track Record affiche les résultats résolus disponibles sans masquer les pertes. Il basculera automatiquement sur la sélection officielle stricte dès que l'échantillon sera suffisant."
+            "Moins de 20 résultats officiels gagnés/perdus sont encore disponibles. "
+            "Le Track Record affiche donc les résultats résolus du moteur courant sans "
+            "masquer les pertes; il basculera automatiquement sur la sélection officielle stricte."
         ) if transition_mode else None,
     }
 
@@ -2941,8 +3027,12 @@ async def _scheduled_full_refresh():
     return await _run_with_scheduler_lease("odds_full_refresh", _full_refresh_and_track, lease_seconds=3500)
 
 
+async def _force_track_reconcile():
+    return await _reconcile_predictions_with_scores(force_score_refresh=True)
+
+
 async def _scheduled_reconcile():
-    return await _run_with_scheduler_lease("results_reconcile", lambda: _reconcile_predictions_with_scores(force_score_refresh=True), lease_seconds=6600)
+    return await _run_with_scheduler_lease("results_reconcile", _force_track_reconcile, lease_seconds=6600)
 
 
 async def _scheduled_subscription_sweep():
@@ -2958,6 +3048,18 @@ async def startup_event():
         await db.scores_archive.create_index("commence_time")
     except Exception:
         # Un problème d'index ne doit jamais empêcher le démarrage de l'API.
+        pass
+
+    # Rattrapage immédiat du Track Record au redémarrage. Les endpoints de scores
+    # sont distincts des cotes et la synchronisation cible uniquement les sports
+    # des pronostics encore pending. Cela évite plusieurs jours de statistiques figées.
+    try:
+        pending_at_startup = await db.predictions_history.count_documents({"result": "pending"})
+        if pending_at_startup:
+            await _run_with_scheduler_lease(
+                "startup_results_reconcile", _force_track_reconcile, lease_seconds=900
+            )
+    except Exception:
         pass
 
     if ENABLE_INTERNAL_SCHEDULER:
