@@ -15,7 +15,6 @@ import {
   Send,
   Sparkles,
   AlertTriangle,
-  RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
@@ -47,15 +46,7 @@ const TIER_META = {
   },
 };
 
-const TIER_ORDER = [
-  "ultra_safe",
-  "sure",
-  "booster",
-  "extra",
-  "jackpot",
-];
-
-function normalizeConfidence(value) {
+function safeConfidence(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 0;
   return n <= 1 ? n * 100 : n;
@@ -66,171 +57,114 @@ function safeOdds(value) {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-function formatKickoff(value) {
-  if (!value) return "";
-  const parsed = dayjs(value);
-  return parsed.isValid() ? parsed.format("HH:mm") : "";
-}
-
-function getLegKey(leg, index) {
-  return (
-    leg?.match_id ||
-    leg?.id ||
-    `${leg?.home_team || "home"}-${leg?.away_team || "away"}-${leg?.commence_time || index}`
-  );
-}
-
 export default function TodayCombosPage() {
   const { user } = useAuth();
 
-  const subscription =
-    user?.subscription_tier ||
-    user?.subscription ||
-    "free";
-
-  const isFree = subscription === "free";
+  const isFree =
+    (user?.subscription_tier || "free") === "free";
 
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
   const [sportKey, setSportKey] = useState("all");
   const [error, setError] = useState("");
 
-  const load = useCallback(async ({ silent = false } = {}) => {
-    if (silent) {
-      setRefreshing(true);
-    } else {
+  useEffect(() => {
+    let active = true;
+
+    const load = async () => {
       setLoading(true);
-    }
+      setError("");
 
-    setError("");
+      try {
+        const response = await api.get(
+          "/predictions/today-combos"
+        );
 
-    try {
-      const response = await api.get("/predictions/today-combos");
-      const payload =
-        response?.data && typeof response.data === "object"
-          ? response.data
-          : {};
+        if (!active) return;
 
-      setData(payload);
-    } catch (err) {
-      const detail =
-        err?.response?.data?.detail ||
-        err?.message ||
-        "Impossible de charger les combinés du jour.";
+        const payload =
+          response?.data &&
+          typeof response.data === "object"
+            ? response.data
+            : {};
 
-      setError(String(detail));
-      toast.error("Impossible de charger les combinés du jour");
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+        setData(payload);
+      } catch (err) {
+        if (!active) return;
+
+        const detail =
+          err?.response?.data?.detail ||
+          err?.message ||
+          "Impossible de charger les combinés du jour";
+
+        setError(String(detail));
+        toast.error(
+          "Impossible de charger les combinés du jour"
+        );
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    };
+
+    load();
+
+    return () => {
+      active = false;
+    };
   }, []);
 
-  useEffect(() => {
-    load();
-  }, [load]);
-
   const families = useMemo(() => {
-    const rawFamilies = data?.families;
+    const source = data?.families;
 
-    if (!rawFamilies || typeof rawFamilies !== "object") {
+    if (!source || typeof source !== "object") {
       return [];
     }
 
-    return Object.values(rawFamilies)
-      .filter((family) => family && typeof family === "object")
-      .sort((a, b) => {
-        if (a.family_key === "all") return -1;
-        if (b.family_key === "all") return 1;
-        return String(a.family_label || "").localeCompare(
-          String(b.family_label || ""),
-          "fr"
-        );
-      });
+    return Object.values(source).filter(Boolean);
   }, [data]);
 
-  useEffect(() => {
-    if (!families.length) return;
+  const currentFamily = useMemo(
+    () =>
+      families.find(
+        (family) =>
+          family?.family_key === sportKey
+      ) || null,
+    [families, sportKey]
+  );
 
-    const exists = families.some(
-      (family) => family.family_key === sportKey
-    );
+  const shareWhatsApp = (tier) => {
+    const legs = Array.isArray(tier?.legs)
+      ? tier.legs
+      : [];
 
-    if (!exists) {
-      const fallback =
-        families.find((family) => family.family_key === "all") ||
-        families[0];
-
-      setSportKey(fallback.family_key);
-    }
-  }, [families, sportKey]);
-
-  const currentFamily = useMemo(() => {
-    if (!families.length) return null;
-
-    return (
-      families.find((family) => family.family_key === sportKey) ||
-      families.find((family) => family.family_key === "all") ||
-      families[0]
-    );
-  }, [families, sportKey]);
-
-  const currentTiers = useMemo(() => {
-    const tiers = currentFamily?.tiers;
-
-    if (!tiers || typeof tiers !== "object") {
-      return [];
-    }
-
-    return Object.entries(tiers)
-      .filter(([, tier]) => tier && typeof tier === "object")
-      .sort(([a], [b]) => {
-        const ai = TIER_ORDER.indexOf(a);
-        const bi = TIER_ORDER.indexOf(b);
-
-        const safeAi = ai === -1 ? 999 : ai;
-        const safeBi = bi === -1 ? 999 : bi;
-
-        return safeAi - safeBi;
-      });
-  }, [currentFamily]);
-
-  const shareWhatsApp = useCallback((tier) => {
-    if (!Array.isArray(tier?.legs) || tier.legs.length === 0) {
-      toast.info("Aucun pick à partager pour ce combiné.");
-      return;
-    }
-
-    const totalOdds = safeOdds(tier.total_odds);
+    if (legs.length === 0) return;
 
     const lines = [
-      `🎯 *Combiné WinPulse ${tier.label || ""}* (${dayjs().format("DD/MM")})`,
-      `_Cote totale : ${totalOdds || "—"} · ${tier.legs.length} pick${tier.legs.length > 1 ? "s" : ""}_`,
+      `🎯 *Combiné WinPulse ${tier?.label || ""}* (${dayjs().format("DD/MM")})`,
+      `_Cote totale : ${tier?.total_odds || "—"} · ${legs.length} picks_`,
       "",
     ];
 
-    tier.legs.forEach((pick, index) => {
+    legs.forEach((pick, index) => {
       lines.push(
-        `${index + 1}. *${pick.home_team || "Équipe 1"} vs ${pick.away_team || "Équipe 2"}*`,
-        `   👉 ${pick.pick || "Sélection"} @ ${pick.pick_odds || "—"}`
+        `${index + 1}. *${pick?.home_team || "Équipe 1"} vs ${pick?.away_team || "Équipe 2"}*`,
+        `   👉 ${pick?.pick || "Sélection"} @ ${pick?.pick_odds || "—"}`
       );
     });
 
     lines.push(
       "",
-      "Généré par WinPulse · https://wnpulse.com",
-      "18+ · Aucun pari n'est garanti."
+      "Généré par WinPulse · https://wnpulse.com"
     );
 
-    const url = `https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`;
+    const url = `https://wa.me/?text=${encodeURIComponent(
+      lines.join("\n")
+    )}`;
 
-    window.open(
-      url,
-      "_blank",
-      "noopener,noreferrer"
-    );
-  }, []);
+    window.open(url, "_blank");
+  };
 
   return (
     <AppLayout>
@@ -252,44 +186,18 @@ export default function TodayCombosPage() {
               {dayjs().format("DD/MM/YYYY")}
             </Badge>
 
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto">
               <LiveDataBadge />
-
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => load({ silent: true })}
-                disabled={refreshing || loading}
-                className="h-8"
-              >
-                <RefreshCw
-                  className={cn(
-                    "h-3.5 w-3.5 mr-1.5",
-                    refreshing && "animate-spin"
-                  )}
-                />
-                Actualiser
-              </Button>
             </div>
           </div>
 
           <p className="text-sm text-slate-600 max-w-2xl">
-            Uniquement les matchs qui se jouent aujourd'hui, répartis
-            en niveaux de cote, du plus prudent au plus ambitieux.
+            Uniquement les matchs qui se jouent{" "}
+            <strong>aujourd'hui</strong>, répartis en
+            niveaux de cote — du plus sûr au plus jackpot.
+            Choisis ta stratégie.
           </p>
         </div>
-
-        {error && (
-          <Card className="mb-5 border-rose-200 bg-rose-50 p-4">
-            <p className="text-sm font-semibold text-rose-800">
-              Données temporairement indisponibles
-            </p>
-            <p className="text-xs text-rose-700 mt-1">
-              {error}
-            </p>
-          </Card>
-        )}
 
         {!loading && data?.ultra_safe && (
           <div className="mb-6">
@@ -297,7 +205,9 @@ export default function TodayCombosPage() {
               tier={data.ultra_safe}
               tkey="ultra_safe"
               isFree={false}
-              onShare={() => shareWhatsApp(data.ultra_safe)}
+              onShare={() =>
+                shareWhatsApp(data.ultra_safe)
+              }
             />
           </div>
         )}
@@ -312,19 +222,33 @@ export default function TodayCombosPage() {
               className="bg-white border border-neutral-200 flex-wrap h-auto p-1"
               data-testid="today-sport-tabs"
             >
-              {families.map((family) => (
+              {families.map((family, index) => (
                 <TabsTrigger
-                  key={family.family_key}
-                  value={family.family_key}
-                  disabled={
-                    Number(family.matches_today || 0) === 0 &&
-                    family.family_key !== "all"
+                  key={
+                    family?.family_key ||
+                    `family-${index}`
                   }
-                  data-testid={`today-tab-${family.family_key}`}
+                  value={
+                    family?.family_key ||
+                    `family-${index}`
+                  }
+                  disabled={
+                    Number(
+                      family?.matches_today || 0
+                    ) === 0 &&
+                    family?.family_key !== "all"
+                  }
+                  data-testid={`today-tab-${
+                    family?.family_key || index
+                  }`}
                 >
-                  {family.family_label || family.family_key}
+                  {family?.family_label ||
+                    family?.family_key ||
+                    "Sport"}
 
-                  {Number(family.matches_today || 0) > 0 && (
+                  {Number(
+                    family?.matches_today || 0
+                  ) > 0 && (
                     <span className="ml-1.5 text-[9px] opacity-70">
                       {family.matches_today}
                     </span>
@@ -339,21 +263,19 @@ export default function TodayCombosPage() {
           <div className="grid place-items-center py-16">
             <Loader2 className="h-6 w-6 animate-spin text-orange-500" />
           </div>
-        ) : !currentFamily ? (
-          <Card className="p-8 bg-white border-neutral-200 text-center">
-            <div className="text-4xl mb-3 opacity-40">
-              🕒
-            </div>
-
-            <p className="text-slate-500 text-sm">
-              Aucun combiné disponible pour le moment.
+        ) : error && !data ? (
+          <Card className="p-8 bg-white border-rose-200 text-center">
+            <p className="text-rose-600 text-sm font-semibold">
+              Impossible de charger les combinés.
             </p>
-
             <p className="text-slate-400 text-xs mt-2">
-              Les données seront affichées dès qu'elles seront disponibles.
+              {error}
             </p>
           </Card>
-        ) : Number(currentFamily.matches_today || 0) === 0 ? (
+        ) : !currentFamily ||
+          Number(
+            currentFamily?.matches_today || 0
+          ) === 0 ? (
           <Card className="p-8 bg-white border-neutral-200 text-center">
             <div className="text-4xl mb-3 opacity-40">
               🕒
@@ -362,29 +284,30 @@ export default function TodayCombosPage() {
             <p className="text-slate-500 text-sm">
               Aucun match aujourd'hui dans{" "}
               <strong>
-                {currentFamily.family_label || "ce sport"}
-              </strong>.
+                {currentFamily?.family_label ||
+                  "ce sport"}
+              </strong>
+              .
             </p>
 
             <p className="text-slate-400 text-xs mt-2">
-              Consulte les autres sports ou reviens plus tard.
-            </p>
-          </Card>
-        ) : currentTiers.length === 0 ? (
-          <Card className="p-8 bg-white border-neutral-200 text-center">
-            <p className="text-slate-500 text-sm">
-              Aucun combiné n'a encore été construit pour cette catégorie.
+              Reviens demain matin ou regarde la
+              catégorie "Tous sports".
             </p>
           </Card>
         ) : (
-          <div className="grid gap-4 md:grid-cols-2">
-            {currentTiers.map(([tkey, tier]) => (
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
+            {Object.entries(
+              currentFamily?.tiers || {}
+            ).map(([tkey, tier]) => (
               <TierCard
                 key={tkey}
-                tier={tier}
+                tier={tier || {}}
                 tkey={tkey}
                 isFree={isFree}
-                onShare={() => shareWhatsApp(tier)}
+                onShare={() =>
+                  shareWhatsApp(tier)
+                }
               />
             ))}
           </div>
@@ -395,14 +318,13 @@ export default function TodayCombosPage() {
 }
 
 function TierCard({
-  tier,
+  tier = {},
   tkey,
   isFree,
   onShare,
 }) {
   const meta =
-    TIER_META[tkey] ||
-    TIER_META.sure;
+    TIER_META[tkey] || TIER_META.sure;
 
   const Icon = meta.icon;
 
@@ -411,21 +333,23 @@ function TierCard({
     : [];
 
   const isLocked =
-    Boolean(tier?.locked) &&
-    isFree;
+    Boolean(tier?.locked) && isFree;
 
   const isUltraSafe =
     tkey === "ultra_safe";
 
-  const totalOdds = safeOdds(tier?.total_odds);
+  const totalOdds = safeOdds(
+    tier?.total_odds
+  );
 
-  const avgConfidence =
-    normalizeConfidence(tier?.avg_confidence);
-
-  const potentialReturn =
+  const potentialWin =
     totalOdds > 0
       ? Math.round(totalOdds * 1000)
       : 0;
+
+  const avgConfidence = Math.round(
+    safeConfidence(tier?.avg_confidence)
+  );
 
   return (
     <Card
@@ -450,15 +374,13 @@ function TierCard({
             </div>
 
             <div className="min-w-0">
-              <div className="font-heading font-extrabold text-xl truncate">
+              <div className="font-heading font-extrabold text-xl">
                 {tier?.label || "Combiné"}
               </div>
 
-              {tier?.tagline && (
-                <div className="text-[10px] uppercase tracking-wider opacity-90 font-bold">
-                  {tier.tagline}
-                </div>
-              )}
+              <div className="text-[10px] uppercase tracking-wider opacity-90 font-bold">
+                {tier?.tagline || ""}
+              </div>
             </div>
           </div>
 
@@ -473,16 +395,20 @@ function TierCard({
           </div>
         </div>
 
-        <div className="mt-3 pt-3 border-t border-white/20 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="mt-3 pt-3 border-t border-white/20 flex items-center justify-between gap-2 text-xs flex-wrap">
           <span className="opacity-90">
             {legs.length} pick
-            {legs.length > 1 ? "s" : ""} · confiance{" "}
-            {Math.round(avgConfidence)}%
+            {legs.length > 1 ? "s" : ""} ·
+            confiance {avgConfidence}%
           </span>
 
-          {potentialReturn > 0 && (
+          {potentialWin > 0 && (
             <span className="bg-white/25 rounded px-2 py-0.5 font-mono font-bold">
-              Mise 1 000 → retour potentiel {potentialReturn.toLocaleString("fr-FR")} FCFA
+              Mise 1000 →{" "}
+              {potentialWin.toLocaleString(
+                "fr-FR"
+              )}{" "}
+              FCFA
             </span>
           )}
         </div>
@@ -495,87 +421,115 @@ function TierCard({
           </p>
         )}
 
-        {isUltraSafe && legs.length > 0 && (
-          <div className="flex items-start gap-2 mb-3 p-2.5 rounded-lg bg-amber-50 border border-amber-200">
-            <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+        {isUltraSafe &&
+          legs.length > 0 && (
+            <div className="flex items-start gap-2 mb-3 p-2.5 rounded-lg bg-amber-50 border border-amber-200">
+              <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
 
-            <p className="text-[11px] text-amber-800 leading-snug">
-              Même un favori très net peut perdre. Ce niveau réduit
-              le risque, il ne l'élimine pas. Aucun pari sportif
-              n'est garanti.
-            </p>
-          </div>
-        )}
+              <p className="text-[11px] text-amber-800 leading-snug">
+                Même un favori très net peut
+                perdre. Ce niveau réduit le
+                risque, il ne l'élimine pas.
+                Jamais de garantie à 100% sur un
+                pari sportif.
+              </p>
+            </div>
+          )}
 
         {isLocked ? (
           <div className="text-center py-6">
             <Lock className="h-8 w-8 mx-auto text-slate-400 mb-2" />
 
             <p className="text-sm text-slate-600 font-semibold mb-1">
-              Réservé aux abonnés WinPulse Pro
+              Réservé aux abonnés Pro
             </p>
 
             <p className="text-xs text-slate-400 mb-3">
-              Abonne-toi pour débloquer tous les niveaux et leurs sélections.
+              Passe Pro pour débloquer les
+              niveaux réservés aux abonnés.
             </p>
           </div>
         ) : legs.length === 0 ? (
           <p className="text-xs text-slate-400 py-4 text-center">
             {isUltraSafe
-              ? "Pas assez de matchs très fiables aujourd'hui pour ce niveau. Reviens plus tard."
-              : "Pas assez de matchs qualifiés aujourd'hui pour construire ce niveau."}
+              ? "Pas assez de matchs très fiables aujourd'hui pour ce niveau. Reviens plus tard dans la journée."
+              : "Pas assez de matchs aujourd'hui pour construire ce niveau."}
           </p>
         ) : (
           <>
             <div className="space-y-2 mb-3">
-              {legs.map((pick, index) => {
-                const confidence =
-                  normalizeConfidence(pick?.confidence);
+              {legs.map(
+                (pick, index) => {
+                  const confidence =
+                    Math.round(
+                      safeConfidence(
+                        pick?.confidence
+                      )
+                    );
 
-                const kickoff =
-                  formatKickoff(pick?.commence_time);
+                  const kickoff =
+                    pick?.commence_time &&
+                    dayjs(
+                      pick.commence_time
+                    ).isValid()
+                      ? dayjs(
+                          pick.commence_time
+                        ).format("HH:mm")
+                      : "";
 
-                return (
-                  <div
-                    key={getLegKey(pick, index)}
-                    className="p-2.5 rounded-lg bg-slate-50 border border-neutral-200"
-                  >
-                    <div className="flex items-center justify-between gap-2 mb-1">
-                      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold truncate">
-                        {pick?.sport_title ||
-                          pick?.market_label ||
-                          "Match"}
-                        {kickoff ? ` · ${kickoff}` : ""}
+                  return (
+                    <div
+                      key={
+                        pick?.match_id ||
+                        pick?.id ||
+                        `${pick?.home_team || "home"}-${pick?.away_team || "away"}-${index}`
+                      }
+                      className="p-2.5 rounded-lg bg-slate-50 border border-neutral-200"
+                    >
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold truncate">
+                          {pick?.sport_title ||
+                            pick?.market_label ||
+                            "Match"}
+                          {kickoff
+                            ? ` · ${kickoff}`
+                            : ""}
+                        </div>
+
+                        <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded shrink-0">
+                          {confidence}%
+                        </span>
                       </div>
 
-                      <span className="text-[10px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded shrink-0">
-                        {Math.round(confidence)}%
-                      </span>
-                    </div>
+                      <div className="text-sm font-semibold text-slate-900 truncate">
+                        {pick?.home_team ||
+                          "Équipe 1"}{" "}
+                        <span className="text-slate-400">
+                          vs
+                        </span>{" "}
+                        {pick?.away_team ||
+                          "Équipe 2"}
+                      </div>
 
-                    <div className="text-sm font-semibold text-slate-900 truncate">
-                      {pick?.home_team || "Équipe 1"}{" "}
-                      <span className="text-slate-400">
-                        vs
-                      </span>{" "}
-                      {pick?.away_team || "Équipe 2"}
+                      <div className="text-xs text-slate-600 mt-0.5">
+                        <span className="text-slate-500">
+                          {pick?.market_label ||
+                            "Sélection"}{" "}
+                          :
+                        </span>{" "}
+                        <strong className="text-orange-600">
+                          {pick?.pick || "—"}
+                        </strong>{" "}
+                        @{" "}
+                        <strong className="font-mono">
+                          {pick?.pick_odds ||
+                            "—"}
+                        </strong>
+                      </div>
                     </div>
-
-                    <div className="text-xs text-slate-600 mt-0.5">
-                      <span className="text-slate-500">
-                        {pick?.market_label || "Sélection"} :
-                      </span>{" "}
-                      <strong className="text-orange-600">
-                        {pick?.pick || "—"}
-                      </strong>{" "}
-                      @{" "}
-                      <strong className="font-mono">
-                        {pick?.pick_odds || "—"}
-                      </strong>
-                    </div>
-                  </div>
-                );
-              })}
+                  );
+                }
+              )}
             </div>
 
             <Button
