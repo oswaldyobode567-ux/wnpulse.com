@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import LandingPage from "@/pages/LandingPage";
@@ -15,7 +15,7 @@ import TopPicksPage from "@/pages/TopPicksPage";
 import AdminPage from "@/pages/AdminPage";
 import TrackRecordPage from "@/pages/TrackRecordPage";
 import ValueBetsPage from "@/pages/ValueBetsPage";
-import MontantePage from "@/pages/MontantePage";
+import MontantePage from "./MontantePage";
 import ProfilePage from "@/pages/ProfilePage";
 import ParrainagePage from "@/pages/ParrainagePage";
 import ComboBuilderPage from "@/pages/ComboBuilderPage";
@@ -72,6 +72,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/top"
             element={
@@ -80,6 +81,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/value-bets"
             element={
@@ -88,6 +90,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/montante"
             element={
@@ -96,6 +99,12 @@ export default function App() {
               </RequireAuth>
             }
           />
+
+          <Route
+            path="/montante"
+            element={<Navigate to="/app/montante" replace />}
+          />
+
           <Route
             path="/app/profil"
             element={
@@ -104,6 +113,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/parrainage"
             element={
@@ -112,6 +122,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/match/:matchId"
             element={
@@ -120,6 +131,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/combines"
             element={
@@ -128,6 +140,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/builder"
             element={
@@ -136,6 +149,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/aujourdhui"
             element={
@@ -144,6 +158,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/live"
             element={
@@ -152,6 +167,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/historique"
             element={
@@ -160,6 +176,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/abonnement"
             element={
@@ -168,6 +185,7 @@ export default function App() {
               </RequireAuth>
             }
           />
+
           <Route
             path="/app/admin"
             element={
