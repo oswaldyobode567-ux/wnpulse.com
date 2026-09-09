@@ -214,7 +214,7 @@ export default function PaymentModal({
 
   return (
     <div
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/60 p-3 sm:p-6"
+      className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center bg-slate-950/60 p-0 sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-label="Paiement WinPulse"
@@ -226,8 +226,8 @@ export default function PaymentModal({
         onClick={close}
       />
 
-      <div className="relative z-10 flex max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-neutral-200 px-5 py-4">
+      <div className="relative z-10 flex max-h-[100dvh] sm:max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl">
+        <div className="shrink-0 flex items-start justify-between gap-4 border-b border-neutral-200 px-5 py-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-orange-600">
               Paiement WinPulse
@@ -255,7 +255,7 @@ export default function PaymentModal({
           </button>
         </div>
 
-        <div className="overflow-y-auto px-5 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 pb-6">
           {loadingPlan ? (
             <div className="grid place-items-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-orange-500" />
@@ -413,16 +413,14 @@ export default function PaymentModal({
           )}
         </div>
 
-        <div className="sticky bottom-0 border-t border-neutral-200 bg-white px-5 py-4">
+        <div className="shrink-0 border-t border-neutral-200 bg-white px-5 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
           {step === 1 ? (
             <Button
               type="button"
               onClick={goNext}
               disabled={
                 submitting ||
-                loadingPlan ||
-                !payerName.trim() ||
-                !phone.trim()
+                loadingPlan
               }
               className="h-12 w-full wp-gradient-warm text-white border-0"
               data-testid="payment-next-button"
