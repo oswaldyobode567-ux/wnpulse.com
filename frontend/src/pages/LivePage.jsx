@@ -1,4 +1,4 @@
-import {
+
   useCallback,
   useEffect,
   useMemo,
@@ -27,6 +27,8 @@ import dayjs from "dayjs";
 import LiveDataBadge from "@/components/LiveDataBadge";
 
 const REFRESH_INTERVAL_MS = 45_000;
+const LIVE_CACHE_KEY = "winpulse_live_scores_v1";
+const LIVE_CACHE_MAX_AGE_MS = 5 * 60_000;
 
 const SPORT_ICONS = {
   soccer: "⚽",
@@ -64,10 +66,54 @@ function formatTime(value, format) {
   return parsed.isValid() ? parsed.format(format) : "";
 }
 
+function readLiveCache() {
+  try {
+    const raw = sessionStorage.getItem(LIVE_CACHE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw);
+    const savedAt = Number(parsed?.savedAt || 0);
+    const data = Array.isArray(parsed?.data) ? parsed.data : null;
+
+    if (!data) return null;
+
+    return {
+      data,
+      savedAt,
+      fresh: Date.now() - savedAt <= LIVE_CACHE_MAX_AGE_MS,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeLiveCache(data) {
+  try {
+    sessionStorage.setItem(
+      LIVE_CACHE_KEY,
+      JSON.stringify({
+        data,
+        savedAt: Date.now(),
+      })
+    );
+  } catch {
+    // Le cache local est optionnel.
+  }
+}
+
 export default function LivePage() {
-  const [scores, setScores] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [refreshedAt, setRefreshedAt] = useState(null);
+  const cached = readLiveCache();
+
+  const [scores, setScores] = useState(
+    () => cached?.data || []
+  );
+  const [loading, setLoading] = useState(
+    () => !cached?.data?.length
+  );
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshedAt, setRefreshedAt] = useState(
+    () => (cached?.savedAt ? new Date(cached.savedAt) : null)
+  );
 
   const mountedRef = useRef(false);
   const requestInFlightRef = useRef(false);
@@ -78,6 +124,10 @@ export default function LivePage() {
 
     requestInFlightRef.current = true;
 
+    if (silent && mountedRef.current) {
+      setRefreshing(true);
+    }
+
     try {
       const { data } = await api.get("/scores");
       const nextScores = Array.isArray(data) ? data : [];
@@ -86,6 +136,7 @@ export default function LivePage() {
 
       setScores(nextScores);
       setRefreshedAt(new Date());
+      writeLiveCache(nextScores);
       errorToastShownRef.current = false;
     } catch (error) {
       if (!mountedRef.current) return;
@@ -99,6 +150,7 @@ export default function LivePage() {
 
       if (mountedRef.current) {
         setLoading(false);
+        setRefreshing(false);
       }
     }
   }, []);
@@ -106,7 +158,7 @@ export default function LivePage() {
   useEffect(() => {
     mountedRef.current = true;
 
-    load();
+    load({ silent: Boolean(cached?.data?.length) });
 
     const intervalId = window.setInterval(() => {
       if (document.visibilityState === "visible") {
@@ -120,7 +172,10 @@ export default function LivePage() {
       }
     };
 
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    document.addEventListener(
+      "visibilitychange",
+      handleVisibilityChange
+    );
 
     return () => {
       mountedRef.current = false;
@@ -134,7 +189,11 @@ export default function LivePage() {
 
   const { live, completed, upcoming } = useMemo(() => {
     const liveMatches = scores
-      .filter((match) => !match?.completed && hasScores(match))
+      .filter(
+        (match) =>
+          !match?.completed &&
+          hasScores(match)
+      )
       .sort((a, b) =>
         String(a?.commence_time || "").localeCompare(
           String(b?.commence_time || "")
@@ -144,13 +203,26 @@ export default function LivePage() {
     const completedMatches = scores
       .filter((match) => Boolean(match?.completed))
       .sort((a, b) => {
-        const aTime = a?.last_update || a?.commence_time || "";
-        const bTime = b?.last_update || b?.commence_time || "";
-        return String(bTime).localeCompare(String(aTime));
+        const aTime =
+          a?.last_update ||
+          a?.commence_time ||
+          "";
+        const bTime =
+          b?.last_update ||
+          b?.commence_time ||
+          "";
+
+        return String(bTime).localeCompare(
+          String(aTime)
+        );
       });
 
     const upcomingMatches = scores
-      .filter((match) => !match?.completed && !hasScores(match))
+      .filter(
+        (match) =>
+          !match?.completed &&
+          !hasScores(match)
+      )
       .sort((a, b) =>
         String(a?.commence_time || "").localeCompare(
           String(b?.commence_time || "")
@@ -190,7 +262,10 @@ export default function LivePage() {
               {live.length} en direct
             </Badge>
 
-            <div className="ml-auto">
+            <div className="ml-auto flex items-center gap-2">
+              {refreshing && (
+                <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />
+              )}
               <LiveDataBadge />
             </div>
           </div>
@@ -202,7 +277,8 @@ export default function LivePage() {
 
           {refreshedAt && (
             <p className="text-[10px] text-slate-400 mt-1">
-              Mis à jour à {dayjs(refreshedAt).format("HH:mm:ss")}
+              Mis à jour à{" "}
+              {dayjs(refreshedAt).format("HH:mm:ss")}
             </p>
           )}
         </div>
@@ -284,7 +360,7 @@ export default function LivePage() {
                 />
               ) : (
                 <div className="grid gap-3 sm:grid-cols-2">
-                  {completed.map((match, index) => (
+                  {completed.slice(0, 40).map((match, index) => (
                     <MatchRow
                       key={matchKey(match, index)}
                       match={match}
@@ -321,16 +397,24 @@ export default function LivePage() {
 }
 
 function MatchRow({ match, status }) {
-  const home = match?.home_team || "Équipe domicile";
-  const away = match?.away_team || "Équipe extérieure";
+  const home =
+    match?.home_team ||
+    "Équipe domicile";
+  const away =
+    match?.away_team ||
+    "Équipe extérieure";
 
-  const homeScore = match?.scores?.find(
-    (score) => score?.name === home
-  )?.score;
+  const homeScore =
+    match?.scores?.find(
+      (score) =>
+        score?.name === home
+    )?.score;
 
-  const awayScore = match?.scores?.find(
-    (score) => score?.name === away
-  )?.score;
+  const awayScore =
+    match?.scores?.find(
+      (score) =>
+        score?.name === away
+    )?.score;
 
   const scoresAreNumeric =
     homeScore != null &&
@@ -365,11 +449,18 @@ function MatchRow({ match, status }) {
         status === "live" &&
           "border-rose-300 ring-2 ring-rose-500/10"
       )}
-      data-testid={`live-match-${match?.id || match?.match_id || "unknown"}`}
+      data-testid={`live-match-${
+        match?.id ||
+        match?.match_id ||
+        "unknown"
+      }`}
     >
       <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">
         <span className="flex items-center gap-1 min-w-0">
-          <span>{iconFor(match?.sport_key)}</span>
+          <span>
+            {iconFor(match?.sport_key)}
+          </span>
+
           <span className="truncate max-w-[180px]">
             {match?.sport_title ||
               match?.sport_key ||
@@ -465,11 +556,12 @@ function MatchRow({ match, status }) {
         </div>
       </div>
 
-      {updateLabel && status !== "upcoming" && (
-        <div className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-neutral-100">
-          Actualisé à {updateLabel}
-        </div>
-      )}
+      {updateLabel &&
+        status !== "upcoming" && (
+          <div className="text-[10px] text-slate-400 mt-2 pt-2 border-t border-neutral-100">
+            Actualisé à {updateLabel}
+          </div>
+        )}
     </Card>
   );
 }
@@ -480,6 +572,7 @@ function EmptyState({ msg, icon }) {
       <div className="text-4xl mb-3 opacity-40">
         {icon}
       </div>
+
       <p className="text-slate-500 text-sm">
         {msg}
       </p>
