@@ -1,9 +1,15 @@
+import { useEffect, useState, useMemo } from "react";
 
 import AppLayout from "@/components/AppLayout";
+
 import { Card } from "@/components/ui/card";
+
 import { Button } from "@/components/ui/button";
+
 import { Badge } from "@/components/ui/badge";
+
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+
 import {
   Shield,
   ShieldCheck,
@@ -17,11 +23,17 @@ import {
   Sparkles,
   AlertTriangle,
 } from "lucide-react";
+
 import { cn } from "@/lib/utils";
+
 import api from "@/lib/api";
+
 import { useAuth } from "@/contexts/AuthContext";
+
 import { toast } from "sonner";
+
 import LiveDataBadge from "@/components/LiveDataBadge";
+
 import dayjs from "dayjs";
 
 const TIER_META = {
@@ -30,21 +42,25 @@ const TIER_META = {
     accent: "teal",
     gradient: "from-teal-500 to-cyan-700",
   },
+
   sure: {
     icon: Shield,
     accent: "emerald",
     gradient: "from-emerald-500 to-emerald-700",
   },
+
   booster: {
     icon: Zap,
     accent: "orange",
     gradient: "from-orange-500 to-orange-700",
   },
+
   extra: {
     icon: Flame,
     accent: "rose",
     gradient: "from-rose-500 to-pink-700",
   },
+
   jackpot: {
     icon: Rocket,
     accent: "violet",
@@ -54,10 +70,14 @@ const TIER_META = {
 
 export default function TodayCombosPage() {
   const { user } = useAuth();
-  const isFree = (user?.subscription_tier || "free") === "free";
+
+  const isFree =
+    (user?.subscription_tier || "free") === "free";
 
   const [data, setData] = useState(null);
+
   const [loading, setLoading] = useState(true);
+
   const [sportKey, setSportKey] = useState("all");
 
   useEffect(() => {
@@ -65,10 +85,15 @@ export default function TodayCombosPage() {
       setLoading(true);
 
       try {
-        const { data } = await api.get("/predictions/today-combos");
+        const { data } = await api.get(
+          "/predictions/today-combos"
+        );
+
         setData(data);
       } catch (e) {
-        toast.error("Impossible de charger les combinés du jour");
+        toast.error(
+          "Impossible de charger les combinés du jour"
+        );
       } finally {
         setLoading(false);
       }
@@ -76,7 +101,10 @@ export default function TodayCombosPage() {
   }, []);
 
   const families = useMemo(
-    () => (data ? Object.values(data.families) : []),
+    () =>
+      data?.families
+        ? Object.values(data.families)
+        : [],
     [data]
   );
 
@@ -109,7 +137,9 @@ export default function TodayCombosPage() {
     );
 
     window.open(
-      `https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`,
+      `https://wa.me/?text=${encodeURIComponent(
+        lines.join("\n")
+      )}`,
       "_blank"
     );
   };
@@ -142,8 +172,9 @@ export default function TodayCombosPage() {
 
           <p className="text-sm text-slate-600 max-w-2xl">
             Uniquement les matchs qui se jouent{" "}
-            <strong>aujourd'hui</strong>, répartis en niveaux de cote —
-            du plus sûr au plus jackpot. Choisis ta stratégie.
+            <strong>aujourd'hui</strong>, répartis
+            en niveaux de cote — du plus sûr au
+            plus jackpot. Choisis ta stratégie.
           </p>
         </div>
 
@@ -155,7 +186,9 @@ export default function TodayCombosPage() {
               tkey="ultra_safe"
               isFree={false}
               onShare={() =>
-                shareWhatsApp(data.ultra_safe)
+                shareWhatsApp(
+                  data.ultra_safe
+                )
               }
             />
           </div>
@@ -207,30 +240,32 @@ export default function TodayCombosPage() {
             <p className="text-slate-500 text-sm">
               Aucun match aujourd'hui dans{" "}
               <strong>
-                {currentFamily?.family_label || "ce sport"}
+                {currentFamily?.family_label ||
+                  "ce sport"}
               </strong>
               .
             </p>
 
             <p className="text-slate-400 text-xs mt-2">
-              Reviens demain matin ou regarde la catégorie "Tous sports".
+              Reviens demain matin ou regarde la
+              catégorie "Tous sports".
             </p>
           </Card>
         ) : (
           <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-2">
-            {Object.entries(currentFamily.tiers).map(
-              ([tkey, tier]) => (
-                <TierCard
-                  key={tkey}
-                  tier={tier}
-                  tkey={tkey}
-                  isFree={isFree}
-                  onShare={() =>
-                    shareWhatsApp(tier)
-                  }
-                />
-              )
-            )}
+            {Object.entries(
+              currentFamily.tiers
+            ).map(([tkey, tier]) => (
+              <TierCard
+                key={tkey}
+                tier={tier}
+                tkey={tkey}
+                isFree={isFree}
+                onShare={() =>
+                  shareWhatsApp(tier)
+                }
+              />
+            ))}
           </div>
         )}
       </div>
@@ -245,11 +280,16 @@ function TierCard({
   onShare,
 }) {
   const meta =
-    TIER_META[tkey] || TIER_META.sure;
+    TIER_META[tkey] ||
+    TIER_META.sure;
 
   const Icon = meta.icon;
+
   const legs = tier.legs || [];
-  const isLocked = tier.locked && isFree;
+
+  const isLocked =
+    tier.locked && isFree;
+
   const isUltraSafe =
     tkey === "ultra_safe";
 
@@ -304,7 +344,8 @@ function TierCard({
         <div className="mt-3 pt-3 border-t border-white/20 flex items-center justify-between text-xs">
           <span className="opacity-90">
             {legs.length} pick
-            {legs.length > 1 ? "s" : ""} · confiance{" "}
+            {legs.length > 1 ? "s" : ""} ·
+            confiance{" "}
             {tier.avg_confidence || 0}%
           </span>
 
@@ -327,9 +368,11 @@ function TierCard({
               <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
 
               <p className="text-[11px] text-amber-800 leading-snug">
-                Même un favori très net peut perdre. Ce niveau réduit le
-                risque, il ne l'élimine pas. Jamais de garantie à 100%
-                sur un pari sportif.
+                Même un favori très net peut
+                perdre. Ce niveau réduit le
+                risque, il ne l'élimine pas.
+                Jamais de garantie à 100% sur un
+                pari sportif.
               </p>
             </div>
           )}
@@ -343,7 +386,8 @@ function TierCard({
             </p>
 
             <p className="text-xs text-slate-400 mb-3">
-              Passe Pro pour débloquer les 3 niveaux Booster, Extra & Jackpot
+              Passe Pro pour débloquer les 3
+              niveaux Booster, Extra & Jackpot
             </p>
           </div>
         ) : legs.length === 0 ? (
