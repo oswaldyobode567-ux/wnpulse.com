@@ -54,7 +54,7 @@ function matchKey(match, index) {
 return (
 match?.id ||
 match?.match_id ||
-${match?.sport_key || "sport"}-${match?.home_team || "home"}-${match?.away_team || "away"}-${match?.commence_time || index}
+`${match?.sport_key || "sport"}-${match?.home_team || "home"}-${match?.away_team || "away"}-${match?.commence_time || index}`
 );
 }
 
@@ -369,7 +369,7 @@ className={cn(
 status === "live" &&
 "border-rose-300 ring-2 ring-rose-500/10"
 )}
-data-testid={live-match-${match?.id || match?.match_id || "unknown"}}
+data-testid={`live-match-${match?.id || match?.match_id || "unknown"}`}
 >
 <div className="flex items-center justify-between gap-2 text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-2">
 <span className="flex items-center gap-1 min-w-0">
