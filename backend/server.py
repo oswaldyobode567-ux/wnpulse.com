@@ -1400,7 +1400,7 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
     predictions = analyze_all(matches, real_stats_map=real_stats_map)
     candidates = []
     now = datetime.now(timezone.utc)
-    current_day = now.date()
+    search_until = now + timedelta(hours=72)
     for p in predictions:
         ct = p.get("commence_time")
         try:
@@ -1409,10 +1409,12 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
                 dt = dt.replace(tzinfo=timezone.utc)
         except Exception:
             continue
-        # Uniquement les matchs encore jouables du jour ou a venir.
-        if dt.date() != current_day:
-            continue
+        # Recherche les matchs encore jouables dans les 72 prochaines heures.
+        # Cela évite de bloquer la montante lorsqu'aucun pick qualifié n'existe
+        # exactement à la date UTC du jour.
         if dt < now - timedelta(minutes=15):
+            continue
+        if dt > search_until:
             continue
         if not p.get("pick"):
             continue
@@ -1420,7 +1422,7 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
 
     selected = montante_selector.select_daily_picks(candidates, limit=MONTANTE_MAX_PICKS)
     if not selected:
-        state["waiting_reason"] = "Aucun pick ne respecte actuellement les criteres de la montante (confiance >= 70%, cote 1.20-1.50)."
+        state["waiting_reason"] = "Aucun pick ne respecte actuellement les criteres de la montante dans les 72 prochaines heures (confiance >= 70%, cote 1.20-1.50)."
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         await _montante_save(state)
         return state
