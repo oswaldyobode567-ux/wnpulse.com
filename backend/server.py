@@ -1395,12 +1395,36 @@ async def _montante_reconcile(state: Dict) -> Dict:
 async def _montante_prepare_next_day(state: Dict) -> Dict:
     if state.get("status") != "ACTIVE" or state.get("current_picks"):
         return state
+
     matches = await fetch_all_matches(db)
     real_stats_map = await get_real_stats_map(db, matches)
-    predictions = analyze_all(matches, real_stats_map=real_stats_map)
+    predictions = list(analyze_all(matches, real_stats_map=real_stats_map) or [])
+
     candidates = []
     now = datetime.now(timezone.utc)
     search_until = now + timedelta(hours=72)
+
+    # Diagnostic transparent : mêmes données et mêmes seuils que la Montante.
+    # Il n'assouplit aucun critère et ne force jamais un pronostic.
+    diagnostic = {
+        "generated_at": now.isoformat(),
+        "window_hours": 72,
+        "matches_received": len(matches) if isinstance(matches, list) else None,
+        "predictions_generated": len(predictions),
+        "invalid_commence_time": 0,
+        "past_or_started": 0,
+        "beyond_72h": 0,
+        "in_72h": 0,
+        "without_pick": 0,
+        "with_pick": 0,
+        "missing_odds_or_confidence": 0,
+        "odds_outside_range": 0,
+        "confidence_below_min": 0,
+        "edge_below_min": 0,
+        "eligible": 0,
+        "selected": 0,
+    }
+
     for p in predictions:
         ct = p.get("commence_time")
         try:
@@ -1408,21 +1432,65 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
         except Exception:
+            diagnostic["invalid_commence_time"] += 1
             continue
-        # Recherche les matchs encore jouables dans les 72 prochaines heures.
-        # Cela évite de bloquer la montante lorsqu'aucun pick qualifié n'existe
-        # exactement à la date UTC du jour.
+
         if dt < now - timedelta(minutes=15):
+            diagnostic["past_or_started"] += 1
             continue
         if dt > search_until:
+            diagnostic["beyond_72h"] += 1
             continue
+
+        diagnostic["in_72h"] += 1
+
         if not p.get("pick"):
+            diagnostic["without_pick"] += 1
             continue
+
+        diagnostic["with_pick"] += 1
+
+        # Utilise exactement la normalisation du service Montante pour savoir
+        # pourquoi un pick est accepté ou rejeté.
+        normalized = montante_selector._normalize(p, p)
+        if normalized is None:
+            diagnostic["missing_odds_or_confidence"] += 1
+        else:
+            rejected = False
+            if not (MONTANTE_MIN_ODDS <= normalized["odds"] <= MONTANTE_MAX_ODDS):
+                diagnostic["odds_outside_range"] += 1
+                rejected = True
+            if normalized["confidence"] < MONTANTE_MIN_CONFIDENCE:
+                diagnostic["confidence_below_min"] += 1
+                rejected = True
+            if normalized["edge"] < montante_selector.min_edge:
+                diagnostic["edge_below_min"] += 1
+                rejected = True
+            if not rejected:
+                diagnostic["eligible"] += 1
+
         candidates.append(p)
 
-    selected = montante_selector.select_daily_picks(candidates, limit=MONTANTE_MAX_PICKS)
+    selected = montante_selector.select_daily_picks(
+        candidates,
+        limit=MONTANTE_MAX_PICKS,
+    )
+    diagnostic["selected"] = len(selected)
+    state["diagnostic"] = diagnostic
+
     if not selected:
-        state["waiting_reason"] = "Aucun pick ne respecte actuellement les criteres de la montante dans les 72 prochaines heures (confiance >= 70%, cote 1.20-1.50)."
+        state["waiting_reason"] = (
+            "Aucun pick éligible pour la montante dans les 72 prochaines heures. "
+            f"Diagnostic : {diagnostic['predictions_generated']} prédictions générées, "
+            f"{diagnostic['in_72h']} dans la fenêtre 72 h, "
+            f"{diagnostic['with_pick']} avec un pick, "
+            f"{diagnostic['eligible']} éligible(s). "
+            f"Rejets principaux : cote hors {MONTANTE_MIN_ODDS:.2f}-{MONTANTE_MAX_ODDS:.2f}="
+            f"{diagnostic['odds_outside_range']}, "
+            f"confiance < {int(MONTANTE_MIN_CONFIDENCE * 100)}%="
+            f"{diagnostic['confidence_below_min']}, "
+            f"cote/confiance manquante={diagnostic['missing_odds_or_confidence']}."
+        )
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         await _montante_save(state)
         return state
@@ -1432,7 +1500,6 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     await _montante_save(state)
     return state
-
 
 @app.get("/api/montante")
 async def get_montante(payload: dict = Depends(get_current_user_payload)):
@@ -1447,6 +1514,30 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     public["can_start"] = False
     return public
 
+@app.get("/api/montante/diagnostic")
+async def get_montante_diagnostic(payload: dict = Depends(get_current_user_payload)):
+    """Diagnostic administrateur de la sélection Montante."""
+    await _require_admin(payload)
+    state = await _montante_get()
+    if not state:
+        return {
+            "status": "NONE",
+            "message": "Aucune montante active.",
+            "diagnostic": None,
+        }
+
+    state = await _montante_reconcile(state)
+    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+        state = await _montante_prepare_next_day(state)
+
+    public = _montante_public(state)
+    return {
+        "status": public.get("status"),
+        "current_day": public.get("current_day"),
+        "waiting_reason": public.get("waiting_reason"),
+        "current_picks": public.get("current_picks") or [],
+        "diagnostic": public.get("diagnostic"),
+    }
 
 @app.post("/api/montante/start")
 async def start_montante(
