@@ -258,7 +258,7 @@ class MontanteService:
         ) or 0.0
 
         event_id = str(
-            match.get("id") or match.get("event_id") or
+            match.get("match_id") or match.get("id") or match.get("event_id") or
             f'{match.get("home_team", match.get("home", ""))}_'
             f'{match.get("away_team", match.get("away", ""))}'
         )
@@ -268,7 +268,7 @@ class MontanteService:
         )
         return {
             "event_id": event_id,
-            "match_id": match.get("id") or match.get("event_id"),
+            "match_id": match.get("match_id") or match.get("id") or match.get("event_id"),
             "home_team": match.get("home_team") or match.get("home") or "",
             "away_team": match.get("away_team") or match.get("away") or "",
             "league": (
