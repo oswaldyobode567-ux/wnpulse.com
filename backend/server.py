@@ -8,6 +8,7 @@ import time
 import httpx
 import uuid
 import statistics
+import math
 import secrets
 import re
 import unicodedata
@@ -1398,76 +1399,101 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
 
     matches = await fetch_all_matches(db)
     real_stats_map = await get_real_stats_map(db, matches)
-    predictions = list(analyze_all(matches, real_stats_map=real_stats_map) or [])
+    predictions = analyze_all(matches, real_stats_map=real_stats_map)
 
-    candidates = []
     now = datetime.now(timezone.utc)
     search_until = now + timedelta(hours=72)
+    candidates = []
 
-    # Diagnostic transparent : mêmes données et mêmes seuils que la Montante.
-    # Il n'assouplit aucun critère et ne force jamais un pronostic.
     diagnostic = {
         "generated_at": now.isoformat(),
         "window_hours": 72,
-        "matches_received": len(matches) if isinstance(matches, list) else None,
-        "predictions_generated": len(predictions),
-        "invalid_commence_time": 0,
-        "past_or_started": 0,
-        "beyond_72h": 0,
-        "in_72h": 0,
-        "without_pick": 0,
+        "matches_received": len(matches) if isinstance(matches, list) else 0,
+        "predictions_generated": len(predictions) if isinstance(predictions, list) else 0,
+        "within_72h": 0,
         "with_pick": 0,
-        "missing_odds_or_confidence": 0,
-        "odds_outside_range": 0,
-        "confidence_below_min": 0,
-        "edge_below_min": 0,
-        "eligible": 0,
+        "with_valid_odds": 0,
+        "odds_in_range": 0,
+        "with_valid_confidence": 0,
+        "confidence_at_least_70": 0,
+        "eligible_before_selector": 0,
         "selected": 0,
+        "criteria": {
+            "min_confidence": MONTANTE_MIN_CONFIDENCE,
+            "min_odds": MONTANTE_MIN_ODDS,
+            "max_odds": MONTANTE_MAX_ODDS,
+            "max_picks": MONTANTE_MAX_PICKS,
+        },
     }
 
+    # Le diagnostic de fraicheur permet de distinguer un vrai manque de valeur
+    # d'un cache de cotes trop ancien. Une erreur de lecture du statut du cache
+    # ne doit toutefois jamais bloquer la Montante.
+    try:
+        cache_status = await get_odds_cache_status(db)
+        diagnostic["odds_cache_updated_at"] = cache_status.get("updated_at")
+        diagnostic["odds_cache_hard_stale"] = bool(cache_status.get("hard_stale"))
+        diagnostic["odds_cache_stale"] = bool(cache_status.get("stale"))
+    except Exception:
+        diagnostic["odds_cache_updated_at"] = None
+        diagnostic["odds_cache_hard_stale"] = None
+        diagnostic["odds_cache_stale"] = None
+
     for p in predictions:
+        if not isinstance(p, dict):
+            continue
+
         ct = p.get("commence_time")
         try:
             dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
         except Exception:
-            diagnostic["invalid_commence_time"] += 1
             continue
 
-        if dt < now - timedelta(minutes=15):
-            diagnostic["past_or_started"] += 1
+        # Recherche les matchs encore jouables dans les 72 prochaines heures.
+        if dt < now - timedelta(minutes=15) or dt > search_until:
             continue
-        if dt > search_until:
-            diagnostic["beyond_72h"] += 1
-            continue
-
-        diagnostic["in_72h"] += 1
+        diagnostic["within_72h"] += 1
 
         if not p.get("pick"):
-            diagnostic["without_pick"] += 1
             continue
-
         diagnostic["with_pick"] += 1
 
-        # Utilise exactement la normalisation du service Montante pour savoir
-        # pourquoi un pick est accepté ou rejeté.
-        normalized = montante_selector._normalize(p, p)
-        if normalized is None:
-            diagnostic["missing_odds_or_confidence"] += 1
-        else:
-            rejected = False
-            if not (MONTANTE_MIN_ODDS <= normalized["odds"] <= MONTANTE_MAX_ODDS):
-                diagnostic["odds_outside_range"] += 1
-                rejected = True
-            if normalized["confidence"] < MONTANTE_MIN_CONFIDENCE:
-                diagnostic["confidence_below_min"] += 1
-                rejected = True
-            if normalized["edge"] < montante_selector.min_edge:
-                diagnostic["edge_below_min"] += 1
-                rejected = True
-            if not rejected:
-                diagnostic["eligible"] += 1
+        # Les prédictions WinPulse utilisent principalement pick_odds et confidence.
+        # On reproduit ici les mêmes conversions que MontanteService afin que le
+        # diagnostic explique fidèlement pourquoi un candidat est accepté/rejeté.
+        try:
+            odds = float(p.get("pick_odds"))
+            if not math.isfinite(odds):
+                raise ValueError
+            diagnostic["with_valid_odds"] += 1
+        except (TypeError, ValueError):
+            odds = None
+
+        if odds is not None and MONTANTE_MIN_ODDS <= odds <= MONTANTE_MAX_ODDS:
+            diagnostic["odds_in_range"] += 1
+
+        try:
+            confidence = float(p.get("confidence"))
+            if not math.isfinite(confidence):
+                raise ValueError
+            if confidence > 1:
+                confidence /= 100.0
+            diagnostic["with_valid_confidence"] += 1
+        except (TypeError, ValueError):
+            confidence = None
+
+        if confidence is not None and confidence >= MONTANTE_MIN_CONFIDENCE:
+            diagnostic["confidence_at_least_70"] += 1
+
+        if (
+            odds is not None
+            and confidence is not None
+            and MONTANTE_MIN_ODDS <= odds <= MONTANTE_MAX_ODDS
+            and confidence >= MONTANTE_MIN_CONFIDENCE
+        ):
+            diagnostic["eligible_before_selector"] += 1
 
         candidates.append(p)
 
@@ -1479,18 +1505,22 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
     state["diagnostic"] = diagnostic
 
     if not selected:
-        state["waiting_reason"] = (
-            "Aucun pick éligible pour la montante dans les 72 prochaines heures. "
-            f"Diagnostic : {diagnostic['predictions_generated']} prédictions générées, "
-            f"{diagnostic['in_72h']} dans la fenêtre 72 h, "
-            f"{diagnostic['with_pick']} avec un pick, "
-            f"{diagnostic['eligible']} éligible(s). "
-            f"Rejets principaux : cote hors {MONTANTE_MIN_ODDS:.2f}-{MONTANTE_MAX_ODDS:.2f}="
-            f"{diagnostic['odds_outside_range']}, "
-            f"confiance < {int(MONTANTE_MIN_CONFIDENCE * 100)}%="
-            f"{diagnostic['confidence_below_min']}, "
-            f"cote/confiance manquante={diagnostic['missing_odds_or_confidence']}."
-        )
+        if diagnostic.get("odds_cache_hard_stale") is True:
+            state["waiting_reason"] = (
+                "Montante en attente : les donnees de cotes sont trop anciennes. "
+                "Lance un refresh des donnees puis actualise la Montante."
+            )
+        else:
+            state["waiting_reason"] = (
+                "Aucun pick qualifie pour la Montante. "
+                f"Diagnostic 72h : {diagnostic['matches_received']} matchs recus, "
+                f"{diagnostic['predictions_generated']} predictions, "
+                f"{diagnostic['within_72h']} dans la fenetre, "
+                f"{diagnostic['with_pick']} avec pick, "
+                f"{diagnostic['odds_in_range']} avec cote 1.20-1.50, "
+                f"{diagnostic['confidence_at_least_70']} avec confiance >= 70%, "
+                f"{diagnostic['eligible_before_selector']} respectent les deux criteres."
+            )
         state["updated_at"] = datetime.now(timezone.utc).isoformat()
         await _montante_save(state)
         return state
@@ -1500,6 +1530,7 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     await _montante_save(state)
     return state
+
 
 @app.get("/api/montante")
 async def get_montante(payload: dict = Depends(get_current_user_payload)):
@@ -1514,30 +1545,6 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     public["can_start"] = False
     return public
 
-@app.get("/api/montante/diagnostic")
-async def get_montante_diagnostic(payload: dict = Depends(get_current_user_payload)):
-    """Diagnostic administrateur de la sélection Montante."""
-    await _require_admin(payload)
-    state = await _montante_get()
-    if not state:
-        return {
-            "status": "NONE",
-            "message": "Aucune montante active.",
-            "diagnostic": None,
-        }
-
-    state = await _montante_reconcile(state)
-    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
-        state = await _montante_prepare_next_day(state)
-
-    public = _montante_public(state)
-    return {
-        "status": public.get("status"),
-        "current_day": public.get("current_day"),
-        "waiting_reason": public.get("waiting_reason"),
-        "current_picks": public.get("current_picks") or [],
-        "diagnostic": public.get("diagnostic"),
-    }
 
 @app.post("/api/montante/start")
 async def start_montante(
