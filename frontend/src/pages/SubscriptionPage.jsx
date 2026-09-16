@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -32,6 +32,10 @@ export default function SubscriptionPage() {
 
   const [plans, setPlans] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [paymentConfig, setPaymentConfig] = useState({
+    provider: "manual_momo",
+    fedapay_enabled: false,
+  });
 
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentStep, setPaymentStep] = useState(1);
@@ -44,22 +48,31 @@ export default function SubscriptionPage() {
   useEffect(() => {
     let active = true;
 
-    api
-      .get("/plans")
-      .then((response) => {
+    Promise.allSettled([
+      api.get("/plans"),
+      api.get("/payments/config"),
+    ])
+      .then(([plansResult, configResult]) => {
         if (!active) return;
 
-        setPlans(
-          Array.isArray(response?.data)
-            ? response.data
-            : []
-        );
-      })
-      .catch(() => {
-        if (active) {
-          toast.error(
-            "Impossible de charger les offres"
+        if (plansResult.status === "fulfilled") {
+          setPlans(
+            Array.isArray(plansResult.value?.data)
+              ? plansResult.value.data
+              : []
           );
+        } else {
+          toast.error("Impossible de charger les offres");
+        }
+
+        if (configResult.status === "fulfilled") {
+          const config = configResult.value?.data || {};
+          setPaymentConfig({
+            provider: config.provider || "manual_momo",
+            fedapay_enabled: config.fedapay_enabled === true,
+            fedapay_environment: config.fedapay_environment || null,
+            currency: config.currency || "XOF",
+          });
         }
       })
       .finally(() => {
@@ -88,6 +101,10 @@ export default function SubscriptionPage() {
       ),
     [plan]
   );
+
+  const isFedapay =
+    paymentConfig?.fedapay_enabled === true ||
+    paymentConfig?.provider === "fedapay";
 
   const openPayment = () => {
     setPayerName(
@@ -124,7 +141,9 @@ export default function SubscriptionPage() {
 
     if (!cleanPhone) {
       setPaymentError(
-        "Indique le numéro MTN Mobile Money utilisé."
+        isFedapay
+          ? "Indique ton numéro de téléphone pour le paiement FedaPay."
+          : "Indique le numéro MTN Mobile Money utilisé."
       );
       return;
     }
@@ -151,8 +170,8 @@ export default function SubscriptionPage() {
         }
       );
 
-      const generatedReference =
-        response?.data?.reference;
+      const paymentData = response?.data || {};
+      const generatedReference = paymentData.reference;
 
       if (!generatedReference) {
         throw new Error(
@@ -160,9 +179,18 @@ export default function SubscriptionPage() {
         );
       }
 
-      setReference(
-        generatedReference
-      );
+      setReference(generatedReference);
+
+      if (paymentData.payment_provider === "fedapay") {
+        if (!paymentData.payment_url) {
+          throw new Error(
+            "FedaPay n'a pas retourné de lien de paiement. Vérifie la configuration du backend."
+          );
+        }
+
+        window.location.assign(paymentData.payment_url);
+        return;
+      }
 
       setPaymentStep(2);
     } catch (error) {
@@ -224,7 +252,9 @@ export default function SubscriptionPage() {
           </h1>
 
           <p className="mt-3 text-sm text-slate-600">
-            Paiement sécurisé via MTN Mobile Money Bénin · annulable à tout moment
+            {isFedapay
+              ? "Paiement sécurisé via FedaPay · Mobile Money / carte selon disponibilité"
+              : "Paiement MTN Mobile Money Bénin · validation manuelle"}
           </p>
 
           {user?.subscription_tier &&
@@ -344,7 +374,9 @@ export default function SubscriptionPage() {
 
                 <h2 className="mt-1 text-xl font-extrabold text-slate-900">
                   {paymentStep === 1
-                    ? "Informations de paiement"
+                    ? isFedapay
+                      ? "Paiement sécurisé FedaPay"
+                      : "Informations de paiement"
                     : "Détails du paiement"}
                 </h2>
               </div>
@@ -408,7 +440,9 @@ export default function SubscriptionPage() {
 
                 <div>
                   <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Numéro MTN Mobile Money
+                    {isFedapay
+                      ? "Numéro de téléphone"
+                      : "Numéro MTN Mobile Money"}
                   </label>
 
                   <input
@@ -419,7 +453,7 @@ export default function SubscriptionPage() {
                         event.target.value
                       )
                     }
-                    placeholder="Ex. 01 97 00 00 00"
+                    placeholder={isFedapay ? "Ex. +229 01 97 00 00 00" : "Ex. 01 97 00 00 00"}
                     className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm"
                   />
                 </div>
@@ -466,15 +500,19 @@ export default function SubscriptionPage() {
                   {submitting ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Génération…
+                      {isFedapay ? "Ouverture de FedaPay…" : "Génération…"}
                     </>
+                  ) : isFedapay ? (
+                    "Payer avec FedaPay"
                   ) : (
                     "Suivant — afficher les détails du paiement"
                   )}
                 </button>
 
                 <p className="text-center text-[10px] text-slate-400">
-                  Le bouton ci-dessus est intégré directement dans la page Abonnement.
+                  {isFedapay
+                    ? "Tu seras redirigé vers la page de paiement sécurisée FedaPay."
+                    : "Le paiement manuel reste disponible en secours."}
                 </p>
               </div>
             ) : (
