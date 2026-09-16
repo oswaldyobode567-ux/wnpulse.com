@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
@@ -41,6 +41,10 @@ export default function PaymentModal({
   const [phone, setPhone] = useState("");
   const [reference, setReference] = useState("");
   const [error, setError] = useState("");
+  const [paymentConfig, setPaymentConfig] = useState({
+    provider: "manual_momo",
+    fedapay_enabled: false,
+  });
 
   useEffect(() => {
     if (!isOpen) return;
@@ -62,8 +66,23 @@ export default function PaymentModal({
       setLoadingPlan(true);
 
       try {
-        const response = await api.get("/plans");
+        const [response, paymentResponse] = await Promise.all([
+          api.get("/plans"),
+          api.get("/payments/config").catch(() => ({
+            data: {
+              provider: "manual_momo",
+              fedapay_enabled: false,
+            },
+          })),
+        ]);
         if (cancelled) return;
+
+        setPaymentConfig({
+          provider: paymentResponse?.data?.provider || "manual_momo",
+          fedapay_enabled: paymentResponse?.data?.fedapay_enabled === true,
+          fedapay_environment:
+            paymentResponse?.data?.fedapay_environment || null,
+        });
 
         const plans = Array.isArray(response?.data)
           ? response.data
@@ -134,7 +153,7 @@ export default function PaymentModal({
       return;
     }
 
-    if (!cleanPhone) {
+    if (!cleanPhone && !paymentConfig?.fedapay_enabled) {
       setError(
         "Indique le numéro MTN Mobile Money utilisé pour le paiement."
       );
@@ -164,6 +183,34 @@ export default function PaymentModal({
       }
 
       setReference(generatedReference);
+
+      const paymentUrl = response?.data?.payment_url;
+      if (paymentUrl) {
+        let safePaymentUrl;
+        try {
+          safePaymentUrl = new URL(paymentUrl);
+        } catch {
+          throw new Error("Lien de paiement FedaPay invalide.");
+        }
+
+        if (safePaymentUrl.protocol !== "https:") {
+          throw new Error("Le lien de paiement FedaPay doit être sécurisé (HTTPS).");
+        }
+
+        try {
+          window.sessionStorage.setItem(
+            "winpulse_payment_reference",
+            generatedReference
+          );
+        } catch {
+          // Le navigateur peut bloquer sessionStorage en mode privé strict.
+        }
+
+        window.location.assign(safePaymentUrl.toString());
+        return;
+      }
+
+      // Fallback historique : seulement lorsque FedaPay est désactivé.
       setStep(2);
     } catch (e) {
       const detail =
@@ -284,6 +331,15 @@ export default function PaymentModal({
                 </div>
               </div>
 
+              {paymentConfig?.fedapay_enabled && (
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800">
+                  <div className="font-bold">Paiement sécurisé par FedaPay</div>
+                  <div className="mt-1 text-xs leading-5">
+                    Après validation, tu seras redirigé vers la page FedaPay pour choisir le moyen de paiement disponible. Ton abonnement sera activé automatiquement après confirmation du paiement.
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label
                   htmlFor="payment-email"
@@ -327,7 +383,9 @@ export default function PaymentModal({
                   htmlFor="payment-phone"
                   className="mb-1.5 block text-xs font-bold text-slate-700"
                 >
-                  Numéro MTN Mobile Money utilisé
+                  {paymentConfig?.fedapay_enabled
+                    ? "Téléphone (facultatif)"
+                    : "Numéro MTN Mobile Money utilisé"}
                 </label>
 
                 <input
@@ -338,7 +396,11 @@ export default function PaymentModal({
                     setPhone(event.target.value)
                   }
                   autoComplete="tel"
-                  placeholder="Ex. 01 97 00 00 00"
+                  placeholder={
+                    paymentConfig?.fedapay_enabled
+                      ? "Ex. +229 01 97 00 00 00"
+                      : "Ex. 01 97 00 00 00"
+                  }
                   className="h-11 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-900 outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
                 />
               </div>
@@ -428,11 +490,15 @@ export default function PaymentModal({
               {submitting ? (
                 <>
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Génération de la référence…
+                  {paymentConfig?.fedapay_enabled
+                    ? "Ouverture de FedaPay…"
+                    : "Génération de la référence…"}
                 </>
               ) : (
                 <>
-                  Suivant
+                  {paymentConfig?.fedapay_enabled
+                    ? "Payer avec FedaPay"
+                    : "Suivant"}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
