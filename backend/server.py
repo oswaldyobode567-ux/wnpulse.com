@@ -7,6 +7,9 @@ import asyncio
 import time
 import httpx
 import uuid
+import hmac
+import hashlib
+import json
 import statistics
 import math
 import secrets
@@ -15,7 +18,7 @@ import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 
-from fastapi import FastAPI, Depends, HTTPException, status, Header
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, EmailStr, Field
@@ -796,17 +799,475 @@ async def get_subscription_status(payload: dict = Depends(get_current_user_paylo
     }
 
 
-# ─── Paiement manuel MoMo + validation admin ─────────────────────────────
+# ─── Paiements abonnement : FedaPay + secours manuel ───────────────────────
+
+# Le flux FedaPay est volontairement OFF par defaut pour permettre un deploiement
+# sans interruption. Une fois les secrets configures sur l'hebergeur, activer :
+# FEDAPAY_ENABLED=true et FEDAPAY_ENV=live.
+FEDAPAY_ENABLED = os.environ.get("FEDAPAY_ENABLED", "false").strip().lower() in ("1", "true", "yes")
+FEDAPAY_ENV = os.environ.get("FEDAPAY_ENV", "sandbox").strip().lower()
+FEDAPAY_SECRET_KEY = os.environ.get("FEDAPAY_SECRET_KEY", "").strip()
+FEDAPAY_WEBHOOK_SECRET = os.environ.get("FEDAPAY_WEBHOOK_SECRET", "").strip()
+FEDAPAY_CALLBACK_URL = os.environ.get(
+    "FEDAPAY_CALLBACK_URL",
+    "https://www.wnpulse.com/app/abonnement",
+).strip()
+FEDAPAY_WEBHOOK_TOLERANCE_SECONDS = 300
 
 MOMO_NUMBER = "+229 01 66 28 06 03"
 MOMO_RECIPIENT_NAME = "KOUKPAKI VIANEY"
 PAYMENT_WHATSAPP_NUMBER = "+33 7 67 97 17 52"
 
 
+def _fedapay_base_url() -> str:
+    if FEDAPAY_ENV == "live":
+        return "https://api.fedapay.com/v1"
+    return "https://sandbox-api.fedapay.com/v1"
+
+
+def _fedapay_configured() -> bool:
+    return bool(FEDAPAY_ENABLED and FEDAPAY_SECRET_KEY)
+
+
+def _fedapay_callback_url(reference: str) -> str:
+    separator = "&" if "?" in FEDAPAY_CALLBACK_URL else "?"
+    return f"{FEDAPAY_CALLBACK_URL}{separator}payment=return&reference={reference}"
+
+
+def _fedapay_safe_error(payload) -> str:
+    if isinstance(payload, dict):
+        for key in ("message", "error", "detail"):
+            value = payload.get(key)
+            if value:
+                return str(value)[:300]
+        errors = payload.get("errors")
+        if errors:
+            return str(errors)[:300]
+    return "Erreur fournisseur de paiement"
+
+
+async def _fedapay_request(method: str, path: str, json_body: Optional[Dict] = None) -> Dict:
+    if not FEDAPAY_SECRET_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="FedaPay n'est pas encore configure sur le serveur (FEDAPAY_SECRET_KEY manquante).",
+        )
+
+    url = f"{_fedapay_base_url()}{path}"
+    headers = {
+        "Authorization": f"Bearer {FEDAPAY_SECRET_KEY}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=25.0) as http:
+            response = await http.request(method, url, headers=headers, json=json_body)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"FedaPay inaccessible: {type(exc).__name__}")
+
+    try:
+        data = response.json()
+    except Exception:
+        data = {}
+
+    if response.status_code < 200 or response.status_code >= 300:
+        raise HTTPException(
+            status_code=502,
+            detail=f"FedaPay HTTP {response.status_code}: {_fedapay_safe_error(data)}",
+        )
+    return data if isinstance(data, dict) else {"data": data}
+
+
+def _fedapay_transaction_from_response(data: Dict) -> Dict:
+    """Tolere les reponses directes et quelques enveloppes historiques du SDK/API."""
+    if not isinstance(data, dict):
+        return {}
+    if data.get("id") is not None:
+        return data
+    for key in ("transaction", "data", "entity"):
+        value = data.get(key)
+        if isinstance(value, dict) and value.get("id") is not None:
+            return value
+    return data
+
+
+async def _fedapay_retrieve_transaction(transaction_id) -> Dict:
+    data = await _fedapay_request("GET", f"/transactions/{transaction_id}")
+    return _fedapay_transaction_from_response(data)
+
+
+async def _fedapay_retrieve_by_merchant_reference(reference: str) -> Dict:
+    data = await _fedapay_request("GET", f"/transactions/merchant/{reference}")
+    return _fedapay_transaction_from_response(data)
+
+
+def _fedapay_custom_metadata(transaction: Dict) -> Dict:
+    metadata = transaction.get("custom_metadata") or {}
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except Exception:
+            metadata = {}
+    return metadata if isinstance(metadata, dict) else {}
+
+
+def _fedapay_reference_from_transaction(transaction: Dict) -> Optional[str]:
+    reference = transaction.get("merchant_reference")
+    if reference:
+        return str(reference)
+    metadata = _fedapay_custom_metadata(transaction)
+    reference = metadata.get("winpulse_reference") or metadata.get("reference")
+    return str(reference) if reference else None
+
+
+def _fedapay_signature_valid(raw_body: bytes, signature_header: str) -> bool:
+    """Verification compatible avec le SDK officiel FedaPay.
+
+    X-FEDAPAY-SIGNATURE est de la forme t=<timestamp>,s=<hmac>.
+    La valeur signee est '<timestamp>.<corps brut>' en HMAC-SHA256.
+    """
+    if not FEDAPAY_WEBHOOK_SECRET or not signature_header:
+        return False
+
+    timestamp = None
+    signatures: List[str] = []
+    for raw_item in signature_header.split(","):
+        item = raw_item.strip()
+        if "=" not in item:
+            continue
+        key, value = item.split("=", 1)
+        key, value = key.strip(), value.strip()
+        if key == "t":
+            try:
+                timestamp = int(value)
+            except (TypeError, ValueError):
+                return False
+        elif key == "s" and value:
+            signatures.append(value)
+
+    if timestamp is None or not signatures:
+        return False
+    if abs(int(time.time()) - timestamp) > FEDAPAY_WEBHOOK_TOLERANCE_SECONDS:
+        return False
+
+    try:
+        payload_text = raw_body.decode("utf-8")
+    except UnicodeDecodeError:
+        return False
+
+    signed_payload = f"{timestamp}.{payload_text}".encode("utf-8")
+    expected = hmac.new(
+        FEDAPAY_WEBHOOK_SECRET.encode("utf-8"),
+        signed_payload,
+        hashlib.sha256,
+    ).hexdigest()
+    return any(secrets.compare_digest(expected, candidate) for candidate in signatures)
+
+
+def _subscription_expiry_for_payment(user: Dict, days: int) -> str:
+    """Renouvellement : prolonge depuis l'expiration courante si elle est future."""
+    now = datetime.now(timezone.utc)
+    base = now
+    current_expiry = user.get("subscription_expires_at")
+    if current_expiry:
+        try:
+            current_dt = datetime.fromisoformat(str(current_expiry).replace("Z", "+00:00"))
+            if current_dt.tzinfo is None:
+                current_dt = current_dt.replace(tzinfo=timezone.utc)
+            if current_dt > base:
+                base = current_dt
+        except Exception:
+            pass
+    return (base + timedelta(days=max(1, int(days)))).isoformat()
+
+
+async def _activate_verified_fedapay_payment(transaction: Dict) -> Dict:
+    """Active un abonnement uniquement apres relecture de la transaction FedaPay.
+
+    Idempotence : activation_expires_at est reserve une seule fois dans la demande
+    locale puis reutilise sur toutes les tentatives suivantes. Un webhook rejoue ne
+    peut donc pas ajouter 30 jours une seconde fois.
+    """
+    tx_id = transaction.get("id")
+    tx_status = str(transaction.get("status") or "").lower().strip()
+    reference = _fedapay_reference_from_transaction(transaction)
+
+    if tx_status != "approved":
+        return {"ok": False, "status": tx_status or "unknown", "activated": False}
+    if not reference:
+        raise HTTPException(status_code=409, detail="Transaction FedaPay sans merchant_reference WinPulse")
+
+    req = await db.subscription_requests.find_one({"reference": reference})
+    if not req:
+        raise HTTPException(status_code=404, detail="Demande d'abonnement WinPulse introuvable")
+    if req.get("payment_provider") != "fedapay":
+        raise HTTPException(status_code=409, detail="La demande ne correspond pas a un paiement FedaPay")
+
+    if req.get("fedapay_transaction_id") is not None and str(req.get("fedapay_transaction_id")) != str(tx_id):
+        raise HTTPException(status_code=409, detail="ID de transaction FedaPay incoherent")
+
+    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == req.get("plan_id")), None)
+    if not plan:
+        raise HTTPException(status_code=409, detail="Plan d'abonnement introuvable")
+
+    try:
+        paid_amount = int(transaction.get("amount"))
+        expected_amount = int(req.get("amount_fcfa") or plan["price_fcfa"])
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=409, detail="Montant FedaPay invalide")
+
+    if paid_amount != expected_amount or expected_amount != int(plan["price_fcfa"]):
+        raise HTTPException(status_code=409, detail="Montant FedaPay different du montant WinPulse attendu")
+
+    metadata = _fedapay_custom_metadata(transaction)
+    metadata_reference = metadata.get("winpulse_reference")
+    metadata_user = metadata.get("winpulse_user_id")
+    metadata_plan = metadata.get("winpulse_plan_id")
+    metadata_currency = metadata.get("currency")
+    if metadata_reference and str(metadata_reference) != reference:
+        raise HTTPException(status_code=409, detail="Reference FedaPay incoherente")
+    if metadata_user and str(metadata_user) != str(req.get("user_id")):
+        raise HTTPException(status_code=409, detail="Utilisateur FedaPay incoherent")
+    if metadata_plan and str(metadata_plan) != str(req.get("plan_id")):
+        raise HTTPException(status_code=409, detail="Plan FedaPay incoherent")
+    if metadata_currency and str(metadata_currency).upper() != "XOF":
+        raise HTTPException(status_code=409, detail="Devise FedaPay incoherente")
+
+    # Deja regle : on ne reprolonge jamais l'abonnement.
+    if req.get("status") == "approved" and req.get("activation_applied") is True:
+        return {
+            "ok": True,
+            "status": "approved",
+            "activated": True,
+            "already_processed": True,
+            "reference": reference,
+            "subscription_expires_at": req.get("activation_expires_at"),
+        }
+
+    user = await db.users.find_one({"id": req.get("user_id")})
+    if not user:
+        raise HTTPException(status_code=404, detail="Utilisateur WinPulse introuvable")
+
+    activation_expires_at = req.get("activation_expires_at")
+    if not activation_expires_at:
+        candidate_expiry = _subscription_expiry_for_payment(user, int(plan.get("duration_days", 30)))
+        claimed = await db.subscription_requests.find_one_and_update(
+            {
+                "reference": reference,
+                "$or": [
+                    {"activation_expires_at": {"$exists": False}},
+                    {"activation_expires_at": None},
+                ],
+            },
+            {"$set": {
+                "activation_expires_at": candidate_expiry,
+                "status": "processing",
+                "payment_status": "approved",
+                "fedapay_verified_at": datetime.now(timezone.utc).isoformat(),
+            }},
+            return_document=ReturnDocument.AFTER,
+        )
+        if claimed:
+            req = claimed
+            activation_expires_at = candidate_expiry
+        else:
+            req = await db.subscription_requests.find_one({"reference": reference})
+            activation_expires_at = req.get("activation_expires_at") if req else None
+
+    if not activation_expires_at:
+        raise HTTPException(status_code=500, detail="Impossible de reserver la date d'expiration de l'abonnement")
+
+    await db.users.update_one(
+        {"id": req["user_id"]},
+        {"$set": {
+            "subscription": req["plan_id"],
+            "subscription_expires_at": activation_expires_at,
+        }},
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    was_applied = bool(req.get("activation_applied"))
+    await db.subscription_requests.update_one(
+        {"reference": reference},
+        {"$set": {
+            "status": "approved",
+            "payment_status": "approved",
+            "activation_applied": True,
+            "approved_at": req.get("approved_at") or now_iso,
+            "paid_at": transaction.get("approved_at") or now_iso,
+            "fedapay_verified_at": now_iso,
+            "fedapay_transaction_id": tx_id,
+            "fedapay_reference": transaction.get("reference"),
+            "fedapay_receipt_url": transaction.get("receipt_url"),
+            "fedapay_payment_method_id": transaction.get("payment_method_id"),
+        }},
+    )
+
+    if not was_applied:
+        await send_subscription_activated_email(
+            req["user_email"],
+            plan["name"],
+            activation_expires_at,
+        )
+
+    return {
+        "ok": True,
+        "status": "approved",
+        "activated": True,
+        "already_processed": was_applied,
+        "reference": reference,
+        "subscription_expires_at": activation_expires_at,
+    }
+
+
+async def _create_fedapay_subscription_payment(
+    user: Dict,
+    plan: Dict,
+    payer_name: str = "",
+    payer_phone: str = "",
+) -> Dict:
+    if not _fedapay_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Paiement FedaPay non active sur le serveur. Configure FEDAPAY_SECRET_KEY puis FEDAPAY_ENABLED=true.",
+        )
+
+    reference = _generate_reference()
+    created_at = datetime.now(timezone.utc).isoformat()
+    request_doc = {
+        "reference": reference,
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "amount_fcfa": int(plan["price_fcfa"]),
+        "currency": "XOF",
+        "payer_phone": (payer_phone or "").strip(),
+        "payer_name": (payer_name or "").strip(),
+        "payment_provider": "fedapay",
+        "payment_status": "creating",
+        "status": "pending",
+        "created_at": created_at,
+    }
+    await db.subscription_requests.insert_one(dict(request_doc))
+
+    customer: Dict = {"email": user["email"]}
+    clean_name = (payer_name or user.get("name") or "").strip()
+    if clean_name:
+        parts = clean_name.split()
+        customer["firstname"] = parts[0]
+        customer["lastname"] = " ".join(parts[1:]) if len(parts) > 1 else parts[0]
+
+    tx_payload = {
+        "description": f"Abonnement {plan['name']} WinPulse - {reference}",
+        "amount": int(plan["price_fcfa"]),
+        "currency": {"iso": "XOF"},
+        "callback_url": _fedapay_callback_url(reference),
+        "customer": customer,
+        "merchant_reference": reference,
+        "custom_metadata": {
+            "winpulse_reference": reference,
+            "winpulse_user_id": str(user["id"]),
+            "winpulse_plan_id": plan["id"],
+            "currency": "XOF",
+        },
+    }
+
+    try:
+        created = await _fedapay_request("POST", "/transactions", tx_payload)
+        transaction = _fedapay_transaction_from_response(created)
+        transaction_id = transaction.get("id")
+        if transaction_id is None:
+            raise HTTPException(status_code=502, detail="FedaPay n'a pas retourne d'ID de transaction")
+
+        await db.subscription_requests.update_one(
+            {"reference": reference},
+            {"$set": {
+                "payment_status": str(transaction.get("status") or "pending"),
+                "fedapay_transaction_id": transaction_id,
+                "fedapay_reference": transaction.get("reference"),
+                "fedapay_environment": FEDAPAY_ENV,
+            }},
+        )
+
+        token_data = await _fedapay_request("POST", f"/transactions/{transaction_id}/token")
+        payment_url = token_data.get("url")
+        payment_token = token_data.get("token")
+        if not payment_url:
+            raise HTTPException(status_code=502, detail="FedaPay n'a pas retourne de lien de paiement")
+
+        await db.subscription_requests.update_one(
+            {"reference": reference},
+            {"$set": {
+                "payment_status": "pending",
+                "payment_url": payment_url,
+                "fedapay_token_created_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+
+        return {
+            "reference": reference,
+            "plan": plan,
+            "payment_provider": "fedapay",
+            "payment_status": "pending",
+            "payment_url": payment_url,
+            # Token retourne pour diagnostic frontend si necessaire, jamais la cle API.
+            "payment_token": payment_token,
+            "environment": FEDAPAY_ENV,
+        }
+    except HTTPException as exc:
+        await db.subscription_requests.update_one(
+            {"reference": reference},
+            {"$set": {
+                "payment_status": "provider_error",
+                "provider_error": str(exc.detail)[:500],
+                "provider_error_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        raise
+
+
+async def _create_manual_subscription_request(
+    user: Dict,
+    plan: Dict,
+    payer_name: str = "",
+    payer_phone: str = "",
+) -> Dict:
+    reference = _generate_reference()
+    await db.subscription_requests.insert_one({
+        "reference": reference,
+        "user_id": user["id"],
+        "user_email": user["email"],
+        "plan_id": plan["id"],
+        "plan_name": plan["name"],
+        "amount_fcfa": plan["price_fcfa"],
+        "payer_phone": (payer_phone or "").strip(),
+        "payer_name": (payer_name or "").strip(),
+        "payment_provider": "manual_momo",
+        "status": "pending",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"reference": reference, "plan": plan, "payment_provider": "manual_momo"}
+
+
 class CheckoutPayload(BaseModel):
     tier: str
-    phone: str
-    payer_name: str
+    phone: str = ""
+    payer_name: str = ""
+
+
+def _generate_reference() -> str:
+    return f"PE-{uuid.uuid4().hex[:8].upper()}"
+
+
+@app.get("/api/payments/config")
+async def get_payment_config():
+    return {
+        "provider": "fedapay" if FEDAPAY_ENABLED else "manual_momo",
+        "fedapay_enabled": FEDAPAY_ENABLED,
+        "fedapay_environment": FEDAPAY_ENV if FEDAPAY_ENABLED else None,
+        "currency": "XOF",
+    }
 
 
 @app.post("/api/subscription/checkout")
@@ -822,29 +1283,24 @@ async def subscription_checkout(
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
-    reference = _generate_reference()
-    await db.subscription_requests.insert_one({
-        "reference": reference,
-        "user_id": user["id"],
-        "user_email": user["email"],
-        "plan_id": plan["id"],
-        "plan_name": plan["name"],
-        "amount_fcfa": plan["price_fcfa"],
-        "payer_phone": payload_in.phone.strip(),
-        "payer_name": payload_in.payer_name.strip(),
-        "status": "pending",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    })
+    if FEDAPAY_ENABLED:
+        return await _create_fedapay_subscription_payment(
+            user,
+            plan,
+            payer_name=payload_in.payer_name,
+            payer_phone=payload_in.phone,
+        )
 
-    return {"reference": reference, "plan": plan}
+    return await _create_manual_subscription_request(
+        user,
+        plan,
+        payer_name=payload_in.payer_name,
+        payer_phone=payload_in.phone,
+    )
 
 
 class UpgradeRequestPayload(BaseModel):
     plan_id: str
-
-
-def _generate_reference() -> str:
-    return f"PE-{uuid.uuid4().hex[:8].upper()}"
 
 
 @app.post("/api/subscription/request-upgrade")
@@ -860,19 +1316,11 @@ async def request_subscription_upgrade(
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
-    reference = _generate_reference()
-    request_doc = {
-        "reference": reference,
-        "user_id": user["id"],
-        "user_email": user["email"],
-        "plan_id": plan["id"],
-        "plan_name": plan["name"],
-        "amount_fcfa": plan["price_fcfa"],
-        "status": "pending",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    await db.subscription_requests.insert_one(request_doc)
+    if FEDAPAY_ENABLED:
+        return await _create_fedapay_subscription_payment(user, plan)
 
+    manual = await _create_manual_subscription_request(user, plan)
+    reference = manual["reference"]
     whatsapp_message = (
         f"Bonjour WinPulse !\n"
         f"Je viens d'effectuer le paiement pour activer mon plan *{plan['name']}*.\n\n"
@@ -888,21 +1336,17 @@ async def request_subscription_upgrade(
         f"https://wa.me/{PAYMENT_WHATSAPP_NUMBER.replace('+', '').replace(' ', '')}"
         f"?text={whatsapp_message}"
     )
-
     return {
-        "reference": reference,
-        "plan": plan,
+        **manual,
         "payment_instructions": {
             "momo_number": MOMO_NUMBER,
             "momo_recipient_name": MOMO_RECIPIENT_NAME,
             "amount_fcfa": plan["price_fcfa"],
             "steps": [
-                f"Compose *165# sur ton telephone MTN (ou l'app MoMo).",
-                f"Envoie {plan['price_fcfa']:,} FCFA".replace(",", " ")
-                + f" au {MOMO_NUMBER} ({MOMO_RECIPIENT_NAME}).",
-                "Garde le SMS de confirmation MTN.",
-                "Envoie la confirmation sur WhatsApp avec le bouton ci-dessous.",
-                "Ton acces est active des reception et verification du paiement.",
+                "Effectue le paiement MTN MoMo.",
+                "Garde le SMS de confirmation.",
+                "Envoie la confirmation sur WhatsApp.",
+                "Ton acces est active apres verification.",
             ],
         },
         "whatsapp_number": PAYMENT_WHATSAPP_NUMBER,
@@ -917,6 +1361,160 @@ async def request_subscription_upgrade_alias(
     payload: dict = Depends(get_current_user_payload),
 ):
     return await request_subscription_upgrade(payload_in, payload)
+
+
+@app.get("/api/subscription/payment-status/{reference}")
+async def get_subscription_payment_status(
+    reference: str,
+    payload: dict = Depends(get_current_user_payload),
+):
+    req = await db.subscription_requests.find_one({
+        "reference": reference,
+        "user_id": payload["sub"],
+    })
+    if not req:
+        raise HTTPException(status_code=404, detail="Paiement introuvable")
+
+    if req.get("payment_provider") == "fedapay" and req.get("fedapay_transaction_id"):
+        try:
+            transaction = await _fedapay_retrieve_transaction(req["fedapay_transaction_id"])
+            provider_status = str(transaction.get("status") or req.get("payment_status") or "pending").lower()
+            if provider_status == "approved":
+                await _activate_verified_fedapay_payment(transaction)
+                req = await db.subscription_requests.find_one({"reference": reference})
+            else:
+                await db.subscription_requests.update_one(
+                    {"reference": reference},
+                    {"$set": {
+                        "payment_status": provider_status,
+                        "payment_status_checked_at": datetime.now(timezone.utc).isoformat(),
+                    }},
+                )
+                req["payment_status"] = provider_status
+        except HTTPException as exc:
+            # Le statut local reste consultable meme si FedaPay a une indisponibilite temporaire.
+            if exc.status_code not in (502, 503):
+                raise
+
+    user = await db.users.find_one({"id": payload["sub"]})
+    return {
+        "reference": reference,
+        "status": req.get("status", "pending"),
+        "payment_status": req.get("payment_status", req.get("status", "pending")),
+        "payment_provider": req.get("payment_provider"),
+        "subscription": user.get("subscription", "free") if user else "free",
+        "subscription_expires_at": user.get("subscription_expires_at") if user else None,
+        "activated": bool(req.get("activation_applied")) or req.get("status") == "approved",
+    }
+
+
+@app.post("/api/payments/fedapay/webhook")
+async def fedapay_webhook(request: Request):
+    if not FEDAPAY_ENABLED:
+        raise HTTPException(status_code=503, detail="FedaPay desactive")
+    if not FEDAPAY_WEBHOOK_SECRET:
+        raise HTTPException(status_code=503, detail="FEDAPAY_WEBHOOK_SECRET manquant")
+
+    raw_body = await request.body()
+    signature_header = request.headers.get("X-FEDAPAY-SIGNATURE", "")
+    if not _fedapay_signature_valid(raw_body, signature_header):
+        raise HTTPException(status_code=400, detail="Signature webhook FedaPay invalide")
+
+    try:
+        body = json.loads(raw_body.decode("utf-8"))
+    except Exception:
+        raise HTTPException(status_code=400, detail="Payload webhook FedaPay invalide")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Payload webhook FedaPay invalide")
+
+    event = body.get("event") if isinstance(body.get("event"), dict) else body
+    event_name = str(
+        event.get("name") or event.get("type") or body.get("name") or body.get("type") or ""
+    ).lower().strip()
+    entity = event.get("entity") if isinstance(event, dict) else None
+    if entity is None:
+        entity = body.get("entity")
+    if isinstance(entity, str):
+        try:
+            entity = json.loads(entity)
+        except Exception:
+            entity = {}
+    if not isinstance(entity, dict):
+        entity = {}
+
+    event_id = (
+        event.get("id") if isinstance(event, dict) else None
+    ) or body.get("id") or hashlib.sha256(raw_body).hexdigest()[:32]
+    event_key = f"fedapay:{event_id}"
+    existing_event = await db.payment_webhook_events.find_one({"_id": event_key})
+    if existing_event and existing_event.get("processed") is True:
+        return {"received": True, "duplicate": True}
+
+    await db.payment_webhook_events.update_one(
+        {"_id": event_key},
+        {"$set": {
+            "provider": "fedapay",
+            "event_name": event_name,
+            "received_at": datetime.now(timezone.utc).isoformat(),
+            "processed": False,
+        }},
+        upsert=True,
+    )
+
+    try:
+        transaction_id = entity.get("id") or (
+            event.get("object_id") if isinstance(event, dict) else None
+        ) or body.get("object_id")
+        merchant_reference = entity.get("merchant_reference")
+        if not merchant_reference:
+            entity_metadata = entity.get("custom_metadata")
+            if isinstance(entity_metadata, dict):
+                merchant_reference = entity_metadata.get("winpulse_reference")
+
+        transaction = None
+        if transaction_id is not None:
+            transaction = await _fedapay_retrieve_transaction(transaction_id)
+        elif merchant_reference:
+            transaction = await _fedapay_retrieve_by_merchant_reference(str(merchant_reference))
+
+        if event_name == "transaction.approved":
+            if not transaction:
+                raise HTTPException(status_code=409, detail="Transaction FedaPay introuvable")
+            settlement = await _activate_verified_fedapay_payment(transaction)
+        else:
+            settlement = {"ok": True, "activated": False, "event": event_name}
+            if transaction:
+                reference = _fedapay_reference_from_transaction(transaction)
+                provider_status = str(transaction.get("status") or "pending").lower()
+                if reference:
+                    await db.subscription_requests.update_one(
+                        {"reference": reference, "payment_provider": "fedapay"},
+                        {"$set": {
+                            "payment_status": provider_status,
+                            "fedapay_last_event": event_name,
+                            "fedapay_last_event_at": datetime.now(timezone.utc).isoformat(),
+                        }},
+                    )
+
+        await db.payment_webhook_events.update_one(
+            {"_id": event_key},
+            {"$set": {
+                "processed": True,
+                "processed_at": datetime.now(timezone.utc).isoformat(),
+                "result": settlement,
+            }},
+        )
+        return {"received": True, "event": event_name, "result": settlement}
+    except Exception as exc:
+        await db.payment_webhook_events.update_one(
+            {"_id": event_key},
+            {"$set": {
+                "processed": False,
+                "last_error": str(getattr(exc, "detail", exc))[:500],
+                "last_error_at": datetime.now(timezone.utc).isoformat(),
+            }},
+        )
+        raise
 
 
 async def _require_admin(payload: dict) -> dict:
@@ -1238,6 +1836,11 @@ async def admin_approve_subscription_request(
         raise HTTPException(status_code=404, detail="Demande introuvable")
     if req["status"] == "approved":
         return {"ok": True, "detail": "Deja approuvee"}
+    if req.get("payment_provider") == "fedapay" and not req.get("fedapay_verified_at"):
+        raise HTTPException(
+            status_code=409,
+            detail="Paiement FedaPay non verifie : l'activation manuelle est bloquee pour cette demande.",
+        )
 
     plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == req["plan_id"]), None)
     duration_days = plan["duration_days"] if plan else 30
