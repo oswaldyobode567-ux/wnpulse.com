@@ -1300,7 +1300,9 @@ montante_selector = MontanteService(
     min_confidence=MONTANTE_MIN_CONFIDENCE,
     min_odds=MONTANTE_MIN_ODDS,
     max_odds=MONTANTE_MAX_ODDS,
-    min_edge=0.0,
+    # L'edge sert au classement des candidats mais ne doit pas être un critère
+    # bloquant : l'interface Montante annonce uniquement confiance + cote.
+    min_edge=float("-inf"),
     initial_bankroll=10000.0,
 )
 
