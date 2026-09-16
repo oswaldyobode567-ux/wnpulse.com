@@ -89,18 +89,55 @@ export default function SubscriptionPage() {
     [plan]
   );
 
-  const openPayment = () => {
-    setPayerName(
-      user?.full_name ||
-        user?.name ||
-        ""
-    );
+  const openPayment = async () => {
+    if (!plan?.id || submitting) return;
 
-    setPhone("");
-    setReference("");
+    setSubmitting(true);
     setPaymentError("");
-    setPaymentStep(1);
-    setPaymentOpen(true);
+
+    try {
+      const response = await api.post(
+        "/subscription/checkout",
+        {
+          tier: String(plan.id).toLowerCase(),
+          phone: "",
+          payer_name:
+            user?.full_name ||
+            user?.name ||
+            "",
+        }
+      );
+
+      const paymentData = response?.data || {};
+
+      if (
+        paymentData?.payment_provider === "fedapay" &&
+        paymentData?.payment_url
+      ) {
+        window.location.assign(paymentData.payment_url);
+        return;
+      }
+
+      if (paymentData?.payment_provider === "manual_momo") {
+        throw new Error(
+          "FedaPay n'est pas activé sur le backend. Vérifie FEDAPAY_ENABLED=true et FEDAPAY_SECRET_KEY sur le service backend déployé."
+        );
+      }
+
+      throw new Error(
+        "FedaPay n'a pas retourné de lien de paiement."
+      );
+    } catch (error) {
+      const detail =
+        error?.response?.data?.detail ||
+        error?.message ||
+        "Impossible d'ouvrir le paiement FedaPay.";
+
+      setPaymentError(String(detail));
+      toast.error(String(detail));
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const closePayment = () => {
@@ -151,9 +188,8 @@ export default function SubscriptionPage() {
         }
       );
 
-      const paymentData = response?.data || {};
       const generatedReference =
-        paymentData?.reference;
+        response?.data?.reference;
 
       if (!generatedReference) {
         throw new Error(
@@ -164,17 +200,6 @@ export default function SubscriptionPage() {
       setReference(
         generatedReference
       );
-
-      // FedaPay : le backend crée la transaction et renvoie l'URL sécurisée.
-      // On redirige uniquement si l'URL est réellement présente. Sinon on
-      // conserve le parcours MTN/WhatsApp existant comme solution de secours.
-      if (
-        String(paymentData?.payment_provider || "").toLowerCase() === "fedapay" &&
-        paymentData?.payment_url
-      ) {
-        window.location.assign(paymentData.payment_url);
-        return;
-      }
 
       setPaymentStep(2);
     } catch (error) {
@@ -236,7 +261,7 @@ export default function SubscriptionPage() {
           </h1>
 
           <p className="mt-3 text-sm text-slate-600">
-            Paiement sécurisé via FedaPay · Mobile Money / carte selon disponibilité
+            Paiement sécurisé via FedaPay · XOF · activation automatique après confirmation
           </p>
 
           {user?.subscription_tier &&
@@ -314,15 +339,23 @@ export default function SubscriptionPage() {
               data-testid={`choose-${plan.id}-btn`}
               className="w-full h-12 text-base wp-gradient-warm text-white border-0 hover:opacity-90"
               onClick={openPayment}
-              disabled={isCurrent}
+              disabled={isCurrent || submitting}
             >
               {isCurrent
                 ? "Plan actuel"
-                : `Débloquer ${plan.name}`}
+                : submitting
+                  ? "Ouverture de FedaPay…"
+                  : `Débloquer ${plan.name}`}
             </Button>
 
+            {paymentError && (
+              <div className="mt-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                {paymentError}
+              </div>
+            )}
+
             <p className="text-center text-xs text-slate-400 mt-4">
-              Sans engagement · résiliable à tout moment · support WhatsApp inclus
+              Paiement traité par FedaPay · activation automatique après confirmation
             </p>
           </Card>
         ) : (
@@ -332,262 +365,6 @@ export default function SubscriptionPage() {
         )}
       </div>
 
-      {paymentOpen && (
-        <div
-          className="fixed inset-0 z-[99999] flex items-start sm:items-center justify-center overflow-y-auto bg-slate-950/70 p-3 sm:p-6"
-          data-testid="subscription-payment-overlay"
-        >
-          <button
-            type="button"
-            className="fixed inset-0"
-            aria-label="Fermer"
-            onClick={closePayment}
-          />
-
-          <div
-            className="relative z-10 my-auto w-full max-w-lg rounded-2xl bg-white shadow-2xl"
-            data-testid="subscription-payment-modal"
-          >
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <div>
-                <div className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
-                  Paiement WinPulse
-                </div>
-
-                <h2 className="mt-1 text-xl font-extrabold text-slate-900">
-                  {paymentStep === 1
-                    ? "Informations de paiement"
-                    : "Détails du paiement"}
-                </h2>
-              </div>
-
-              <button
-                type="button"
-                onClick={closePayment}
-                className="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-600"
-              >
-                <X className="h-4 w-4" />
-              </button>
-            </div>
-
-            {paymentStep === 1 ? (
-              <div className="space-y-4 p-5">
-                <div className="rounded-xl bg-orange-50 border border-orange-200 p-4">
-                  <div className="text-xs text-slate-500">
-                    Montant
-                  </div>
-
-                  <div className="text-2xl font-black text-orange-600">
-                    {formatXof(
-                      amount
-                    )}{" "}
-                    FCFA
-                  </div>
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Email du compte
-                  </label>
-
-                  <input
-                    type="email"
-                    value={
-                      user?.email || ""
-                    }
-                    readOnly
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Nom utilisé pour le paiement
-                  </label>
-
-                  <input
-                    type="text"
-                    value={payerName}
-                    onChange={(event) =>
-                      setPayerName(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Nom et prénom"
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Numéro MTN Mobile Money
-                  </label>
-
-                  <input
-                    type="tel"
-                    value={phone}
-                    onChange={(event) =>
-                      setPhone(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Ex. 01 97 00 00 00"
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm"
-                  />
-                </div>
-
-                {paymentError && (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                    {paymentError}
-                  </div>
-                )}
-
-                <button
-                  type="button"
-                  onClick={goNext}
-                  disabled={submitting}
-                  data-testid="subscription-inline-next"
-                  style={{
-                    display: "flex",
-                    width: "100%",
-                    minHeight: "52px",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: "8px",
-                    border: "0",
-                    borderRadius: "10px",
-                    background:
-                      submitting
-                        ? "#94a3b8"
-                        : "#f97316",
-                    color: "#ffffff",
-                    fontSize: "16px",
-                    fontWeight: 800,
-                    cursor:
-                      submitting
-                        ? "wait"
-                        : "pointer",
-                    opacity: 1,
-                    visibility:
-                      "visible",
-                    position:
-                      "relative",
-                    zIndex: 100000,
-                  }}
-                >
-                  {submitting ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Génération…
-                    </>
-                  ) : (
-                    "Continuer vers le paiement"
-                  )}
-                </button>
-
-                <p className="text-center text-[10px] text-slate-400">
-                  Le bouton ci-dessus est intégré directement dans la page Abonnement.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-5 p-5">
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                  <div className="text-xs font-bold text-emerald-700">
-                    Référence de suivi
-                  </div>
-
-                  <div className="mt-1 flex items-center justify-between gap-3">
-                    <div className="font-mono text-xl font-black text-slate-900">
-                      {reference}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={
-                        copyReference
-                      }
-                      className="grid h-9 w-9 place-items-center rounded-lg border border-emerald-200 bg-white text-emerald-700"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 p-4">
-                  <h3 className="font-bold text-slate-900">
-                    Procédure MTN Mobile Money
-                  </h3>
-
-                  <ol className="mt-3 space-y-3 text-sm text-slate-700">
-                    <li>
-                      1. Compose{" "}
-                      <strong>
-                        *165#
-                      </strong>{" "}
-                      ou ouvre l'application MTN MoMo.
-                    </li>
-
-                    <li>
-                      2. Envoie{" "}
-                      <strong>
-                        {formatXof(
-                          amount
-                        )}{" "}
-                        FCFA
-                      </strong>{" "}
-                      au{" "}
-                      <strong>
-                        {MOMO_NUMBER}
-                      </strong>
-                      .
-                    </li>
-
-                    <li>
-                      3. Vérifie le destinataire :{" "}
-                      <strong>
-                        {MOMO_RECIPIENT_NAME}
-                      </strong>
-                      .
-                    </li>
-
-                    <li>
-                      4. Garde le SMS de confirmation puis contacte WinPulse sur WhatsApp.
-                    </li>
-                  </ol>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={
-                    openWhatsApp
-                  }
-                  style={{
-                    display: "flex",
-                    width: "100%",
-                    minHeight: "52px",
-                    alignItems: "center",
-                    justifyContent:
-                      "center",
-                    gap: "8px",
-                    border: "0",
-                    borderRadius:
-                      "10px",
-                    background:
-                      "#25D366",
-                    color: "#ffffff",
-                    fontWeight: 800,
-                    cursor:
-                      "pointer",
-                  }}
-                >
-                  <MessageCircle className="h-4 w-4" />
-                  Envoyer la confirmation sur WhatsApp
-                </button>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
     </AppLayout>
   );
 }
