@@ -879,16 +879,50 @@ async def _fedapay_request(method: str, path: str, json_body: Optional[Dict] = N
 
 
 def _fedapay_transaction_from_response(data: Dict) -> Dict:
-    """Tolere les reponses directes et quelques enveloppes historiques du SDK/API."""
+    """Normalise les reponses Transaction FedaPay, anciennes et actuelles.
+
+    Selon la version de l'API / du compte, FedaPay peut renvoyer soit l'objet
+    transaction directement, soit une enveloppe historique du type
+    {"v1/transaction": {...}}. On accepte aussi les enveloppes usuelles
+    transaction/data/entity afin de rester compatible sans affaiblir les
+    controles de paiement.
+    """
     if not isinstance(data, dict):
         return {}
+
     if data.get("id") is not None:
         return data
-    for key in ("transaction", "data", "entity"):
+
+    # Formats connus, dont l'enveloppe historique encore renvoyee par certains
+    # comptes/endpoints FedaPay.
+    for key in ("v1/transaction", "transaction", "entity"):
         value = data.get(key)
         if isinstance(value, dict) and value.get("id") is not None:
             return value
-    return data
+
+    # Quelques clients/proxies enveloppent encore la reponse sous data/result.
+    for outer_key in ("data", "result", "response"):
+        outer = data.get(outer_key)
+        if not isinstance(outer, dict):
+            continue
+        if outer.get("id") is not None:
+            return outer
+        for key in ("v1/transaction", "transaction", "entity"):
+            value = outer.get(key)
+            if isinstance(value, dict) and value.get("id") is not None:
+                return value
+
+    # Dernier secours strict : une cle de ressource se terminant par /transaction.
+    for key, value in data.items():
+        if (
+            isinstance(key, str)
+            and key.lower().endswith("/transaction")
+            and isinstance(value, dict)
+            and value.get("id") is not None
+        ):
+            return value
+
+    return {}
 
 
 async def _fedapay_retrieve_transaction(transaction_id) -> Dict:
