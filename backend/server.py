@@ -1964,8 +1964,92 @@ async def _montante_save(state: Dict) -> Dict:
     return _montante_public(state)
 
 
+def _montante_norm_text(value: str) -> str:
+    """Normalisation stable pour relier un pick Montante au Track Record."""
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
+    text = re.sub(r"[^a-z0-9.+-]+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+async def _montante_find_resolved_prediction(pick: Dict) -> Optional[Dict]:
+    """Retrouve le résultat d'un pick Montante sans dépendre d'un libellé strict.
+
+    Priorité : signature persistée -> match_id -> fallback équipes+horaire.
+    Cela couvre aussi les picks créés avant l'ajout de ``history_signature``.
+    """
+    resolved_filter = {"$in": ["won", "lost", "void"]}
+    pick_text = str(pick.get("pick") or "").strip()
+    match_id_raw = pick.get("match_id")
+    match_id = str(match_id_raw or "").strip()
+    signature = str(pick.get("history_signature") or "").strip()
+
+    # 1) Lien déterministe pour les nouvelles sélections Montante.
+    if signature:
+        doc = await db.predictions_history.find_one({
+            "signature": signature,
+            "result": resolved_filter,
+        })
+        if doc:
+            return doc
+
+    # 2) Même événement : tolère match_id stocké en chaîne ou dans son type natif
+    # et compare le libellé du pick de manière normalisée.
+    if match_id:
+        id_values = [match_id]
+        if match_id_raw is not None and match_id_raw != match_id:
+            id_values.append(match_id_raw)
+        docs = await db.predictions_history.find({
+            "match_id": {"$in": id_values},
+            "result": resolved_filter,
+        }).sort("created_at", -1).to_list(length=50)
+
+        target_pick = _montante_norm_text(pick_text)
+        target_market = _montante_norm_text(pick.get("market"))
+        for doc in docs:
+            if target_pick and _montante_norm_text(doc.get("pick")) == target_pick:
+                return doc
+
+        # Si le moteur a légèrement renommé le pick, un marché unique sur le même
+        # match est un fallback suffisamment sûr.
+        same_market = [
+            doc for doc in docs
+            if target_market and _montante_norm_text(doc.get("market")) == target_market
+        ]
+        if len(same_market) == 1:
+            return same_market[0]
+
+    # 3) Migration/anciens états : rapprochement équipes + horaire (±12 h).
+    home = str(pick.get("home_team") or "").strip()
+    away = str(pick.get("away_team") or "").strip()
+    if home and away:
+        docs = await db.predictions_history.find({
+            "result": resolved_filter,
+            "home_team": home,
+            "away_team": away,
+        }).sort("created_at", -1).to_list(length=100)
+        pick_dt = _parse_iso(pick.get("start_time"))
+        target_pick = _montante_norm_text(pick_text)
+        target_market = _montante_norm_text(pick.get("market"))
+        candidates = []
+        for doc in docs:
+            doc_dt = _parse_iso(doc.get("commence_time"))
+            if pick_dt and doc_dt and abs((doc_dt - pick_dt).total_seconds()) > 12 * 3600:
+                continue
+            candidates.append(doc)
+            if target_pick and _montante_norm_text(doc.get("pick")) == target_pick:
+                return doc
+        same_market = [
+            doc for doc in candidates
+            if target_market and _montante_norm_text(doc.get("market")) == target_market
+        ]
+        if len(same_market) == 1:
+            return same_market[0]
+
+    return None
+
+
 async def _montante_reconcile(state: Dict) -> Dict:
-    """Met a jour automatiquement la journee avec les resultats deja reconciliés."""
+    """Met à jour automatiquement la journée depuis les résultats du Track Record."""
     if state.get("status") != "ACTIVE":
         return state
     picks = state.get("current_picks") or []
@@ -1973,22 +2057,35 @@ async def _montante_reconcile(state: Dict) -> Dict:
         return state
 
     statuses = []
+    settlement_details = []
     for pick in picks:
-        match_id = str(pick.get("match_id") or "")
-        pick_text = pick.get("pick")
-        if not match_id or not pick_text:
+        if not pick.get("pick"):
             statuses.append("PENDING")
+            settlement_details.append({"match_id": pick.get("match_id"), "status": "PENDING", "reason": "pick_missing"})
             continue
-        docs = await db.predictions_history.find({
-            "match_id": match_id,
-            "pick": pick_text,
-            "result": {"$in": ["won", "lost", "void"]},
-        }).sort("created_at", -1).to_list(length=1)
-        if not docs:
+
+        doc = await _montante_find_resolved_prediction(pick)
+        if not doc:
             statuses.append("PENDING")
-        else:
-            result = docs[0].get("result")
-            statuses.append("WIN" if result == "won" else "LOSS" if result == "lost" else "VOID")
+            settlement_details.append({"match_id": pick.get("match_id"), "status": "PENDING", "reason": "result_not_linked"})
+            continue
+
+        result = str(doc.get("result") or "").lower()
+        status_value = "WIN" if result == "won" else "LOSS" if result == "lost" else "VOID"
+        statuses.append(status_value)
+        settlement_details.append({
+            "match_id": pick.get("match_id"),
+            "status": status_value,
+            "history_signature": doc.get("signature"),
+            "final_score": doc.get("final_score"),
+            "reconciled_at": doc.get("reconciled_at"),
+        })
+
+    state["last_settlement_check"] = {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "statuses": statuses,
+        "details": settlement_details,
+    }
 
     if "LOSS" in statuses:
         state["status"] = "FAILED"
@@ -2140,6 +2237,41 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
         candidates,
         limit=MONTANTE_MAX_PICKS,
     )
+
+    # Lier immédiatement chaque pick Montante au Track Record. Ainsi le résultat
+    # futur ne dépend plus d'une nouvelle génération du même libellé de pick.
+    for item in selected:
+        match_id = item.get("match_id")
+        pick_text = item.get("pick")
+        if not match_id or not pick_text:
+            continue
+        signature = _pick_signature(str(match_id), str(pick_text))
+        item["history_signature"] = signature
+        await db.predictions_history.update_one(
+            {"signature": signature},
+            {"$setOnInsert": {
+                "signature": signature,
+                "match_id": match_id,
+                "home_team": item.get("home_team"),
+                "away_team": item.get("away_team"),
+                "sport_title": item.get("sport_title"),
+                "sport_key": item.get("sport_key"),
+                "commence_time": item.get("start_time"),
+                "pick": pick_text,
+                "market": item.get("market"),
+                "pick_odds": item.get("odds"),
+                "confidence": round(float(item.get("confidence") or 0) * 100.0, 1),
+                "edge": item.get("edge"),
+                "model_version": MODEL_VERSION,
+                "is_combo": False,
+                "official_track_eligible": False,
+                "result": "pending",
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "source": "montante",
+            }},
+            upsert=True,
+        )
+
     diagnostic["selected"] = len(selected)
     state["diagnostic"] = diagnostic
 
@@ -2219,10 +2351,42 @@ async def refresh_montante(payload: dict = Depends(get_current_user_payload)):
     state = await _montante_get()
     if not state:
         raise HTTPException(status_code=404, detail="Aucune montante active")
+
+    # Un refresh administrateur doit aussi synchroniser les scores finaux :
+    # auparavant il ne relisait que predictions_history et pouvait donc rester
+    # bloqué PENDING jusqu'au prochain passage du scheduler Track Record.
+    await _reconcile_predictions_with_scores(force_score_refresh=True)
+
+    state = await _montante_get() or state
     state = await _montante_reconcile(state)
     if state.get("status") == "ACTIVE" and not state.get("current_picks"):
         state = await _montante_prepare_next_day(state)
     return _montante_public(state)
+
+
+async def _montante_sync_after_track_results() -> Dict:
+    """Fait progresser la Montante immédiatement après la synchro des scores."""
+    state = await _montante_get()
+    if not state:
+        return {"status": "NONE", "progressed": False}
+
+    before_day = int(state.get("current_day", 1) or 1)
+    before_status = state.get("status")
+    state = await _montante_reconcile(state)
+
+    # Dès qu'une journée est gagnée, préparer automatiquement la sélection du
+    # jour suivant. Si aucun pick ne qualifie encore, l'état reste ACTIVE/en attente.
+    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+        state = await _montante_prepare_next_day(state)
+
+    after_day = int(state.get("current_day", 1) or 1)
+    after_status = state.get("status")
+    return {
+        "status": after_status,
+        "current_day": after_day,
+        "progressed": after_day > before_day or after_status != before_status,
+        "waiting_reason": state.get("waiting_reason"),
+    }
 
 
 # ─── Combos ─────────────────────────────────────────────────────────────────
@@ -3533,6 +3697,10 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
             {"$set": {"last_run_at": run_at, **result}},
             upsert=True,
         )
+        try:
+            result["montante"] = await _montante_sync_after_track_results()
+        except Exception as exc:
+            result["montante"] = {"status": "ERROR", "progressed": False, "detail": str(exc)}
         return result
 
     now = datetime.now(timezone.utc)
@@ -3674,6 +3842,10 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
         {"$set": {"last_run_at": run_at, **result}},
         upsert=True,
     )
+    try:
+        result["montante"] = await _montante_sync_after_track_results()
+    except Exception as exc:
+        result["montante"] = {"status": "ERROR", "progressed": False, "detail": str(exc)}
     return result
 
 
