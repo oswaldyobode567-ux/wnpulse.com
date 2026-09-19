@@ -16,13 +16,15 @@ import math
 import secrets
 import re
 import unicodedata
+import ipaddress
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
 from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from fastapi.responses import HTMLResponse, PlainTextResponse
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -251,8 +253,128 @@ ADMIN_EMAILS = {
 }
 ALLOW_ADMIN_EMAIL_BOOTSTRAP = os.environ.get("ALLOW_ADMIN_EMAIL_BOOTSTRAP", "false").strip().lower() in ("1", "true", "yes")
 
+# ─── Sécurité applicative ─────────────────────────────────────────────────
+
+ENABLE_API_DOCS = os.environ.get("ENABLE_API_DOCS", "false").strip().lower() in ("1", "true", "yes")
+MAX_REQUEST_BYTES = max(64 * 1024, min(int(os.environ.get("MAX_REQUEST_BYTES", str(2 * 1024 * 1024))), 10 * 1024 * 1024))
+TRUSTED_HOSTS = [
+    h.strip()
+    for h in os.environ.get(
+        "TRUSTED_HOSTS",
+        "wnpulse.com,www.wnpulse.com,*.up.railway.app,*.railway.app,*.railway.internal,localhost,127.0.0.1",
+    ).split(",")
+    if h.strip()
+]
+
+_COMMON_PASSWORDS = {
+    "password", "password123", "1234567890", "123456789", "12345678",
+    "azerty123", "qwerty123", "winpulse123", "motdepasse", "motdepasse123",
+}
+
+def _password_security_error(password: str, email_addr: str = "") -> Optional[str]:
+    if len(password) < 10:
+        return "Le mot de passe doit contenir au moins 10 caractères"
+    lowered = password.casefold()
+    if lowered.strip() in _COMMON_PASSWORDS:
+        return "Choisis un mot de passe moins courant"
+    if len(set(password)) < 4:
+        return "Choisis un mot de passe moins répétitif"
+    local_part = (email_addr.split("@", 1)[0] if "@" in email_addr else email_addr).casefold().strip()
+    if len(local_part) >= 4 and local_part in lowered:
+        return "Le mot de passe ne doit pas contenir ton adresse email"
+    return None
+
+
+def _client_rate_key(request: Request) -> str:
+    """Identifiant réseau non réversible utilisé uniquement pour l'anti-abus.
+
+    On combine l'adresse vue par le serveur avec les en-têtes proxy valides :
+    une requête directe ne peut donc pas contourner la limite en forgeant XFF.
+    """
+    peer = request.client.host if request.client else "unknown"
+    candidates = []
+    for header in ("cf-connecting-ip", "x-real-ip"):
+        value = (request.headers.get(header) or "").strip()
+        if value:
+            candidates.append(value)
+    xff = (request.headers.get("x-forwarded-for") or "").split(",", 1)[0].strip()
+    if xff:
+        candidates.append(xff)
+    valid = []
+    for value in candidates:
+        try:
+            valid.append(str(ipaddress.ip_address(value)))
+        except ValueError:
+            continue
+    raw = "|".join([peer] + valid[:2])
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _identifier_hash(value: str) -> str:
+    return hashlib.sha256(value.strip().casefold().encode("utf-8")).hexdigest()
+
+
+async def _consume_security_limit(
+    scope: str, identifier: str, *, limit: int, window_seconds: int, detail: str = "Trop de tentatives. Réessaie plus tard."
+) -> None:
+    """Rate limiting MongoDB partagé entre replicas. Échec DB => fail-open pour disponibilité."""
+    now = datetime.now(timezone.utc)
+    bucket = int(now.timestamp()) // max(1, window_seconds)
+    identifier_hash = _identifier_hash(identifier)
+    doc_id = f"{scope}:{identifier_hash}:{bucket}"
+    try:
+        doc = await db.security_rate_limits.find_one_and_update(
+            {"_id": doc_id},
+            {
+                "$inc": {"count": 1},
+                "$setOnInsert": {
+                    "scope": scope,
+                    "identifier_hash": identifier_hash,
+                    "created_at": now,
+                    "expires_at": now + timedelta(seconds=window_seconds * 2),
+                },
+            },
+            upsert=True,
+            return_document=ReturnDocument.AFTER,
+        )
+        if doc and int(doc.get("count", 0)) > limit:
+            raise HTTPException(status_code=429, detail=detail, headers={"Retry-After": str(window_seconds)})
+    except HTTPException:
+        raise
+    except Exception:
+        return
+
+
+async def _clear_security_limit(scope: str, identifier: str) -> None:
+    try:
+        await db.security_rate_limits.delete_many({
+            "scope": scope,
+            "identifier_hash": _identifier_hash(identifier),
+        })
+    except Exception:
+        pass
+
+
+async def send_password_changed_email(to: str, name: str) -> bool:
+    first_name = html.escape((name or "").strip().split(" ")[0] or "")
+    greeting = f"Bonjour {first_name}," if first_name else "Bonjour,"
+    body = f"""
+        <p>{greeting}</p>
+        <p>Le mot de passe de ton compte WinPulse vient d'être modifié.</p>
+        <p>Si tu n'es pas à l'origine de ce changement, contacte immédiatement le support WinPulse et évite de réutiliser ton ancien mot de passe.</p>
+    """
+    return await _send_email(to, "Ton mot de passe WinPulse a été modifié", _email_layout("Mot de passe modifié", body))
+
+
 # ─── App setup ────────────────────────────────────────────────────────────
-app = FastAPI(title="WinPulse API")
+app = FastAPI(
+    title="WinPulse API",
+    docs_url="/docs" if ENABLE_API_DOCS else None,
+    redoc_url="/redoc" if ENABLE_API_DOCS else None,
+    openapi_url="/openapi.json" if ENABLE_API_DOCS else None,
+)
+
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
 
 _manual_refresh_lock = asyncio.Lock()
 
@@ -284,6 +406,42 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def security_middleware(request: Request, call_next):
+    # Limite les gros corps de requête JSON/form avant parsing.
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            if int(content_length) > MAX_REQUEST_BYTES:
+                return PlainTextResponse("Payload too large", status_code=413)
+        except ValueError:
+            return PlainTextResponse("Invalid Content-Length", status_code=400)
+
+    response = await call_next(request)
+
+    # Headers défensifs applicables à l'API et aux petites pages de maintenance.
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), usb=()"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; object-src 'none'; "
+        "form-action 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
+        "script-src 'self' 'unsafe-inline'"
+    )
+    response.headers["X-Robots-Tag"] = "noindex, nofollow"
+
+    forwarded_proto = (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip().lower()
+    if request.url.scheme == "https" or forwarded_proto == "https":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
+    if request.url.path.startswith(("/api/auth", "/api/admin", "/api/manual", "/api/subscription", "/api/payments")):
+        response.headers["Cache-Control"] = "no-store, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+
+    return response
+
+
 @app.get("/api/")
 async def racine():
     return {"application": "WinPulse", "statut": "OK", "version": MODEL_VERSION}
@@ -305,7 +463,7 @@ class RegisterPayload(BaseModel):
 
 class LoginPayload(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
 
 
 class ForgotPasswordPayload(BaseModel):
@@ -318,8 +476,13 @@ class ResetPasswordPayload(BaseModel):
 
 
 @app.post("/api/auth/register")
-async def register(payload: RegisterPayload):
-    existing = await db.users.find_one({"email": payload.email.lower()})
+async def register(payload: RegisterPayload, request: Request):
+    await _consume_security_limit("register_ip", _client_rate_key(request), limit=8, window_seconds=3600)
+    email_addr = payload.email.lower().strip()
+    password_error = _password_security_error(payload.password, email_addr)
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
+    existing = await db.users.find_one({"email": email_addr})
     if existing:
         raise HTTPException(status_code=400, detail="Email deja utilise")
 
@@ -349,7 +512,7 @@ async def register(payload: RegisterPayload):
     }
     await db.users.insert_one(user_doc)
     await send_welcome_email(user_doc["email"], user_doc["name"])
-    token = create_access_token(user_id, payload.email.lower())
+    token = create_access_token(user_id, email_addr)
     return {
         "access_token": token,
         "user": {
@@ -362,10 +525,18 @@ async def register(payload: RegisterPayload):
 
 
 @app.post("/api/auth/login")
-async def login(payload: LoginPayload):
-    user = await db.users.find_one({"email": payload.email.lower()})
+async def login(payload: LoginPayload, request: Request):
+    email_addr = payload.email.lower().strip()
+    network_key = _client_rate_key(request)
+    await _consume_security_limit("login_ip", network_key, limit=30, window_seconds=900)
+    await _consume_security_limit("login_email", email_addr, limit=10, window_seconds=900)
+
+    user = await db.users.find_one({"email": email_addr})
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
+        # Message volontairement générique pour éviter l'énumération de comptes.
         raise HTTPException(status_code=401, detail="Email ou mot de passe incorrect")
+
+    await _clear_security_limit("login_email", email_addr)
 
     if ALLOW_ADMIN_EMAIL_BOOTSTRAP and user["email"] in ADMIN_EMAILS and not user.get("is_admin"):
         await db.users.update_one(
@@ -391,12 +562,14 @@ async def login(payload: LoginPayload):
 
 
 @app.post("/api/auth/forgot-password")
-async def forgot_password(payload: ForgotPasswordPayload):
+async def forgot_password(payload: ForgotPasswordPayload, request: Request):
     """
     Demande un lien de réinitialisation sans révéler si l'adresse existe.
     Le token brut n'est jamais stocké : seul son SHA-256 est conservé.
     """
     email_addr = payload.email.lower().strip()
+    await _consume_security_limit("forgot_ip", _client_rate_key(request), limit=12, window_seconds=900)
+    await _consume_security_limit("forgot_email", email_addr, limit=4, window_seconds=900)
     neutral_response = {
         "ok": True,
         "message": "Si un compte correspond à cette adresse, un email de réinitialisation vient d'être envoyé.",
@@ -449,10 +622,12 @@ async def forgot_password(payload: ForgotPasswordPayload):
 
 
 @app.post("/api/auth/reset-password")
-async def reset_password(payload: ResetPasswordPayload):
+async def reset_password(payload: ResetPasswordPayload, request: Request):
     """Valide un token à usage unique puis remplace le mot de passe du compte."""
     raw_token = payload.token.strip()
     token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    await _consume_security_limit("reset_ip", _client_rate_key(request), limit=15, window_seconds=900)
+    await _consume_security_limit("reset_token", token_hash, limit=8, window_seconds=900)
     now = datetime.now(timezone.utc)
 
     token_doc = await db.password_reset_tokens.find_one({
@@ -466,6 +641,10 @@ async def reset_password(payload: ResetPasswordPayload):
     user = await db.users.find_one({"id": token_doc.get("user_id")})
     if not user:
         raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré")
+
+    password_error = _password_security_error(payload.new_password, user.get("email", ""))
+    if password_error:
+        raise HTTPException(status_code=400, detail=password_error)
 
     # Empêche de remettre exactement le mot de passe actuel sans consommer le lien.
     if verify_password(payload.new_password, user.get("password_hash", "")):
@@ -499,6 +678,16 @@ async def reset_password(payload: ResetPasswordPayload):
         {"user_id": user["id"], "used": False},
         {"$set": {"used": True, "invalidated_at": now}},
     )
+    await _clear_security_limit("reset_token", token_hash)
+    await _clear_security_limit("login_email", user.get("email", ""))
+
+    # Notification de sécurité ; un échec d'email ne bloque pas le changement déjà effectué.
+    try:
+        await send_password_changed_email(
+            user.get("email", ""), user.get("full_name") or user.get("name") or ""
+        )
+    except Exception:
+        pass
 
     return {
         "ok": True,
@@ -819,7 +1008,8 @@ async def get_data_status():
 
 @app.post("/api/data/refresh")
 async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
-    """Refresh manuel du dashboard avec verrou anti-double-clic."""
+    """Refresh fournisseur réservé à l'administration avec verrou anti-double-clic."""
+    await _require_admin(payload)
     if _manual_refresh_lock.locked():
         raise HTTPException(status_code=409, detail="Un refresh est déjà en cours")
     async with _manual_refresh_lock:
@@ -848,6 +1038,7 @@ async def manual_refresh_page():
 @app.post("/api/manual-refresh/form-run", response_class=HTMLResponse)
 async def manual_refresh_form_run(request: Request):
     """Exécute le refresh depuis le formulaire HTML, sans JavaScript."""
+    await _consume_security_limit("manual_refresh_ip", _client_rate_key(request), limit=12, window_seconds=900)
     body = (await request.body()).decode("utf-8", errors="replace")
     params = parse_qs(body, keep_blank_values=True)
     key = (params.get("key") or [""])[0].strip()
@@ -885,7 +1076,8 @@ async def manual_refresh_form_run(request: Request):
 
 
 @app.post("/api/manual-refresh/run")
-async def manual_refresh_run(key: str = Header(default="", alias="X-Refresh-Key")):
+async def manual_refresh_run(request: Request, key: str = Header(default="", alias="X-Refresh-Key")):
+    await _consume_security_limit("manual_refresh_ip", _client_rate_key(request), limit=12, window_seconds=900)
     secret = os.environ.get("REFRESH_SECRET", "").strip()
     if not secret or not key or not secrets.compare_digest(key, secret):
         raise HTTPException(status_code=403, detail="REFRESH_SECRET invalide ou non configuré")
@@ -912,7 +1104,8 @@ async def manual_track_sync_page():
 
 
 @app.post("/api/manual-track-sync/run")
-async def manual_track_sync_run(key: str = Header(default="", alias="X-Refresh-Key")):
+async def manual_track_sync_run(request: Request, key: str = Header(default="", alias="X-Refresh-Key")):
+    await _consume_security_limit("manual_track_ip", _client_rate_key(request), limit=12, window_seconds=900)
     secret = os.environ.get("REFRESH_SECRET", "").strip()
     if not secret or not key or not secrets.compare_digest(key, secret):
         raise HTTPException(status_code=403, detail="REFRESH_SECRET invalide ou non configuré")
@@ -4219,6 +4412,18 @@ async def startup_event():
         await db.password_reset_tokens.create_index("token_hash", unique=True)
         await db.password_reset_tokens.create_index("user_id")
         await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        pass
+
+    # Anti-bruteforce partagé + contraintes d'identité.
+    try:
+        await db.security_rate_limits.create_index("expires_at", expireAfterSeconds=0)
+        await db.security_rate_limits.create_index([("scope", 1), ("identifier_hash", 1)])
+    except Exception:
+        pass
+    try:
+        await db.users.create_index("email", unique=True)
+        await db.users.create_index("id", unique=True)
     except Exception:
         pass
 
