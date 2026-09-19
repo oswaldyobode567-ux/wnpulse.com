@@ -15,6 +15,7 @@ import {
 const MOMO_NUMBER = "+229 01 66 28 06 03";
 const MOMO_RECIPIENT_NAME = "KOUKPAKI VIANEY";
 const WHATSAPP_NUMBER = "33767971752";
+const WINPULSE_MONTHLY_PRICE_XOF = 10500;
 
 function formatXof(value) {
   const amount = Number(value || 0);
@@ -127,14 +128,8 @@ export default function PaymentModal({
   }, [isOpen, targetTier, user]);
 
   const amount = useMemo(
-    () =>
-      Number(
-        plan?.price_xof ??
-          plan?.price_fcfa ??
-          plan?.price ??
-          0
-      ),
-    [plan]
+    () => WINPULSE_MONTHLY_PRICE_XOF,
+    []
   );
 
   if (!isOpen) return null;
