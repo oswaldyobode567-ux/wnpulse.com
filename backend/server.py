@@ -101,6 +101,9 @@ async def _sweep_expired_subscriptions() -> Dict:
 
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "").strip()
 EMAIL_FROM = os.environ.get("EMAIL_FROM", "WinPulse <contact@wnpulse.com>")
+PUBLIC_APP_URL = os.environ.get("PUBLIC_APP_URL", "https://www.wnpulse.com").strip().rstrip("/")
+PASSWORD_RESET_TTL_MINUTES = max(10, min(int(os.environ.get("PASSWORD_RESET_TTL_MINUTES", "30")), 120))
+PASSWORD_RESET_MAX_REQUESTS = max(1, min(int(os.environ.get("PASSWORD_RESET_MAX_REQUESTS", "3")), 10))
 
 
 async def _send_email(to: str, subject: str, html: str) -> bool:
@@ -167,6 +170,24 @@ async def send_subscription_activated_email(to: str, plan_name: str, expires_at:
         """,
     )
     await _send_email(to, f"Ton plan {plan_name} est actif 🚀", html)
+
+
+async def send_password_reset_email(to: str, name: str, reset_url: str) -> bool:
+    first_name = html.escape((name or "").strip().split(" ")[0] or "")
+    safe_url = html.escape(reset_url, quote=True)
+    greeting = f"Bonjour {first_name}," if first_name else "Bonjour,"
+    body = f"""
+        <p>{greeting}</p>
+        <p>Une demande de réinitialisation du mot de passe de ton compte WinPulse a été reçue.</p>
+        <p style="margin: 24px 0; text-align: center;">
+          <a href="{safe_url}" style="display:inline-block;background:#ea580c;color:#ffffff;text-decoration:none;font-weight:800;padding:13px 20px;border-radius:10px;">
+            Choisir un nouveau mot de passe
+          </a>
+        </p>
+        <p>Ce lien est valable pendant <strong>{PASSWORD_RESET_TTL_MINUTES} minutes</strong> et ne peut être utilisé qu'une seule fois.</p>
+        <p>Si tu n'es pas à l'origine de cette demande, ignore simplement cet email. Ton mot de passe actuel reste inchangé.</p>
+    """
+    return await _send_email(to, "Réinitialisation de ton mot de passe WinPulse", _email_layout("Mot de passe oublié", body))
 
 
 # ─── DB setup ─────────────────────────────────────────────────────────────
@@ -287,6 +308,15 @@ class LoginPayload(BaseModel):
     password: str
 
 
+class ForgotPasswordPayload(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordPayload(BaseModel):
+    token: str = Field(min_length=20, max_length=256)
+    new_password: str = Field(min_length=10, max_length=128)
+
+
 @app.post("/api/auth/register")
 async def register(payload: RegisterPayload):
     existing = await db.users.find_one({"email": payload.email.lower()})
@@ -357,6 +387,122 @@ async def login(payload: LoginPayload):
             "subscription_tier": user.get("subscription", "free"),
             "is_admin": user.get("is_admin", False),
         },
+    }
+
+
+@app.post("/api/auth/forgot-password")
+async def forgot_password(payload: ForgotPasswordPayload):
+    """
+    Demande un lien de réinitialisation sans révéler si l'adresse existe.
+    Le token brut n'est jamais stocké : seul son SHA-256 est conservé.
+    """
+    email_addr = payload.email.lower().strip()
+    neutral_response = {
+        "ok": True,
+        "message": "Si un compte correspond à cette adresse, un email de réinitialisation vient d'être envoyé.",
+    }
+
+    user = await db.users.find_one({"email": email_addr})
+    if not user:
+        return neutral_response
+
+    now = datetime.now(timezone.utc)
+    window_start = now - timedelta(minutes=15)
+    recent_count = await db.password_reset_tokens.count_documents({
+        "user_id": user["id"],
+        "created_at": {"$gte": window_start},
+    })
+    if recent_count >= PASSWORD_RESET_MAX_REQUESTS:
+        # Réponse volontairement identique afin de ne pas permettre l'énumération des comptes.
+        return neutral_response
+
+    # Un nouveau lien invalide tous les précédents encore actifs.
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_at": now}},
+    )
+
+    raw_token = secrets.token_urlsafe(32)
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    expires_at = now + timedelta(minutes=PASSWORD_RESET_TTL_MINUTES)
+
+    await db.password_reset_tokens.insert_one({
+        "token_hash": token_hash,
+        "user_id": user["id"],
+        "email": email_addr,
+        "created_at": now,
+        "expires_at": expires_at,
+        "used": False,
+    })
+
+    reset_url = f"{PUBLIC_APP_URL}/reset-password/{raw_token}"
+    sent = await send_password_reset_email(
+        email_addr,
+        user.get("full_name") or user.get("name") or "",
+        reset_url,
+    )
+    if not sent:
+        # Ne jamais exposer l'existence du compte au client.
+        print(f"[WinPulse] Echec envoi email reset password pour user_id={user.get('id')}")
+
+    return neutral_response
+
+
+@app.post("/api/auth/reset-password")
+async def reset_password(payload: ResetPasswordPayload):
+    """Valide un token à usage unique puis remplace le mot de passe du compte."""
+    raw_token = payload.token.strip()
+    token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+    now = datetime.now(timezone.utc)
+
+    token_doc = await db.password_reset_tokens.find_one({
+        "token_hash": token_hash,
+        "used": False,
+        "expires_at": {"$gt": now},
+    })
+    if not token_doc:
+        raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré")
+
+    user = await db.users.find_one({"id": token_doc.get("user_id")})
+    if not user:
+        raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou expiré")
+
+    # Empêche de remettre exactement le mot de passe actuel sans consommer le lien.
+    if verify_password(payload.new_password, user.get("password_hash", "")):
+        raise HTTPException(status_code=400, detail="Choisis un nouveau mot de passe différent de l'ancien")
+
+    # Consommation atomique : deux clics simultanés ne peuvent pas réutiliser le même lien.
+    consumed = await db.password_reset_tokens.find_one_and_update(
+        {
+            "_id": token_doc["_id"],
+            "used": False,
+            "expires_at": {"$gt": now},
+        },
+        {"$set": {"used": True, "used_at": now}},
+        return_document=ReturnDocument.AFTER,
+    )
+    if not consumed:
+        raise HTTPException(status_code=400, detail="Lien de réinitialisation invalide ou déjà utilisé")
+
+    await db.users.update_one(
+        {"id": user["id"]},
+        {
+            "$set": {
+                "password_hash": hash_password(payload.new_password),
+                "password_changed_at": now.isoformat(),
+            }
+        },
+    )
+
+    # Invalide tout autre lien de reset éventuellement encore présent.
+    await db.password_reset_tokens.update_many(
+        {"user_id": user["id"], "used": False},
+        {"$set": {"used": True, "invalidated_at": now}},
+    )
+
+    return {
+        "ok": True,
+        "message": "Mot de passe modifié avec succès. Tu peux maintenant te connecter.",
     }
 
 
@@ -4066,6 +4212,14 @@ async def startup_event():
         await db.scores_archive.create_index("commence_time")
     except Exception:
         # Un problème d'index ne doit jamais empêcher le démarrage de l'API.
+        pass
+
+    # Tokens de mot de passe oublié : hash unique + suppression automatique à expiration.
+    try:
+        await db.password_reset_tokens.create_index("token_hash", unique=True)
+        await db.password_reset_tokens.create_index("user_id")
+        await db.password_reset_tokens.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
         pass
 
     # Rattrapage immédiat du Track Record au redémarrage. Les endpoints de scores
