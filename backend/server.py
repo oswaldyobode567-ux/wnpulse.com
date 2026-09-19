@@ -9,6 +9,7 @@ import httpx
 import uuid
 import hmac
 import hashlib
+import html
 import json
 import statistics
 import math
@@ -17,6 +18,7 @@ import re
 import unicodedata
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List, Dict
+from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -682,19 +684,57 @@ async def post_data_refresh(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/manual-refresh", response_class=HTMLResponse)
 async def manual_refresh_page():
-    """Petite page de maintenance permettant un refresh depuis un navigateur.
+    """Page de maintenance sans JavaScript pour forcer le refresh des APIs.
 
-    Le secret n'est jamais placé dans l'URL : il est envoyé uniquement dans un
-    en-tête HTTP vers /api/manual-refresh/run.
+    Le secret est envoyé en POST dans le corps du formulaire, jamais dans l'URL.
+    Cette version fonctionne même si un proxy ou le navigateur bloque les scripts inline.
     """
     return HTMLResponse(
         """<!doctype html>
 <html lang="fr">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>WinPulse — Refresh manuel</title>
-<style>body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:40px 20px}.box{max-width:680px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px;box-shadow:0 12px 40px #0f172a12}h1{margin:0 0 8px;font-size:26px}p{color:#475569}input,button{width:100%;box-sizing:border-box;border-radius:10px;padding:12px 14px;font-size:15px}input{border:1px solid #cbd5e1;margin:12px 0}button{border:0;background:#f97316;color:#fff;font-weight:800;cursor:pointer}button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:16px;min-height:72px;margin-top:18px}.hint{font-size:13px}</style></head>
-<body><div class="box"><h1>Refresh manuel WinPulse</h1><p>Recharge les événements disponibles auprès des APIs, recalcule les statistiques et met à jour le cache.</p><label for="key"><strong>REFRESH_SECRET</strong></label><input id="key" type="password" autocomplete="off" placeholder="Secret configuré dans l'environnement serveur"><button id="run">Lancer le refresh maintenant</button><p class="hint">Le secret n'apparaît pas dans l'URL ni dans l'historique du navigateur.</p><pre id="out">Prêt.</pre></div>
-<script>const btn=document.getElementById('run'),out=document.getElementById('out'),key=document.getElementById('key');btn.onclick=async()=>{if(!key.value){out.textContent='REFRESH_SECRET requis.';return;}btn.disabled=true;out.textContent='Refresh en cours…';try{const r=await fetch('/api/manual-refresh/run',{method:'POST',headers:{'X-Refresh-Key':key.value}});const data=await r.json();out.textContent=JSON.stringify(data,null,2);if(!r.ok) throw new Error(data.detail||('HTTP '+r.status));}catch(e){out.textContent='Erreur : '+e.message+'\n\n'+out.textContent;}finally{btn.disabled=false;}};</script></body></html>"""
+<style>body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:40px 20px}.box{max-width:680px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px;box-shadow:0 12px 40px #0f172a12}h1{margin:0 0 8px;font-size:26px}p{color:#475569}input,button{width:100%;box-sizing:border-box;border-radius:10px;padding:12px 14px;font-size:15px}input{border:1px solid #cbd5e1;margin:12px 0}button{border:0;background:#f97316;color:#fff;font-weight:800;cursor:pointer}.hint{font-size:13px}</style></head>
+<body><div class="box"><h1>Refresh manuel WinPulse</h1><p>Recharge les événements disponibles auprès des APIs, recalcule les statistiques et met à jour le cache.</p><form method="post" action="/api/manual-refresh/form-run"><label for="key"><strong>REFRESH_SECRET</strong></label><input id="key" name="key" type="password" autocomplete="off" required placeholder="Secret configuré dans l'environnement serveur"><button type="submit">Lancer le refresh maintenant</button></form><p class="hint">Le secret est envoyé uniquement dans le corps POST du formulaire et n'apparaît pas dans l'URL.</p></div></body></html>"""
+    )
+
+
+@app.post("/api/manual-refresh/form-run", response_class=HTMLResponse)
+async def manual_refresh_form_run(request: Request):
+    """Exécute le refresh depuis le formulaire HTML, sans JavaScript."""
+    body = (await request.body()).decode("utf-8", errors="replace")
+    params = parse_qs(body, keep_blank_values=True)
+    key = (params.get("key") or [""])[0].strip()
+    secret = os.environ.get("REFRESH_SECRET", "").strip()
+
+    if not secret or not key or not secrets.compare_digest(key, secret):
+        return HTMLResponse(
+            "<h2>REFRESH_SECRET invalide ou non configuré.</h2>"
+            "<p><a href='/api/manual-refresh'>Retour</a></p>",
+            status_code=403,
+        )
+
+    if _manual_refresh_lock.locked():
+        return HTMLResponse(
+            "<h2>Un refresh est déjà en cours.</h2>"
+            "<p><a href='/api/manual-refresh'>Retour</a></p>",
+            status_code=409,
+        )
+
+    async with _manual_refresh_lock:
+        result = await _full_refresh_and_track()
+        cache_status = await get_odds_cache_status(db)
+        payload = {"ok": True, "refresh": result, "cache": cache_status}
+
+    rendered = html.escape(json.dumps(payload, ensure_ascii=False, indent=2))
+    return HTMLResponse(
+        "<!doctype html><html lang='fr'><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>WinPulse — Résultat refresh</title>"
+        "<style>body{font-family:system-ui,-apple-system,sans-serif;background:#f8fafc;color:#0f172a;margin:0;padding:40px 20px}.box{max-width:900px;margin:auto;background:#fff;border:1px solid #e2e8f0;border-radius:18px;padding:28px}.ok{color:#15803d}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#0f172a;color:#e2e8f0;border-radius:12px;padding:16px}a{color:#ea580c;font-weight:700}</style></head>"
+        "<body><div class='box'><h1 class='ok'>Refresh terminé</h1>"
+        f"<pre>{rendered}</pre><p><a href='/api/manual-refresh'>Relancer un refresh</a></p>"
+        "</div></body></html>"
     )
 
 
