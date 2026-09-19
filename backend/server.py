@@ -1135,13 +1135,15 @@ async def get_data_source_audit():
 
 # ─── Abonnement ───────────────────────────────────────────────────────────
 
+WINPULSE_MONTHLY_PRICE_XOF = 10500
+
 SUBSCRIPTION_PLANS = [
     {
         "id": "pro",
         "name": "WinPulse Pro",
-        "price": 10500,
-        "price_fcfa": 10500,
-        "price_xof": 10500,
+        "price": WINPULSE_MONTHLY_PRICE_XOF,
+        "price_fcfa": WINPULSE_MONTHLY_PRICE_XOF,
+        "price_xof": WINPULSE_MONTHLY_PRICE_XOF,
         "duration_days": 30,
         "period": "mois",
         "features": [
@@ -2693,6 +2695,26 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     public = _montante_public(state)
     public["progress"] = round(((int(public.get("current_day", 1)) - 1) / max(1, int(public.get("days", 10)))) * 100, 1) if public.get("status") != "NONE" else 0
     public["can_start"] = False
+
+    # Les picks de la Montante sont un contenu premium. Le masquage doit être
+    # appliqué côté serveur afin qu'un compte Free ne puisse pas contourner
+    # l'interface en appelant directement l'API.
+    has_paid_access = await _has_paid_access(payload)
+    public["picks_locked"] = not has_paid_access
+    if not has_paid_access:
+        current_picks = public.get("current_picks") or []
+        public["current_pick_count"] = len(current_picks)
+        public["current_picks"] = []
+
+        safe_history = []
+        for history_item in public.get("history") or []:
+            safe_item = dict(history_item)
+            history_picks = safe_item.get("picks") or []
+            safe_item["pick_count"] = len(history_picks)
+            safe_item["picks"] = []
+            safe_history.append(safe_item)
+        public["history"] = safe_history
+
     return public
 
 
