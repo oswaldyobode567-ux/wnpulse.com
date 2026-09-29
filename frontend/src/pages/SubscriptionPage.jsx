@@ -1,9 +1,8 @@
-
+import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import {
   CheckCircle2,
   Crown,
@@ -21,6 +20,27 @@ const MOMO_RECIPIENT_NAME = "KOUKPAKI VIANEY";
 const WHATSAPP_NUMBER = "33767971752";
 const WINPULSE_MONTHLY_PRICE_XOF = 10500;
 
+const FALLBACK_PLAN = {
+  id: "pro",
+  name: "WinPulse Pro",
+  price: WINPULSE_MONTHLY_PRICE_XOF,
+  price_fcfa: WINPULSE_MONTHLY_PRICE_XOF,
+  price_xof: WINPULSE_MONTHLY_PRICE_XOF,
+  duration_days: 30,
+  period: "mois",
+  tagline: "Un seul prix. Tout WinPulse. Sans compromis.",
+  features: [
+    "Accès illimité à tous les pronostics, tous les jours, sur 7 sports",
+    "Tous les combinés (Sûr, Booster, Extra, Jackpot) débloqués",
+    "Chaque match analysé sur tous ses marchés",
+    "Combo Builder et détecteur de value bets",
+    "Analyse IA experte sur chaque match",
+    "Montante WinPulse avec picks débloqués",
+    "Track Record public et vérifiable",
+    "Support prioritaire par WhatsApp",
+  ],
+};
+
 function formatXof(value) {
   const amount = Number(value || 0);
   return Number.isFinite(amount)
@@ -31,8 +51,8 @@ function formatXof(value) {
 export default function SubscriptionPage() {
   const { user } = useAuth();
 
-  const [plans, setPlans] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [plans, setPlans] = useState([FALLBACK_PLAN]);
+  const [loading, setLoading] = useState(false);
 
   const [paymentOpen, setPaymentOpen] = useState(false);
   const [paymentStep, setPaymentStep] = useState(1);
@@ -50,16 +70,28 @@ export default function SubscriptionPage() {
       .then((response) => {
         if (!active) return;
 
-        setPlans(
-          Array.isArray(response?.data)
-            ? response.data
-            : []
-        );
+        const remotePlans = Array.isArray(response?.data) ? response.data : [];
+        const remotePlan = remotePlans[0];
+
+        if (remotePlan && typeof remotePlan === "object") {
+          setPlans([{
+            ...FALLBACK_PLAN,
+            ...remotePlan,
+            id: String(remotePlan.id || FALLBACK_PLAN.id),
+            name: String(remotePlan.name || FALLBACK_PLAN.name),
+            price: WINPULSE_MONTHLY_PRICE_XOF,
+            price_fcfa: WINPULSE_MONTHLY_PRICE_XOF,
+            price_xof: WINPULSE_MONTHLY_PRICE_XOF,
+            features: Array.isArray(remotePlan.features)
+              ? remotePlan.features
+              : FALLBACK_PLAN.features,
+          }]);
+        }
       })
       .catch(() => {
         if (active) {
           toast.error(
-            "Impossible de charger les offres"
+            "Offre en ligne momentanément indisponible. Le plan WinPulse reste affiché."
           );
         }
       })
@@ -74,15 +106,12 @@ export default function SubscriptionPage() {
     };
   }, []);
 
-  const plan = plans[0] || null;
-
-  const isCurrent =
-    user?.subscription_tier === plan?.id;
-
-  const amount = useMemo(
-    () => WINPULSE_MONTHLY_PRICE_XOF,
-    []
-  );
+  const plan = plans[0] || FALLBACK_PLAN;
+  const subscriptionTier = String(
+    user?.subscription_tier || user?.subscription || "free"
+  ).toLowerCase();
+  const isCurrent = subscriptionTier === String(plan?.id || "pro").toLowerCase();
+  const amount = WINPULSE_MONTHLY_PRICE_XOF;
 
   const openPayment = () => {
     setPayerName(
@@ -155,9 +184,33 @@ export default function SubscriptionPage() {
         );
       }
 
-      setReference(
-        generatedReference
-      );
+      setReference(generatedReference);
+
+      const paymentUrl = response?.data?.payment_url;
+      if (paymentUrl) {
+        let safePaymentUrl;
+        try {
+          safePaymentUrl = new URL(paymentUrl);
+        } catch {
+          throw new Error("Lien de paiement FedaPay invalide.");
+        }
+
+        if (safePaymentUrl.protocol !== "https:") {
+          throw new Error("Le lien de paiement doit utiliser HTTPS.");
+        }
+
+        try {
+          window.sessionStorage.setItem(
+            "winpulse_payment_reference",
+            generatedReference
+          );
+        } catch {
+          // sessionStorage peut être indisponible en navigation privée stricte.
+        }
+
+        window.location.assign(safePaymentUrl.toString());
+        return;
+      }
 
       setPaymentStep(2);
     } catch (error) {
@@ -222,20 +275,16 @@ export default function SubscriptionPage() {
             Paiement sécurisé via MTN Mobile Money Bénin · annulable à tout moment
           </p>
 
-          {user?.subscription_tier &&
-            user.subscription_tier !==
-              "free" && (
+          {subscriptionTier !== "free" && (
               <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-800">
                 <Crown className="h-3.5 w-3.5" />
                 Plan actif :{" "}
-                {user.subscription_tier.toUpperCase()}
+                {subscriptionTier.toUpperCase()}
               </div>
             )}
         </div>
 
-        {loading ? (
-          <Skeleton className="h-[520px] max-w-md mx-auto" />
-        ) : plan ? (
+        {plan ? (
           <Card
             data-testid={`plan-${plan.id}`}
             className="bg-white p-8 relative max-w-md mx-auto border-orange-500 ring-2 ring-orange-500 shadow-xl"
