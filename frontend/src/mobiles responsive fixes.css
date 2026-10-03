@@ -1,0 +1,152 @@
+/* WinPulse — correctifs responsive globaux mobile/tablette */
+
+html,
+body,
+#root {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  overflow-x: hidden;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+#root > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+@media (max-width: 767px) {
+  html,
+  body,
+  #root {
+    min-height: 100dvh;
+    height: auto;
+  }
+
+  body {
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  main {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  /*
+   * Header public : priorité aux actions Connexion + S'inscrire.
+   * Les liens secondaires Blog/Live ne doivent jamais pousser S'inscrire
+   * hors de l'écran sur iPhone ou petit Android.
+   */
+  header:has(a[href="/register"]) {
+    width: 100%;
+    max-width: 100vw;
+    overflow: hidden;
+  }
+
+  header:has(a[href="/register"]) > div {
+    width: 100% !important;
+    max-width: 100vw !important;
+    min-width: 0 !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    gap: 4px !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/blog"],
+  header:has(a[href="/register"]) a[href*="/live"] {
+    display: none !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/"] {
+    flex: 1 1 auto !important;
+    min-width: 0 !important;
+    max-width: 150px !important;
+    overflow: hidden !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/"] > div:last-child {
+    min-width: 0 !important;
+  }
+
+  /* Conserve WinPulse, masque uniquement la longue baseline sur mobile. */
+  header:has(a[href="/register"]) a[href="/"] > div:last-child > *:last-child:not(:first-child) {
+    display: none !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/login"],
+  header:has(a[href="/register"]) a[href="/register"] {
+    flex: 0 0 auto !important;
+    min-width: 0 !important;
+    white-space: nowrap !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/login"],
+  header:has(a[href="/register"]) a[href="/login"] button {
+    padding-left: 6px !important;
+    padding-right: 6px !important;
+    font-size: 13px !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/register"] button {
+    min-height: 40px !important;
+    max-width: 112px !important;
+    padding-left: 10px !important;
+    padding-right: 10px !important;
+    font-size: 13px !important;
+    white-space: nowrap !important;
+  }
+
+  /* Paiement : hauteur du vrai viewport visible Safari/Chrome mobile. */
+  [role="dialog"][aria-modal="true"] {
+    width: 100vw !important;
+    max-width: 100vw !important;
+    height: var(--wp-visual-height, 100dvh) !important;
+    max-height: var(--wp-visual-height, 100dvh) !important;
+    overflow: hidden !important;
+    overscroll-behavior: contain;
+  }
+
+  [data-testid="subscription-payment-modal"] {
+    width: 100% !important;
+    height: 100% !important;
+    max-height: 100% !important;
+    min-height: 0 !important;
+  }
+
+  [data-testid="subscription-payment-modal"] > div:nth-last-child(2) {
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-y: contain;
+  }
+}
+
+@media (max-width: 374px) {
+  header:has(a[href="/register"]) a[href="/"] {
+    max-width: 120px !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/login"],
+  header:has(a[href="/register"]) a[href="/login"] button,
+  header:has(a[href="/register"]) a[href="/register"] button {
+    font-size: 12px !important;
+  }
+
+  header:has(a[href="/register"]) a[href="/register"] button {
+    max-width: 102px !important;
+    padding-left: 8px !important;
+    padding-right: 8px !important;
+  }
+}
