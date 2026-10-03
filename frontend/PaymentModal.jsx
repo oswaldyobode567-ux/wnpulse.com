@@ -1,4 +1,4 @@
-
+import { useEffect, useMemo, useState } from "react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
@@ -16,6 +16,13 @@ const MOMO_NUMBER = "+229 01 66 28 06 03";
 const MOMO_RECIPIENT_NAME = "KOUKPAKI VIANEY";
 const WHATSAPP_NUMBER = "33767971752";
 const WINPULSE_MONTHLY_PRICE_XOF = 10500;
+const FALLBACK_PLAN = {
+  id: "pro",
+  name: "WinPulse Pro",
+  price: WINPULSE_MONTHLY_PRICE_XOF,
+  price_fcfa: WINPULSE_MONTHLY_PRICE_XOF,
+  price_xof: WINPULSE_MONTHLY_PRICE_XOF,
+};
 
 function formatXof(value) {
   const amount = Number(value || 0);
@@ -32,7 +39,7 @@ export default function PaymentModal({
   const { user } = useAuth();
 
   const [step, setStep] = useState(1);
-  const [plan, setPlan] = useState(null);
+  const [plan, setPlan] = useState(FALLBACK_PLAN);
   const [planId, setPlanId] = useState(
     String(targetTier || "pro").toLowerCase()
   );
@@ -102,15 +109,25 @@ export default function PaymentModal({
           null;
 
         if (selectedPlan) {
-          setPlan(selectedPlan);
-          setPlanId(
-            String(selectedPlan.id || "pro").toLowerCase()
-          );
+          const normalizedPlan = {
+            ...FALLBACK_PLAN,
+            ...selectedPlan,
+            price: WINPULSE_MONTHLY_PRICE_XOF,
+            price_fcfa: WINPULSE_MONTHLY_PRICE_XOF,
+            price_xof: WINPULSE_MONTHLY_PRICE_XOF,
+          };
+          setPlan(normalizedPlan);
+          setPlanId(String(normalizedPlan.id || "pro").toLowerCase());
+        } else {
+          setPlan(FALLBACK_PLAN);
+          setPlanId("pro");
         }
       } catch (e) {
         if (!cancelled) {
+          setPlan(FALLBACK_PLAN);
+          setPlanId("pro");
           setError(
-            "Impossible de charger les informations du plan."
+            "Les informations en ligne sont momentanément indisponibles. Le tarif officiel reste 10 500 FCFA."
           );
         }
       } finally {
@@ -268,7 +285,7 @@ export default function PaymentModal({
         onClick={close}
       />
 
-      <div className="relative z-10 flex max-h-[100dvh] sm:max-h-[92vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl">
+      <div className="relative z-10 flex h-[100dvh] max-h-[100dvh] sm:h-auto sm:max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl">
         <div className="shrink-0 flex items-start justify-between gap-4 border-b border-neutral-200 px-5 py-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-orange-600">
@@ -470,7 +487,7 @@ export default function PaymentModal({
           )}
         </div>
 
-        <div className="shrink-0 border-t border-neutral-200 bg-white px-5 pt-4 pb-[calc(1rem+env(safe-area-inset-bottom))]">
+        <div className="shrink-0 sticky bottom-0 z-20 border-t border-neutral-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] shadow-[0_-10px_24px_rgba(15,23,42,0.08)]">
           {step === 1 ? (
             <Button
               type="button"
@@ -492,8 +509,8 @@ export default function PaymentModal({
               ) : (
                 <>
                   {paymentConfig?.fedapay_enabled
-                    ? "Payer avec FedaPay"
-                    : "Suivant"}
+                    ? `Payer ${formatXof(amount)} FCFA`
+                    : `Continuer — ${formatXof(amount)} FCFA`}
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </>
               )}
