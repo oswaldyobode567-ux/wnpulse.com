@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import "@/styles/mobile-responsive-fixes.css";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { useAuth } from "@/contexts/AuthContext";
@@ -144,6 +145,42 @@ export default function PaymentModal({
     };
   }, [isOpen, targetTier, user]);
 
+  useEffect(() => {
+    if (!isOpen || typeof document === "undefined") return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const syncVisualViewport = () => {
+      const viewport = window.visualViewport;
+      const height = viewport?.height || window.innerHeight;
+      const top = viewport?.offsetTop || 0;
+
+      document.documentElement.style.setProperty(
+        "--wp-visual-height",
+        `${Math.max(320, Math.round(height))}px`
+      );
+      document.documentElement.style.setProperty(
+        "--wp-visual-top",
+        `${Math.max(0, Math.round(top))}px`
+      );
+    };
+
+    syncVisualViewport();
+    window.addEventListener("resize", syncVisualViewport);
+    window.visualViewport?.addEventListener("resize", syncVisualViewport);
+    window.visualViewport?.addEventListener("scroll", syncVisualViewport);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("resize", syncVisualViewport);
+      window.visualViewport?.removeEventListener("resize", syncVisualViewport);
+      window.visualViewport?.removeEventListener("scroll", syncVisualViewport);
+      document.documentElement.style.removeProperty("--wp-visual-height");
+      document.documentElement.style.removeProperty("--wp-visual-top");
+    };
+  }, [isOpen]);
+
   const amount = useMemo(
     () => WINPULSE_MONTHLY_PRICE_XOF,
     []
@@ -273,7 +310,12 @@ export default function PaymentModal({
 
   return (
     <div
-      className="fixed inset-0 z-[9999] flex items-end sm:items-center justify-center bg-slate-950/60 p-0 sm:p-6"
+      className="fixed inset-x-0 top-0 z-[9999] flex items-end sm:items-center justify-center bg-slate-950/60 p-0 sm:p-6"
+      style={{
+        top: "var(--wp-visual-top, 0px)",
+        height: "var(--wp-visual-height, 100dvh)",
+        maxHeight: "var(--wp-visual-height, 100dvh)",
+      }}
       role="dialog"
       aria-modal="true"
       aria-label="Paiement WinPulse"
@@ -285,7 +327,7 @@ export default function PaymentModal({
         onClick={close}
       />
 
-      <div className="relative z-10 flex h-[100dvh] max-h-[100dvh] sm:h-auto sm:max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl">
+      <div className="relative z-10 flex h-full min-h-0 max-h-full sm:h-auto sm:max-h-[92dvh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl sm:rounded-2xl bg-white shadow-2xl">
         <div className="shrink-0 flex items-start justify-between gap-4 border-b border-neutral-200 px-5 py-4">
           <div>
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-orange-600">
@@ -314,7 +356,7 @@ export default function PaymentModal({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-5 pb-6">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-4 sm:py-5 pb-6 [-webkit-overflow-scrolling:touch]">
           {loadingPlan ? (
             <div className="grid place-items-center py-12">
               <Loader2 className="h-6 w-6 animate-spin text-orange-500" />
@@ -487,7 +529,7 @@ export default function PaymentModal({
           )}
         </div>
 
-        <div className="shrink-0 sticky bottom-0 z-20 border-t border-neutral-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] shadow-[0_-10px_24px_rgba(15,23,42,0.08)]">
+        <div className="shrink-0 z-20 border-t border-neutral-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] sm:pb-4 shadow-[0_-10px_24px_rgba(15,23,42,0.12)]">
           {step === 1 ? (
             <Button
               type="button"
