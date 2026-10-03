@@ -5,7 +5,7 @@ import MatchCard from "@/components/MatchCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Trophy, Flame, ChevronRight, Activity, Lock,
   Sparkles, Radio, Send, CheckCircle2, XCircle,
@@ -14,7 +14,6 @@ import {
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRealtimeMatches } from "@/services/realtimeService";
-import PaymentModal from "@/components/payment/PaymentModal";
 import { toast } from "sonner";
 const SPORT_TABS = [
   { key: "all",        label: "Tous",       icon: "🌍" },
@@ -83,25 +82,16 @@ function groupByLeague(matches) {
 }
 export default function DashboardPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
   const [validated,   setValidated]  = useState([]);
-  // CORRECTIF : le prix affiche etait code en dur ("9 900 FCFA") a 2
-  // endroits, jamais mis a jour quand le tarif est passe a un palier
-  // unique a 6 500 FCFA cote backend (server.py SUBSCRIPTION_PLANS).
-  // Desormais lu dynamiquement depuis /api/plans, pour que ce type de
-  // desynchronisation ne puisse plus se reproduire si le prix change.
-  const [planPrice, setPlanPrice] = useState(null);
-  useEffect(() => {
-    api.get("/plans")
-      .then(r => {
-        const price = r.data?.[0]?.price_xof ?? r.data?.[0]?.price_fcfa ?? r.data?.[0]?.price;
-        if (price) setPlanPrice(price);
-      })
-      .catch(() => {});
-  }, []);
-  const priceLabel = planPrice ? `${planPrice.toLocaleString()} FCFA` : "…";
+  // Tarif public canonique WinPulse Pro.
+  // Le Dashboard ne doit jamais afficher un ancien montant ni ouvrir
+  // un ancien flux de paiement : l'abonnement se fait sur /app/abonnement.
+  const WINPULSE_MONTHLY_PRICE_XOF = 10500;
+  const priceLabel = `${WINPULSE_MONTHLY_PRICE_XOF.toLocaleString("fr-FR")} FCFA`;
   const [searchParams, setSearchParams] = useSearchParams();
   const sport = searchParams.get("sport") || "all";
   const betFilter = searchParams.get("bet") || "all";
@@ -122,7 +112,6 @@ export default function DashboardPage() {
     return p;
   });
   const [showAll,     setShowAll]    = useState(false);
-  const [payState,    setPayState]   = useState({ isOpen: false, tier: "pro" });
   const [refreshing,  setRefreshing] = useState(false);
   const isFree  = !user?.subscription_tier || user.subscription_tier === "free";
   const isAdmin = Boolean(user?.is_admin);
@@ -345,7 +334,7 @@ export default function DashboardPage() {
             </div>
             <Button
               className="bg-gradient-to-r from-orange-500 to-rose-500 text-white border-0 hover:opacity-90 flex-shrink-0"
-              onClick={() => setPayState({ isOpen: true, tier: "pro" })}
+              onClick={() => navigate("/app/abonnement")}
             >
               Passer Pro · {priceLabel} <ChevronRight className="h-4 w-4 ml-1" />
             </Button>
@@ -447,7 +436,7 @@ export default function DashboardPage() {
                   isAdmin={isAdmin}
                   shareWA={shareWA}
                   isFree={isFree}
-                  onUpgrade={() => setPayState({ isOpen: true, tier: "pro" })}
+                  onUpgrade={() => navigate("/app/abonnement")}
                 />
               ))}
               {!showAll && leagueGroups.length > 6 && (
@@ -461,11 +450,6 @@ export default function DashboardPage() {
             </div>
           )}   </section>
       </div>
-      <PaymentModal
-        isOpen={payState.isOpen}
-        onClose={() => setPayState(s => ({ ...s, isOpen: false }))}
-        targetTier={payState.tier}
-      />
     </AppLayout>
   );
 }
