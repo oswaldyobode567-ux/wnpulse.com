@@ -1162,9 +1162,22 @@ SUBSCRIPTION_PLANS = [
 ]
 
 
+def _canonical_subscription_plans() -> list:
+    """Retourne toujours le tarif public officiel, même si une ancienne donnée est réintroduite ailleurs."""
+    return [
+        {
+            **plan,
+            "price": WINPULSE_MONTHLY_PRICE_XOF,
+            "price_fcfa": WINPULSE_MONTHLY_PRICE_XOF,
+            "price_xof": WINPULSE_MONTHLY_PRICE_XOF,
+        }
+        for plan in SUBSCRIPTION_PLANS
+    ]
+
+
 @app.get("/api/subscription/plans")
 async def get_subscription_plans():
-    return SUBSCRIPTION_PLANS
+    return _canonical_subscription_plans()
 
 
 @app.get("/api/subscription/status")
@@ -1177,6 +1190,7 @@ async def get_subscription_status(payload: dict = Depends(get_current_user_paylo
         "subscription": user.get("subscription", "free"),
         "subscription_expires_at": user.get("subscription_expires_at"),
         "is_admin": user.get("is_admin", False),
+        "pro_price_xof": WINPULSE_MONTHLY_PRICE_XOF,
     }
 
 
@@ -1690,7 +1704,7 @@ async def subscription_checkout(
     payload_in: CheckoutPayload,
     payload: dict = Depends(get_current_user_payload),
 ):
-    plan = next((p for p in SUBSCRIPTION_PLANS if p["id"] == payload_in.tier.lower()), None)
+    plan = next((p for p in _canonical_subscription_plans() if p["id"] == payload_in.tier.lower()), None)
     if not plan:
         raise HTTPException(status_code=400, detail="Plan inconnu")
 
@@ -3062,7 +3076,7 @@ async def get_value_bets(payload: dict = Depends(get_current_user_payload)):
 
 @app.get("/api/plans")
 async def get_plans_alias():
-    return SUBSCRIPTION_PLANS
+    return _canonical_subscription_plans()
 
 
 # ─── Parrainage ───────────────────────────────────────────────────────────
@@ -4335,6 +4349,669 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     return None
 
 
+
+# ─── Centre de contrôle automatique WinPulse ────────────────────────────────
+# Audit fonctionnel quotidien non destructif. Il vérifie la disponibilité,
+# les données, les règles Free/Pro, les abonnements et les services critiques.
+
+HEALTH_MONITOR_ENABLED = os.environ.get("HEALTH_MONITOR_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+HEALTH_MONITOR_UTC_HOUR = max(0, min(int(os.environ.get("HEALTH_MONITOR_UTC_HOUR", "6")), 23))
+HEALTH_MONITOR_UTC_MINUTE = max(0, min(int(os.environ.get("HEALTH_MONITOR_UTC_MINUTE", "30")), 59))
+HEALTH_MONITOR_RETENTION_DAYS = max(7, min(int(os.environ.get("HEALTH_MONITOR_RETENTION_DAYS", "90")), 365))
+HEALTH_FRONTEND_URL = os.environ.get("HEALTH_FRONTEND_URL", PUBLIC_APP_URL).strip().rstrip("/")
+_default_health_alert = sorted(ADMIN_EMAILS)[0] if ADMIN_EMAILS else ""
+HEALTH_ALERT_EMAIL = os.environ.get("HEALTH_ALERT_EMAIL", _default_health_alert).strip()
+
+
+def _health_result(check_id: str, category: str, status_value: str, message: str, *, plan: Optional[str] = None, details: Optional[Dict] = None, duration_ms: Optional[int] = None) -> Dict:
+    item = {
+        "id": check_id,
+        "category": category,
+        "status": status_value,
+        "message": message,
+    }
+    if plan:
+        item["plan"] = plan
+    if details:
+        item["details"] = details
+    if duration_ms is not None:
+        item["duration_ms"] = duration_ms
+    return item
+
+
+def _health_overall_status(checks: List[Dict]) -> str:
+    statuses = {str(c.get("status") or "").lower() for c in checks}
+    if "fail" in statuses:
+        return "critical"
+    if "warning" in statuses:
+        return "warning"
+    return "healthy"
+
+
+def _health_safe_report(doc: Optional[Dict]) -> Optional[Dict]:
+    if not doc:
+        return None
+    result = dict(doc)
+    result.pop("_id", None)
+    return result
+
+
+def _health_routes_snapshot() -> set:
+    routes = set()
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None) or []
+        if not path:
+            continue
+        for method in methods:
+            routes.add((str(method).upper(), str(path)))
+    return routes
+
+
+def _health_auth_header(token: str) -> Dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
+
+
+async def _health_http_check(
+    client: httpx.AsyncClient,
+    method: str,
+    path: str,
+    *,
+    token: Optional[str] = None,
+    expected_status: Optional[int] = 200,
+) -> tuple:
+    headers = _health_auth_header(token) if token else None
+    started = time.perf_counter()
+    response = await client.request(method, path, headers=headers)
+    elapsed = int((time.perf_counter() - started) * 1000)
+    ok = expected_status is None or response.status_code == expected_status
+    data = None
+    try:
+        data = response.json()
+    except Exception:
+        data = None
+    return ok, response, data, elapsed
+
+
+async def _health_send_alert(report: Dict) -> None:
+    if not HEALTH_ALERT_EMAIL:
+        return
+    overall = report.get("overall_status")
+    if overall == "healthy":
+        return
+
+    problem_checks = [
+        c for c in report.get("checks", [])
+        if c.get("status") in ("warning", "fail")
+    ]
+    rows = "".join(
+        f"<li><strong>{html.escape(str(c.get('category', '')))} — {html.escape(str(c.get('id', '')))}</strong> : "
+        f"{html.escape(str(c.get('message', '')))}</li>"
+        for c in problem_checks[:20]
+    )
+    body = f"""
+        <p>Le contrôle automatique quotidien de WinPulse a détecté un état <strong>{html.escape(str(overall).upper())}</strong>.</p>
+        <p>{report.get('summary', {}).get('passed', 0)} contrôle(s) OK, {report.get('summary', {}).get('warnings', 0)} avertissement(s), {report.get('summary', {}).get('failed', 0)} échec(s).</p>
+        <ul>{rows}</ul>
+        <p>Consulte l'endpoint administrateur <code>/api/admin/health-monitor/latest</code> pour le rapport complet.</p>
+    """
+    await _send_email(
+        HEALTH_ALERT_EMAIL,
+        f"WinPulse — contrôle quotidien {str(overall).upper()}",
+        _email_layout("Contrôle automatique WinPulse", body),
+    )
+
+
+async def _run_daily_health_audit() -> Dict:
+    """Exécute un audit fonctionnel non destructif et enregistre son rapport."""
+    run_id = uuid.uuid4().hex
+    started_at = datetime.now(timezone.utc)
+    checks: List[Dict] = []
+
+    # 1. Base de données
+    started = time.perf_counter()
+    try:
+        await db.command("ping")
+        checks.append(_health_result(
+            "mongodb_ping", "database", "pass", "MongoDB répond normalement.",
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        ))
+    except Exception as exc:
+        checks.append(_health_result(
+            "mongodb_ping", "database", "fail", "MongoDB ne répond pas.",
+            details={"error": type(exc).__name__},
+            duration_ms=int((time.perf_counter() - started) * 1000),
+        ))
+
+    # 2. Routes indispensables : vérifie qu'un déploiement n'a pas supprimé un parcours clé.
+    required_routes = [
+        ("POST", "/api/auth/register"),
+        ("POST", "/api/auth/login"),
+        ("POST", "/api/auth/forgot-password"),
+        ("POST", "/api/auth/reset-password"),
+        ("GET", "/api/auth/me"),
+        ("GET", "/api/plans"),
+        ("GET", "/api/subscription/status"),
+        ("POST", "/api/subscription/checkout"),
+        ("GET", "/api/payments/config"),
+        ("GET", "/api/predictions/top"),
+        ("GET", "/api/predictions/today-combos"),
+        ("GET", "/api/combos"),
+        ("GET", "/api/value-bets"),
+        ("GET", "/api/montante"),
+        ("GET", "/api/builder/matches"),
+    ]
+    routes = _health_routes_snapshot()
+    missing_routes = [f"{method} {path}" for method, path in required_routes if (method, path) not in routes]
+    if missing_routes:
+        checks.append(_health_result(
+            "required_routes", "routing", "fail", "Une ou plusieurs routes indispensables manquent.",
+            details={"missing": missing_routes},
+        ))
+    else:
+        checks.append(_health_result(
+            "required_routes", "routing", "pass", "Toutes les routes indispensables sont enregistrées.",
+            details={"count": len(required_routes)},
+        ))
+
+    # 3. Prix canonique : le site ne doit jamais ressortir 4 500 / 6 500 FCFA.
+    try:
+        plans = _canonical_subscription_plans()
+        prices = sorted({
+            int(v)
+            for plan in plans
+            for v in (plan.get("price"), plan.get("price_fcfa"), plan.get("price_xof"))
+            if v is not None
+        })
+        if plans and prices == [WINPULSE_MONTHLY_PRICE_XOF] and WINPULSE_MONTHLY_PRICE_XOF == 10500:
+            checks.append(_health_result(
+                "subscription_price", "subscription", "pass", "Le tarif Pro est uniformisé à 10 500 FCFA.",
+                details={"price_fcfa": WINPULSE_MONTHLY_PRICE_XOF},
+            ))
+        else:
+            checks.append(_health_result(
+                "subscription_price", "subscription", "fail", "Un tarif d'abonnement incohérent a été détecté.",
+                details={"expected": 10500, "detected": prices},
+            ))
+    except Exception as exc:
+        checks.append(_health_result(
+            "subscription_price", "subscription", "fail", "Impossible de valider le tarif d'abonnement.",
+            details={"error": type(exc).__name__},
+        ))
+
+    # 4. Données / quota fournisseur sans consommer de nouveau crédit API.
+    try:
+        cache_status = await get_odds_cache_status(db)
+        count = int(cache_status.get("count") or 0)
+        future_count = int(cache_status.get("future_event_count") or 0)
+        hard_stale = bool(cache_status.get("hard_stale"))
+        provider = cache_status.get("provider_status") or {}
+        if count <= 0 or future_count <= 0 or hard_stale:
+            checks.append(_health_result(
+                "odds_cache", "sports_data", "fail", "Les données sportives sont absentes ou trop anciennes.",
+                details={"count": count, "future_event_count": future_count, "hard_stale": hard_stale},
+            ))
+        else:
+            checks.append(_health_result(
+                "odds_cache", "sports_data", "pass", "Le cache sportif contient des événements futurs et reste exploitable.",
+                details={"count": count, "future_event_count": future_count, "stale": bool(cache_status.get("stale"))},
+            ))
+
+        if provider.get("quota_exhausted"):
+            checks.append(_health_result(
+                "odds_provider_quota", "sports_data", "fail", "Le quota du fournisseur principal est épuisé.",
+                details={"remaining": provider.get("remaining"), "last_http_status": provider.get("last_http_status")},
+            ))
+        elif provider.get("rate_limited"):
+            checks.append(_health_result(
+                "odds_provider_quota", "sports_data", "warning", "Le fournisseur principal signale une limitation de débit.",
+                details={"remaining": provider.get("remaining"), "last_http_status": provider.get("last_http_status")},
+            ))
+        else:
+            remaining = provider.get("remaining")
+            status_value = "warning" if isinstance(remaining, int) and remaining < 1000 else "pass"
+            message = "Quota fournisseur disponible." if status_value == "pass" else "Le quota fournisseur devient faible."
+            checks.append(_health_result(
+                "odds_provider_quota", "sports_data", status_value, message,
+                details={"remaining": remaining, "last_http_status": provider.get("last_http_status")},
+            ))
+    except Exception as exc:
+        checks.append(_health_result(
+            "odds_cache", "sports_data", "fail", "Impossible de lire l'état des données sportives.",
+            details={"error": type(exc).__name__},
+        ))
+
+    # 5. Moteur de prédiction : on contrôle le snapshot déjà disponible, sans IA payante.
+    try:
+        snapshot = await _get_prediction_snapshot()
+        match_count = len(snapshot.get("matches") or [])
+        prediction_count = len(snapshot.get("predictions") or [])
+        if match_count > 0 and prediction_count > 0:
+            checks.append(_health_result(
+                "prediction_engine", "predictions", "pass", "Le moteur produit des prédictions à partir des matchs disponibles.",
+                details={"matches": match_count, "predictions": prediction_count},
+            ))
+        else:
+            checks.append(_health_result(
+                "prediction_engine", "predictions", "fail", "Le moteur ne produit actuellement aucun contenu exploitable.",
+                details={"matches": match_count, "predictions": prediction_count},
+            ))
+    except Exception as exc:
+        checks.append(_health_result(
+            "prediction_engine", "predictions", "fail", "Le moteur de prédiction a levé une erreur.",
+            details={"error": type(exc).__name__},
+        ))
+
+    # 6. Services paiement / email : configuration uniquement, aucun débit ni email de test.
+    payment_issues = []
+    if FEDAPAY_ENABLED:
+        if not FEDAPAY_SECRET_KEY:
+            payment_issues.append("FEDAPAY_SECRET_KEY manquant")
+        if not FEDAPAY_WEBHOOK_SECRET:
+            payment_issues.append("FEDAPAY_WEBHOOK_SECRET manquant")
+        if FEDAPAY_ENV not in ("sandbox", "live"):
+            payment_issues.append("FEDAPAY_ENV invalide")
+        if not FEDAPAY_CALLBACK_URL.startswith("https://"):
+            payment_issues.append("FEDAPAY_CALLBACK_URL doit utiliser HTTPS")
+    if payment_issues:
+        checks.append(_health_result(
+            "payment_config", "payments", "fail", "La configuration FedaPay est incomplète ou invalide.",
+            details={"issues": payment_issues, "enabled": FEDAPAY_ENABLED, "environment": FEDAPAY_ENV},
+        ))
+    else:
+        checks.append(_health_result(
+            "payment_config", "payments", "pass", "La configuration paiement est cohérente.",
+            details={"fedapay_enabled": FEDAPAY_ENABLED, "environment": FEDAPAY_ENV},
+        ))
+
+    if RESEND_API_KEY:
+        checks.append(_health_result("email_config", "email", "pass", "Le service d'email transactionnel est configuré."))
+    else:
+        checks.append(_health_result(
+            "email_config", "email", "warning", "RESEND_API_KEY est absent : les emails de mot de passe oublié ne pourront pas être envoyés."
+        ))
+
+    # 7. Paiements bloqués / erreurs récentes.
+    try:
+        cutoff_24h = (datetime.now(timezone.utc) - timedelta(hours=24)).isoformat()
+        stale_pending = await db.subscription_requests.count_documents({
+            "status": "pending",
+            "created_at": {"$lt": cutoff_24h},
+        })
+        provider_errors = await db.subscription_requests.count_documents({
+            "payment_status": "provider_error",
+            "created_at": {"$gte": cutoff_24h},
+        })
+        mismatched_pending = await db.subscription_requests.count_documents({
+            "status": {"$in": ["pending", "processing"]},
+            "amount_fcfa": {"$ne": WINPULSE_MONTHLY_PRICE_XOF},
+        })
+        if mismatched_pending:
+            checks.append(_health_result(
+                "pending_payment_amounts", "payments", "fail", "Des paiements actifs portent encore un ancien montant.",
+                details={"count": mismatched_pending, "expected_amount_fcfa": WINPULSE_MONTHLY_PRICE_XOF},
+            ))
+        else:
+            checks.append(_health_result(
+                "pending_payment_amounts", "payments", "pass", "Aucun paiement actif n'utilise un ancien tarif."
+            ))
+        if provider_errors:
+            checks.append(_health_result(
+                "recent_payment_errors", "payments", "warning", "Des erreurs fournisseur de paiement ont été enregistrées sur les dernières 24 h.",
+                details={"count": provider_errors},
+            ))
+        elif stale_pending:
+            checks.append(_health_result(
+                "recent_payment_errors", "payments", "warning", "Des paiements sont en attente depuis plus de 24 h.",
+                details={"stale_pending": stale_pending},
+            ))
+        else:
+            checks.append(_health_result(
+                "recent_payment_errors", "payments", "pass", "Aucune anomalie récente majeure dans les paiements."
+            ))
+    except Exception as exc:
+        checks.append(_health_result(
+            "recent_payment_errors", "payments", "warning", "Impossible d'analyser l'historique récent des paiements.",
+            details={"error": type(exc).__name__},
+        ))
+
+    # 8. Parcours synthétiques Free / Pro sur les vraies routes FastAPI.
+    # Les comptes n'existent que pendant l'audit et sont supprimés dans finally.
+    free_id = f"health-free-{run_id}"
+    pro_id = f"health-pro-{run_id}"
+    free_email = f"health-free-{run_id}@monitor.invalid"
+    pro_email = f"health-pro-{run_id}@monitor.invalid"
+    monitor_filter = {"health_monitor_run_id": run_id}
+    try:
+        # Nettoyage préventif d'anciens comptes synthétiques abandonnés par un crash.
+        await db.users.delete_many({"health_monitor_account": True})
+        now_iso = datetime.now(timezone.utc).isoformat()
+        await db.users.insert_many([
+            {
+                "id": free_id,
+                "email": free_email,
+                "name": "Health Free",
+                "full_name": "Health Free",
+                "subscription": "free",
+                "subscription_expires_at": None,
+                "is_admin": False,
+                "created_at": now_iso,
+                "health_monitor_account": True,
+                "health_monitor_run_id": run_id,
+            },
+            {
+                "id": pro_id,
+                "email": pro_email,
+                "name": "Health Pro",
+                "full_name": "Health Pro",
+                "subscription": "pro",
+                "subscription_expires_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
+                "is_admin": False,
+                "created_at": now_iso,
+                "health_monitor_account": True,
+                "health_monitor_run_id": run_id,
+            },
+        ])
+        free_token = create_access_token(free_id, free_email)
+        pro_token = create_access_token(pro_id, pro_email)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="https://www.wnpulse.com",
+            timeout=httpx.Timeout(45.0),
+        ) as client:
+            # Identité / statut abonnement
+            for plan_name, token, expected_tier in (
+                ("free", free_token, "free"),
+                ("pro", pro_token, "pro"),
+            ):
+                ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/auth/me", token=token)
+                tier = (data or {}).get("subscription_tier") if isinstance(data, dict) else None
+                good = ok and tier == expected_tier
+                checks.append(_health_result(
+                    f"{plan_name}_auth_me", "plan_flow", "pass" if good else "fail",
+                    f"Le compte synthétique {plan_name.upper()} est correctement reconnu." if good else f"Le compte {plan_name.upper()} n'est pas reconnu avec le bon plan.",
+                    plan=plan_name,
+                    details={"http_status": resp.status_code, "subscription_tier": tier},
+                    duration_ms=elapsed,
+                ))
+
+                ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/subscription/status", token=token)
+                subscription = (data or {}).get("subscription") if isinstance(data, dict) else None
+                good = ok and subscription == expected_tier
+                checks.append(_health_result(
+                    f"{plan_name}_subscription_status", "plan_flow", "pass" if good else "fail",
+                    f"Le statut d'abonnement {plan_name.upper()} est cohérent." if good else f"Le statut d'abonnement {plan_name.upper()} est incohérent.",
+                    plan=plan_name,
+                    details={"http_status": resp.status_code, "subscription": subscription},
+                    duration_ms=elapsed,
+                ))
+
+            # Prix public réellement servi par l'API.
+            ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/plans")
+            api_prices = []
+            if isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        api_prices.extend([item.get("price"), item.get("price_fcfa"), item.get("price_xof")])
+            api_prices = sorted({int(x) for x in api_prices if x is not None})
+            good = ok and api_prices == [WINPULSE_MONTHLY_PRICE_XOF]
+            checks.append(_health_result(
+                "plans_api_price", "subscription", "pass" if good else "fail",
+                "L'API publique sert bien le tarif 10 500 FCFA." if good else "L'API publique sert un tarif inattendu.",
+                details={"http_status": resp.status_code, "detected": api_prices, "expected": WINPULSE_MONTHLY_PRICE_XOF},
+                duration_ms=elapsed,
+            ))
+
+            # Free : 1 pronostic maximum complet dans TOP ; le reste doit rester verrouillé.
+            ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/predictions/top?limit=5", token=free_token)
+            free_top_good = ok and isinstance(data, list)
+            free_top_details = {"http_status": resp.status_code, "count": len(data) if isinstance(data, list) else None}
+            if free_top_good and len(data) > 1:
+                unlocked = [i for i, item in enumerate(data) if isinstance(item, dict) and not item.get("locked")]
+                locked_after_first = all(isinstance(item, dict) and item.get("locked") is True for item in data[1:])
+                free_top_good = unlocked == [0] and locked_after_first
+                free_top_details["unlocked_indexes"] = unlocked
+            checks.append(_health_result(
+                "free_prediction_lock", "plan_flow", "pass" if free_top_good else "fail",
+                "Le plan Free ne reçoit qu'un aperçu et les autres pronostics restent verrouillés." if free_top_good else "La règle de verrouillage des pronostics Free ne fonctionne pas correctement.",
+                plan="free", details=free_top_details, duration_ms=elapsed,
+            ))
+
+            # Pro : aucun pronostic TOP ne doit être marqué locked.
+            ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/predictions/top?limit=5", token=pro_token)
+            pro_top_good = ok and isinstance(data, list) and all(not item.get("locked") for item in data if isinstance(item, dict))
+            checks.append(_health_result(
+                "pro_prediction_access", "plan_flow", "pass" if pro_top_good else "fail",
+                "Le plan Pro reçoit les pronostics sans verrouillage Free." if pro_top_good else "Des pronostics Pro restent verrouillés par erreur.",
+                plan="pro", details={"http_status": resp.status_code, "count": len(data) if isinstance(data, list) else None}, duration_ms=elapsed,
+            ))
+
+            # Combos et Value Bets : Free interdit, Pro autorisé.
+            for path, check_name in (("/api/combos", "combos"), ("/api/value-bets", "value_bets")):
+                ok_free, resp_free, _, elapsed_free = await _health_http_check(client, "GET", path, token=free_token, expected_status=403)
+                checks.append(_health_result(
+                    f"free_{check_name}_access", "plan_flow", "pass" if ok_free else "fail",
+                    f"L'accès Free à {check_name} est correctement bloqué." if ok_free else f"Le compte Free accède à {check_name} alors qu'il devrait être bloqué.",
+                    plan="free", details={"http_status": resp_free.status_code}, duration_ms=elapsed_free,
+                ))
+                ok_pro, resp_pro, _, elapsed_pro = await _health_http_check(client, "GET", path, token=pro_token, expected_status=200)
+                checks.append(_health_result(
+                    f"pro_{check_name}_access", "plan_flow", "pass" if ok_pro else "fail",
+                    f"L'accès Pro à {check_name} fonctionne." if ok_pro else f"Le compte Pro ne peut pas accéder à {check_name}.",
+                    plan="pro", details={"http_status": resp_pro.status_code}, duration_ms=elapsed_pro,
+                ))
+
+            # Montante : si active, Free ne reçoit aucun pick ; Pro reste déverrouillé.
+            ok_free, resp_free, free_montante, elapsed_free = await _health_http_check(client, "GET", "/api/montante", token=free_token)
+            ok_pro, resp_pro, pro_montante, elapsed_pro = await _health_http_check(client, "GET", "/api/montante", token=pro_token)
+            if ok_free and isinstance(free_montante, dict) and free_montante.get("status") != "NONE":
+                free_good = free_montante.get("picks_locked") is True and not (free_montante.get("current_picks") or [])
+            else:
+                free_good = ok_free
+            if ok_pro and isinstance(pro_montante, dict) and pro_montante.get("status") != "NONE":
+                pro_good = pro_montante.get("picks_locked") is False
+            else:
+                pro_good = ok_pro
+            checks.append(_health_result(
+                "free_montante_lock", "plan_flow", "pass" if free_good else "fail",
+                "La Montante Free est correctement protégée." if free_good else "Les picks Montante sont exposés au plan Free.",
+                plan="free", details={"http_status": resp_free.status_code, "montante_status": (free_montante or {}).get("status") if isinstance(free_montante, dict) else None}, duration_ms=elapsed_free,
+            ))
+            checks.append(_health_result(
+                "pro_montante_access", "plan_flow", "pass" if pro_good else "fail",
+                "La Montante Pro est accessible sans verrouillage Free." if pro_good else "La Montante reste verrouillée pour le plan Pro.",
+                plan="pro", details={"http_status": resp_pro.status_code, "montante_status": (pro_montante or {}).get("status") if isinstance(pro_montante, dict) else None}, duration_ms=elapsed_pro,
+            ))
+
+            # Combinés du jour : la route doit fonctionner pour les deux plans.
+            for plan_name, token in (("free", free_token), ("pro", pro_token)):
+                ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/predictions/today-combos", token=token)
+                good = ok and isinstance(data, dict) and not data.get("error")
+                checks.append(_health_result(
+                    f"{plan_name}_today_combos", "plan_flow", "pass" if good else "fail",
+                    f"Les combinés du jour fonctionnent pour {plan_name.upper()}." if good else f"Les combinés du jour échouent pour {plan_name.upper()}.",
+                    plan=plan_name, details={"http_status": resp.status_code, "error": (data or {}).get("error") if isinstance(data, dict) else None}, duration_ms=elapsed,
+                ))
+
+            # Builder : les routes sont testées sans sauvegarde ni mutation utilisateur.
+            for plan_name, token in (("free", free_token), ("pro", pro_token)):
+                ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/builder/matches", token=token)
+                good = ok and isinstance(data, dict) and isinstance(data.get("matches"), list)
+                checks.append(_health_result(
+                    f"{plan_name}_builder", "plan_flow", "pass" if good else "fail",
+                    f"Le Combo Builder se charge pour {plan_name.upper()}." if good else f"Le Combo Builder ne se charge pas pour {plan_name.upper()}.",
+                    plan=plan_name, details={"http_status": resp.status_code, "matches": len(data.get("matches") or []) if isinstance(data, dict) else None}, duration_ms=elapsed,
+                ))
+
+            # Configuration de paiement visible par le frontend.
+            ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/payments/config")
+            checks.append(_health_result(
+                "payment_config_api", "payments", "pass" if ok else "fail",
+                "L'interface peut lire la configuration de paiement." if ok else "L'interface ne peut pas lire la configuration de paiement.",
+                details={"http_status": resp.status_code, "fedapay_enabled": (data or {}).get("fedapay_enabled") if isinstance(data, dict) else None}, duration_ms=elapsed,
+            ))
+
+    except Exception as exc:
+        checks.append(_health_result(
+            "synthetic_plan_flows", "plan_flow", "fail", "Le test synthétique Free/Pro n'a pas pu être mené jusqu'au bout.",
+            details={"error": type(exc).__name__, "message": str(exc)[:250]},
+        ))
+    finally:
+        try:
+            await db.users.delete_many(monitor_filter)
+            # Supprime aussi les comptes synthétiques abandonnés par une ancienne exécution interrompue.
+            await db.users.delete_many({"health_monitor_account": True})
+        except Exception:
+            pass
+
+    # 9. Frontend public : vérifie DNS/TLS/HTTP, sans analyser le rendu graphique.
+    if HEALTH_FRONTEND_URL:
+        started = time.perf_counter()
+        try:
+            async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as public_http:
+                response = await public_http.get(HEALTH_FRONTEND_URL)
+            elapsed = int((time.perf_counter() - started) * 1000)
+            if response.status_code < 400:
+                checks.append(_health_result(
+                    "frontend_reachability", "frontend", "pass", "Le site public est accessible en HTTPS.",
+                    details={"status_code": response.status_code, "url": str(response.url)}, duration_ms=elapsed,
+                ))
+            elif response.status_code < 500:
+                checks.append(_health_result(
+                    "frontend_reachability", "frontend", "warning", "Le site public répond mais avec un code HTTP anormal.",
+                    details={"status_code": response.status_code, "url": str(response.url)}, duration_ms=elapsed,
+                ))
+            else:
+                checks.append(_health_result(
+                    "frontend_reachability", "frontend", "fail", "Le site public retourne une erreur serveur.",
+                    details={"status_code": response.status_code, "url": str(response.url)}, duration_ms=elapsed,
+                ))
+        except Exception as exc:
+            checks.append(_health_result(
+                "frontend_reachability", "frontend", "fail", "Le site public n'est pas joignable depuis le backend.",
+                details={"error": type(exc).__name__},
+                duration_ms=int((time.perf_counter() - started) * 1000),
+            ))
+
+    # 10. Scheduler : l'audit quotidien doit lui-même être surveillé.
+    try:
+        scheduler_obj = globals().get("scheduler")
+        jobs = [job.id for job in scheduler_obj.get_jobs()] if scheduler_obj and scheduler_obj.running else []
+        expected_jobs = {"odds_full_refresh", "results_reconcile", "subscription_sweep"}
+        if HEALTH_MONITOR_ENABLED:
+            expected_jobs.add("site_health_audit")
+        missing_jobs = sorted(expected_jobs.difference(jobs)) if ENABLE_INTERNAL_SCHEDULER else []
+        if not ENABLE_INTERNAL_SCHEDULER:
+            checks.append(_health_result(
+                "internal_scheduler", "scheduler", "warning", "ENABLE_INTERNAL_SCHEDULER est désactivé : les contrôles automatiques ne s'exécuteront pas seuls."
+            ))
+        elif not HEALTH_MONITOR_ENABLED:
+            checks.append(_health_result(
+                "internal_scheduler", "scheduler", "warning", "HEALTH_MONITOR_ENABLED est désactivé : le contrôle quotidien ne s'exécutera pas automatiquement.",
+                details={"registered": jobs},
+            ))
+        elif missing_jobs:
+            checks.append(_health_result(
+                "internal_scheduler", "scheduler", "fail", "Des tâches automatiques attendues ne sont pas planifiées.",
+                details={"missing": missing_jobs, "registered": jobs},
+            ))
+        else:
+            checks.append(_health_result(
+                "internal_scheduler", "scheduler", "pass", "Les tâches automatiques essentielles sont planifiées.",
+                details={"registered": jobs},
+            ))
+    except Exception as exc:
+        checks.append(_health_result(
+            "internal_scheduler", "scheduler", "warning", "Impossible de lire l'état du scheduler.",
+            details={"error": type(exc).__name__},
+        ))
+
+    finished_at = datetime.now(timezone.utc)
+    overall = _health_overall_status(checks)
+    passed = sum(1 for c in checks if c.get("status") == "pass")
+    warnings = sum(1 for c in checks if c.get("status") == "warning")
+    failed = sum(1 for c in checks if c.get("status") == "fail")
+    report = {
+        "run_id": run_id,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_ms": int((finished_at - started_at).total_seconds() * 1000),
+        "overall_status": overall,
+        "summary": {
+            "total": len(checks),
+            "passed": passed,
+            "warnings": warnings,
+            "failed": failed,
+        },
+        "checks": checks,
+        "expires_at": finished_at + timedelta(days=HEALTH_MONITOR_RETENTION_DAYS),
+    }
+
+    try:
+        await db.health_monitor_reports.insert_one(dict(report))
+    except Exception as exc:
+        # Si l'enregistrement du rapport échoue, on conserve quand même le résultat
+        # dans les logs et dans la réponse du run manuel.
+        report["storage_warning"] = type(exc).__name__
+
+    try:
+        await _health_send_alert(report)
+    except Exception:
+        pass
+
+    print(
+        f"[WinPulse Health] status={overall} pass={passed} warning={warnings} fail={failed} run_id={run_id}"
+    )
+    return report
+
+
+@app.get("/api/health")
+async def public_health():
+    """Liveness minimal : ne révèle aucun secret ni détail d'infrastructure."""
+    try:
+        await db.command("ping")
+        database_ok = True
+    except Exception:
+        database_ok = False
+    return {
+        "ok": database_ok,
+        "service": "winpulse-api",
+        "time": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/api/admin/health-monitor/latest")
+async def admin_health_monitor_latest(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    doc = await db.health_monitor_reports.find_one(sort=[("started_at", -1)])
+    if not doc:
+        return {"status": "never_run", "message": "Aucun contrôle automatique n'a encore été exécuté."}
+    return _health_safe_report(doc)
+
+
+@app.get("/api/admin/health-monitor/history")
+async def admin_health_monitor_history(
+    limit: int = 30,
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    safe_limit = max(1, min(int(limit), 100))
+    docs = await db.health_monitor_reports.find({}).sort("started_at", -1).to_list(length=safe_limit)
+    return {"reports": [_health_safe_report(doc) for doc in docs]}
+
+
+@app.post("/api/admin/health-monitor/run")
+async def admin_health_monitor_run(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    result = await _run_with_scheduler_lease(
+        "site_health_audit", _run_daily_health_audit, lease_seconds=1800
+    )
+    if result is None:
+        raise HTTPException(status_code=409, detail="Un contrôle WinPulse est déjà en cours")
+    return result
+
 # ─── Workers automatiques : refresh des matchs + reconciliation ───────────────
 
 scheduler = AsyncIOScheduler(timezone="UTC")
@@ -4418,6 +5095,10 @@ async def _scheduled_subscription_sweep():
     return await _run_with_scheduler_lease("subscription_sweep", _sweep_expired_subscriptions, lease_seconds=3300)
 
 
+async def _scheduled_health_audit():
+    return await _run_with_scheduler_lease("site_health_audit", _run_daily_health_audit, lease_seconds=1800)
+
+
 @app.on_event("startup")
 async def startup_event():
     # Archive Track Record : un score final doit être enregistré une seule fois
@@ -4446,6 +5127,14 @@ async def startup_event():
     try:
         await db.users.create_index("email", unique=True)
         await db.users.create_index("id", unique=True)
+    except Exception:
+        pass
+
+    # Rapports du contrôle automatique : historique limité et purge TTL.
+    try:
+        await db.health_monitor_reports.create_index("started_at")
+        await db.health_monitor_reports.create_index("expires_at", expireAfterSeconds=0)
+        await db.health_monitor_reports.create_index("overall_status")
     except Exception:
         pass
 
@@ -4479,6 +5168,17 @@ async def startup_event():
         )
         scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_subscription_sweep, "cron", minute=30, id="subscription_sweep", replace_existing=True, coalesce=True, max_instances=1)
+        if HEALTH_MONITOR_ENABLED:
+            scheduler.add_job(
+                _scheduled_health_audit,
+                "cron",
+                hour=HEALTH_MONITOR_UTC_HOUR,
+                minute=HEALTH_MONITOR_UTC_MINUTE,
+                id="site_health_audit",
+                replace_existing=True,
+                coalesce=True,
+                max_instances=1,
+            )
         scheduler.start()
 
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
