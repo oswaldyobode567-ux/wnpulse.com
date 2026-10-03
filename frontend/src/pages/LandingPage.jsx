@@ -21,7 +21,6 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
-import dayjs from "dayjs";
 import LiveHeatmap from "@/components/LiveHeatmap";
 
 export default function LandingPage() {
@@ -36,37 +35,71 @@ export default function LandingPage() {
   }, []);
 
   return (
-    <div className="min-h-screen bg-neutral-50">
-      <header className="sticky top-0 z-50 bg-white/80 backdrop-blur-xl border-b border-neutral-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
-          <Link to="/" className="flex items-center gap-2.5" data-testid="brand-link">
-            <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center text-white shadow-lg shadow-orange-600/30">
-              <Zap className="h-5 w-5" strokeWidth={2.5} fill="white" />
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-neutral-50">
+      <header className="sticky top-0 z-50 w-full max-w-full border-b border-neutral-200 bg-white/90 backdrop-blur-xl">
+        <div className="mx-auto flex h-16 w-full max-w-7xl items-center gap-2 px-3 sm:px-6 lg:px-8">
+          <Link
+            to="/"
+            className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-2.5"
+            data-testid="brand-link"
+          >
+            <div className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-white shadow-lg shadow-orange-600/30 wp-gradient-warm sm:h-9 sm:w-9 sm:rounded-xl">
+              <Zap className="h-4 w-4 sm:h-5 sm:w-5" strokeWidth={2.5} fill="white" />
             </div>
-            <div>
-              <div className="font-heading font-extrabold text-lg leading-none">WinPulse</div>
-              <div className="text-[10px] uppercase tracking-[0.18em] text-orange-600 font-semibold">Ton pouls de gagnant</div>
+            <div className="min-w-0">
+              <div className="font-heading text-base font-extrabold leading-none sm:text-lg">WinPulse</div>
+              <div className="mt-1 hidden text-[10px] font-semibold uppercase tracking-[0.18em] text-orange-600 md:block">
+                Ton pouls de gagnant
+              </div>
             </div>
           </Link>
-          <nav className="flex items-center gap-2">
-            <Link to="/resultats" className="hidden sm:inline-flex"><Button variant="ghost" size="sm" data-testid="public-trackrecord-link">📈 Track record</Button></Link>
-            <Link to="/blog" className="inline-flex">
-              <Button variant="ghost" size="sm" className="relative text-orange-700 font-bold hover:bg-orange-50" data-testid="public-blog-link">
-                📰 Blog
-                <span className="ml-1.5 text-[9px] font-bold uppercase tracking-wider bg-orange-500 text-white px-1.5 py-0.5 rounded animate-pulse">Live</span>
+
+          <nav className="ml-auto flex min-w-0 shrink-0 items-center gap-1 sm:gap-2">
+            <Link to="/resultats" className="hidden lg:inline-flex">
+              <Button variant="ghost" size="sm" data-testid="public-trackrecord-link">
+                📈 Track record
               </Button>
             </Link>
+
+            <Link to="/blog" className="hidden md:inline-flex">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="relative font-bold text-orange-700 hover:bg-orange-50"
+                data-testid="public-blog-link"
+              >
+                📰 Blog
+                <span className="ml-1.5 rounded bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white animate-pulse">
+                  Live
+                </span>
+              </Button>
+            </Link>
+
             {user ? (
-              <Button data-testid="open-app-btn" className="wp-gradient-warm text-white hover:opacity-90 border-0" onClick={() => navigate("/app")}>
+              <Button
+                data-testid="open-app-btn"
+                className="h-9 shrink-0 border-0 px-3 text-xs text-white hover:opacity-90 wp-gradient-warm sm:px-4 sm:text-sm"
+                onClick={() => navigate("/app")}
+              >
                 Ouvrir l'app
               </Button>
             ) : (
               <>
-                <Button variant="ghost" onClick={() => navigate("/login")} data-testid="header-login-btn">
+                <Button
+                  variant="ghost"
+                  onClick={() => navigate("/login")}
+                  data-testid="header-login-btn"
+                  className="h-9 shrink-0 px-2 text-xs sm:px-3 sm:text-sm"
+                >
                   Connexion
                 </Button>
-                <Button className="wp-gradient-warm text-white hover:opacity-90 border-0" onClick={() => navigate("/register")} data-testid="header-signup-btn">
-                  Démarrer gratuit
+                <Button
+                  className="h-9 shrink-0 border-0 px-3 text-xs text-white hover:opacity-90 wp-gradient-warm sm:px-4 sm:text-sm"
+                  onClick={() => navigate("/register")}
+                  data-testid="header-signup-btn"
+                >
+                  <span className="sm:hidden">S'inscrire</span>
+                  <span className="hidden sm:inline">Démarrer gratuit</span>
                 </Button>
               </>
             )}
@@ -80,26 +113,26 @@ export default function LandingPage() {
         <div className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-rose-300/40 blur-3xl pointer-events-none animate-pulse" style={{ animationDuration: "10s" }} />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-72 w-72 rounded-full bg-amber-300/20 blur-3xl pointer-events-none" />
 
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24 relative">
+        <div className="relative mx-auto max-w-7xl px-3 py-12 sm:px-6 sm:py-24 lg:px-8">
           <div className="grid lg:grid-cols-12 gap-10 items-center">
             <div className="lg:col-span-7">
-              <div className="inline-flex items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-xs font-bold text-orange-700 mb-6 shadow-lg shadow-orange-200/50">
+              <div className="mb-6 inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-[11px] font-bold text-orange-700 shadow-lg shadow-orange-200/50 sm:text-xs">
                 <span className="h-2 w-2 rounded-full bg-rose-500 live-dot" />
                 Analyses live · 7 sports · 2 400+ utilisateurs
               </div>
-              <h1 className="font-heading text-4xl sm:text-5xl lg:text-7xl font-black tracking-tighter text-slate-900 leading-[0.95]">
+              <h1 className="font-heading text-[2.55rem] font-black leading-[0.98] tracking-tighter text-slate-900 sm:text-5xl lg:text-7xl">
                 Sens battre le pouls<br />
                 <span className="bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">
                   des paris gagnants
                 </span>.
               </h1>
-              <p className="mt-6 text-lg text-slate-600 max-w-2xl leading-relaxed">
+              <p className="mt-6 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg">
                 Chaque jour, WinPulse analyse les matchs de la planète foot, basket, tennis, NFL, NHL, MMA. On chiffre la confiance, on détecte la value, et on te livre trois combinés clés en main : <strong>Sécurité</strong>, <strong>Équilibre</strong>, <strong>Jackpot</strong>.
               </p>
               <div className="mt-8 flex flex-col sm:flex-row gap-3">
                 <Button
                   size="lg"
-                  className="relative wp-gradient-warm text-white border-0 hover:scale-105 transition-transform text-base px-8 h-12 shadow-2xl shadow-orange-600/40 group"
+                  className="group relative h-12 w-full border-0 px-5 text-base text-white shadow-2xl shadow-orange-600/40 transition-transform hover:scale-[1.02] wp-gradient-warm sm:w-auto sm:px-8"
                   onClick={() => navigate(user ? "/app" : "/register")}
                   data-testid="hero-cta-btn"
                 >
@@ -110,14 +143,14 @@ export default function LandingPage() {
                 <Button
                   size="lg"
                   variant="outline"
-                  className="text-base px-8 h-12 border-slate-300 bg-white hover:bg-slate-50"
+                  className="h-12 w-full border-slate-300 bg-white px-5 text-base hover:bg-slate-50 sm:w-auto sm:px-8"
                   onClick={() => document.getElementById("pricing")?.scrollIntoView({ behavior: "smooth" })}
                   data-testid="hero-pricing-btn"
                 >
                   Voir les abonnements
                 </Button>
               </div>
-              <div className="mt-8 flex flex-wrap items-center gap-6 text-sm text-slate-500">
+              <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6">
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
                   Pas de carte bancaire
@@ -185,7 +218,7 @@ export default function LandingPage() {
                     <Link to={user ? "/app/abonnement" : "/register"} className="font-bold text-orange-600 hover:underline">Débloquer →</Link>
                   </div>
                 </Card>
-                <div className="absolute -top-8 -right-4 wp-gradient-warm text-white rounded-2xl px-5 py-3 shadow-2xl shadow-rose-500/40 rotate-3">
+                <div className="absolute -top-6 right-2 rotate-2 rounded-2xl px-4 py-2.5 text-white shadow-2xl shadow-rose-500/40 wp-gradient-warm sm:-top-8 sm:-right-4 sm:px-5 sm:py-3 sm:rotate-3">
                   <div className="text-[10px] uppercase tracking-wider font-bold opacity-90">Confiance IA</div>
                   <div className="text-3xl font-black tracking-tighter">{livePicks[0]?.confidence ? Math.round(livePicks[0].confidence) : 82}%</div>
                 </div>
@@ -410,15 +443,42 @@ export default function LandingPage() {
               ABONNEMENT
             </div>
             <h2 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight">
-              Choisis ton niveau de jeu
+              Choisis ton accès
             </h2>
             <p className="mt-3 text-slate-400">Paiement sécurisé via MTN Mobile Money Bénin · annulable à tout moment</p>
           </div>
-          <div className="grid md:grid-cols-3 gap-5">
+          <div className="mx-auto grid max-w-4xl gap-5 md:grid-cols-2">
             {[
-              { id: "free", name: "Free", price: "0 FCFA", desc: "Pour découvrir", features: ["1 pick gratuit du jour", "Tous les matchs (cotes visibles)", "Track record public"], cta: "Démarrer gratuit", highlight: false },
-              { id: "pro", name: "Pro", price: "4 900 FCFA", per: "/mois", desc: "Le plus populaire", features: ["Tous les pronostics débloqués", "Tous les sports (Coupe du Monde, NBA, Tennis…)", "Analyse IA experte sur chaque match", "Les 3 combinés du jour", "Email VIP avec les picks"], cta: "Choisir Pro", highlight: true },
-              { id: "elite", name: "Elite", price: "14 900 FCFA", per: "/mois", desc: "Performance max", features: ["Tout Pro inclus", "Picks VIP haute confiance (>80%)", "Combinés boostés (5 sélections)", "Bankroll & Kelly criterion", "Support WhatsApp prio"], cta: "Choisir Elite", highlight: false },
+              {
+                id: "free",
+                name: "Free",
+                price: "0 FCFA",
+                desc: "Pour découvrir",
+                features: [
+                  "1 pick gratuit du jour",
+                  "Tous les matchs (cotes visibles)",
+                  "Track record public",
+                ],
+                cta: "Démarrer gratuit",
+                highlight: false,
+              },
+              {
+                id: "pro",
+                name: "Pro",
+                price: "10 500 FCFA",
+                per: "/mois",
+                desc: "Accès complet",
+                features: [
+                  "Tous les pronostics débloqués",
+                  "Tous les combinés du jour",
+                  "Analyse IA experte sur chaque match",
+                  "Value bets et Combo Builder",
+                  "Montante premium",
+                  "Support WhatsApp prioritaire",
+                ],
+                cta: "Choisir Pro",
+                highlight: true,
+              },
             ].map((p) => (
               <Card
                 key={p.id}
