@@ -279,7 +279,7 @@ export default function SubscriptionPage() {
 
   return (
     <AppLayout>
-      <div className="w-full max-w-2xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8">
+      <div className={`w-full max-w-2xl mx-auto px-3 sm:px-6 lg:px-8 pt-5 sm:pt-8 ${subscriptionTier === "free" && !isCurrent ? "pb-36 lg:pb-8" : "pb-8"}`}>
         <div className="mb-8 text-center">
           <h1 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
             Un seul accès. Tout WinPulse.
@@ -336,6 +336,17 @@ export default function SubscriptionPage() {
               </span>
             </div>
 
+            {!isCurrent && (
+              <Button
+                type="button"
+                data-testid="choose-pro-primary-btn"
+                className="mb-6 w-full min-h-12 text-base wp-gradient-warm text-white border-0 hover:opacity-90"
+                onClick={openPayment}
+              >
+                Débloquer WinPulse Pro
+              </Button>
+            )}
+
             <ul className="space-y-3 mb-8">
               {Array.isArray(
                 plan.features
@@ -377,6 +388,32 @@ export default function SubscriptionPage() {
           </p>
         )}
       </div>
+
+      {subscriptionTier === "free" && !isCurrent && !paymentOpen && (
+        <div
+          className="lg:hidden fixed inset-x-0 z-[35] px-3"
+          style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
+          data-testid="subscription-mobile-sticky-cta"
+        >
+          <div className="mx-auto flex w-full max-w-2xl items-center gap-3 rounded-2xl border border-orange-200 bg-white/95 p-3 shadow-[0_-8px_28px_rgba(15,23,42,0.16)] backdrop-blur-xl">
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs font-bold text-slate-500">WinPulse Pro</div>
+              <div className="font-heading text-base font-black text-slate-900">
+                {formatXof(amount)} FCFA / mois
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={openPayment}
+              className="shrink-0 rounded-xl bg-orange-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 active:scale-[0.99]"
+              data-testid="subscription-mobile-sticky-unlock"
+            >
+              Débloquer Pro
+            </button>
+          </div>
+        </div>
+      )}
 
       {paymentOpen && (
         <div
