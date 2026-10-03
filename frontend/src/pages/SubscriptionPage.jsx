@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import "../styles/mobile-responsive-fixes.css";
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
