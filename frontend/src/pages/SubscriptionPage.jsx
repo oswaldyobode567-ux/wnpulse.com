@@ -61,14 +61,28 @@ export default function SubscriptionPage() {
   const [reference, setReference] = useState("");
   const [paymentError, setPaymentError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [paymentConfig, setPaymentConfig] = useState({
+    provider: "manual_momo",
+    fedapay_enabled: false,
+  });
 
   useEffect(() => {
     let active = true;
 
-    api
-      .get("/plans")
-      .then((response) => {
+    Promise.all([
+      api.get("/plans"),
+      api.get("/payments/config").catch(() => ({
+        data: { provider: "manual_momo", fedapay_enabled: false },
+      })),
+    ])
+      .then(([response, paymentResponse]) => {
         if (!active) return;
+
+        setPaymentConfig({
+          provider: paymentResponse?.data?.provider || "manual_momo",
+          fedapay_enabled: paymentResponse?.data?.fedapay_enabled === true,
+          fedapay_environment: paymentResponse?.data?.fedapay_environment || null,
+        });
 
         const remotePlans = Array.isArray(response?.data) ? response.data : [];
         const remotePlan = remotePlans[0];
@@ -146,7 +160,7 @@ export default function SubscriptionPage() {
       return;
     }
 
-    if (!cleanPhone) {
+    if (!cleanPhone && !paymentConfig?.fedapay_enabled) {
       setPaymentError(
         "Indique le numéro MTN Mobile Money utilisé."
       );
@@ -265,7 +279,7 @@ export default function SubscriptionPage() {
 
   return (
     <AppLayout>
-      <div className="max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="w-full max-w-2xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8">
         <div className="mb-8 text-center">
           <h1 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
             Un seul accès. Tout WinPulse.
@@ -287,7 +301,7 @@ export default function SubscriptionPage() {
         {plan ? (
           <Card
             data-testid={`plan-${plan.id}`}
-            className="bg-white p-8 relative max-w-md mx-auto border-orange-500 ring-2 ring-orange-500 shadow-xl"
+            className="bg-white p-5 sm:p-8 relative w-full max-w-md mx-auto border-orange-500 ring-2 ring-orange-500 shadow-xl"
           >
             <div className="absolute -top-3 left-1/2 -translate-x-1/2 wp-gradient-warm text-white text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full flex items-center gap-1">
               <Zap
@@ -310,7 +324,7 @@ export default function SubscriptionPage() {
             </div>
 
             <div className="flex items-baseline justify-center gap-1 my-6">
-              <span className="font-heading text-5xl font-black tracking-tighter text-slate-900">
+              <span className="font-heading text-4xl sm:text-5xl font-black tracking-tighter text-slate-900">
                 {formatXof(amount)}
               </span>
 
@@ -366,257 +380,167 @@ export default function SubscriptionPage() {
 
       {paymentOpen && (
         <div
-          className="fixed inset-0 z-[99999] flex items-start sm:items-center justify-center overflow-y-auto bg-slate-950/70 p-3 sm:p-6"
+          className="fixed inset-0 z-[99999] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 lg:p-6"
           data-testid="subscription-payment-overlay"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Paiement WinPulse"
         >
           <button
             type="button"
-            className="fixed inset-0"
+            className="absolute inset-0"
             aria-label="Fermer"
             onClick={closePayment}
           />
 
           <div
-            className="relative z-10 my-auto w-full max-w-lg rounded-2xl bg-white shadow-2xl"
+            className="relative z-10 flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:max-w-lg sm:rounded-2xl"
             data-testid="subscription-payment-modal"
           >
-            <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-              <div>
+            <div className="shrink-0 flex items-center justify-between gap-3 border-b border-slate-200 px-4 sm:px-5 py-3.5 sm:py-4">
+              <div className="min-w-0">
                 <div className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
                   Paiement WinPulse
                 </div>
-
-                <h2 className="mt-1 text-xl font-extrabold text-slate-900">
-                  {paymentStep === 1
-                    ? "Informations de paiement"
-                    : "Détails du paiement"}
+                <h2 className="mt-1 truncate text-lg sm:text-xl font-extrabold text-slate-900">
+                  {paymentStep === 1 ? "Informations de paiement" : "Détails du paiement"}
                 </h2>
+                <div className="mt-0.5 text-[11px] text-slate-500">
+                  WinPulse Pro · {formatXof(amount)} FCFA / mois
+                </div>
               </div>
 
               <button
                 type="button"
                 onClick={closePayment}
-                className="grid h-9 w-9 place-items-center rounded-full border border-slate-200 bg-white text-slate-600"
+                disabled={submitting}
+                className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-slate-600 disabled:opacity-50"
+                aria-label="Fermer"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            {paymentStep === 1 ? (
-              <div className="space-y-4 p-5">
-                <div className="rounded-xl bg-orange-50 border border-orange-200 p-4">
-                  <div className="text-xs text-slate-500">
-                    Montant
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-4 sm:py-5 pb-6">
+              {paymentStep === 1 ? (
+                <div className="space-y-4">
+                  <div className="rounded-xl bg-orange-50 border border-orange-200 p-4">
+                    <div className="text-xs text-slate-500">Montant de l'abonnement</div>
+                    <div className="text-2xl font-black text-orange-600">
+                      {formatXof(amount)} FCFA
+                    </div>
+                    <div className="mt-1 text-[11px] text-slate-500">30 jours · WinPulse Pro</div>
                   </div>
 
-                  <div className="text-2xl font-black text-orange-600">
-                    {formatXof(
-                      amount
-                    )}{" "}
-                    FCFA
+                  {paymentConfig?.fedapay_enabled && (
+                    <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-3.5 text-xs leading-5 text-emerald-800">
+                      <strong>Paiement sécurisé par FedaPay.</strong> Après validation, tu seras redirigé vers la page de paiement.
+                    </div>
+                  )}
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-700">Email du compte</label>
+                    <input
+                      type="email"
+                      value={user?.email || ""}
+                      readOnly
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-700">Nom utilisé pour le paiement</label>
+                    <input
+                      type="text"
+                      value={payerName}
+                      onChange={(event) => setPayerName(event.target.value)}
+                      placeholder="Nom et prénom"
+                      autoComplete="name"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-bold text-slate-700">
+                      {paymentConfig?.fedapay_enabled ? "Téléphone (facultatif)" : "Numéro MTN Mobile Money"}
+                    </label>
+                    <input
+                      type="tel"
+                      value={phone}
+                      onChange={(event) => setPhone(event.target.value)}
+                      placeholder={paymentConfig?.fedapay_enabled ? "Ex. +229 01 97 00 00 00" : "Ex. 01 97 00 00 00"}
+                      autoComplete="tel"
+                      className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                    />
+                  </div>
+
+                  {paymentError && (
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                      {paymentError}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-5">
+                  <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
+                    <div className="text-xs font-bold text-emerald-700">Référence de suivi</div>
+                    <div className="mt-1 flex items-center justify-between gap-3">
+                      <div className="min-w-0 break-all font-mono text-lg sm:text-xl font-black text-slate-900">{reference}</div>
+                      <button
+                        type="button"
+                        onClick={copyReference}
+                        className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-emerald-200 bg-white text-emerald-700"
+                        aria-label="Copier la référence"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-200 p-4">
+                    <h3 className="font-bold text-slate-900">Procédure MTN Mobile Money</h3>
+                    <ol className="mt-3 space-y-3 text-sm text-slate-700">
+                      <li>1. Compose <strong>*165#</strong> ou ouvre l'application MTN MoMo.</li>
+                      <li>2. Envoie <strong>{formatXof(amount)} FCFA</strong> au <strong>{MOMO_NUMBER}</strong>.</li>
+                      <li>3. Vérifie le destinataire : <strong>{MOMO_RECIPIENT_NAME}</strong>.</li>
+                      <li>4. Garde le SMS de confirmation puis contacte WinPulse sur WhatsApp.</li>
+                    </ol>
                   </div>
                 </div>
+              )}
+            </div>
 
-                <div>
-                  <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Email du compte
-                  </label>
-
-                  <input
-                    type="email"
-                    value={
-                      user?.email || ""
-                    }
-                    readOnly
-                    className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Nom utilisé pour le paiement
-                  </label>
-
-                  <input
-                    type="text"
-                    value={payerName}
-                    onChange={(event) =>
-                      setPayerName(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Nom et prénom"
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm"
-                  />
-                </div>
-
-                <div>
-                  <label className="mb-1 block text-xs font-bold text-slate-700">
-                    Numéro MTN Mobile Money
-                  </label>
-
-                  <input
-                    type="tel"
-                    value={phone}
-                    onChange={(event) =>
-                      setPhone(
-                        event.target.value
-                      )
-                    }
-                    placeholder="Ex. 01 97 00 00 00"
-                    className="w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm"
-                  />
-                </div>
-
-                {paymentError && (
-                  <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-                    {paymentError}
-                  </div>
-                )}
-
+            <div className="shrink-0 sticky bottom-0 z-20 border-t border-slate-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] shadow-[0_-10px_24px_rgba(15,23,42,0.08)]">
+              {paymentStep === 1 ? (
                 <button
                   type="button"
                   onClick={goNext}
                   disabled={submitting}
                   data-testid="subscription-inline-next"
-                  style={{
-                    display: "flex",
-                    width: "100%",
-                    minHeight: "52px",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: "8px",
-                    border: "0",
-                    borderRadius: "10px",
-                    background:
-                      submitting
-                        ? "#94a3b8"
-                        : "#f97316",
-                    color: "#ffffff",
-                    fontSize: "16px",
-                    fontWeight: 800,
-                    cursor:
-                      submitting
-                        ? "wait"
-                        : "pointer",
-                    opacity: 1,
-                    visibility:
-                      "visible",
-                    position:
-                      "relative",
-                    zIndex: 100000,
-                  }}
+                  className="flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl bg-orange-500 px-4 text-base font-extrabold text-white shadow-lg shadow-orange-500/20 transition hover:bg-orange-600 disabled:cursor-wait disabled:bg-slate-400"
                 >
                   {submitting ? (
                     <>
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      Génération…
+                      {paymentConfig?.fedapay_enabled ? "Ouverture du paiement…" : "Préparation du paiement…"}
                     </>
                   ) : (
-                    "Suivant — afficher les détails du paiement"
+                    paymentConfig?.fedapay_enabled
+                      ? `Payer ${formatXof(amount)} FCFA`
+                      : `Continuer — ${formatXof(amount)} FCFA`
                   )}
                 </button>
-
-                <p className="text-center text-[10px] text-slate-400">
-                  Le bouton ci-dessus est intégré directement dans la page Abonnement.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-5 p-5">
-                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4">
-                  <div className="text-xs font-bold text-emerald-700">
-                    Référence de suivi
-                  </div>
-
-                  <div className="mt-1 flex items-center justify-between gap-3">
-                    <div className="font-mono text-xl font-black text-slate-900">
-                      {reference}
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={
-                        copyReference
-                      }
-                      className="grid h-9 w-9 place-items-center rounded-lg border border-emerald-200 bg-white text-emerald-700"
-                    >
-                      <Copy className="h-4 w-4" />
-                    </button>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-slate-200 p-4">
-                  <h3 className="font-bold text-slate-900">
-                    Procédure MTN Mobile Money
-                  </h3>
-
-                  <ol className="mt-3 space-y-3 text-sm text-slate-700">
-                    <li>
-                      1. Compose{" "}
-                      <strong>
-                        *165#
-                      </strong>{" "}
-                      ou ouvre l'application MTN MoMo.
-                    </li>
-
-                    <li>
-                      2. Envoie{" "}
-                      <strong>
-                        {formatXof(
-                          amount
-                        )}{" "}
-                        FCFA
-                      </strong>{" "}
-                      au{" "}
-                      <strong>
-                        {MOMO_NUMBER}
-                      </strong>
-                      .
-                    </li>
-
-                    <li>
-                      3. Vérifie le destinataire :{" "}
-                      <strong>
-                        {MOMO_RECIPIENT_NAME}
-                      </strong>
-                      .
-                    </li>
-
-                    <li>
-                      4. Garde le SMS de confirmation puis contacte WinPulse sur WhatsApp.
-                    </li>
-                  </ol>
-                </div>
-
+              ) : (
                 <button
                   type="button"
-                  onClick={
-                    openWhatsApp
-                  }
-                  style={{
-                    display: "flex",
-                    width: "100%",
-                    minHeight: "52px",
-                    alignItems: "center",
-                    justifyContent:
-                      "center",
-                    gap: "8px",
-                    border: "0",
-                    borderRadius:
-                      "10px",
-                    background:
-                      "#25D366",
-                    color: "#ffffff",
-                    fontWeight: 800,
-                    cursor:
-                      "pointer",
-                  }}
+                  onClick={openWhatsApp}
+                  className="flex min-h-[52px] w-full items-center justify-center gap-2 rounded-xl bg-[#25D366] px-4 text-sm sm:text-base font-extrabold text-white"
                 >
                   <MessageCircle className="h-4 w-4" />
                   Envoyer la confirmation sur WhatsApp
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </div>
       )}
