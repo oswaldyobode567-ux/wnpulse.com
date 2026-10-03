@@ -104,6 +104,15 @@ const NAV = [
   },
 ];
 
+
+const WINPULSE_MONTHLY_PRICE_LABEL = "10 500 FCFA";
+
+function normalizeLegacyPriceText(text) {
+  return String(text || "")
+    .replace(/4[\s.\u00A0\u202F]?500\s*FCFA/gi, WINPULSE_MONTHLY_PRICE_LABEL)
+    .replace(/6[\s.\u00A0\u202F]?500\s*FCFA/gi, WINPULSE_MONTHLY_PRICE_LABEL);
+}
+
 // Sur mobile : 4 onglets essentiels + "Plus".
 // Cela évite que les 11+ entrées de navigation agrandissent la barre fixe
 // sur plusieurs lignes et recouvrent le contenu.
@@ -125,7 +134,55 @@ export default function AppLayout({ children }) {
     setMoreOpen(false);
   }, [location.pathname]);
 
-  const tierLabel = {
+  // Filet de sécurité global : neutralise tout ancien tarif d’abonnement encore affiché
+  // encore éventuellement présents dans un vieux composant ou un contenu mis en cache.
+  useEffect(() => {
+    const root = document.getElementById("root");
+    if (!root) return undefined;
+
+    const normalizeNode = (container) => {
+      const walker = document.createTreeWalker(
+        container,
+        NodeFilter.SHOW_TEXT
+      );
+      let node = walker.nextNode();
+      while (node) {
+        const parent = node.parentElement;
+        if (parent && !["SCRIPT", "STYLE", "TEXTAREA", "INPUT"].includes(parent.tagName)) {
+          const nextValue = normalizeLegacyPriceText(node.nodeValue);
+          if (nextValue !== node.nodeValue) node.nodeValue = nextValue;
+        }
+        node = walker.nextNode();
+      }
+    };
+
+    normalizeNode(root);
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        mutation.addedNodes.forEach((node) => {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const nextValue = normalizeLegacyPriceText(node.nodeValue);
+            if (nextValue !== node.nodeValue) node.nodeValue = nextValue;
+          } else if (node.nodeType === Node.ELEMENT_NODE) {
+            normalizeNode(node);
+          }
+        });
+        if (mutation.type === "characterData" && mutation.target?.nodeValue) {
+          const nextValue = normalizeLegacyPriceText(mutation.target.nodeValue);
+          if (nextValue !== mutation.target.nodeValue) mutation.target.nodeValue = nextValue;
+        }
+      }
+    });
+
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
+    return () => observer.disconnect();
+  }, []);
+
+  const subscriptionTier = String(
+    user?.subscription_tier || user?.subscription || "free"
+  ).toLowerCase();
+
+  const tierLabel = ({
     free: {
       label: "Free",
       cls: "bg-slate-100 text-slate-700",
@@ -138,7 +195,12 @@ export default function AppLayout({ children }) {
       label: "Elite",
       cls: "bg-rose-100 text-rose-700",
     },
-  }[user?.subscription_tier || "free"];
+  }[subscriptionTier] || {
+    label: subscriptionTier === "free" ? "Free" : "Pro",
+    cls: subscriptionTier === "free"
+      ? "bg-slate-100 text-slate-700"
+      : "bg-orange-100 text-orange-700",
+  });
 
   const navItems = [...NAV];
 
@@ -165,7 +227,7 @@ export default function AppLayout({ children }) {
   );
 
   return (
-    <div className="min-h-screen w-full overflow-x-hidden bg-neutral-50">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-neutral-50">
       {/* Sidebar desktop */}
       <aside
         className="hidden lg:flex fixed inset-y-0 left-0 w-64 bg-slate-950 text-slate-100 flex-col"
@@ -279,7 +341,7 @@ export default function AppLayout({ children }) {
       </aside>
 
       {/* Header mobile */}
-      <header className="lg:hidden sticky top-0 z-40 w-full bg-white/95 backdrop-blur-xl border-b border-neutral-200 px-4 py-3 flex items-center justify-between">
+      <header className="lg:hidden sticky top-0 z-40 w-full bg-white/95 backdrop-blur-xl border-b border-neutral-200 px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <div className="h-8 w-8 shrink-0 rounded-lg wp-gradient-warm grid place-items-center text-white">
             <Zap
@@ -347,7 +409,7 @@ export default function AppLayout({ children }) {
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-1 p-3 pb-5">
+            <div className="grid grid-cols-2 sm:grid-cols-3 gap-1 p-3 pb-5">
               {moreMobileItems.map((item) => {
                 const Icon = item.icon;
                 const active = isActive(item);
@@ -379,7 +441,7 @@ export default function AppLayout({ children }) {
 
       {/* Navigation mobile : une seule ligne + zone tactile compatible iPhone */}
       <nav
-        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white border-t border-neutral-200 grid grid-cols-5 min-h-16"
+        className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/98 backdrop-blur border-t border-neutral-200 grid grid-cols-5 min-h-16 shadow-[0_-8px_24px_rgba(15,23,42,0.06)]"
         style={{
           paddingBottom: "env(safe-area-inset-bottom)",
         }}
@@ -431,12 +493,12 @@ export default function AppLayout({ children }) {
       </nav>
 
       {/* Contenu principal */}
-      <main className="lg:pl-64 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0 min-h-screen w-full flex flex-col">
-        <div className="flex-1 min-w-0 overflow-x-hidden">
+      <main className="lg:pl-64 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0 min-h-screen w-full min-w-0 max-w-full flex flex-col">
+        <div className="flex-1 min-w-0 max-w-full overflow-x-hidden">
           {children}
         </div>
 
-        <footer className="border-t border-neutral-200 bg-white py-5 px-4">
+        <footer className="border-t border-neutral-200 bg-white py-5 px-3 sm:px-4">
           <div className="max-w-6xl mx-auto flex flex-col items-center gap-2 text-xs">
             <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
               <Link
