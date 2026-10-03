@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import "@/styles/mobile-responsive-fixes.css";
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
@@ -119,6 +120,42 @@ export default function SubscriptionPage() {
       active = false;
     };
   }, []);
+
+  useEffect(() => {
+    if (!paymentOpen || typeof document === "undefined") return undefined;
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+
+    const syncVisualViewport = () => {
+      const viewport = window.visualViewport;
+      const height = viewport?.height || window.innerHeight;
+      const top = viewport?.offsetTop || 0;
+
+      document.documentElement.style.setProperty(
+        "--wp-visual-height",
+        `${Math.max(320, Math.round(height))}px`
+      );
+      document.documentElement.style.setProperty(
+        "--wp-visual-top",
+        `${Math.max(0, Math.round(top))}px`
+      );
+    };
+
+    syncVisualViewport();
+    window.addEventListener("resize", syncVisualViewport);
+    window.visualViewport?.addEventListener("resize", syncVisualViewport);
+    window.visualViewport?.addEventListener("scroll", syncVisualViewport);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("resize", syncVisualViewport);
+      window.visualViewport?.removeEventListener("resize", syncVisualViewport);
+      window.visualViewport?.removeEventListener("scroll", syncVisualViewport);
+      document.documentElement.style.removeProperty("--wp-visual-height");
+      document.documentElement.style.removeProperty("--wp-visual-top");
+    };
+  }, [paymentOpen]);
 
   const plan = plans[0] || FALLBACK_PLAN;
   const subscriptionTier = String(
@@ -391,7 +428,7 @@ export default function SubscriptionPage() {
 
       {subscriptionTier === "free" && !isCurrent && !paymentOpen && (
         <div
-          className="lg:hidden fixed inset-x-0 z-[35] px-3"
+          className="lg:hidden fixed inset-x-0 z-[60] px-3"
           style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
           data-testid="subscription-mobile-sticky-cta"
         >
@@ -417,7 +454,12 @@ export default function SubscriptionPage() {
 
       {paymentOpen && (
         <div
-          className="fixed inset-0 z-[99999] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 lg:p-6"
+          className="fixed inset-x-0 top-0 z-[99999] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 lg:p-6"
+          style={{
+            top: "var(--wp-visual-top, 0px)",
+            height: "var(--wp-visual-height, 100dvh)",
+            maxHeight: "var(--wp-visual-height, 100dvh)",
+          }}
           data-testid="subscription-payment-overlay"
           role="dialog"
           aria-modal="true"
@@ -431,7 +473,7 @@ export default function SubscriptionPage() {
           />
 
           <div
-            className="relative z-10 flex h-[100dvh] max-h-[100dvh] w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:max-w-lg sm:rounded-2xl"
+            className="relative z-10 flex h-full min-h-0 max-h-full w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:max-w-lg sm:rounded-2xl"
             data-testid="subscription-payment-modal"
           >
             <div className="shrink-0 flex items-center justify-between gap-3 border-b border-slate-200 px-4 sm:px-5 py-3.5 sm:py-4">
@@ -458,7 +500,7 @@ export default function SubscriptionPage() {
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-4 sm:py-5 pb-6">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-4 sm:py-5 pb-6 [-webkit-overflow-scrolling:touch]">
               {paymentStep === 1 ? (
                 <div className="space-y-4">
                   <div className="rounded-xl bg-orange-50 border border-orange-200 p-4">
@@ -547,7 +589,7 @@ export default function SubscriptionPage() {
               )}
             </div>
 
-            <div className="shrink-0 sticky bottom-0 z-20 border-t border-slate-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] shadow-[0_-10px_24px_rgba(15,23,42,0.08)]">
+            <div className="shrink-0 z-20 border-t border-slate-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] sm:pb-4 shadow-[0_-10px_24px_rgba(15,23,42,0.12)]">
               {paymentStep === 1 ? (
                 <button
                   type="button"
