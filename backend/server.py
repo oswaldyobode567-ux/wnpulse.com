@@ -2604,6 +2604,11 @@ MONTANTE_MAX_PICKS = 2
 MONTANTE_MIN_CONFIDENCE = 0.70
 MONTANTE_MIN_ODDS = 1.20
 MONTANTE_MAX_ODDS = 1.50
+# Résultats Montante : contrôle ciblé, indépendant du Track Record général.
+# 5 minutes = progression quasi immédiate une fois le score final publié,
+# sans relancer toutes les cotes de la plateforme.
+MONTANTE_RESULT_SYNC_MINUTES = max(2, min(int(os.environ.get("MONTANTE_RESULT_SYNC_MINUTES", "5")), 30))
+_montante_result_sync_lock = asyncio.Lock()
 
 montante_selector = MontanteService(
     days=MONTANTE_DEFAULT_DAYS,
@@ -2636,6 +2641,95 @@ async def _montante_save(state: Dict) -> Dict:
     state["_id"] = MONTANTE_DOC_ID
     await db.montantes.replace_one({"_id": MONTANTE_DOC_ID}, state, upsert=True)
     return _montante_public(state)
+
+
+async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Dict:
+    """Construit UNE vue de la même Montante pour Admin, Pro et Free.
+
+    La sélection source est globale (MONTANTE_DOC_ID=active) : Admin et Pro
+    reçoivent exactement les mêmes picks. Free reçoit exactement le même nombre
+    d'emplacements, mais aucun détail permettant de reconstituer les picks.
+    Les contrôles Admin sont pilotés par le rôle relu en base, jamais uniquement
+    par un état React potentiellement périmé.
+    """
+    user = await _get_user_from_payload(payload)
+    is_admin = bool(user and user.get("is_admin"))
+    subscription = str((user or {}).get("subscription") or "free").lower()
+    has_paid_access = bool(is_admin or subscription != "free")
+
+    public = _montante_public(state) if state else {
+        "status": "NONE",
+        "message": "Aucune montante active.",
+    }
+
+    history = list(public.get("history") or [])
+    completed_days = len(history)
+    total_days = max(1, int(public.get("days") or MONTANTE_DEFAULT_DAYS))
+
+    public["viewer"] = {
+        "is_admin": is_admin,
+        "subscription": subscription,
+        "has_premium_access": has_paid_access,
+    }
+    public["admin_controls"] = is_admin
+    public["can_start"] = is_admin
+    public["same_selection_for_all"] = True
+    public["reinvestment_mode"] = "FULL"
+    public["result_sync_interval_minutes"] = MONTANTE_RESULT_SYNC_MINUTES
+    public["completed_days"] = completed_days
+    public["progress"] = 100.0 if public.get("status") == "COMPLETED" else round(
+        min(completed_days, total_days) / total_days * 100.0, 1
+    )
+    public["current_stake"] = round(
+        float(public.get("theoretical_bankroll") or 0), 2
+    ) if public.get("status") == "ACTIVE" else 0.0
+
+    current_picks = list(public.get("current_picks") or [])
+    current_pick_count = len(current_picks)
+    public["picks_locked"] = not has_paid_access
+    public["current_pick_count"] = current_pick_count
+    public["has_current_picks"] = current_pick_count > 0
+    public["current_picks_preview"] = [
+        {"slot": index + 1, "locked": not has_paid_access}
+        for index in range(current_pick_count)
+    ]
+
+    # Les diagnostics internes et contrôles opérationnels restent Admin-only.
+    if not is_admin:
+        public.pop("diagnostic", None)
+        public.pop("last_result_sync", None)
+
+    if not has_paid_access:
+        # Free : même nombre de picks, zéro fuite du contenu premium.
+        public["current_picks"] = []
+
+        safe_history = []
+        for history_item in history:
+            safe_item = dict(history_item)
+            history_picks = list(safe_item.get("picks") or [])
+            safe_item["pick_count"] = len(history_picks)
+            safe_item["picks_preview"] = [
+                {"slot": index + 1, "locked": True}
+                for index in range(len(history_picks))
+            ]
+            safe_item["picks"] = []
+            safe_history.append(safe_item)
+        public["history"] = safe_history
+
+        # Le statut de règlement peut être montré sans révéler le pari.
+        settlement = public.get("last_settlement_check")
+        if isinstance(settlement, dict):
+            statuses = list(settlement.get("statuses") or [])
+            public["last_settlement_check"] = {
+                "checked_at": settlement.get("checked_at"),
+                "statuses": statuses,
+                "details": [
+                    {"slot": i + 1, "status": status}
+                    for i, status in enumerate(statuses)
+                ],
+            }
+
+    return public
 
 
 def _montante_norm_text(value: str) -> str:
@@ -2756,6 +2850,7 @@ async def _montante_reconcile(state: Dict) -> Dict:
         })
 
     state["last_settlement_check"] = {
+        "day": int(state.get("current_day", 1) or 1),
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "statuses": statuses,
         "details": settlement_details,
@@ -2997,67 +3092,287 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
         return state
 
     state["current_picks"] = selected
+    state["last_settlement_check"] = {
+        "day": int(state.get("current_day", 1) or 1),
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "statuses": ["PENDING" for _ in selected],
+        "details": [
+            {
+                "slot": index + 1,
+                "match_id": pick.get("match_id"),
+                "history_signature": pick.get("history_signature"),
+                "status": "PENDING",
+            }
+            for index, pick in enumerate(selected)
+        ],
+    }
     state["waiting_reason"] = None
     state["updated_at"] = datetime.now(timezone.utc).isoformat()
     await _montante_save(state)
     return state
 
 
+def _montante_expected_result_delay_minutes(pick: Dict) -> int:
+    """Délai minimal avant d'interroger le fournisseur pour un score final."""
+    sport = _normalize_sport({
+        "sport_key": pick.get("sport_key"),
+        "sport_title": pick.get("sport_title") or pick.get("league"),
+    })
+    return {
+        "football": 115,
+        "american_football": 210,
+        "basketball": 155,
+        "hockey": 165,
+        "baseball": 210,
+        "tennis": 90,
+        "mma": 90,
+    }.get(sport, 120)
+
+
+def _montante_provider_check_due(state: Dict) -> bool:
+    now = datetime.now(timezone.utc)
+    picks = list(state.get("current_picks") or [])
+    if not picks:
+        return False
+    for pick in picks:
+        start = _parse_iso(pick.get("start_time"))
+        if not start:
+            continue
+        delay = timedelta(minutes=_montante_expected_result_delay_minutes(pick))
+        if now >= start + delay:
+            return True
+    return False
+
+
+async def _montante_linked_prediction_doc(pick: Dict) -> Optional[Dict]:
+    signature = str(pick.get("history_signature") or "").strip()
+    if not signature and pick.get("match_id") and pick.get("pick"):
+        signature = _pick_signature(str(pick.get("match_id")), str(pick.get("pick")))
+    if signature:
+        doc = await db.predictions_history.find_one({"signature": signature})
+        if doc:
+            return doc
+
+    # Compatibilité avec les montantes créées avant history_signature.
+    match_id = pick.get("match_id")
+    if match_id is not None:
+        docs = await db.predictions_history.find({
+            "match_id": {"$in": [match_id, str(match_id)]},
+        }).sort("created_at", -1).to_list(length=50)
+        target_pick = _montante_norm_text(pick.get("pick"))
+        for doc in docs:
+            if target_pick and _montante_norm_text(doc.get("pick")) == target_pick:
+                return doc
+    return None
+
+
+async def _montante_sync_current_results(*, force_provider: bool = False) -> tuple[Dict, Dict]:
+    """Synchronise uniquement les 1–2 picks de la Montante courante.
+
+    Contrairement au Track Record général, cette routine ne balaie pas des milliers
+    de pronostics. Elle interroge uniquement les sports des picks courants, puis
+    appelle immédiatement _montante_reconcile afin de passer au jour suivant.
+    """
+    async with _montante_result_sync_lock:
+        state = await _montante_get()
+        if not state:
+            return {"status": "NONE"}, {"checked": 0, "updated": 0, "progressed": False}
+
+        before_day = int(state.get("current_day", 1) or 1)
+        before_status = str(state.get("status") or "NONE")
+
+        # Toujours consommer d'abord les résultats déjà disponibles en base.
+        state = await _montante_reconcile(state)
+        if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+            state = await _montante_prepare_next_day(state)
+
+        if state.get("status") != "ACTIVE" or not state.get("current_picks"):
+            diagnostic = {
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checked": 0,
+                "updated": 0,
+                "progressed": int(state.get("current_day", 1) or 1) > before_day or str(state.get("status")) != before_status,
+                "provider_called": False,
+            }
+            return state, diagnostic
+
+        now = datetime.now(timezone.utc)
+        last_sync = _parse_iso(state.get("last_result_sync_at"))
+        cooldown = timedelta(minutes=MONTANTE_RESULT_SYNC_MINUTES)
+        provider_due = force_provider or _montante_provider_check_due(state)
+        cooldown_ok = force_provider or not last_sync or now >= last_sync + cooldown
+
+        if not provider_due or not cooldown_ok:
+            diagnostic = {
+                "checked_at": now.isoformat(),
+                "checked": len(state.get("current_picks") or []),
+                "updated": 0,
+                "progressed": False,
+                "provider_called": False,
+                "reason": "waiting_expected_end" if not provider_due else "cooldown",
+            }
+            return state, diagnostic
+
+        linked_docs = []
+        for pick in state.get("current_picks") or []:
+            doc = await _montante_linked_prediction_doc(pick)
+            if doc:
+                linked_docs.append(doc)
+
+        pending_docs = [
+            doc for doc in linked_docs
+            if str(doc.get("result") or "pending").lower() == "pending"
+        ]
+
+        diagnostic = {
+            "checked_at": now.isoformat(),
+            "checked": len(linked_docs),
+            "pending_before": len(pending_docs),
+            "updated": 0,
+            "provider_called": bool(pending_docs),
+            "progressed": False,
+            "errors": 0,
+        }
+
+        if pending_docs:
+            classic_docs = [
+                doc for doc in pending_docs
+                if not str(doc.get("match_id") or "").startswith("oaio-")
+            ]
+            oaio_docs = [
+                doc for doc in pending_docs
+                if str(doc.get("match_id") or "").startswith("oaio-")
+            ]
+
+            required_sport_keys = sorted({
+                str(doc.get("sport_key") or "").strip()
+                for doc in classic_docs
+                if str(doc.get("sport_key") or "").strip()
+            })
+
+            scores = []
+            if classic_docs:
+                try:
+                    scores = await fetch_all_scores(
+                        db,
+                        sport_keys=required_sport_keys or None,
+                        force_refresh=True,
+                        days_from=3,
+                        include_archive=True,
+                        archive_days=60,
+                    )
+                except Exception:
+                    diagnostic["errors"] += 1
+                    scores = []
+            scores_by_match = {str(s.get("id")): s for s in scores if s.get("id")}
+
+            oaio_scores_map = {}
+            if oaio_docs:
+                try:
+                    oaio_scores_map = await fetch_odds_api_io_scores_map()
+                except Exception:
+                    diagnostic["errors"] += 1
+                    oaio_scores_map = {}
+
+            for pred in pending_docs:
+                try:
+                    match_id = str(pred.get("match_id") or "")
+                    home_score = away_score = None
+                    source = None
+
+                    if match_id.startswith("oaio-"):
+                        numeric_id = match_id[len("oaio-"):]
+                        entry = oaio_scores_map.get(numeric_id)
+                        if not entry:
+                            entry = _find_oaio_score_fallback(pred, oaio_scores_map)
+                        if entry:
+                            home_score = int(entry["home_score"])
+                            away_score = int(entry["away_score"])
+                            if entry.get("_teams_reversed"):
+                                home_score, away_score = away_score, home_score
+                            source = "montante_odds_api_io"
+                    else:
+                        score_entry = scores_by_match.get(match_id) or _find_score_fallback(pred, scores)
+                        if score_entry and score_entry.get("completed"):
+                            home_score, away_score = _score_pair(score_entry)
+                            if home_score is None or away_score is None:
+                                for row in score_entry.get("scores") or []:
+                                    name = _norm_team_for_reconcile(row.get("name"))
+                                    try:
+                                        value = int(row.get("score"))
+                                    except Exception:
+                                        continue
+                                    if name == _norm_team_for_reconcile(pred.get("home_team")):
+                                        home_score = value
+                                    elif name == _norm_team_for_reconcile(pred.get("away_team")):
+                                        away_score = value
+                            if score_entry.get("_teams_reversed") and home_score is not None and away_score is not None:
+                                home_score, away_score = away_score, home_score
+                            source = "montante_scores_api"
+
+                    if home_score is None or away_score is None:
+                        continue
+
+                    result_value = _evaluate_pick_result(pred, int(home_score), int(away_score))
+                    if not result_value:
+                        continue
+
+                    await db.predictions_history.update_one(
+                        {"signature": pred["signature"]},
+                        {"$set": {
+                            "result": result_value,
+                            "final_score": f"{home_score}-{away_score}",
+                            "reconciled_at": datetime.now(timezone.utc).isoformat(),
+                            "reconciliation_source": source,
+                        }},
+                    )
+                    diagnostic["updated"] += 1
+                except Exception:
+                    diagnostic["errors"] += 1
+
+        # Un résultat nouvellement enregistré doit produire l'effet Montante
+        # dans la même transaction logique, sans attendre le scheduler général.
+        state = await _montante_get() or state
+        state = await _montante_reconcile(state)
+        if state.get("status") == "ACTIVE" and not state.get("current_picks"):
+            state = await _montante_prepare_next_day(state)
+
+        after_day = int(state.get("current_day", 1) or 1)
+        after_status = str(state.get("status") or "NONE")
+        diagnostic["progressed"] = after_day > before_day or after_status != before_status
+        diagnostic["day_before"] = before_day
+        diagnostic["day_after"] = after_day
+        diagnostic["status_before"] = before_status
+        diagnostic["status_after"] = after_status
+
+        state["last_result_sync_at"] = datetime.now(timezone.utc).isoformat()
+        state["last_result_sync"] = diagnostic
+        await _montante_save(state)
+        return state, diagnostic
+
+
 @app.get("/api/montante")
 async def get_montante(payload: dict = Depends(get_current_user_payload)):
     state = await _montante_get()
     if not state:
-        return {"status": "NONE", "message": "Aucune montante active.", "can_start": False}
+        return await _montante_view_for_payload(None, payload)
+
+    # 1) applique immédiatement un résultat déjà réconcilié en base ;
+    # 2) si le match devrait être terminé et le cooldown écoulé, déclenche un
+    #    contrôle ciblé. Ainsi l'ouverture de la page peut elle-même rattraper
+    #    une Montante, sans dépendre uniquement du scheduler.
     state = await _montante_reconcile(state)
+    if state.get("status") == "ACTIVE" and state.get("current_picks") and _montante_provider_check_due(state):
+        try:
+            state, _ = await _montante_sync_current_results(force_provider=False)
+        except Exception:
+            # L'affichage reste disponible même si le fournisseur de scores est indisponible.
+            state = await _montante_get() or state
+
     if state.get("status") == "ACTIVE" and not state.get("current_picks"):
         state = await _montante_prepare_next_day(state)
-    public = _montante_public(state)
-    public["progress"] = round(((int(public.get("current_day", 1)) - 1) / max(1, int(public.get("days", 10)))) * 100, 1) if public.get("status") != "NONE" else 0
-    public["can_start"] = False
-    public["reinvestment_mode"] = "FULL"
-    public["current_stake"] = round(
-        float(public.get("theoretical_bankroll") or 0),
-        2,
-    ) if public.get("status") == "ACTIVE" else 0.0
 
-    # Les détails des picks Montante sont premium, mais un compte Free doit
-    # pouvoir voir qu'une sélection existe (cartes verrouillées) afin de
-    # comprendre ce que Pro débloque. On calcule donc le même aperçu AVANT
-    # de masquer les détails.
-    has_paid_access = await _has_paid_access(payload)
-    current_picks = list(public.get("current_picks") or [])
-    current_pick_count = len(current_picks)
-
-    public["picks_locked"] = not has_paid_access
-    public["current_pick_count"] = current_pick_count
-    public["has_current_picks"] = current_pick_count > 0
-    public["current_picks_preview"] = [
-        {
-            "slot": index + 1,
-            "locked": not has_paid_access,
-        }
-        for index in range(current_pick_count)
-    ]
-
-    if not has_paid_access:
-        # Ne jamais exposer équipes, marché, sélection, cote, confiance,
-        # bookmaker ou toute autre donnée permettant de reconstituer le pick.
-        public["current_picks"] = []
-
-        safe_history = []
-        for history_item in public.get("history") or []:
-            safe_item = dict(history_item)
-            history_picks = list(safe_item.get("picks") or [])
-            safe_item["pick_count"] = len(history_picks)
-            safe_item["picks_preview"] = [
-                {"slot": index + 1, "locked": True}
-                for index in range(len(history_picks))
-            ]
-            safe_item["picks"] = []
-            safe_history.append(safe_item)
-        public["history"] = safe_history
-
-    return public
+    return await _montante_view_for_payload(state, payload)
 
 
 @app.post("/api/montante/start")
@@ -3076,7 +3391,7 @@ async def start_montante(
     state["waiting_reason"] = "Sélection des meilleurs picks du jour..."
     state = await _montante_save(state)
     state = await _montante_prepare_next_day(state)
-    return _montante_public(state)
+    return await _montante_view_for_payload(state, payload)
 
 
 @app.post("/api/montante/restart")
@@ -3090,21 +3405,26 @@ async def restart_montante(
 
 @app.post("/api/montante/refresh")
 async def refresh_montante(payload: dict = Depends(get_current_user_payload)):
+    # Compatibilité avec l'ancien bouton Admin : même moteur ciblé que sync-results.
     await _require_admin(payload)
-    state = await _montante_get()
-    if not state:
+    state, _ = await _montante_sync_current_results(force_provider=True)
+    if not state or state.get("status") == "NONE":
         raise HTTPException(status_code=404, detail="Aucune montante active")
+    return await _montante_view_for_payload(state, payload)
 
-    # Un refresh administrateur doit aussi synchroniser les scores finaux :
-    # auparavant il ne relisait que predictions_history et pouvait donc rester
-    # bloqué PENDING jusqu'au prochain passage du scheduler Track Record.
-    await _reconcile_predictions_with_scores(force_score_refresh=True)
 
-    state = await _montante_get() or state
-    state = await _montante_reconcile(state)
-    if state.get("status") == "ACTIVE" and not state.get("current_picks"):
-        state = await _montante_prepare_next_day(state)
-    return _montante_public(state)
+@app.post("/api/montante/sync-results")
+async def sync_montante_results(payload: dict = Depends(get_current_user_payload)):
+    """Force immédiatement la lecture des scores des picks Montante courants.
+
+    Admin-only : ce bouton peut consommer une requête fournisseur et ne doit pas
+    être exposé aux comptes Free/Pro.
+    """
+    await _require_admin(payload)
+    state, diagnostic = await _montante_sync_current_results(force_provider=True)
+    view = await _montante_view_for_payload(state, payload)
+    view["sync_diagnostic"] = diagnostic
+    return view
 
 
 async def _montante_sync_after_track_results() -> Dict:
@@ -4828,6 +5148,7 @@ async def _run_daily_health_audit() -> Dict:
         ("GET", "/api/combos"),
         ("GET", "/api/value-bets"),
         ("GET", "/api/montante"),
+        ("POST", "/api/montante/sync-results"),
         ("GET", "/api/builder/matches"),
     ]
     routes = _health_routes_snapshot()
@@ -5286,7 +5607,7 @@ async def _run_daily_health_audit() -> Dict:
     try:
         scheduler_obj = globals().get("scheduler")
         jobs = [job.id for job in scheduler_obj.get_jobs()] if scheduler_obj and scheduler_obj.running else []
-        expected_jobs = {"odds_full_refresh", "results_reconcile", "subscription_sweep"}
+        expected_jobs = {"odds_full_refresh", "results_reconcile", "montante_result_sync", "subscription_sweep"}
         if HEALTH_MONITOR_ENABLED:
             expected_jobs.add("site_health_audit")
         missing_jobs = sorted(expected_jobs.difference(jobs)) if ENABLE_INTERNAL_SCHEDULER else []
@@ -5478,6 +5799,18 @@ async def _scheduled_reconcile():
     return await _run_with_scheduler_lease("results_reconcile", _force_track_reconcile, lease_seconds=6600)
 
 
+async def _scheduled_montante_result_sync():
+    async def run_targeted_sync():
+        _state, diagnostic = await _montante_sync_current_results(force_provider=False)
+        return diagnostic
+
+    return await _run_with_scheduler_lease(
+        "montante_result_sync",
+        run_targeted_sync,
+        lease_seconds=max(90, MONTANTE_RESULT_SYNC_MINUTES * 60 - 10),
+    )
+
+
 async def _scheduled_subscription_sweep():
     return await _run_with_scheduler_lease("subscription_sweep", _sweep_expired_subscriptions, lease_seconds=3300)
 
@@ -5547,6 +5880,13 @@ async def startup_event():
     except Exception:
         pass
 
+    # Rattrapage Montante au démarrage. Ne consulte le fournisseur que si un
+    # match actif devrait déjà être terminé.
+    try:
+        await _montante_sync_current_results(force_provider=False)
+    except Exception:
+        pass
+
     if ENABLE_INTERNAL_SCHEDULER:
         # Deux refresh complets par jour par défaut (06:05 et 13:05 WAT = 05:05
         # et 12:05 UTC). L'ancien refresh horaire pouvait épuiser très vite le
@@ -5564,6 +5904,17 @@ async def startup_event():
             max_instances=1,
         )
         scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
+        # Synchronisation dédiée Montante : uniquement 1–2 picks actifs, donc bien
+        # plus légère que la réconciliation générale du Track Record.
+        scheduler.add_job(
+            _scheduled_montante_result_sync,
+            "interval",
+            minutes=MONTANTE_RESULT_SYNC_MINUTES,
+            id="montante_result_sync",
+            replace_existing=True,
+            coalesce=True,
+            max_instances=1,
+        )
         scheduler.add_job(_scheduled_subscription_sweep, "cron", minute=30, id="subscription_sweep", replace_existing=True, coalesce=True, max_instances=1)
         if HEALTH_MONITOR_ENABLED:
             scheduler.add_job(
