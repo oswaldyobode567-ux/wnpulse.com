@@ -126,33 +126,8 @@ export default function SubscriptionPage() {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
 
-    const syncVisualViewport = () => {
-      const viewport = window.visualViewport;
-      const height = viewport?.height || window.innerHeight;
-      const top = viewport?.offsetTop || 0;
-
-      document.documentElement.style.setProperty(
-        "--wp-visual-height",
-        `${Math.max(320, Math.round(height))}px`
-      );
-      document.documentElement.style.setProperty(
-        "--wp-visual-top",
-        `${Math.max(0, Math.round(top))}px`
-      );
-    };
-
-    syncVisualViewport();
-    window.addEventListener("resize", syncVisualViewport);
-    window.visualViewport?.addEventListener("resize", syncVisualViewport);
-    window.visualViewport?.addEventListener("scroll", syncVisualViewport);
-
     return () => {
       document.body.style.overflow = previousOverflow;
-      window.removeEventListener("resize", syncVisualViewport);
-      window.visualViewport?.removeEventListener("resize", syncVisualViewport);
-      window.visualViewport?.removeEventListener("scroll", syncVisualViewport);
-      document.documentElement.style.removeProperty("--wp-visual-height");
-      document.documentElement.style.removeProperty("--wp-visual-top");
     };
   }, [paymentOpen]);
 
@@ -315,14 +290,20 @@ export default function SubscriptionPage() {
 
   return (
     <AppLayout>
-      <div className={`w-full max-w-2xl mx-auto px-3 sm:px-6 lg:px-8 pt-5 sm:pt-8 ${subscriptionTier === "free" && !isCurrent ? "pb-36 lg:pb-8" : "pb-8"}`}>
+      <div
+        className="h-[calc(100dvh-3.5rem)] lg:h-auto w-full overflow-y-auto lg:overflow-visible overscroll-y-contain [-webkit-overflow-scrolling:touch]"
+        data-testid="subscription-page-scroll"
+      >
+        <div className={`w-full max-w-2xl mx-auto px-3 sm:px-6 lg:px-8 pt-5 sm:pt-8 ${subscriptionTier === "free" && !isCurrent ? "pb-[calc(11rem+env(safe-area-inset-bottom))] lg:pb-8" : "pb-[calc(7rem+env(safe-area-inset-bottom))] lg:pb-8"}`}>
         <div className="mb-8 text-center">
           <h1 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
             Un seul accès. Tout WinPulse.
           </h1>
 
           <p className="mt-3 text-sm text-slate-600">
-            Paiement sécurisé via MTN Mobile Money Bénin · annulable à tout moment
+            {paymentConfig?.fedapay_enabled
+              ? "Paiement sécurisé via FedaPay · choisis ton moyen de paiement sur la page FedaPay · annulable à tout moment"
+              : "Paiement sécurisé · MTN Mobile Money disponible en solution de secours · annulable à tout moment"}
           </p>
 
           {subscriptionTier !== "free" && (
@@ -423,15 +404,16 @@ export default function SubscriptionPage() {
             Aucun plan disponible pour le moment.
           </p>
         )}
+        </div>
       </div>
 
       {subscriptionTier === "free" && !isCurrent && !paymentOpen && (
         <div
-          className="lg:hidden fixed inset-x-0 z-[60] px-3"
+          className="lg:hidden fixed inset-x-0 z-[90] px-3 pointer-events-none"
           style={{ bottom: "calc(4rem + env(safe-area-inset-bottom))" }}
           data-testid="subscription-mobile-sticky-cta"
         >
-          <div className="mx-auto flex w-full max-w-2xl items-center gap-3 rounded-2xl border border-orange-200 bg-white/95 p-3 shadow-[0_-8px_28px_rgba(15,23,42,0.16)] backdrop-blur-xl">
+          <div className="pointer-events-auto mx-auto flex w-full max-w-2xl items-center gap-3 rounded-2xl border border-orange-200 bg-white/95 p-3 shadow-[0_-8px_28px_rgba(15,23,42,0.16)] backdrop-blur-xl">
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-bold text-slate-500">WinPulse Pro</div>
               <div className="font-heading text-base font-black text-slate-900">
@@ -453,12 +435,7 @@ export default function SubscriptionPage() {
 
       {paymentOpen && (
         <div
-          className="fixed inset-x-0 top-0 z-[99999] flex items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 lg:p-6"
-          style={{
-            top: "var(--wp-visual-top, 0px)",
-            height: "var(--wp-visual-height, 100dvh)",
-            maxHeight: "var(--wp-visual-height, 100dvh)",
-          }}
+          className="fixed inset-0 z-[99999] flex h-[100dvh] max-h-[100dvh] items-end sm:items-center justify-center bg-slate-950/70 p-0 sm:p-4 lg:p-6 overflow-hidden"
           data-testid="subscription-payment-overlay"
           role="dialog"
           aria-modal="true"
@@ -472,10 +449,10 @@ export default function SubscriptionPage() {
           />
 
           <div
-            className="relative z-10 flex h-full min-h-0 max-h-full w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:max-w-lg sm:rounded-2xl"
+            className="relative z-10 flex h-[100dvh] min-h-0 max-h-[100dvh] w-full flex-col overflow-hidden bg-white shadow-2xl sm:h-auto sm:max-h-[92dvh] sm:max-w-lg sm:rounded-2xl"
             data-testid="subscription-payment-modal"
           >
-            <div className="shrink-0 flex items-center justify-between gap-3 border-b border-slate-200 px-4 sm:px-5 py-3.5 sm:py-4">
+            <div className="shrink-0 flex items-center justify-between gap-3 border-b border-slate-200 px-4 sm:px-5 py-2.5 sm:py-4">
               <div className="min-w-0">
                 <div className="text-[10px] font-black uppercase tracking-[0.18em] text-orange-600">
                   Paiement WinPulse
@@ -499,7 +476,7 @@ export default function SubscriptionPage() {
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 sm:px-5 py-4 sm:py-5 pb-6 [-webkit-overflow-scrolling:touch]">
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain touch-pan-y px-4 sm:px-5 py-3 sm:py-5 pb-8 [-webkit-overflow-scrolling:touch]">
               {paymentStep === 1 ? (
                 <div className="space-y-4">
                   <div className="rounded-xl bg-orange-50 border border-orange-200 p-4">
@@ -588,7 +565,7 @@ export default function SubscriptionPage() {
               )}
             </div>
 
-            <div className="shrink-0 z-20 border-t border-slate-200 bg-white px-4 sm:px-5 pt-3.5 pb-[calc(0.875rem+env(safe-area-inset-bottom))] sm:pb-4 shadow-[0_-10px_24px_rgba(15,23,42,0.12)]">
+            <div className="shrink-0 z-30 border-t border-slate-200 bg-white px-4 sm:px-5 pt-3 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:pb-4 shadow-[0_-12px_28px_rgba(15,23,42,0.16)]">
               {paymentStep === 1 ? (
                 <button
                   type="button"
