@@ -92,10 +92,36 @@ export default function MontantePage() {
 
   const st = statusLabel(data?.status);
   const progress = data?.status === "COMPLETED" ? 100 : Number(data?.progress || 0);
+  const currentPickPreview = Array.isArray(data?.current_picks_preview)
+    ? data.current_picks_preview
+    : [];
+
   const currentPickCount = Number(
-    data?.current_pick_count ??
+    currentPickPreview.length ||
+    data?.current_pick_count ||
     (Array.isArray(data?.current_picks) ? data.current_picks.length : 0)
   );
+
+  const historyItems = Array.isArray(data?.history) ? data.history : [];
+  const latestHistoryItem = historyItems.length
+    ? historyItems[historyItems.length - 1]
+    : null;
+  const latestHistoryPickCount = Number(
+    latestHistoryItem?.pick_count ??
+    (Array.isArray(latestHistoryItem?.picks_preview)
+      ? latestHistoryItem.picks_preview.length
+      : Array.isArray(latestHistoryItem?.picks)
+        ? latestHistoryItem.picks.length
+        : 0)
+  );
+
+  // Si les picks de la journée viennent juste d'être réglés, current_picks peut
+  // déjà être vide alors que la dernière journée possède bien des picks.
+  // Le Free doit encore voir qu'ils existent dans l'historique, toujours verrouillés.
+  const lockedDisplayCount =
+    currentPickCount > 0 ? currentPickCount : latestHistoryPickCount;
+  const lockedDisplayIsCurrent = currentPickCount > 0;
+
   const currentStake = Number(
     data?.current_stake ??
     (data?.status === "ACTIVE" ? data?.theoretical_bankroll : 0) ??
@@ -202,12 +228,12 @@ export default function MontantePage() {
               </div>
 
               {picksLocked ? (
-                currentPickCount > 0 ? (
+                lockedDisplayCount > 0 ? (
                   <div className="space-y-4">
                     <div className="rounded-xl border border-orange-200 bg-orange-50/70 px-4 py-3 text-center">
                       <div className="flex items-center justify-center gap-2 text-orange-700 font-bold">
                         <Lock className="h-4 w-4" />
-                        {currentPickCount} {currentPickCount > 1 ? "picks disponibles" : "pick disponible"} aujourd'hui
+                        {lockedDisplayCount} {lockedDisplayCount > 1 ? "picks Montante" : "pick Montante"} {lockedDisplayIsCurrent ? "sélectionnés pour cette journée" : "dans la dernière journée"}
                       </div>
                       <p className="text-xs text-slate-600 mt-1">
                         Les picks existent bien, mais leurs équipes, marchés, sélections et cotes sont réservés aux comptes Pro.
@@ -215,7 +241,7 @@ export default function MontantePage() {
                     </div>
 
                     <div className="grid md:grid-cols-2 gap-4">
-                      {Array.from({ length: currentPickCount }).map((_, i) => (
+                      {Array.from({ length: lockedDisplayCount }).map((_, i) => (
                         <div
                           key={`locked-montante-pick-${i}`}
                           className="relative overflow-hidden rounded-xl border border-orange-200 bg-gradient-to-br from-white to-orange-50/50 p-5"
@@ -261,9 +287,9 @@ export default function MontantePage() {
                 ) : (
                   <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center">
                     <Clock3 className="h-7 w-7 mx-auto text-slate-400 mb-2" />
-                    <p className="font-semibold text-slate-700">Aucun pick qualifié pour l'instant</p>
+                    <p className="font-semibold text-slate-700">Aucune sélection Montante enregistrée pour le moment</p>
                     <p className="text-xs text-slate-500 mt-1">
-                      Le moteur ne force jamais un pronostic s'il ne respecte pas les critères de la Montante.
+                      Dès qu'un ou plusieurs picks sont sélectionnés par le moteur, le compte Free verra ici les cartes verrouillées correspondantes.
                     </p>
                   </div>
                 )
