@@ -13,13 +13,13 @@ const COMPANY = "WinPulse";
 const FAQ = [
   {
     q: "Comment je paye mon abonnement ?",
-    a: "Tu paies en 30 secondes via MTN Mobile Money sur le **+229 01 66 28 06 03** au nom de **KOUKPAKI VIANEY**. Tape *880# sur ton téléphone, choisis 'Transfert d'argent', mets le montant exact (4 900 FCFA pour Pro, 14 900 FCFA pour Elite) et la référence PE-XXXXXXXX qui s'affiche pendant ton paiement.",
+    a: "L’abonnement **WinPulse Pro coûte 10 500 FCFA/mois**. Le paiement est sécurisé via **FedaPay** : depuis la page Abonnement, clique sur « Débloquer Pro », puis choisis le moyen de paiement proposé sur la page FedaPay.",
     cta: "Voir les abonnements",
     cta_link: "/app/abonnement",
   },
   {
     q: "Combien de temps pour activer mon compte après paiement ?",
-    a: "**Moyenne : 5-15 minutes** après réception de ton WhatsApp avec la capture du SMS MTN. Notre équipe valide manuellement chaque paiement 7j/7 entre 7h et 23h.",
+    a: "Avec **FedaPay**, l’activation est normalement liée à la confirmation du paiement. Si ton accès Pro ne s’active pas après un paiement confirmé, contacte le support WhatsApp avec ta référence de paiement.",
     cta: "Envoyer ma confirmation",
     cta_link: `https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent("Bonjour WinPulse, je viens d'effectuer un paiement et je voudrais l'activer.")}`,
     external: true,
@@ -32,7 +32,7 @@ const FAQ = [
   },
   {
     q: "Quelle est la différence entre Free, Pro et Elite ?",
-    a: "**Free** : 1 pick gratuit/jour, track record public. **Pro (4 900 FCFA/mois)** : tous les pronostics du jour, 3 combinés (Sécurité/Équilibre/Jackpot), analyse IA. **Elite (14 900 FCFA/mois)** : tout Pro + picks VIP + stratégie bankroll Kelly + support prioritaire WhatsApp.",
+    a: "**Free** : aperçu limité avec 1 pick gratuit du jour et Track Record public. **Pro (10 500 FCFA/mois)** : accès complet aux pronostics premium, combinés, analyses IA, Value Bets, Combo Builder et Montante.",
     cta: "Comparer les plans",
     cta_link: "/app/abonnement",
   },
@@ -108,7 +108,7 @@ export default function WhatsAppWidget() {
       {!open && (
         <button
           onClick={() => setOpen(true)}
-          className="fixed bottom-5 right-5 sm:bottom-6 sm:right-6 h-14 w-14 rounded-full bg-[#25D366] hover:bg-[#1ebe5c] grid place-items-center text-white shadow-2xl shadow-emerald-600/40 transition-transform hover:scale-110 active:scale-95 group"
+          className="fixed right-4 bottom-[calc(5rem+env(safe-area-inset-bottom))] lg:bottom-6 lg:right-6 h-14 w-14 rounded-full bg-[#25D366] hover:bg-[#1ebe5c] grid place-items-center text-white shadow-2xl shadow-emerald-600/40 transition-transform hover:scale-110 active:scale-95 group"
           style={{ animation: "wpPulse 2s infinite", zIndex: 10001 }}
           data-testid="whatsapp-floating-btn"
           aria-label="Ouvrir le chat WhatsApp"
