@@ -2483,13 +2483,29 @@ async def _montante_reconcile(state: Dict) -> Dict:
     }
 
     if "LOSS" in statuses:
+        # Montante = réinvestissement intégral. La mise du jour correspond donc
+        # à tout le capital théorique disponible avant le règlement.
+        stake_before = round(
+            float(state.get("theoretical_bankroll", state.get("initial_bankroll", 10000)) or 0),
+            2,
+        )
+        potential_combined_odds = 1.0
+        for pick in picks:
+            potential_combined_odds *= float(pick.get("odds") or 1)
+
         state["status"] = "FAILED"
         state["failed_at"] = datetime.now(timezone.utc).isoformat()
         state["waiting_reason"] = "La montante a perdu sur le jour en cours."
+        # Une montante jouée à 100 % perd son capital théorique si la journée perd.
+        state["theoretical_bankroll"] = 0.0
         state.setdefault("history", []).append({
             "day": state.get("current_day", 1),
             "status": "LOSS",
             "settled_at": datetime.now(timezone.utc).isoformat(),
+            "stake_before": stake_before,
+            "combined_odds": round(potential_combined_odds, 3),
+            "profit": round(-stake_before, 2),
+            "bankroll_after": 0.0,
             "picks": picks,
         })
         await _montante_save(state)
@@ -2497,18 +2513,28 @@ async def _montante_reconcile(state: Dict) -> Dict:
 
     if statuses and all(x in ("WIN", "VOID") for x in statuses):
         # Un pari void/push est remboursé : multiplicateur 1.00 dans la montante.
+        # Le principe de la montante est un réinvestissement intégral :
+        # capital du jour suivant = mise du jour + gain = mise * cote combinée.
+        stake_before = round(
+            float(state.get("theoretical_bankroll", state.get("initial_bankroll", 10000)) or 0),
+            2,
+        )
         combined_odds = 1.0
         for pick, pick_status in zip(picks, statuses):
             if pick_status == "WIN":
                 combined_odds *= float(pick.get("odds") or 1)
-        state["theoretical_bankroll"] = round(
-            float(state.get("theoretical_bankroll", state.get("initial_bankroll", 10000))) * combined_odds, 2
-        )
+
+        bankroll_after = round(stake_before * combined_odds, 2)
+        profit = round(bankroll_after - stake_before, 2)
+        state["theoretical_bankroll"] = bankroll_after
         state.setdefault("history", []).append({
             "day": state.get("current_day", 1),
             "status": "WIN" if any(x == "WIN" for x in statuses) else "VOID",
             "settled_at": datetime.now(timezone.utc).isoformat(),
+            "stake_before": stake_before,
             "combined_odds": round(combined_odds, 3),
+            "profit": profit,
+            "bankroll_after": bankroll_after,
             "picks": picks,
         })
         if int(state.get("current_day", 1)) >= int(state.get("days", 10)):
@@ -2709,6 +2735,11 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     public = _montante_public(state)
     public["progress"] = round(((int(public.get("current_day", 1)) - 1) / max(1, int(public.get("days", 10)))) * 100, 1) if public.get("status") != "NONE" else 0
     public["can_start"] = False
+    public["reinvestment_mode"] = "FULL"
+    public["current_stake"] = round(
+        float(public.get("theoretical_bankroll") or 0),
+        2,
+    ) if public.get("status") == "ACTIVE" else 0.0
 
     # Les picks de la Montante sont un contenu premium. Le masquage doit être
     # appliqué côté serveur afin qu'un compte Free ne puisse pas contourner
@@ -2718,6 +2749,10 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     if not has_paid_access:
         current_picks = public.get("current_picks") or []
         public["current_pick_count"] = len(current_picks)
+        public["has_current_picks"] = len(current_picks) > 0
+        # Ne jamais exposer équipes, marché, sélection, cote ou confiance en Free.
+        # Le frontend utilise uniquement current_pick_count pour dessiner
+        # des cartes verrouillées représentant les picks disponibles.
         public["current_picks"] = []
 
         safe_history = []
