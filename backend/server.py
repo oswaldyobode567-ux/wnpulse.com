@@ -2741,25 +2741,39 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
         2,
     ) if public.get("status") == "ACTIVE" else 0.0
 
-    # Les picks de la Montante sont un contenu premium. Le masquage doit être
-    # appliqué côté serveur afin qu'un compte Free ne puisse pas contourner
-    # l'interface en appelant directement l'API.
+    # Les détails des picks Montante sont premium, mais un compte Free doit
+    # pouvoir voir qu'une sélection existe (cartes verrouillées) afin de
+    # comprendre ce que Pro débloque. On calcule donc le même aperçu AVANT
+    # de masquer les détails.
     has_paid_access = await _has_paid_access(payload)
+    current_picks = list(public.get("current_picks") or [])
+    current_pick_count = len(current_picks)
+
     public["picks_locked"] = not has_paid_access
+    public["current_pick_count"] = current_pick_count
+    public["has_current_picks"] = current_pick_count > 0
+    public["current_picks_preview"] = [
+        {
+            "slot": index + 1,
+            "locked": not has_paid_access,
+        }
+        for index in range(current_pick_count)
+    ]
+
     if not has_paid_access:
-        current_picks = public.get("current_picks") or []
-        public["current_pick_count"] = len(current_picks)
-        public["has_current_picks"] = len(current_picks) > 0
-        # Ne jamais exposer équipes, marché, sélection, cote ou confiance en Free.
-        # Le frontend utilise uniquement current_pick_count pour dessiner
-        # des cartes verrouillées représentant les picks disponibles.
+        # Ne jamais exposer équipes, marché, sélection, cote, confiance,
+        # bookmaker ou toute autre donnée permettant de reconstituer le pick.
         public["current_picks"] = []
 
         safe_history = []
         for history_item in public.get("history") or []:
             safe_item = dict(history_item)
-            history_picks = safe_item.get("picks") or []
+            history_picks = list(safe_item.get("picks") or [])
             safe_item["pick_count"] = len(history_picks)
+            safe_item["picks_preview"] = [
+                {"slot": index + 1, "locked": True}
+                for index in range(len(history_picks))
+            ]
             safe_item["picks"] = []
             safe_history.append(safe_item)
         public["history"] = safe_history
@@ -4838,26 +4852,67 @@ async def _run_daily_health_audit() -> Dict:
                     plan="pro", details={"http_status": resp_pro.status_code}, duration_ms=elapsed_pro,
                 ))
 
-            # Montante : si active, Free ne reçoit aucun pick ; Pro reste déverrouillé.
+            # Montante : Free voit le nombre de picks/cartes verrouillées sans
+            # recevoir leur contenu ; Pro reçoit les picks complets.
             ok_free, resp_free, free_montante, elapsed_free = await _health_http_check(client, "GET", "/api/montante", token=free_token)
             ok_pro, resp_pro, pro_montante, elapsed_pro = await _health_http_check(client, "GET", "/api/montante", token=pro_token)
-            if ok_free and isinstance(free_montante, dict) and free_montante.get("status") != "NONE":
-                free_good = free_montante.get("picks_locked") is True and not (free_montante.get("current_picks") or [])
-            else:
-                free_good = ok_free
-            if ok_pro and isinstance(pro_montante, dict) and pro_montante.get("status") != "NONE":
-                pro_good = pro_montante.get("picks_locked") is False
-            else:
-                pro_good = ok_pro
+
+            free_good = ok_free
+            pro_good = ok_pro
+            free_count = None
+            pro_count = None
+            preview_count = None
+
+            if (
+                ok_free
+                and ok_pro
+                and isinstance(free_montante, dict)
+                and isinstance(pro_montante, dict)
+                and free_montante.get("status") != "NONE"
+                and pro_montante.get("status") != "NONE"
+            ):
+                free_count = int(free_montante.get("current_pick_count") or 0)
+                pro_count = len(pro_montante.get("current_picks") or [])
+                preview_count = len(free_montante.get("current_picks_preview") or [])
+
+                free_good = (
+                    free_montante.get("picks_locked") is True
+                    and not (free_montante.get("current_picks") or [])
+                    and free_count == pro_count
+                    and preview_count == pro_count
+                )
+                pro_good = (
+                    pro_montante.get("picks_locked") is False
+                    and len(pro_montante.get("current_picks") or []) == pro_count
+                )
+
             checks.append(_health_result(
                 "free_montante_lock", "plan_flow", "pass" if free_good else "fail",
-                "La Montante Free est correctement protégée." if free_good else "Les picks Montante sont exposés au plan Free.",
-                plan="free", details={"http_status": resp_free.status_code, "montante_status": (free_montante or {}).get("status") if isinstance(free_montante, dict) else None}, duration_ms=elapsed_free,
+                "La Montante Free affiche le bon nombre de cartes verrouillées sans exposer les picks."
+                if free_good
+                else "L'aperçu Montante Free ne correspond pas aux picks réellement disponibles.",
+                plan="free",
+                details={
+                    "http_status": resp_free.status_code,
+                    "montante_status": (free_montante or {}).get("status") if isinstance(free_montante, dict) else None,
+                    "free_preview_count": preview_count,
+                    "free_current_pick_count": free_count,
+                    "pro_current_pick_count": pro_count,
+                },
+                duration_ms=elapsed_free,
             ))
             checks.append(_health_result(
                 "pro_montante_access", "plan_flow", "pass" if pro_good else "fail",
-                "La Montante Pro est accessible sans verrouillage Free." if pro_good else "La Montante reste verrouillée pour le plan Pro.",
-                plan="pro", details={"http_status": resp_pro.status_code, "montante_status": (pro_montante or {}).get("status") if isinstance(pro_montante, dict) else None}, duration_ms=elapsed_pro,
+                "La Montante Pro est accessible avec les picks complets."
+                if pro_good
+                else "La Montante reste verrouillée ou incohérente pour le plan Pro.",
+                plan="pro",
+                details={
+                    "http_status": resp_pro.status_code,
+                    "montante_status": (pro_montante or {}).get("status") if isinstance(pro_montante, dict) else None,
+                    "pro_current_pick_count": pro_count,
+                },
+                duration_ms=elapsed_pro,
             ))
 
             # Combinés du jour : la route doit fonctionner pour les deux plans.
