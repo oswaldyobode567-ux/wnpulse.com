@@ -24,7 +24,7 @@ from urllib.parse import parse_qs
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
 from pydantic import BaseModel, EmailStr, Field
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -355,6 +355,201 @@ async def _clear_security_limit(scope: str, identifier: str) -> None:
         pass
 
 
+# ─── Sessions personnelles / anti-partage de compte ─────────────────────────
+# Règle WinPulse :
+# - Free / Pro : UNE seule session active par compte.
+# - Admin : plusieurs sessions simultanées autorisées.
+# Le token brut n'est jamais stocké : seulement son SHA-256.
+
+AUTH_SESSION_RETENTION_DAYS = max(
+    7,
+    min(int(os.environ.get("AUTH_SESSION_RETENTION_DAYS", "90")), 365),
+)
+
+_AUTH_SESSION_BYPASS_PATHS = {
+    "/api/auth/login",
+    "/api/auth/register",
+    "/api/auth/forgot-password",
+    "/api/auth/reset-password",
+}
+
+
+def _auth_token_hash(token: str) -> str:
+    return hashlib.sha256((token or "").encode("utf-8")).hexdigest()
+
+
+async def _register_auth_session(
+    user: dict,
+    token: str,
+    request: Optional[Request] = None,
+    *,
+    source: str = "login",
+) -> None:
+    """Enregistre une session sans stocker le JWT en clair.
+
+    Pour Free/Pro, active_session_hash dans users est la source de vérité :
+    toute nouvelle connexion remplace instantanément la précédente.
+    Les comptes admin sont volontairement exemptés de cette limitation.
+    """
+    if not user or not token:
+        return
+
+    now = datetime.now(timezone.utc)
+    token_hash = _auth_token_hash(token)
+    user_id = str(user.get("id") or "")
+    if not user_id:
+        return
+
+    is_admin = bool(user.get("is_admin"))
+    user_agent = ""
+    network_hash = None
+
+    if request is not None:
+        user_agent = (request.headers.get("user-agent") or "").strip()[:300]
+        try:
+            network_hash = _client_rate_key(request)
+        except Exception:
+            network_hash = None
+
+    if not is_admin:
+        # Un seul hash actif en base : même en cas de connexions simultanées,
+        # la dernière écriture gagne et les anciens tokens deviennent invalides.
+        await db.users.update_one(
+            {"id": user_id},
+            {
+                "$set": {
+                    "active_session_hash": token_hash,
+                    "active_session_started_at": now,
+                }
+            },
+        )
+
+        # Conserve un historique minimal des anciennes sessions pour diagnostic,
+        # sans conserver de token en clair.
+        await db.auth_sessions.update_many(
+            {
+                "user_id": user_id,
+                "_id": {"$ne": token_hash},
+                "revoked": {"$ne": True},
+            },
+            {
+                "$set": {
+                    "revoked": True,
+                    "revoked_at": now,
+                    "revoked_reason": "replaced_by_new_login",
+                }
+            },
+        )
+
+    session_doc = {
+        "_id": token_hash,
+        "user_id": user_id,
+        "is_admin": is_admin,
+        "created_at": now,
+        "last_seen_at": now,
+        "expires_at": now + timedelta(days=AUTH_SESSION_RETENTION_DAYS),
+        "revoked": False,
+        "source": source,
+        "user_agent": user_agent,
+    }
+    if network_hash:
+        session_doc["network_hash"] = network_hash
+
+    await db.auth_sessions.update_one(
+        {"_id": token_hash},
+        {"$set": session_doc},
+        upsert=True,
+    )
+
+
+async def _revoke_all_auth_sessions(user_id: str, reason: str) -> None:
+    """Révoque toutes les sessions d'un compte, notamment après changement MDP."""
+    if not user_id:
+        return
+    now = datetime.now(timezone.utc)
+    await db.auth_sessions.update_many(
+        {"user_id": user_id, "revoked": {"$ne": True}},
+        {
+            "$set": {
+                "revoked": True,
+                "revoked_at": now,
+                "revoked_reason": reason,
+            }
+        },
+    )
+    await db.users.update_one(
+        {"id": user_id},
+        {
+            "$unset": {
+                "active_session_hash": "",
+                "active_session_started_at": "",
+            }
+        },
+    )
+
+
+async def _validate_registered_session(token: str) -> tuple[bool, str]:
+    """Valide le token contre le registre de sessions.
+
+    Retourne (True, "") si autorisé, sinon (False, code).
+    Pour Admin, aucune comparaison avec active_session_hash : plusieurs
+    navigateurs/appareils peuvent rester connectés en parallèle.
+    """
+    if not token:
+        return True, ""
+
+    token_hash = _auth_token_hash(token)
+    session = await db.auth_sessions.find_one({"_id": token_hash})
+    if not session or session.get("revoked") is True:
+        return False, "SESSION_REVOKED"
+
+    user = await db.users.find_one(
+        {"id": session.get("user_id")},
+        {"id": 1, "is_admin": 1, "active_session_hash": 1},
+    )
+    if not user:
+        return False, "SESSION_REVOKED"
+
+    if bool(user.get("is_admin")):
+        # Exemption explicite administrateur : chaque session enregistrée reste valide.
+        return True, ""
+
+    active_hash = str(user.get("active_session_hash") or "")
+    if not active_hash or not hmac.compare_digest(active_hash, token_hash):
+        # Marque l'ancienne session comme révoquée pour l'historique.
+        try:
+            await db.auth_sessions.update_one(
+                {"_id": token_hash},
+                {
+                    "$set": {
+                        "revoked": True,
+                        "revoked_at": datetime.now(timezone.utc),
+                        "revoked_reason": "replaced_by_new_login",
+                    }
+                },
+            )
+        except Exception:
+            pass
+        return False, "SESSION_REVOKED"
+
+    # Mise à jour légère de last_seen au maximum toutes les 5 minutes.
+    last_seen = session.get("last_seen_at")
+    if not isinstance(last_seen, datetime) or (
+        datetime.now(timezone.utc) - (
+            last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+        )
+    ) >= timedelta(minutes=5):
+        try:
+            await db.auth_sessions.update_one(
+                {"_id": token_hash},
+                {"$set": {"last_seen_at": datetime.now(timezone.utc)}},
+            )
+        except Exception:
+            pass
+
+    return True, ""
+
+
 async def send_password_changed_email(to: str, name: str) -> bool:
     first_name = html.escape((name or "").strip().split(" ")[0] or "")
     greeting = f"Bonjour {first_name}," if first_name else "Bonjour,"
@@ -408,6 +603,34 @@ app.add_middleware(
 
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
+    # Anti-partage de compte : tout JWT présenté doit correspondre à une
+    # session enregistrée. Les routes permettant de se reconnecter restent
+    # accessibles même si l'ancien token a été révoqué.
+    if request.url.path not in _AUTH_SESSION_BYPASS_PATHS:
+        authorization = (request.headers.get("authorization") or "").strip()
+        if authorization.lower().startswith("bearer "):
+            bearer_token = authorization[7:].strip()
+            if bearer_token:
+                try:
+                    session_ok, session_code = await _validate_registered_session(bearer_token)
+                except Exception:
+                    # Fail-open uniquement en cas de panne Mongo transitoire :
+                    # l'auth JWT habituelle continue de protéger la requête.
+                    session_ok, session_code = True, ""
+
+                if not session_ok:
+                    return JSONResponse(
+                        status_code=401,
+                        content={
+                            "detail": session_code or "SESSION_REVOKED",
+                            "message": (
+                                "Ce compte a été connecté sur un autre appareil ou navigateur. "
+                                "Reconnecte-toi pour continuer."
+                            ),
+                        },
+                        headers={"Cache-Control": "no-store, max-age=0"},
+                    )
+
     # Limite les gros corps de requête JSON/form avant parsing.
     content_length = request.headers.get("content-length")
     if content_length:
@@ -513,6 +736,7 @@ async def register(payload: RegisterPayload, request: Request):
     await db.users.insert_one(user_doc)
     await send_welcome_email(user_doc["email"], user_doc["name"])
     token = create_access_token(user_id, email_addr)
+    await _register_auth_session(user_doc, token, request, source="register")
     return {
         "access_token": token,
         "user": {
@@ -549,6 +773,7 @@ async def login(payload: LoginPayload, request: Request):
     user = await _check_and_downgrade_if_expired(user)
 
     token = create_access_token(user["id"], user["email"])
+    await _register_auth_session(user, token, request, source="login")
     return {
         "access_token": token,
         "user": {
@@ -681,6 +906,10 @@ async def reset_password(payload: ResetPasswordPayload, request: Request):
     await _clear_security_limit("reset_token", token_hash)
     await _clear_security_limit("login_email", user.get("email", ""))
 
+    # Un changement de mot de passe est un événement de sécurité fort :
+    # toutes les sessions existantes doivent être reconnectées.
+    await _revoke_all_auth_sessions(user["id"], "password_changed")
+
     # Notification de sécurité ; un échec d'email ne bloque pas le changement déjà effectué.
     try:
         await send_password_changed_email(
@@ -693,6 +922,56 @@ async def reset_password(payload: ResetPasswordPayload, request: Request):
         "ok": True,
         "message": "Mot de passe modifié avec succès. Tu peux maintenant te connecter.",
     }
+
+
+@app.post("/api/auth/logout")
+async def logout_current_session(
+    request: Request,
+    payload: dict = Depends(get_current_user_payload),
+):
+    """Révoque uniquement la session courante.
+
+    Free/Pro : retire aussi active_session_hash si ce token est la session active.
+    Admin : les autres navigateurs/appareils admin restent connectés.
+    """
+    authorization = (request.headers.get("authorization") or "").strip()
+    token = authorization[7:].strip() if authorization.lower().startswith("bearer ") else ""
+    if not token:
+        return {"ok": True}
+
+    token_hash = _auth_token_hash(token)
+    user_id = str(payload.get("sub") or "")
+    now = datetime.now(timezone.utc)
+
+    await db.auth_sessions.update_one(
+        {"_id": token_hash},
+        {
+            "$set": {
+                "revoked": True,
+                "revoked_at": now,
+                "revoked_reason": "user_logout",
+            }
+        },
+    )
+
+    user = await db.users.find_one(
+        {"id": user_id},
+        {"id": 1, "is_admin": 1, "active_session_hash": 1},
+    )
+    if user and not bool(user.get("is_admin")):
+        active_hash = str(user.get("active_session_hash") or "")
+        if active_hash and hmac.compare_digest(active_hash, token_hash):
+            await db.users.update_one(
+                {"id": user_id, "active_session_hash": token_hash},
+                {
+                    "$unset": {
+                        "active_session_hash": "",
+                        "active_session_started_at": "",
+                    }
+                },
+            )
+
+    return {"ok": True}
 
 
 @app.get("/api/auth/me")
@@ -4538,6 +4817,7 @@ async def _run_daily_health_audit() -> Dict:
         ("POST", "/api/auth/login"),
         ("POST", "/api/auth/forgot-password"),
         ("POST", "/api/auth/reset-password"),
+        ("POST", "/api/auth/logout"),
         ("GET", "/api/auth/me"),
         ("GET", "/api/plans"),
         ("GET", "/api/subscription/status"),
@@ -4733,6 +5013,7 @@ async def _run_daily_health_audit() -> Dict:
     monitor_filter = {"health_monitor_run_id": run_id}
     try:
         # Nettoyage préventif d'anciens comptes synthétiques abandonnés par un crash.
+        await db.auth_sessions.delete_many({"source": "health_monitor"})
         await db.users.delete_many({"health_monitor_account": True})
         now_iso = datetime.now(timezone.utc).isoformat()
         await db.users.insert_many([
@@ -4763,6 +5044,21 @@ async def _run_daily_health_audit() -> Dict:
         ])
         free_token = create_access_token(free_id, free_email)
         pro_token = create_access_token(pro_id, pro_email)
+
+        # Les parcours synthétiques utilisent la même sécurité de session que
+        # les vrais comptes afin que le contrôle quotidien reste représentatif.
+        await _register_auth_session(
+            {"id": free_id, "is_admin": False},
+            free_token,
+            None,
+            source="health_monitor",
+        )
+        await _register_auth_session(
+            {"id": pro_id, "is_admin": False},
+            pro_token,
+            None,
+            source="health_monitor",
+        )
 
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -4950,6 +5246,7 @@ async def _run_daily_health_audit() -> Dict:
         ))
     finally:
         try:
+            await db.auth_sessions.delete_many({"source": "health_monitor"})
             await db.users.delete_many(monitor_filter)
             # Supprime aussi les comptes synthétiques abandonnés par une ancienne exécution interrompue.
             await db.users.delete_many({"health_monitor_account": True})
@@ -5214,6 +5511,16 @@ async def startup_event():
         await db.security_rate_limits.create_index([("scope", 1), ("identifier_hash", 1)])
     except Exception:
         pass
+    # Sessions d'authentification : index par compte + purge TTL.
+    # Free/Pro utilisent active_session_hash dans users pour garantir une seule
+    # session ; Admin peut conserver plusieurs documents actifs simultanément.
+    try:
+        await db.auth_sessions.create_index("user_id")
+        await db.auth_sessions.create_index([("user_id", 1), ("revoked", 1)])
+        await db.auth_sessions.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        pass
+
     try:
         await db.users.create_index("email", unique=True)
         await db.users.create_index("id", unique=True)
