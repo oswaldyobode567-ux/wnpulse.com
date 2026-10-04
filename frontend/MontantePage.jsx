@@ -53,7 +53,11 @@ export default function MontantePage() {
     setRefreshing(true);
     setError("");
     try {
-      const r = await api.post("/montante/refresh");
+      // Le refresh serveur avec réconciliation forcée reste réservé à l'admin.
+      // Pour Free/Pro, un GET suffit et évite un 403 inutile.
+      const r = isAdmin
+        ? await api.post("/montante/refresh")
+        : await api.get("/montante");
       setData(r?.data || { status: "NONE", message: "Aucune montante active." });
     } catch (e) {
       const detail = e?.response?.data?.detail || e?.message || "Impossible d'actualiser la montante.";
@@ -88,6 +92,15 @@ export default function MontantePage() {
 
   const st = statusLabel(data?.status);
   const progress = data?.status === "COMPLETED" ? 100 : Number(data?.progress || 0);
+  const currentPickCount = Number(
+    data?.current_pick_count ??
+    (Array.isArray(data?.current_picks) ? data.current_picks.length : 0)
+  );
+  const currentStake = Number(
+    data?.current_stake ??
+    (data?.status === "ACTIVE" ? data?.theoretical_bankroll : 0) ??
+    0
+  );
 
   return (
     <AppLayout>
@@ -102,7 +115,8 @@ export default function MontantePage() {
               <h1 className="font-heading text-3xl sm:text-4xl font-black tracking-tight mt-2">10 → 15 jours</h1>
               <p className="text-slate-300 text-sm mt-2 max-w-2xl">
                 Chaque jour, le moteur sélectionne 1 ou 2 pronostics existants répondant aux critères de la montante.
-                Une journée gagnée fait avancer la progression ; une journée perdue remet la série à l'état échoué.
+                Le capital est réinvesti à 100 % : la mise suivante correspond à la mise précédente + son gain.
+                Une journée perdue met fin à la série.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -152,10 +166,19 @@ export default function MontantePage() {
           </Card>
         ) : (
           <>
-            <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-4">
               <Kpi label="Jour" value={`${data.current_day}/${data.days}`} sub="progression" />
-              <Kpi label="Capital initial" value={`${Number(data.initial_bankroll || 0).toLocaleString()} FCFA`} sub="mise de départ" />
-              <Kpi label="Capital théorique" value={`${Number(data.theoretical_bankroll || 0).toLocaleString()} FCFA`} sub="si les journées passent" />
+              <Kpi label="Capital initial" value={`${Number(data.initial_bankroll || 0).toLocaleString("fr-FR")} FCFA`} sub="mise de départ" />
+              <Kpi
+                label="Capital théorique"
+                value={`${Number(data.theoretical_bankroll || 0).toLocaleString("fr-FR")} FCFA`}
+                sub={data.status === "FAILED" ? "capital après perte" : "mise + gains cumulés"}
+              />
+              <Kpi
+                label="Mise du jour"
+                value={`${currentStake.toLocaleString("fr-FR")} FCFA`}
+                sub={data.status === "ACTIVE" ? "100 % du capital réinvesti" : "aucune mise active"}
+              />
               <Kpi label="Progression" value={`${progress}%`} sub="de la série" />
             </div>
 
@@ -179,21 +202,71 @@ export default function MontantePage() {
               </div>
 
               {picksLocked ? (
-                <div className="rounded-xl border border-orange-200 bg-orange-50/60 p-8 text-center">
-                  <div className="h-12 w-12 rounded-full bg-orange-100 grid place-items-center mx-auto mb-3">
-                    <Lock className="h-6 w-6 text-orange-600" />
+                currentPickCount > 0 ? (
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-orange-200 bg-orange-50/70 px-4 py-3 text-center">
+                      <div className="flex items-center justify-center gap-2 text-orange-700 font-bold">
+                        <Lock className="h-4 w-4" />
+                        {currentPickCount} {currentPickCount > 1 ? "picks disponibles" : "pick disponible"} aujourd'hui
+                      </div>
+                      <p className="text-xs text-slate-600 mt-1">
+                        Les picks existent bien, mais leurs équipes, marchés, sélections et cotes sont réservés aux comptes Pro.
+                      </p>
+                    </div>
+
+                    <div className="grid md:grid-cols-2 gap-4">
+                      {Array.from({ length: currentPickCount }).map((_, i) => (
+                        <div
+                          key={`locked-montante-pick-${i}`}
+                          className="relative overflow-hidden rounded-xl border border-orange-200 bg-gradient-to-br from-white to-orange-50/50 p-5"
+                        >
+                          <div className="absolute inset-0 bg-white/35 backdrop-blur-[1px] pointer-events-none" />
+                          <div className="relative z-10">
+                            <div className="flex items-center justify-between mb-4">
+                              <span className="text-[10px] uppercase tracking-wider font-bold text-orange-700">
+                                Pick {i + 1}
+                              </span>
+                              <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 text-[10px] font-bold">
+                                <Lock className="h-3 w-3" /> PRO
+                              </span>
+                            </div>
+
+                            <div className="space-y-2">
+                              <div className="h-4 w-4/5 rounded bg-slate-200" />
+                              <div className="h-4 w-3/5 rounded bg-slate-200" />
+                              <div className="flex gap-2 pt-2">
+                                <div className="h-7 w-20 rounded-full bg-orange-100" />
+                                <div className="h-7 w-24 rounded-full bg-slate-100" />
+                              </div>
+                            </div>
+
+                            <div className="mt-4 flex items-center gap-2 text-xs font-semibold text-slate-600">
+                              <Lock className="h-3.5 w-3.5 text-orange-600" />
+                              Sélection verrouillée
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="text-center">
+                      <Link
+                        to="/app/abonnement"
+                        className="inline-flex items-center justify-center rounded-md px-5 h-11 wp-gradient-warm text-white font-semibold text-sm hover:opacity-90"
+                      >
+                        Passer Pro pour voir les picks — 10 500 FCFA/mois
+                      </Link>
+                    </div>
                   </div>
-                  <p className="font-heading font-bold text-slate-900">Picks Montante réservés aux abonnés</p>
-                  <p className="text-sm text-slate-600 mt-2 max-w-lg mx-auto">
-                    La progression reste visible, mais les sélections, cotes et marchés du jour sont verrouillés avec l'abonnement Free.
-                  </p>
-                  <Link
-                    to="/app/abonnement"
-                    className="inline-flex mt-4 items-center justify-center rounded-md px-4 h-10 wp-gradient-warm text-white font-semibold text-sm hover:opacity-90"
-                  >
-                    Débloquer WinPulse Pro — 10 500 FCFA/mois
-                  </Link>
-                </div>
+                ) : (
+                  <div className="rounded-xl border border-dashed border-slate-200 p-8 text-center">
+                    <Clock3 className="h-7 w-7 mx-auto text-slate-400 mb-2" />
+                    <p className="font-semibold text-slate-700">Aucun pick qualifié pour l'instant</p>
+                    <p className="text-xs text-slate-500 mt-1">
+                      Le moteur ne force jamais un pronostic s'il ne respecte pas les critères de la Montante.
+                    </p>
+                  </div>
+                )
               ) : data.current_picks?.length ? (
                 <div className="grid md:grid-cols-2 gap-4">
                   {data.current_picks.map((p, i) => (
@@ -248,9 +321,27 @@ export default function MontantePage() {
                           </div>
                           <div className="text-xs text-slate-500">
                             {picksLocked
-                              ? "Picks réservés aux abonnés WinPulse Pro"
+                              ? `${Number(h.pick_count || 0)} ${Number(h.pick_count || 0) > 1 ? "picks verrouillés" : "pick verrouillé"} · réservé aux abonnés WinPulse Pro`
                               : h.picks?.map(p => `${p.pick} @ ${p.odds}`).join(" · ")}
                           </div>
+
+                          {(h.stake_before != null || h.bankroll_after != null) && (
+                            <div className="text-[11px] text-slate-500 mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+                              {h.stake_before != null && (
+                                <span>Mise : <strong className="text-slate-700">{Number(h.stake_before).toLocaleString("fr-FR")} FCFA</strong></span>
+                              )}
+                              {h.profit != null && (
+                                <span>
+                                  Gain : <strong className={Number(h.profit) >= 0 ? "text-emerald-700" : "text-rose-700"}>
+                                    {Number(h.profit) > 0 ? "+" : ""}{Number(h.profit).toLocaleString("fr-FR")} FCFA
+                                  </strong>
+                                </span>
+                              )}
+                              {h.bankroll_after != null && (
+                                <span>Capital après : <strong className="text-slate-700">{Number(h.bankroll_after).toLocaleString("fr-FR")} FCFA</strong></span>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </div>
                       {h.combined_odds && <span className="font-mono font-bold text-orange-600">x{h.combined_odds}</span>}
