@@ -23,6 +23,8 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import api from "@/lib/api";
+import { toast } from "sonner";
 
 const NAV = [
   {
@@ -133,6 +135,63 @@ export default function AppLayout({ children }) {
   useEffect(() => {
     setMoreOpen(false);
   }, [location.pathname]);
+
+  // Sécurité anti-partage : le serveur autorise une seule session active pour
+  // Free/Pro. Si ce compte est reconnecté ailleurs, l'ancien navigateur reçoit
+  // SESSION_REVOKED et est déconnecté proprement. Les comptes Admin peuvent
+  // avoir plusieurs sessions simultanées : le serveur les exempte de la règle.
+  useEffect(() => {
+    if (!user?.id) return undefined;
+
+    let stopped = false;
+    let handlingRevocation = false;
+
+    const verifySession = async () => {
+      if (stopped || handlingRevocation) return;
+
+      try {
+        await api.get("/auth/me");
+      } catch (error) {
+        const status = error?.response?.status;
+        const detail = String(error?.response?.data?.detail || "");
+
+        if (status === 401) {
+          handlingRevocation = true;
+
+          if (detail === "SESSION_REVOKED") {
+            toast.error(
+              "Ce compte vient d’être connecté sur un autre appareil ou navigateur. Cette session a été fermée."
+            );
+          } else {
+            toast.error("Ta session a expiré. Reconnecte-toi pour continuer.");
+          }
+
+          logout();
+          navigate("/login", { replace: true });
+        }
+      }
+    };
+
+    // Contrôle immédiat, puis périodique. Les événements focus/visibility
+    // rendent la révocation quasi immédiate quand l'utilisateur revient sur l'app.
+    verifySession();
+    const intervalId = window.setInterval(verifySession, 15000);
+
+    const onFocus = () => verifySession();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") verifySession();
+    };
+
+    window.addEventListener("focus", onFocus);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", onFocus);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [user?.id, logout, navigate]);
 
   // Filet de sécurité global : neutralise tout ancien tarif d’abonnement encore affiché
   // encore éventuellement présents dans un vieux composant ou un contenu mis en cache.
@@ -328,7 +387,12 @@ export default function AppLayout({ children }) {
               size="sm"
               variant="ghost"
               className="w-full text-slate-300 hover:text-white hover:bg-slate-800 justify-start"
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await api.post("/auth/logout");
+                } catch {
+                  // Même si le réseau est indisponible, on termine la déconnexion locale.
+                }
                 logout();
                 navigate("/");
               }}
