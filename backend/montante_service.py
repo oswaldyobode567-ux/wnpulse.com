@@ -133,7 +133,17 @@ class MontanteService:
             return self.get_state()
 
         if status == "LOSS":
-            self._record(picks, "LOSS")
+            stake_before = round(float(self.state["theoretical_bankroll"]), 2)
+            potential_combined_odds = math.prod(float(p["odds"]) for p in picks)
+            self.state["theoretical_bankroll"] = 0.0
+            self._record(
+                picks,
+                "LOSS",
+                potential_combined_odds,
+                stake_before=stake_before,
+                profit=-stake_before,
+                bankroll_after=0.0,
+            )
             self.state["status"] = "FAILED"
             self.state["failed_at"] = self._now()
             self._touch()
@@ -142,7 +152,15 @@ class MontanteService:
         if status == "VOID":
             # Une journée entièrement remboursée ne doit ni faire perdre la
             # montante ni valider artificiellement un jour supplémentaire.
-            self._record(picks, "VOID", 1.0)
+            stake_before = round(float(self.state["theoretical_bankroll"]), 2)
+            self._record(
+                picks,
+                "VOID",
+                1.0,
+                stake_before=stake_before,
+                profit=0.0,
+                bankroll_after=stake_before,
+            )
             self.state["waiting_reason"] = (
                 "Journée remboursée : nouvelle sélection nécessaire pour ce jour."
             )
@@ -152,11 +170,21 @@ class MontanteService:
         if status != "WIN":
             raise ValueError("Statut invalide: WIN, LOSS, VOID ou PENDING.")
 
+        # Réinvestissement intégral :
+        # capital suivant = mise du jour + gain = mise * cote combinée.
+        stake_before = round(float(self.state["theoretical_bankroll"]), 2)
         combined_odds = math.prod(float(p["odds"]) for p in picks)
-        self.state["theoretical_bankroll"] = round(
-            self.state["theoretical_bankroll"] * combined_odds, 2
+        bankroll_after = round(stake_before * combined_odds, 2)
+        profit = round(bankroll_after - stake_before, 2)
+        self.state["theoretical_bankroll"] = bankroll_after
+        self._record(
+            picks,
+            "WIN",
+            combined_odds,
+            stake_before=stake_before,
+            profit=profit,
+            bankroll_after=bankroll_after,
         )
-        self._record(picks, "WIN", combined_odds)
 
         if self.state["current_day"] >= self.state["days"]:
             self.state["status"] = "COMPLETED"
@@ -294,13 +322,24 @@ class MontanteService:
             item["edge"] >= self.min_edge
         )
 
-    def _record(self, picks: Sequence[Dict[str, Any]], status: str,
-                combined_odds: Optional[float] = None) -> None:
+    def _record(
+        self,
+        picks: Sequence[Dict[str, Any]],
+        status: str,
+        combined_odds: Optional[float] = None,
+        *,
+        stake_before: Optional[float] = None,
+        profit: Optional[float] = None,
+        bankroll_after: Optional[float] = None,
+    ) -> None:
         self.state["history"].append({
             "day": self.state["current_day"],
             "status": status,
             "settled_at": self._now(),
             "combined_odds": round(combined_odds, 3) if combined_odds else None,
+            "stake_before": round(stake_before, 2) if stake_before is not None else None,
+            "profit": round(profit, 2) if profit is not None else None,
+            "bankroll_after": round(bankroll_after, 2) if bankroll_after is not None else None,
             "picks": [self._clone(dict(p)) for p in picks],
         })
 
