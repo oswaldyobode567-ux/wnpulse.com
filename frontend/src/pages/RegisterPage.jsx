@@ -7,7 +7,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
 
-// registerWithWhatsapp doit être implémenté dans AuthContext et le backend.
+// registerWithWhatsapp est fourni dans AuthContext et le backend de ce lot.
 // Il reçoit un objet et conserve le comportement de connexion de register.
 // Sans cet adaptateur, une inscription avec numéro est arrêtée AVANT création.
 export default function RegisterPage() {
@@ -109,14 +109,14 @@ export default function RegisterPage() {
               <div><div className="text-xs font-bold">Libre</div><div className="mt-0.5 text-[10px] text-slate-500">Sans engagement</div></div>
             </div>
             <form onSubmit={submit} className="space-y-4" aria-busy={loading}>
-              <div><Label htmlFor="name">Nom</Label><Input id="name" name="name" value={fullName} onChange={(e) => setFullName(e.target.value)} required autoComplete="name" placeholder="Jean Dupont" className="mt-1 h-11" data-testid="register-name-input" /></div>
+              <div><Label htmlFor="name">Nom</Label><Input id="name" name="name" value={fullName} onChange={(e) => setFullName(e.target.value)} required maxLength={120} autoComplete="name" placeholder="Jean Dupont" className="mt-1 h-11" data-testid="register-name-input" /></div>
               <div><Label htmlFor="email">Email</Label><Input id="email" name="email" type="email" inputMode="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" placeholder="vous@email.com" className="mt-1 h-11" data-testid="register-email-input" /></div>
               <div>
                 <Label htmlFor="whatsapp">Numéro WhatsApp <span className="ml-1 text-xs font-normal text-slate-500">(optionnel)</span></Label>
                 <Input id="whatsapp" name="whatsapp" type="tel" inputMode="tel" autoComplete="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="+225 07 00 00 00 00" aria-describedby="whatsapp-help" className="mt-1 h-11" data-testid="register-whatsapp-input" />
                 <p id="whatsapp-help" className="mt-1.5 text-xs text-slate-500">Ajoute l’indicatif de ton pays : +225 Côte d’Ivoire, +229 Bénin, +223 Mali.</p>
               </div>
-              <div><Label htmlFor="password">Mot de passe</Label><Input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={6} autoComplete="new-password" placeholder="6 caractères minimum" className="mt-1 h-11" data-testid="register-password-input" /></div>
+              <div><Label htmlFor="password">Mot de passe</Label><Input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} maxLength={128} autoComplete="new-password" placeholder="10 caractères minimum" className="mt-1 h-11" data-testid="register-password-input" /></div>
               {!showReferral ? <button type="button" onClick={() => setShowReferral(true)} className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-orange-600"><Gift className="h-3.5 w-3.5" />J’ai un code parrainage</button> : <div><Label htmlFor="ref">Code parrainage <span className="text-xs font-normal text-slate-500">(optionnel)</span></Label><Input id="ref" name="referralCode" value={referralCode} onChange={(e) => setReferralCode(e.target.value.toUpperCase())} placeholder="WP-XXXX" autoComplete="off" className="mt-1 h-11 font-mono" data-testid="register-referral-input" /></div>}
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <label htmlFor="whatsapp-opt-in" className="flex cursor-pointer items-start gap-3">
