@@ -19,10 +19,9 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
 
-// Activer uniquement après raccordement au véritable endpoint d'historique.
-// Exemple de contrat à implémenter : voir LIRE_AVANT_INSTALLATION.md.
-const DAILY_RESULTS_ENDPOINT = null;
-const RESULTS_TIME_ZONE = "Africa/Porto-Novo";
+// Même archive que /track-record ; endpoint inclus dans server.py livré.
+const DAILY_RESULTS_ENDPOINT = "/track-record/highlights";
+const RESULTS_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 
 function isAvailablePick(row) {
   if (!row || typeof row !== "object") return false;
@@ -60,7 +59,7 @@ function eventDate(value) {
 }
 
 function readDailyResults(data, date, now = new Date()) {
-  if (!data || data.date !== date || data.time_zone !== RESULTS_TIME_ZONE || data.complete !== true) {
+  if (!data || data.date !== date || data.time_zone !== RESULTS_TIME_ZONE || data.complete !== true || data.source !== "track_record") {
     throw new Error("Daily results must describe the complete requested day");
   }
   const summary = data.summary;
@@ -88,7 +87,7 @@ function readDailyResults(data, date, now = new Date()) {
   return {
     date,
     summary,
-    winners: winners.sort((a, b) => Date.parse(b.start_time) - Date.parse(a.start_time) || a.id.localeCompare(b.id)).slice(0, 3),
+    winners: winners.sort((a, b) => b.pick_odds - a.pick_odds || Date.parse(b.start_time) - Date.parse(a.start_time) || a.id.localeCompare(b.id)).slice(0, 3),
   };
 }
 
@@ -155,7 +154,7 @@ export default function LandingPage() {
     let active = true;
     setDailyResults(null);
     setResultsStatus("loading");
-    api.get(DAILY_RESULTS_ENDPOINT, { params: { date: resultsDate, time_zone: RESULTS_TIME_ZONE } })
+    api.get(DAILY_RESULTS_ENDPOINT, { params: { date: resultsDate, time_zone: RESULTS_TIME_ZONE, limit: 3 } })
       .then(({ data }) => {
         const results = readDailyResults(data, resultsDate);
         if (!active) return;
@@ -357,6 +356,7 @@ export default function LandingPage() {
               <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Historique des pronostics</span>
               <h2 id="resultats-hier-title" className="font-heading text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Les résultats d’hier</h2>
               <p className="mt-2 text-sm leading-relaxed text-slate-500">Matchs du {resultsDateLabel}.</p>
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">Quelques paris gagnants de la veille, classés par cote décroissante, issus de notre Track Record.</p>
             </div>
             <Link to="/resultats" className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50" data-testid="yesterday-all-results-link">Voir tous les résultats<ArrowRight className="h-4 w-4 shrink-0" /></Link>
           </div>
