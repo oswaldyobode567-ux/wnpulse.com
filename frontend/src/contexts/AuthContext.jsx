@@ -3,10 +3,8 @@ import api from "@/lib/api";
 
 const AuthContext = createContext(null);
 
-// Garder false tant que /auth/register ne valide et n'enregistre pas
-// whatsapp_number et whatsapp_marketing_opt_in dans la base de données.
-// Passer à true seulement après installation du backend correspondant.
-const WHATSAPP_REGISTRATION_ENABLED = false;
+// Déployer avec server.py fourni : le backend enregistre les champs WhatsApp.
+const WHATSAPP_REGISTRATION_ENABLED = true;
 
 function readCachedUser() {
   try {
@@ -59,7 +57,7 @@ export function AuthProvider({ children }) {
   // Signature existante conservée pour les autres pages du projet.
   const register = async (email, password, full_name, referral_code = null) => {
     const cleanEmail = email.trim().toLowerCase();
-    const payload = { email: cleanEmail, password, full_name };
+    const payload = { email: cleanEmail, password, name: full_name.trim(), full_name: full_name.trim() };
     if (referral_code) payload.referral_code = referral_code.trim();
     const { data } = await api.post("/auth/register", payload);
     return saveSession(data);
@@ -94,6 +92,7 @@ export function AuthProvider({ children }) {
     const payload = {
       email: email.trim().toLowerCase(),
       password,
+      name: full_name.trim(),
       full_name: full_name.trim(),
       whatsapp_number: number,
       whatsapp_marketing_opt_in,
