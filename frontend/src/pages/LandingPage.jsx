@@ -19,12 +19,75 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
 
+// Nouveau endpoint à créer dans le backend : voir LIRE_AVANT_INSTALLATION.md.
+// Si l'historique dispose déjà d'un endpoint, adapter ce chemin et sa réponse.
+const DAILY_RESULTS_ENDPOINT = "/predictions/results/daily";
+const RESULTS_TIME_ZONE = "Africa/Porto-Novo";
+
+function yesterdayDate(now = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: RESULTS_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const get = (type) => Number(parts.find((part) => part.type === type).value);
+  return new Date(Date.UTC(get("year"), get("month") - 1, get("day") - 1)).toISOString().slice(0, 10);
+}
+
+function eventDate(value) {
+  if (typeof value !== "string" || !/(Z|[+-]\d{2}:\d{2})$/.test(value)) return null;
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: RESULTS_TIME_ZONE, year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(date);
+  return ["year", "month", "day"].map((type) => parts.find((part) => part.type === type).value).join("-");
+}
+
+function readDailyResults(data, date, now = new Date()) {
+  if (!data || data.date !== date || data.time_zone !== RESULTS_TIME_ZONE || data.complete !== true) {
+    throw new Error("Daily results must describe the complete requested day");
+  }
+  const summary = data.summary;
+  const keys = ["total", "won", "lost", "pending", "void"];
+  if (!summary || keys.some((key) => !Number.isSafeInteger(summary[key]) || summary[key] < 0)
+    || summary.total !== summary.won + summary.lost + summary.pending + summary.void
+    || !Array.isArray(data.winners)) {
+    throw new Error("Invalid daily results summary");
+  }
+  const seen = new Set();
+  const winners = data.winners.filter((row) => {
+    if (!row || typeof row.id !== "string" || !row.id.trim() || seen.has(row.id)) return false;
+    if (row.status !== "won" || row.result_verified !== true) return false;
+    if (["home_team", "away_team", "pick", "final_score"].some((key) => typeof row[key] !== "string" || !row[key].trim())) return false;
+    if (typeof row.pick_odds !== "number" || !Number.isFinite(row.pick_odds) || row.pick_odds <= 1) return false;
+    const start = Date.parse(row.start_time);
+    const published = Date.parse(row.published_at);
+    const settled = Date.parse(row.settled_at);
+    if (eventDate(row.start_time) !== date || !eventDate(row.published_at) || !eventDate(row.settled_at)
+      || !Number.isFinite(published) || !Number.isFinite(settled) || published >= start || settled < start || settled > now.getTime()) return false;
+    seen.add(row.id);
+    return true;
+  });
+  if (winners.length > summary.won) throw new Error("Winners exceed the daily summary");
+  return {
+    date,
+    summary,
+    winners: winners.sort((a, b) => Date.parse(b.start_time) - Date.parse(a.start_time) || a.id.localeCompare(b.id)).slice(0, 3),
+  };
+}
+
 export default function LandingPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
   const [picksStatus, setPicksStatus] = useState("loading");
   const [reloadKey, setReloadKey] = useState(0);
+  const [resultsDate, setResultsDate] = useState(yesterdayDate);
+  const [dailyResults, setDailyResults] = useState(null);
+  const [resultsStatus, setResultsStatus] = useState("loading");
+  const [resultsReloadKey, setResultsReloadKey] = useState(0);
+  const resultsDateLabel = new Intl.DateTimeFormat("fr-FR", {
+    day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
+  }).format(new Date(`${resultsDate}T12:00:00Z`));
   const signupUrl = typeof window === "undefined" ? "/register" : (() => {
     const ref = new URLSearchParams(window.location.search).get("ref");
     return ref ? `/register?ref=${encodeURIComponent(ref)}` : "/register";
@@ -54,6 +117,30 @@ export default function LandingPage() {
       });
     return () => { active = false; };
   }, [reloadKey]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setResultsDate(yesterdayDate()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    setDailyResults(null);
+    setResultsStatus("loading");
+    api.get(DAILY_RESULTS_ENDPOINT, { params: { date: resultsDate, time_zone: RESULTS_TIME_ZONE } })
+      .then(({ data }) => {
+        const results = readDailyResults(data, resultsDate);
+        if (!active) return;
+        setDailyResults(results);
+        setResultsStatus("ready");
+      })
+      .catch(() => {
+        if (!active) return;
+        setDailyResults(null);
+        setResultsStatus("error");
+      });
+    return () => { active = false; };
+  }, [resultsDate, resultsReloadKey]);
 
   return (
     <div className="min-h-screen w-full min-w-0 bg-neutral-50">
@@ -230,6 +317,75 @@ export default function LandingPage() {
                 </Card>
               </div>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="resultats-hier" aria-labelledby="resultats-hier-title" className="border-y border-neutral-200 bg-white py-12 sm:py-16">
+        <div className="mx-auto w-full min-w-0 max-w-7xl px-4 sm:px-6 lg:px-8">
+          <div className="flex min-w-0 flex-col items-start justify-between gap-5 sm:flex-row sm:items-end">
+            <div className="min-w-0">
+              <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Historique des pronostics</span>
+              <h2 id="resultats-hier-title" className="font-heading text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Les résultats d’hier</h2>
+              <p className="mt-2 text-sm leading-relaxed text-slate-500">Matchs du {resultsDateLabel} · heure du Bénin.</p>
+            </div>
+            <Link to="/resultats" className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50" data-testid="yesterday-all-results-link">Voir tous les résultats<ArrowRight className="h-4 w-4 shrink-0" /></Link>
+          </div>
+
+          <div className="mt-7" aria-live="polite" aria-busy={resultsStatus === "loading"}>
+            {resultsStatus === "loading" || (dailyResults && dailyResults.date !== resultsDate) ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">Chargement des résultats d’hier…</div>
+            ) : resultsStatus === "error" ? (
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-6">
+                <p className="font-semibold text-slate-800">Le bilan d’hier n’est pas disponible pour le moment.</p>
+                <p className="mt-2 text-sm leading-relaxed text-slate-500">Tu peux consulter l’historique complet des résultats.</p>
+                <button type="button" onClick={() => setResultsReloadKey((value) => value + 1)} className="mt-3 min-h-11 text-sm font-semibold text-orange-700 underline">Réessayer</button>
+              </div>
+            ) : dailyResults && (
+              <>
+                <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="yesterday-summary">
+                  {[
+                    { key: "won", label: "Gagnants", color: "text-emerald-700" },
+                    { key: "lost", label: "Perdants", color: "text-rose-700" },
+                    { key: "pending", label: "En attente", color: "text-amber-700" },
+                    { key: "void", label: "Annulés / remboursés", color: "text-slate-600" },
+                  ].map(({ key, label, color }) => (
+                    <div key={key} className="min-w-0 rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+                      <dt className="break-words text-xs font-semibold text-slate-500">{label}</dt>
+                      <dd className={`mt-1 font-heading text-3xl font-extrabold ${color}`}>{dailyResults.summary[key]}</dd>
+                    </div>
+                  ))}
+                </dl>
+                <p className="mt-3 text-xs leading-relaxed text-slate-500">Bilan complet : {dailyResults.summary.total} pronostic{dailyResults.summary.total === 1 ? "" : "s"}. Les cartes ci-dessous montrent uniquement une sélection des gagnants.</p>
+
+                {dailyResults.summary.total === 0 ? (
+                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Aucun pronostic publié pour les matchs de cette journée.</p>
+                ) : dailyResults.summary.won === 0 ? (
+                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Aucun pronostic gagnant confirmé pour cette journée. Le bilan reste visible ci-dessus.</p>
+                ) : dailyResults.winners.length === 0 ? (
+                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Les détails des pronostics gagnants ne sont pas encore disponibles ici. Consulte l’historique complet.</p>
+                ) : (
+                  <div className="mt-6 grid min-w-0 gap-4 md:grid-cols-3">
+                    {dailyResults.winners.map((row) => (
+                      <Card key={row.id} className="min-w-0 rounded-2xl border-emerald-200 bg-white p-5 shadow-sm" data-testid="yesterday-winner-card">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Gagné</span>
+                          <span className="text-xs text-slate-500">{new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: RESULTS_TIME_ZONE }).format(new Date(row.start_time))}</span>
+                        </div>
+                        <h3 className="mt-4 break-words font-heading text-lg font-bold text-slate-900">{row.home_team} <span className="font-normal text-slate-400">vs</span> {row.away_team}</h3>
+                        <p className="mt-3 break-words text-sm font-semibold leading-relaxed text-slate-700">{row.pick}</p>
+                        <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-100 pt-4">
+                          <div className="min-w-0"><dt className="text-xs text-slate-500">Cote publiée</dt><dd className="mt-1 font-bold text-slate-900">{row.pick_odds.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</dd></div>
+                          <div className="min-w-0"><dt className="text-xs text-slate-500">Score final</dt><dd className="mt-1 break-words font-bold text-slate-900">{row.final_score}</dd></div>
+                        </dl>
+                        <p className="mt-4 text-xs leading-relaxed text-slate-500">Pronostic publié avant le match · résultat confirmé.</p>
+                      </Card>
+                    ))}
+                  </div>
+                )}
+                <p className="mt-5 text-xs leading-relaxed text-slate-500">Les résultats passés ne garantissent pas les prochains résultats.</p>
+              </>
+            )}
           </div>
         </div>
       </section>
