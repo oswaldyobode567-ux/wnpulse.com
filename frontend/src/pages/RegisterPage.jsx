@@ -64,7 +64,7 @@ export default function RegisterPage() {
     } catch (err) {
       const detail = err?.response?.data?.detail;
       const message = err?.response?.data?.message;
-      setError(typeof detail === "string" ? detail : typeof message === "string" ? message : "L’inscription n’a pas abouti. Réessaie dans un instant.");
+      setError(typeof detail === "string" ? detail : typeof message === "string" ? message : err instanceof Error && !err?.response ? err.message : "L’inscription n’a pas abouti. Réessaie dans un instant.");
     } finally {
       setLoading(false);
     }
