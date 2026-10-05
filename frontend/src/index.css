@@ -1,33 +1,9 @@
-html, body {
-  overflow-x: hidden;
-  max-width: 100vw;
-}
-
-#root {
-  overflow-x: hidden;
-  max-width: 100vw;
-}
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800;900&family=IBM+Plex+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
-body {
-  margin: 0;
-  font-family: 'IBM Plex Sans', system-ui, sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  background-color: #fafafa;
-  color: #0f172a;
-}
-h1, h2, h3, h4, h5, .font-heading {
-  font-family: 'Manrope', system-ui, sans-serif;
-  letter-spacing: -0.02em;
-}
-.font-mono, code, pre {
-  font-family: 'JetBrains Mono', monospace;
-}
-/* shadcn tokens (light, WinPulse warm vibrant) */
+
 @layer base {
   :root {
     --background: 0 0% 98%;
@@ -36,7 +12,7 @@ h1, h2, h3, h4, h5, .font-heading {
     --card-foreground: 222 47% 11%;
     --popover: 0 0% 100%;
     --popover-foreground: 222 47% 11%;
-    --primary: 22 92% 50%;             /* orange-600 #ea580c — energy */
+    --primary: 22 92% 50%;
     --primary-foreground: 0 0% 100%;
     --secondary: 30 15% 96%;
     --secondary-foreground: 222 47% 11%;
@@ -51,27 +27,74 @@ h1, h2, h3, h4, h5, .font-heading {
     --ring: 22 92% 50%;
     --radius: 0.875rem;
   }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  * { @apply border-border; }
+
+  html {
+    margin: 0;
+    padding: 0;
+    min-width: 0;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    margin: 0;
+    min-width: 0;
+    font-family: 'IBM Plex Sans', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  #root {
+    width: 100%;
+    min-width: 0;
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+
+  h1, h2, h3, h4, h5, h6, .font-heading {
+    font-family: 'Manrope', system-ui, sans-serif;
+    letter-spacing: -0.02em;
+  }
+
+  .font-mono, code, pre { font-family: 'JetBrains Mono', monospace; }
+  img, video, canvas { max-width: 100%; height: auto; }
+  iframe { max-width: 100%; }
 }
 
-@layer base {
-  * { @apply border-border; }
-  body { @apply bg-background text-foreground; }
+/* Pas de masquage global du débordement : les conteneurs flex/grid
+   des pages fournies ont min-w-0, les textes et boutons peuvent se replier.
+   Les décorations débordantes restent contenues par leur propre section. */
+.wp-mobile-hero-title { overflow-wrap: anywhere; }
+
+@media (max-width: 640px) {
+  .wp-mobile-hero-title {
+    font-size: clamp(1.9rem, 9vw, 2.65rem);
+    line-height: 1.12;
+  }
 }
-/* WinPulse signature gradients */
+
+/* Placé dans base : les classes utilitaires explicites restent prioritaires. */
+@layer base {
+  @media (max-width: 767px) {
+    input, select, textarea { font-size: 16px; }
+  }
+}
+
 .wp-gradient-hero {
   background:
     radial-gradient(circle at 80% 0%, rgba(244, 63, 94, 0.18), transparent 50%),
     radial-gradient(circle at 0% 70%, rgba(234, 88, 12, 0.16), transparent 55%),
     radial-gradient(circle at 100% 100%, rgba(132, 204, 22, 0.10), transparent 50%);
 }
-.wp-gradient-warm {
-  background: linear-gradient(135deg, #ea580c 0%, #f43f5e 100%);
-}
-.wp-gradient-warm-soft {
-  background: linear-gradient(135deg, rgba(234,88,12,0.08) 0%, rgba(244,63,94,0.06) 100%);
-}
+.wp-gradient-warm { background: linear-gradient(135deg, #ea580c 0%, #f43f5e 100%); }
+.wp-gradient-warm-soft { background: linear-gradient(135deg, rgba(234,88,12,0.08) 0%, rgba(244,63,94,0.06) 100%); }
+
 .wp-noise::before {
-  content: "";
+  content: '';
   position: absolute;
   inset: 0;
   background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.06'/%3E%3C/svg%3E");
@@ -82,16 +105,18 @@ h1, h2, h3, h4, h5, .font-heading {
 .scrollbar-thin::-webkit-scrollbar { height: 8px; width: 8px; }
 .scrollbar-thin::-webkit-scrollbar-track { background: transparent; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 999px; }
-/* Pulse animation for the live indicators */
+
 @keyframes wp-pulse {
-  0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 rgba(244, 63, 94, 0.6); }
-  50% { transform: scale(1.2); opacity: 0.85; box-shadow: 0 0 0 8px rgba(244, 63, 94, 0); }
+  0%, 100% { transform: scale(1); opacity: 1; box-shadow: 0 0 0 0 rgba(244,63,94,0.6); }
+  50% { transform: scale(1.2); opacity: 0.85; box-shadow: 0 0 0 8px rgba(244,63,94,0); }
 }
 .live-dot { animation: wp-pulse 1.6s ease-in-out infinite; }
-/* Soft bounce for top picks */
 @keyframes wp-rise {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
 .wp-rise { animation: wp-rise 0.45s ease-out both; }
-[data-debug-wrapper="true"] { display: contents !important; }
+@media (prefers-reduced-motion: reduce) {
+  .live-dot, .wp-rise, .animate-pulse { animation: none; }
+}
+[data-debug-wrapper='true'] { display: contents !important; }
