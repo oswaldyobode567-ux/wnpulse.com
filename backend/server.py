@@ -18,6 +18,7 @@ import re
 import unicodedata
 import ipaddress
 from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, List, Dict
 from urllib.parse import parse_qs
 
@@ -25,7 +26,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, StrictBool
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pymongo import ReturnDocument
@@ -681,7 +682,10 @@ class RegisterPayload(BaseModel):
     email: EmailStr
     password: str = Field(min_length=10, max_length=128)
     name: Optional[str] = Field(default=None, max_length=120)
+    full_name: Optional[str] = Field(default=None, max_length=120)
     referral_code: Optional[str] = Field(default=None, max_length=64)
+    whatsapp_number: Optional[str] = Field(default=None, max_length=40)
+    whatsapp_marketing_opt_in: StrictBool = False
 
 
 class LoginPayload(BaseModel):
@@ -698,10 +702,36 @@ class ResetPasswordPayload(BaseModel):
     new_password: str = Field(min_length=10, max_length=128)
 
 
+def _normalize_whatsapp_number(value: Optional[str]) -> Optional[str]:
+    number = re.sub(r"[\s().-]", "", str(value or "").strip())
+    if not number:
+        return None
+    if not re.fullmatch(r"\+[1-9]\d{7,14}", number):
+        raise HTTPException(status_code=400, detail="Renseigne un numéro WhatsApp avec + et l’indicatif du pays")
+    return number
+
+
+def _whatsapp_contact_fields(user: Dict) -> Dict:
+    return {
+        "whatsapp_number": user.get("whatsapp_number"),
+        "whatsapp_marketing_opt_in": bool(user.get("whatsapp_number") and user.get("whatsapp_marketing_opt_in") is True),
+        "whatsapp_opt_in_at": user.get("whatsapp_opt_in_at"),
+        "whatsapp_opt_out_at": user.get("whatsapp_opt_out_at"),
+        "whatsapp_consent_version": user.get("whatsapp_consent_version"),
+        "whatsapp_last_contacted_at": user.get("whatsapp_last_contacted_at"),
+        "whatsapp_followup_status": user.get("whatsapp_followup_status", "do_not_contact"),
+    }
+
+
 @app.post("/api/auth/register")
 async def register(payload: RegisterPayload, request: Request):
     await _consume_security_limit("register_ip", _client_rate_key(request), limit=8, window_seconds=3600)
     email_addr = payload.email.lower().strip()
+    whatsapp_number = _normalize_whatsapp_number(payload.whatsapp_number)
+    if payload.whatsapp_marketing_opt_in and not whatsapp_number:
+        raise HTTPException(status_code=400, detail="L’autorisation WhatsApp nécessite un numéro")
+    display_name = (payload.name or payload.full_name or "").strip() or email_addr.split("@")[0]
+    registered_at = datetime.now(timezone.utc).isoformat()
     password_error = _password_security_error(payload.password, email_addr)
     if password_error:
         raise HTTPException(status_code=400, detail=password_error)
@@ -722,9 +752,9 @@ async def register(payload: RegisterPayload, request: Request):
 
     user_doc = {
         "id": user_id,
-        "email": payload.email.lower(),
-        "name": payload.name or payload.email.split("@")[0],
-        "full_name": payload.name or payload.email.split("@")[0],
+        "email": email_addr,
+        "name": display_name,
+        "full_name": display_name,
         "password_hash": hash_password(payload.password),
         "created_at": datetime.now(timezone.utc).isoformat(),
         "subscription": "elite" if is_admin else "free",
@@ -732,6 +762,13 @@ async def register(payload: RegisterPayload, request: Request):
         "referral_code": user_id[:8].upper(),
         "referred_by": referred_by,
         "referral_reward_claimed": False,
+        "whatsapp_number": whatsapp_number,
+        "whatsapp_marketing_opt_in": payload.whatsapp_marketing_opt_in,
+        "whatsapp_opt_in_at": registered_at if payload.whatsapp_marketing_opt_in else None,
+        "whatsapp_opt_out_at": None,
+        "whatsapp_consent_version": "winpulse-whatsapp-2026-10-05" if payload.whatsapp_marketing_opt_in else None,
+        "whatsapp_last_contacted_at": None,
+        "whatsapp_followup_status": "new" if payload.whatsapp_marketing_opt_in else "do_not_contact",
     }
     await db.users.insert_one(user_doc)
     await send_welcome_email(user_doc["email"], user_doc["name"])
@@ -744,6 +781,7 @@ async def register(payload: RegisterPayload, request: Request):
             "full_name": user_doc["full_name"], "subscription": user_doc["subscription"],
             "subscription_tier": user_doc["subscription"],
             "is_admin": user_doc["is_admin"],
+            **_whatsapp_contact_fields(user_doc),
         },
     }
 
@@ -782,6 +820,7 @@ async def login(payload: LoginPayload, request: Request):
             "subscription": user.get("subscription", "free"),
             "subscription_tier": user.get("subscription", "free"),
             "is_admin": user.get("is_admin", False),
+            **_whatsapp_contact_fields(user),
         },
     }
 
@@ -987,7 +1026,23 @@ async def me(payload: dict = Depends(get_current_user_payload)):
         "subscription_tier": user.get("subscription", "free"),
         "subscription_expires_at": user.get("subscription_expires_at"),
         "is_admin": user.get("is_admin", False),
+        **_whatsapp_contact_fields(user),
     }
+
+
+@app.post("/api/auth/whatsapp-opt-out")
+async def whatsapp_opt_out(payload: dict = Depends(get_current_user_payload)):
+    updated = await db.users.update_one(
+        {"id": payload["sub"]},
+        {"$set": {
+            "whatsapp_marketing_opt_in": False,
+            "whatsapp_opt_out_at": datetime.now(timezone.utc).isoformat(),
+            "whatsapp_followup_status": "do_not_contact",
+        }},
+    )
+    if not updated.matched_count:
+        raise HTTPException(status_code=404, detail="Utilisateur introuvable")
+    return {"ok": True, "whatsapp_marketing_opt_in": False}
 
 
 # ─── Prediction cache + calibration empirique ───────────────────────────────
@@ -2269,6 +2324,7 @@ async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
             "subscription": u.get("subscription", "free"),
             "is_admin": u.get("is_admin", False),
             "created_at": u.get("created_at"),
+            **_whatsapp_contact_fields(u),
         })
     return result
 
@@ -3805,6 +3861,119 @@ def _parse_iso(dt_str: Optional[str]) -> Optional[datetime]:
         return dt
     except Exception:
         return None
+
+
+def _track_datetime(value) -> Optional[datetime]:
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return _parse_iso(str(value)) if value else None
+
+
+def _track_highlight_period(date_value: Optional[str], time_zone: str, now: datetime):
+    try:
+        if not time_zone or len(time_zone) > 100:
+            raise ValueError("invalid timezone")
+        zone = ZoneInfo(time_zone)
+    except (ZoneInfoNotFoundError, ValueError):
+        raise HTTPException(status_code=400, detail="Fuseau horaire invalide")
+    today = now.astimezone(zone).date()
+    if date_value:
+        try:
+            selected = datetime.strptime(date_value, "%Y-%m-%d").date()
+            if selected.isoformat() != date_value:
+                raise ValueError("invalid date format")
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=400, detail="La date doit être au format AAAA-MM-JJ")
+    else:
+        selected = today - timedelta(days=1)
+    if selected >= today:
+        raise HTTPException(status_code=400, detail="Choisis une journée antérieure à aujourd’hui")
+    try:
+        local_start = datetime(selected.year, selected.month, selected.day, tzinfo=zone)
+        start = local_start.astimezone(timezone.utc)
+        end = (local_start + timedelta(days=1)).astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        raise HTTPException(status_code=400, detail="Date hors de l’intervalle pris en charge")
+    return selected, zone, start, end
+
+
+def _build_track_record_highlights(rows: List[Dict], selected, zone, limit: int, now: datetime) -> Dict:
+    summary = {"total": 0, "won": 0, "lost": 0, "pending": 0, "void": 0}
+    candidates = {}
+    for row in rows:
+        event_at = _track_datetime(row.get("commence_time"))
+        result = row.get("result")
+        if not event_at or event_at.astimezone(zone).date() != selected or result not in summary or result == "total":
+            continue
+        # Même collection et mêmes statuts que le Track Record, avec les pending
+        # en plus pour donner un bilan complet de la journée, sans pagination.
+        summary["total"] += 1
+        summary[result] += 1
+        if result != "won" or row.get("is_combo"):
+            continue
+        published_at = _track_datetime(row.get("created_at"))
+        settled_at = _track_datetime(row.get("reconciled_at"))
+        if not published_at or not settled_at or published_at >= event_at or not event_at <= settled_at <= now:
+            continue
+        if any(not isinstance(row.get(key), str) or not row[key].strip() for key in ("signature", "home_team", "away_team", "pick", "final_score")):
+            continue
+        try:
+            odds = float(row.get("pick_odds"))
+        except (TypeError, ValueError):
+            continue
+        if not math.isfinite(odds) or odds <= 1:
+            continue
+        item = {
+            "id": row["signature"],
+            "home_team": row["home_team"],
+            "away_team": row["away_team"],
+            "pick": row["pick"],
+            "pick_odds": odds,
+            "final_score": row["final_score"],
+            "status": "won",
+            "result_verified": True,
+            "published_at": published_at.astimezone(timezone.utc).isoformat(),
+            "start_time": event_at.astimezone(timezone.utc).isoformat(),
+            "settled_at": settled_at.astimezone(timezone.utc).isoformat(),
+        }
+        existing = candidates.get(item["id"])
+        # S'il existe un ancien doublon, conserver la première publication.
+        if existing is None or item["published_at"] < existing["published_at"]:
+            candidates[item["id"]] = item
+    winners = sorted(candidates.values(), key=lambda row: (-row["pick_odds"], -_track_datetime(row["start_time"]).timestamp(), row["id"]))[:limit]
+    return {
+        "date": selected.isoformat(),
+        "time_zone": zone.key,
+        "complete": True,
+        "source": "track_record",
+        "selection": "highest_winning_odds",
+        "summary": summary,
+        "winners": winners,
+        "eligible_winners": len(candidates),
+    }
+
+
+@app.get("/api/track-record/highlights")
+async def get_track_record_highlights(date: Optional[str] = None, time_zone: str = "UTC", limit: int = 3):
+    """Gagnants de la veille issus du vrai Track Record, triés par cote décroissante.
+
+    Cet endpoint public lit uniquement l'archive MongoDB. Il ne lance aucun
+    appel au fournisseur de cotes ni aucune nouvelle réconciliation des scores.
+    """
+    now = datetime.now(timezone.utc)
+    selected, zone, start, end = _track_highlight_period(date, time_zone, now)
+    event_date = {"$convert": {"input": "$commence_time", "to": "date", "onError": None, "onNull": None}}
+    query = {
+        "result": {"$in": ["won", "lost", "void", "pending"]},
+        "$expr": {"$and": [{"$gte": [event_date, start]}, {"$lt": [event_date, end]}]},
+    }
+    projection = {"_id": 0, "signature": 1, "home_team": 1, "away_team": 1, "pick": 1,
+                  "pick_odds": 1, "final_score": 1, "result": 1, "is_combo": 1,
+                  "created_at": 1, "commence_time": 1, "reconciled_at": 1}
+    rows = []
+    async for row in db.predictions_history.find(query, projection):
+        rows.append(row)
+    return _build_track_record_highlights(rows, selected, zone, max(1, min(limit, 3)), now)
 
 
 @app.get("/api/track-record")
