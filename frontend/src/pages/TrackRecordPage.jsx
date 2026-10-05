@@ -93,33 +93,34 @@ export default function TrackRecordPage() {
   return (
     <div className="min-h-screen bg-neutral-50">
       <header className="sticky top-0 z-50 bg-white/85 backdrop-blur-xl border-b border-neutral-200">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex min-w-0 items-center justify-between gap-2">
           <Link
             to="/"
-            className="flex items-center gap-2.5"
+            className="flex shrink-0 items-center gap-2 sm:gap-2.5"
           >
-            <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center text-white shadow-lg">
+            <div className="h-8 w-8 shrink-0 rounded-xl wp-gradient-warm grid place-items-center text-white shadow-lg sm:h-9 sm:w-9">
               <Zap
                 className="h-5 w-5"
                 fill="white"
               />
             </div>
 
-            <span className="font-heading font-extrabold text-lg">
+            <span className="font-heading font-extrabold text-base sm:text-lg">
               WinPulse
             </span>
           </Link>
 
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1 sm:gap-2">
             <Link to="/login">
-              <Button variant="ghost">
+              <Button variant="ghost" className="h-9 px-2 text-xs sm:px-3 sm:text-sm">
                 Connexion
               </Button>
             </Link>
 
             <Link to="/register">
-              <Button className="wp-gradient-warm text-white border-0">
-                Démarrer gratuit
+              <Button className="wp-gradient-warm text-white border-0 h-9 px-2 text-xs sm:px-3 sm:text-sm">
+                <span className="sm:hidden">Gratuit</span>
+                <span className="hidden sm:inline">Démarrer gratuit</span>
               </Button>
             </Link>
           </div>
