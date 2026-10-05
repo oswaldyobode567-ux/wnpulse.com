@@ -19,10 +19,27 @@ import {
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
 
-// Nouveau endpoint à créer dans le backend : voir LIRE_AVANT_INSTALLATION.md.
-// Si l'historique dispose déjà d'un endpoint, adapter ce chemin et sa réponse.
-const DAILY_RESULTS_ENDPOINT = "/predictions/results/daily";
+// Activer uniquement après raccordement au véritable endpoint d'historique.
+// Exemple de contrat à implémenter : voir LIRE_AVANT_INSTALLATION.md.
+const DAILY_RESULTS_ENDPOINT = null;
 const RESULTS_TIME_ZONE = "Africa/Porto-Novo";
+
+function isAvailablePick(row) {
+  if (!row || typeof row !== "object") return false;
+  const unlocked = [undefined, null, false, 0, "false"].includes(row.locked);
+  return unlocked && typeof row.pick === "string" && Boolean(row.pick.trim());
+}
+
+function homepagePicks(data) {
+  if (!Array.isArray(data)) {
+    const error = new Error("Unexpected predictions response");
+    error.code = "INVALID_TOP_PREDICTIONS_RESPONSE";
+    throw error;
+  }
+  const rows = data.filter((row) => row && typeof row === "object");
+  // Chercher la sélection disponible AVANT de limiter l'aperçu à trois cartes.
+  return [...rows.filter(isAvailablePick), ...rows.filter((row) => !isAvailablePick(row))].slice(0, 3);
+}
 
 function yesterdayDate(now = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
@@ -83,7 +100,7 @@ export default function LandingPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [resultsDate, setResultsDate] = useState(yesterdayDate);
   const [dailyResults, setDailyResults] = useState(null);
-  const [resultsStatus, setResultsStatus] = useState("loading");
+  const [resultsStatus, setResultsStatus] = useState(DAILY_RESULTS_ENDPOINT ? "loading" : "disabled");
   const [resultsReloadKey, setResultsReloadKey] = useState(0);
   const resultsDateLabel = new Intl.DateTimeFormat("fr-FR", {
     day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
@@ -105,13 +122,18 @@ export default function LandingPage() {
     setPicksStatus("loading");
     api.get("/predictions/top")
       .then((response) => {
-        if (!Array.isArray(response.data)) throw new Error("Unexpected predictions response");
+        const rows = homepagePicks(response.data);
         if (!active) return;
-        setLivePicks(response.data.filter((row) => row && typeof row === "object").slice(0, 3));
+        setLivePicks(rows);
         setPicksStatus("ready");
       })
-      .catch(() => {
+      .catch((error) => {
         if (!active) return;
+        // Diagnostic développeur : aucun numéro, email, jeton ou payload logué.
+        console.warn("WinPulse: public predictions request failed", {
+          status: error?.response?.status ?? null,
+          code: error?.code ?? null,
+        });
         setLivePicks([]);
         setPicksStatus("error");
       });
@@ -119,11 +141,17 @@ export default function LandingPage() {
   }, [reloadKey]);
 
   useEffect(() => {
+    if (!DAILY_RESULTS_ENDPOINT) return;
     const timer = window.setInterval(() => setResultsDate(yesterdayDate()), 60000);
     return () => window.clearInterval(timer);
   }, []);
 
   useEffect(() => {
+    if (!DAILY_RESULTS_ENDPOINT) {
+      setDailyResults(null);
+      setResultsStatus("disabled");
+      return;
+    }
     let active = true;
     setDailyResults(null);
     setResultsStatus("loading");
@@ -294,7 +322,7 @@ export default function LandingPage() {
                         <p className="mt-2 text-sm text-slate-500">Consulte l’historique de résultats en attendant les prochaines sélections.</p>
                       </div>
                     ) : livePicks.map((row, i) => {
-                      const locked = Boolean(row.locked) || !row.pick;
+                      const locked = !isAvailablePick(row);
                       const confidence = row.confidence == null || row.confidence === "" ? NaN : Number(row.confidence);
                       const showConfidence = !locked && Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
                       return (
@@ -321,13 +349,14 @@ export default function LandingPage() {
         </div>
       </section>
 
+      {DAILY_RESULTS_ENDPOINT && (
       <section id="resultats-hier" aria-labelledby="resultats-hier-title" className="border-y border-neutral-200 bg-white py-12 sm:py-16">
         <div className="mx-auto w-full min-w-0 max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 flex-col items-start justify-between gap-5 sm:flex-row sm:items-end">
             <div className="min-w-0">
               <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Historique des pronostics</span>
               <h2 id="resultats-hier-title" className="font-heading text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Les résultats d’hier</h2>
-              <p className="mt-2 text-sm leading-relaxed text-slate-500">Matchs du {resultsDateLabel} · heure du Bénin.</p>
+              <p className="mt-2 text-sm leading-relaxed text-slate-500">Matchs du {resultsDateLabel}.</p>
             </div>
             <Link to="/resultats" className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50" data-testid="yesterday-all-results-link">Voir tous les résultats<ArrowRight className="h-4 w-4 shrink-0" /></Link>
           </div>
@@ -389,6 +418,7 @@ export default function LandingPage() {
           </div>
         </div>
       </section>
+      )}
 
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div className="text-center mb-12">
@@ -543,7 +573,7 @@ export default function LandingPage() {
             <span className="text-slate-300">·</span>
             <Link to="/blog" className="text-slate-600 hover:text-orange-600 font-semibold">Blog</Link>
           </div>
-          <div className="text-sm text-slate-500 text-center">© 2026 WinPulse SARL · Cotonou, Bénin · Joue responsable · 18+</div>
+          <div className="text-sm text-slate-500 text-center">© 2026 WinPulse · Joue responsable · 18+</div>
           <div className="text-xs text-slate-400 max-w-2xl text-center">Les pronostics sont des analyses statistiques, pas des garanties. Mise ce que tu peux perdre. WinPulse n'accepte aucun pari et ne joue pas pour ses utilisateurs.</div>
         </div>
       </footer>
