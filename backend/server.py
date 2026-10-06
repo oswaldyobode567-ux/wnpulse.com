@@ -1217,6 +1217,11 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
     merged = []
     for i, m in enumerate(matches):
         pred = dict(pred_by_id.get(m.get("id"), {}))
+        # Métadonnée publique pour compter les vrais picks, même après masquage
+        # Pro. Un match sans sélection ne doit pas augmenter le compteur.
+        pred["has_prediction"] = bool(str(pred.get("pick") or "").strip()) and not (
+            pred.get("is_finished") or m.get("is_finished") or m.get("completed")
+        )
         if not is_paid and i > 0:
             pred = _lock_prediction_for_free(pred)
         else:
@@ -4447,10 +4452,94 @@ async def admin_sweep_expired_simple(key: str = Header(default="", alias="X-Admi
 
 # ─── Scores ───────────────────────────────────────────────────────────────
 
+LIVE_SCORES_FRESH_SECONDS = 60
+LIVE_SCORES_MAX_AGE_SECONDS = 5 * 60
+LIVE_SCORES_REFRESH_TIMEOUT_SECONDS = 120
+_live_scores_refresh_task = None
+_live_scores_retry_at = 0.0
+_live_scores_refresh_error = False
+
+
+async def _refresh_live_scores_in_background():
+    """La collecte fournisseur et l'archivage ne bloquent plus la page Live."""
+    global _live_scores_retry_at, _live_scores_refresh_error
+    ran = False
+
+    async def collect():
+        nonlocal ran
+        ran = True
+        return await fetch_all_scores(db)
+
+    try:
+        await asyncio.wait_for(
+            _run_with_scheduler_lease(
+                "live_scores_refresh", collect,
+                lease_seconds=LIVE_SCORES_REFRESH_TIMEOUT_SECONDS + 30,
+            ),
+            timeout=LIVE_SCORES_REFRESH_TIMEOUT_SECONDS,
+        )
+        if ran:
+            _live_scores_refresh_error = False
+        else:
+            _live_scores_retry_at = time.monotonic() + 5
+    except Exception:
+        # Conserver le dernier cache valide et temporiser les nouvelles tentatives.
+        _live_scores_refresh_error = True
+        _live_scores_retry_at = time.monotonic() + 30
+    finally:
+        if ran:
+            try:
+                await db.scheduler_locks.update_one(
+                    {"_id": "live_scores_refresh", "owner": SCHEDULER_INSTANCE_ID},
+                    {"$set": {"lease_until": datetime.now(timezone.utc).isoformat()}},
+                )
+            except Exception:
+                pass
+
+
+def _start_live_scores_refresh():
+    global _live_scores_refresh_task
+    if _live_scores_refresh_task and not _live_scores_refresh_task.done():
+        return
+    if time.monotonic() < _live_scores_retry_at:
+        return
+    _live_scores_refresh_task = asyncio.create_task(_refresh_live_scores_in_background())
+
+
 @app.get("/api/scores")
-async def get_scores():
-    scores = await fetch_all_scores(db)
-    return scores
+async def get_scores(snapshot: bool = False):
+    # Lire directement Mongo : fetch_all_scores archive même un cache frais,
+    # puis attend les réponses de toutes les compétitions si le cache a expiré.
+    cached = await db.scores_cache.find_one({"_id": "all_scores"})
+    scores = cached.get("data") if cached else None
+    updated_at = cached.get("updated_at") if cached else None
+    age = float("inf")
+    if updated_at:
+        try:
+            updated = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
+            if updated.tzinfo is None:
+                updated = updated.replace(tzinfo=timezone.utc)
+            age = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
+        except (TypeError, ValueError):
+            pass
+
+    valid = isinstance(scores, list) and age <= LIVE_SCORES_MAX_AGE_SECONDS
+    stale = not valid or age >= LIVE_SCORES_FRESH_SECONDS
+    if stale:
+        _start_live_scores_refresh()
+    refreshing = bool(_live_scores_refresh_task and not _live_scores_refresh_task.done())
+    status_code = 200 if valid else (503 if _live_scores_refresh_error else 202)
+    data = scores if valid else []
+    if snapshot:
+        data = {
+            "scores": data,
+            "updated_at": str(updated_at) if valid else None,
+            "stale": stale,
+            "refreshing": refreshing,
+            "status": "ready" if valid else ("error" if _live_scores_refresh_error else "warming"),
+        }
+    # /scores reste compatible avec les clients existants : un tableau JSON.
+    return JSONResponse(content=data, status_code=status_code, headers={"Cache-Control": "no-store"})
 
 
 # ─── Admin ────────────────────────────────────────────────────────────────
@@ -6115,5 +6204,11 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    if _live_scores_refresh_task and not _live_scores_refresh_task.done():
+        _live_scores_refresh_task.cancel()
+        try:
+            await asyncio.wait_for(_live_scores_refresh_task, timeout=5)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
     if scheduler.running:
         scheduler.shutdown(wait=False)
