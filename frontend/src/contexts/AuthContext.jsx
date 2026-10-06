@@ -3,9 +3,6 @@ import api from "@/lib/api";
 
 const AuthContext = createContext(null);
 
-// Déployer avec server.py fourni : le backend enregistre les champs WhatsApp.
-const WHATSAPP_REGISTRATION_ENABLED = true;
-
 function readCachedUser() {
   try {
     const raw = localStorage.getItem("pronostix_user");
@@ -54,15 +51,6 @@ export function AuthProvider({ children }) {
     return saveSession(data);
   };
 
-  // Signature existante conservée pour les autres pages du projet.
-  const register = async (email, password, full_name, referral_code = null) => {
-    const cleanEmail = email.trim().toLowerCase();
-    const payload = { email: cleanEmail, password, name: full_name.trim(), full_name: full_name.trim() };
-    if (referral_code) payload.referral_code = referral_code.trim();
-    const { data } = await api.post("/auth/register", payload);
-    return saveSession(data);
-  };
-
   // Signature attendue par la nouvelle RegisterPage.jsx.
   const registerWithWhatsapp = async ({
     email,
@@ -76,19 +64,12 @@ export function AuthProvider({ children }) {
     if (typeof whatsapp_marketing_opt_in !== "boolean") {
       throw new Error("Le choix de contact WhatsApp doit être vrai ou faux.");
     }
-    if (number && !/^\+[1-9]\d{7,14}$/.test(number)) {
+    if (!number) {
+      throw new Error("Le numéro WhatsApp est obligatoire pour créer un compte.");
+    }
+    if (!/^\+[1-9]\d{7,14}$/.test(number)) {
       throw new Error("Renseigne le numéro WhatsApp avec + et l’indicatif du pays.");
     }
-    if (whatsapp_marketing_opt_in && !number) {
-      throw new Error("Le consentement WhatsApp nécessite un numéro.");
-    }
-    if (!number) {
-      return register(email, password, full_name, referral_code);
-    }
-    if (!WHATSAPP_REGISTRATION_ENABLED) {
-      throw new Error("L’enregistrement WhatsApp n’est pas encore disponible. Tu peux créer ton compte en laissant ce champ vide.");
-    }
-
     const payload = {
       email: email.trim().toLowerCase(),
       password,
@@ -101,6 +82,10 @@ export function AuthProvider({ children }) {
     const { data } = await api.post("/auth/register", payload);
     return saveSession(data);
   };
+
+  // Les anciens appels doivent maintenant fournir le numéro en 5e argument.
+  const register = async (email, password, full_name, referral_code = null, whatsapp_number = null, whatsapp_marketing_opt_in = false) =>
+    registerWithWhatsapp({ email, password, full_name, referral_code, whatsapp_number, whatsapp_marketing_opt_in });
 
   const logout = () => {
     localStorage.removeItem("pronostix_token");
