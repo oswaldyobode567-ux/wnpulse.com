@@ -17,15 +17,17 @@ import secrets
 import re
 import unicodedata
 import ipaddress
+import csv
+import io
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from typing import Optional, List, Dict
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, Depends, HTTPException, status, Header, Request
+from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, StrictBool
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -684,7 +686,7 @@ class RegisterPayload(BaseModel):
     name: Optional[str] = Field(default=None, max_length=120)
     full_name: Optional[str] = Field(default=None, max_length=120)
     referral_code: Optional[str] = Field(default=None, max_length=64)
-    whatsapp_number: Optional[str] = Field(default=None, max_length=40)
+    whatsapp_number: str = Field(min_length=1, max_length=40)
     whatsapp_marketing_opt_in: StrictBool = False
 
 
@@ -706,7 +708,7 @@ def _normalize_whatsapp_number(value: Optional[str]) -> Optional[str]:
     number = re.sub(r"[\s().-]", "", str(value or "").strip())
     if not number:
         return None
-    if not re.fullmatch(r"\+[1-9]\d{7,14}", number):
+    if not re.fullmatch(r"\+[1-9][0-9]{7,14}", number):
         raise HTTPException(status_code=400, detail="Renseigne un numéro WhatsApp avec + et l’indicatif du pays")
     return number
 
@@ -728,8 +730,8 @@ async def register(payload: RegisterPayload, request: Request):
     await _consume_security_limit("register_ip", _client_rate_key(request), limit=8, window_seconds=3600)
     email_addr = payload.email.lower().strip()
     whatsapp_number = _normalize_whatsapp_number(payload.whatsapp_number)
-    if payload.whatsapp_marketing_opt_in and not whatsapp_number:
-        raise HTTPException(status_code=400, detail="L’autorisation WhatsApp nécessite un numéro")
+    if not whatsapp_number:
+        raise HTTPException(status_code=400, detail="Le numéro WhatsApp est obligatoire pour créer un compte")
     display_name = (payload.name or payload.full_name or "").strip() or email_addr.split("@")[0]
     registered_at = datetime.now(timezone.utc).isoformat()
     password_error = _password_security_error(payload.password, email_addr)
@@ -766,7 +768,7 @@ async def register(payload: RegisterPayload, request: Request):
         "whatsapp_marketing_opt_in": payload.whatsapp_marketing_opt_in,
         "whatsapp_opt_in_at": registered_at if payload.whatsapp_marketing_opt_in else None,
         "whatsapp_opt_out_at": None,
-        "whatsapp_consent_version": "winpulse-whatsapp-2026-10-05" if payload.whatsapp_marketing_opt_in else None,
+        "whatsapp_consent_version": "winpulse-whatsapp-2026-10-06" if payload.whatsapp_marketing_opt_in else None,
         "whatsapp_last_contacted_at": None,
         "whatsapp_followup_status": "new" if payload.whatsapp_marketing_opt_in else "do_not_contact",
     }
@@ -2332,6 +2334,100 @@ async def admin_get_users(payload: dict = Depends(get_current_user_payload)):
             **_whatsapp_contact_fields(u),
         })
     return result
+
+
+def _admin_whatsapp_query(search: str = "", contact_filter: str = "all") -> Dict:
+    valid_number = {"$regex": r"^\+[1-9][0-9]{7,14}$"}
+    query = {}
+    if contact_filter == "authorized":
+        query = {"whatsapp_number": valid_number, "whatsapp_marketing_opt_in": True}
+    elif contact_filter == "not_authorized":
+        query = {"whatsapp_number": valid_number, "whatsapp_marketing_opt_in": {"$ne": True}}
+    elif contact_filter == "missing":
+        query = {"whatsapp_number": {"$not": valid_number}}
+    elif contact_filter != "all":
+        raise HTTPException(status_code=400, detail="Filtre de contacts inconnu")
+    search = search.strip()
+    if search:
+        literal = {"$regex": re.escape(search), "$options": "i"}
+        query["$or"] = [{key: literal} for key in ("name", "full_name", "email", "whatsapp_number")]
+    return query
+
+
+_ADMIN_WHATSAPP_PROJECTION = {
+    "_id": 0, "id": 1, "name": 1, "full_name": 1, "email": 1,
+    "subscription": 1, "created_at": 1, "whatsapp_number": 1,
+    "whatsapp_marketing_opt_in": 1, "whatsapp_opt_in_at": 1,
+    "whatsapp_opt_out_at": 1, "whatsapp_consent_version": 1,
+    "whatsapp_last_contacted_at": 1, "whatsapp_followup_status": 1,
+}
+
+
+@app.get("/api/admin/whatsapp-contacts")
+async def admin_whatsapp_contacts(
+    page: int = Query(default=1, ge=1),
+    per_page: int = Query(default=50, ge=1, le=100),
+    search: str = Query(default="", max_length=120),
+    contact_filter: str = "all",
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    query = _admin_whatsapp_query(search, contact_filter)
+    total = await db.users.count_documents(query)
+    users = await db.users.find(query, _ADMIN_WHATSAPP_PROJECTION).sort(
+        [("created_at", -1), ("id", 1)]
+    ).skip((page - 1) * per_page).limit(per_page).to_list(length=per_page)
+    return {
+        "items": [{
+            "id": u.get("id"), "name": u.get("full_name") or u.get("name") or "",
+            "email": u.get("email"), "subscription": u.get("subscription", "free"),
+            "created_at": u.get("created_at"), **_whatsapp_contact_fields(u),
+        } for u in users],
+        "total": total, "page": page, "per_page": per_page,
+        "total_pages": max(1, (total + per_page - 1) // per_page),
+    }
+
+
+def _whatsapp_csv_cell(value) -> str:
+    text = str(value or "")
+    # Conserver les numéros avec + comme du texte, et neutraliser les formules.
+    if text.lstrip().startswith(("=", "+", "-", "@", "\t", "\r", "\n")):
+        return "'" + text
+    return text
+
+
+@app.get("/api/admin/whatsapp-contacts/export")
+async def admin_export_whatsapp_contacts(
+    search: str = Query(default="", max_length=120),
+    payload: dict = Depends(get_current_user_payload),
+):
+    await _require_admin(payload)
+    query = _admin_whatsapp_query(search, "authorized")
+
+    async def rows():
+        yield "\ufeff".encode("utf-8")
+        buffer = io.StringIO(newline="")
+        writer = csv.writer(buffer, delimiter=";")
+        writer.writerow(["Nom", "Email", "WhatsApp", "Abonnement", "Autorisation le", "Version de l’autorisation"])
+        yield buffer.getvalue().encode("utf-8")
+        buffer.seek(0)
+        buffer.truncate(0)
+        cursor = db.users.find(query, _ADMIN_WHATSAPP_PROJECTION).sort([("created_at", -1), ("id", 1)])
+        async for user in cursor:
+            writer.writerow([_whatsapp_csv_cell(value) for value in (
+                user.get("full_name") or user.get("name"), user.get("email"),
+                user.get("whatsapp_number"), user.get("subscription", "free"),
+                user.get("whatsapp_opt_in_at"), user.get("whatsapp_consent_version"),
+            )])
+            yield buffer.getvalue().encode("utf-8")
+            buffer.seek(0)
+            buffer.truncate(0)
+
+    filename = f"winpulse-contacts-whatsapp-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}.csv"
+    return StreamingResponse(rows(), media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": f'attachment; filename="{filename}"',
+        "Cache-Control": "no-store",
+    })
 
 
 _PAYMENT_STATUS_MAP_FR_TO_EN = {
