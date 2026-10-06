@@ -5,12 +5,11 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ConfidenceBadge } from "@/components/ConfidenceBadge";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Shield, Scale, Rocket, RefreshCw, TrendingUp, Lock, Gift, Sparkles } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
-import PaymentModal from "@/components/payment/PaymentModal";
 const TIERS = [
   {
     key: "safe",
@@ -59,10 +58,10 @@ const ACCENT_CLS = {
 };
 export default function CombosPage() {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [combos, setCombos] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activeTier, setActiveTier] = useState("balanced");
-  const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
   const fetchCombos = async () => {
     setLoading(true);
     try {
@@ -167,7 +166,7 @@ export default function CombosPage() {
             <div className="flex-1 text-sm text-orange-900">
               <strong>Pas de combiné gratuit aujourd'hui.</strong> Reviens demain ou passe Pro pour débloquer les 3 combinés tout de suite.
             </div>
-            <Button size="sm" className="wp-gradient-warm text-white border-0" data-testid="upgrade-from-combos-btn" onClick={() => setPayState({ isOpen: true, tier: "PRO" })}>
+            <Button size="sm" className="wp-gradient-warm text-white border-0" data-testid="upgrade-from-combos-btn" onClick={() => navigate("/app/abonnement")}>
               Passer Pro
             </Button>
           </Card>
@@ -245,11 +244,6 @@ export default function CombosPage() {
           </div>
         )}
       </div>
-      <PaymentModal
-        isOpen={payState.isOpen}
-        onClose={() => setPayState({ isOpen: false, tier: payState.tier })}
-        targetTier={payState.tier}
-      />
     </AppLayout>
   );
 }
