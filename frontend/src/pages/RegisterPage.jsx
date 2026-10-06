@@ -7,11 +7,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
 
-// registerWithWhatsapp est fourni dans AuthContext et le backend de ce lot.
-// Il reçoit un objet et conserve le comportement de connexion de register.
-// Sans cet adaptateur, une inscription avec numéro est arrêtée AVANT création.
+// Déployer avec AuthContext.jsx et server.py de ce lot.
 export default function RegisterPage() {
-  const { register, registerWithWhatsapp } = useAuth();
+  const { registerWithWhatsapp } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
   const initialReferral = (params.get("ref") || "").trim().toUpperCase();
@@ -34,32 +32,28 @@ export default function RegisterPage() {
       setError("Renseigne ton nom.");
       return;
     }
-    if (normalizedNumber && !/^\+[1-9]\d{7,14}$/.test(normalizedNumber)) {
+    if (!normalizedNumber) {
+      setError("Ton numéro WhatsApp est obligatoire pour créer ton compte.");
+      return;
+    }
+    if (!/^\+[1-9]\d{7,14}$/.test(normalizedNumber)) {
       setError("Renseigne ton numéro avec + et l’indicatif du pays, par exemple +2250700000000.");
       return;
     }
-    if (whatsappOptIn && !normalizedNumber) {
-      setError("Renseigne ton numéro WhatsApp ou décoche l’autorisation de contact.");
-      return;
-    }
-    if (normalizedNumber && typeof registerWithWhatsapp !== "function") {
-      setError("L’enregistrement WhatsApp n’est pas encore disponible. Tu peux créer ton compte en laissant ce champ vide.");
+    if (typeof registerWithWhatsapp !== "function") {
+      setError("Le formulaire d’inscription doit être mis à jour. Réessaie après actualisation de la page.");
       return;
     }
     setLoading(true);
     try {
-      if (normalizedNumber) {
-        await registerWithWhatsapp({
-          email: email.trim(),
-          password,
-          full_name: fullName.trim(),
-          referral_code: referralCode.trim() || null,
-          whatsapp_number: normalizedNumber,
-          whatsapp_marketing_opt_in: whatsappOptIn,
-        });
-      } else {
-        await register(email.trim(), password, fullName.trim(), referralCode.trim() || null);
-      }
+      await registerWithWhatsapp({
+        email: email.trim(),
+        password,
+        full_name: fullName.trim(),
+        referral_code: referralCode.trim() || null,
+        whatsapp_number: normalizedNumber,
+        whatsapp_marketing_opt_in: whatsappOptIn,
+      });
       navigate("/app", { replace: true });
     } catch (err) {
       const detail = err?.response?.data?.detail;
@@ -112,8 +106,8 @@ export default function RegisterPage() {
               <div><Label htmlFor="name">Nom</Label><Input id="name" name="name" value={fullName} onChange={(e) => setFullName(e.target.value)} required maxLength={120} autoComplete="name" placeholder="Jean Dupont" className="mt-1 h-11" data-testid="register-name-input" /></div>
               <div><Label htmlFor="email">Email</Label><Input id="email" name="email" type="email" inputMode="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" placeholder="vous@email.com" className="mt-1 h-11" data-testid="register-email-input" /></div>
               <div>
-                <Label htmlFor="whatsapp">Numéro WhatsApp <span className="ml-1 text-xs font-normal text-slate-500">(optionnel)</span></Label>
-                <Input id="whatsapp" name="whatsapp" type="tel" inputMode="tel" autoComplete="tel" value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="+225 07 00 00 00 00" aria-describedby="whatsapp-help" className="mt-1 h-11" data-testid="register-whatsapp-input" />
+                <Label htmlFor="whatsapp">Numéro WhatsApp <span className="ml-1 text-xs font-normal text-orange-700">(obligatoire)</span></Label>
+                <Input id="whatsapp" name="whatsapp" type="tel" inputMode="tel" autoComplete="tel" required maxLength={40} value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="+225 07 00 00 00 00" aria-describedby="whatsapp-help" className="mt-1 h-11" data-testid="register-whatsapp-input" />
                 <p id="whatsapp-help" className="mt-1.5 text-xs text-slate-500">Ajoute l’indicatif de ton pays : +225 Côte d’Ivoire, +229 Bénin, +223 Mali.</p>
               </div>
               <div><Label htmlFor="password">Mot de passe</Label><Input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} maxLength={128} autoComplete="new-password" placeholder="10 caractères minimum" className="mt-1 h-11" data-testid="register-password-input" /></div>
@@ -121,7 +115,7 @@ export default function RegisterPage() {
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <label htmlFor="whatsapp-opt-in" className="flex cursor-pointer items-start gap-3">
                   <input id="whatsapp-opt-in" name="whatsapp_marketing_opt_in" type="checkbox" checked={whatsappOptIn} onChange={(e) => setWhatsappOptIn(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 accent-orange-600" data-testid="register-whatsapp-opt-in" />
-                  <span className="min-w-0 text-xs leading-relaxed text-slate-600">J’accepte de recevoir sur WhatsApp des informations et des offres WinPulse, par relance manuelle ou automatique. Ce choix est facultatif. Je peux demander l’arrêt des messages à tout moment.</span>
+                  <span className="min-w-0 text-xs leading-relaxed text-slate-600">J’accepte de recevoir sur WhatsApp les offres WinPulse et les invitations à ses groupes ou communautés privées, par contact manuel ou automatique. Cette autorisation est facultative et n’est pas nécessaire pour créer mon compte. Je peux la retirer depuis mon profil.</span>
                 </label>
               </div>
               {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
