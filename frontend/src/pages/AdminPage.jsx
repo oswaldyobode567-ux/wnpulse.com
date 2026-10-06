@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
+import { Input } from "@/components/ui/input";
 import AppLayout from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -7,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { CheckCircle2, XCircle, Send, Users, Wallet, Clock, Mail, Loader2, ShieldCheck, Sunrise, Copy, MessageCircle } from "lucide-react";
+import { CheckCircle2, XCircle, Send, Users, Wallet, Clock, Mail, Loader2, ShieldCheck, Sunrise, Copy, MessageCircle, Download, RefreshCw } from "lucide-react";
 import { toast } from "sonner";
 import dayjs from "dayjs";
 import { cn } from "@/lib/utils";
@@ -175,7 +177,7 @@ export default function AdminPage() {
           </div>
           <div>
             <h1 className="font-heading text-3xl font-extrabold text-slate-900">Panneau admin</h1>
-            <p className="text-sm text-slate-500">Validation paiements · stats · envoi d'emails VIP</p>
+            <p className="text-sm text-slate-500">Validation paiements · utilisateurs · contacts WhatsApp</p>
           </div>
         </div>
 
@@ -200,9 +202,10 @@ export default function AdminPage() {
         )}
 
         <Tabs defaultValue="payments" className="space-y-6">
-          <TabsList className="bg-neutral-100">
+          <TabsList className="h-auto flex flex-wrap justify-start gap-1 bg-neutral-100">
             <TabsTrigger value="payments" data-testid="tab-payments">Paiements</TabsTrigger>
             <TabsTrigger value="users" data-testid="tab-users">Utilisateurs</TabsTrigger>
+            <TabsTrigger value="whatsapp-contacts" data-testid="tab-whatsapp-contacts"><MessageCircle className="mr-1.5 h-3.5 w-3.5" />Contacts WhatsApp</TabsTrigger>
             <TabsTrigger value="broadcast" data-testid="tab-broadcast">Envoi emails</TabsTrigger>
             <TabsTrigger value="auto-follower" data-testid="tab-auto-follower">
               <Sunrise className="h-3.5 w-3.5 mr-1.5" />Suiveur 7h
@@ -282,6 +285,7 @@ export default function AdminPage() {
                     <div className="min-w-0 flex-1">
                       <div className="font-semibold text-sm text-slate-900 truncate">{u.name} {u.is_admin && <Badge className="ml-1 bg-orange-100 text-orange-700">admin</Badge>}</div>
                       <div className="text-xs text-slate-500 truncate">{u.email}</div>
+                      <div className="mt-1 text-xs text-slate-500">WhatsApp : <span className="font-mono">{u.whatsapp_number || "Non renseigné"}</span> · {canContact(u) ? "Contact autorisé" : "Contact non autorisé"}</div>
                     </div>
                     <Badge variant="outline" className="font-semibold">{(u.subscription || "free").toUpperCase()}</Badge>
                     <div className="text-xs text-slate-400 hidden sm:block">{u.created_at ? dayjs(u.created_at).format("DD MMM YYYY") : "—"}</div>
@@ -289,6 +293,10 @@ export default function AdminPage() {
                 ))}
               </div>
             </Card>
+          </TabsContent>
+
+          <TabsContent value="whatsapp-contacts">
+            <AdminWhatsAppContacts />
           </TabsContent>
 
           <TabsContent value="broadcast">
@@ -438,7 +446,7 @@ export default function AdminPage() {
 {blast?.blast_text || "Aperçu non encore généré. Clique sur \"Aperçu\" pour préparer le message du jour."}
                 </pre>
                 <p className="text-[11px] text-emerald-800/80 mt-2">
-                  💡 Astuce : crée une <strong>liste de diffusion WhatsApp</strong> avec tes abonnés Pro/Elite. Ouvre la liste, colle le message et envoie.
+                  💡 Astuce : crée une <strong>liste de diffusion WhatsApp</strong> avec les personnes ayant accepté les messages. Consulte l’onglet Contacts WhatsApp pour vérifier leurs autorisations et préparer une invitation à ta communauté.
                 </p>
               </div>
             </Card>
@@ -477,6 +485,169 @@ function Kpi({ icon: Icon, label, value, sub, accent, mono }) {
       <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-0.5">{label}</div>
       <div className={cn("font-heading text-2xl font-extrabold text-slate-900", mono && "font-mono text-xl")}>{value}</div>
       {sub && <div className="text-xs text-slate-500 mt-0.5">{sub}</div>}
+    </Card>
+  );
+}
+
+function canContact(contact) {
+  return contact?.whatsapp_marketing_opt_in === true && /^\+[1-9]\d{7,14}$/.test(contact?.whatsapp_number || "");
+}
+
+function whatsappLink(contact, message) {
+  if (!canContact(contact)) return null;
+  return `https://wa.me/${contact.whatsapp_number.slice(1)}?text=${encodeURIComponent(message)}`;
+}
+
+function dateLabel(value) {
+  const date = value ? new Date(value) : null;
+  return date && Number.isFinite(date.getTime()) ? date.toLocaleDateString("fr-FR") : "—";
+}
+
+function AdminWhatsAppContacts() {
+  const { user } = useAuth();
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState("all");
+  const [page, setPage] = useState(1);
+  const [revision, setRevision] = useState(0);
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [exporting, setExporting] = useState(false);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [message, setMessage] = useState("Bonjour ! Tu as accepté les messages WhatsApp de WinPulse. Souhaites-tu découvrir notre offre Pro ou recevoir une invitation à notre communauté privée ? Tu peux retirer cette autorisation depuis ton profil WinPulse.");
+
+  useEffect(() => {
+    let active = true;
+    setData(null);
+    if (!user?.is_admin) return () => { active = false; };
+    setLoading(true);
+    setError("");
+    api.get("/admin/whatsapp-contacts", { params: { page, per_page: 50, search, contact_filter: filter } })
+      .then(({ data: response }) => {
+        if (!active) return;
+        if (!Array.isArray(response?.items) || !Number.isSafeInteger(response?.total) || !Number.isSafeInteger(response?.total_pages)) {
+          throw new Error("Réponse de contacts invalide.");
+        }
+        if (page > response.total_pages) {
+          setPage(Math.max(1, response.total_pages));
+          return;
+        }
+        setData(response);
+      })
+      .catch(err => {
+        if (active) setError(typeof err?.response?.data?.detail === "string" ? err.response.data.detail : "Impossible de charger les contacts WhatsApp. Vérifie que le serveur a été mis à jour.");
+      })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [user?.id, user?.is_admin, page, search, filter, revision]);
+
+  async function copyNumber(number) {
+    setNotice("");
+    try {
+      await navigator.clipboard.writeText(number);
+      setNotice("Numéro copié.");
+    } catch {
+      setNotice("La copie automatique est indisponible. Sélectionne et copie le numéro affiché.");
+    }
+  }
+
+  async function exportContacts() {
+    if (exporting || !user?.is_admin) return;
+    setExporting(true);
+    setNotice("");
+    setError("");
+    let url;
+    try {
+      const response = await api.get("/admin/whatsapp-contacts/export", { params: { search }, responseType: "blob" });
+      if (!String(response.headers?.["content-type"] || "").toLowerCase().includes("text/csv")) {
+        throw new Error("Le serveur n’a pas renvoyé un CSV.");
+      }
+      url = URL.createObjectURL(response.data);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `winpulse-contacts-whatsapp-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setNotice("Export téléchargé : uniquement les contacts autorisés correspondant à la recherche, sur toutes les pages.");
+    } catch {
+      setError("L’export a échoué. Vérifie ton accès administrateur et réessaie.");
+    } finally {
+      if (url) window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setExporting(false);
+    }
+  }
+
+  if (!user?.is_admin) return null;
+
+  return (
+    <Card className="space-y-5 border-neutral-200 p-4 sm:p-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-bold text-slate-900"><MessageCircle className="h-5 w-5 text-emerald-600" />Contacts WhatsApp</h2>
+          <p className="mt-1 text-sm text-slate-500">Numéros des inscrits, autorisations de contact et invitations à ta communauté.</p>
+        </div>
+        <Button type="button" variant="outline" disabled={loading} onClick={() => setRevision(value => value + 1)}><RefreshCw className={`mr-2 h-4 w-4 ${loading ? "animate-spin" : ""}`} />Actualiser</Button>
+      </div>
+
+      <form onSubmit={event => { event.preventDefault(); setSearch(searchInput.trim()); setPage(1); setRevision(value => value + 1); }} className="flex flex-wrap items-end gap-3">
+        <label className="min-w-0 flex-1 text-xs font-semibold text-slate-600">Rechercher
+          <Input className="mt-1 min-w-48" value={searchInput} onChange={event => setSearchInput(event.target.value)} maxLength={120} placeholder="Nom, email ou numéro" />
+        </label>
+        <label className="text-xs font-semibold text-slate-600">Autorisation
+          <select className="mt-1 block h-10 rounded-md border border-slate-200 bg-white px-3 text-sm" value={filter} onChange={event => { setFilter(event.target.value); setPage(1); }}>
+            <option value="all">Tous les inscrits</option>
+            <option value="authorized">Contact autorisé</option>
+            <option value="not_authorized">Contact non autorisé</option>
+            <option value="missing">Numéro absent ou invalide</option>
+          </select>
+        </label>
+        <Button type="submit">Rechercher</Button>
+      </form>
+
+      <div className="rounded-lg bg-slate-50 p-3">
+        <label className="block text-xs font-semibold text-slate-600">Message à préparer dans WhatsApp
+          <textarea rows={3} maxLength={2000} className="mt-2 w-full rounded-md border border-slate-200 bg-white p-2 text-sm font-normal text-slate-700" value={message} onChange={event => setMessage(event.target.value)} />
+        </label>
+        <p className="mt-1 text-xs text-slate-500">Le bouton ouvre une conversation avec un brouillon. Tu décides de l’envoyer. Une invitation laisse la personne choisir de rejoindre le groupe.</p>
+      </div>
+
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-600">{data ? `${data.total} inscrit${data.total > 1 ? "s" : ""} correspondant au filtre` : "Chargement des contacts…"}</p>
+        <Button type="button" variant="outline" onClick={exportContacts} disabled={loading || exporting || !data}><Download className="mr-2 h-4 w-4" />{exporting ? "Export…" : "Exporter les contacts autorisés"}</Button>
+      </div>
+      <p className="text-xs text-slate-500">L’export suit la recherche et inclut uniquement les numéros ayant une autorisation active, quel que soit le filtre choisi. Les anciens comptes sans numéro restent accessibles.</p>
+      {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
+      {notice && <p role="status" className="rounded-lg bg-emerald-50 p-3 text-sm text-emerald-700">{notice}</p>}
+      {loading ? <p role="status" className="py-5 text-center text-sm text-slate-500">Chargement…</p> : data && (
+        <>
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[650px] text-left text-sm">
+              <thead className="bg-slate-50 text-xs text-slate-500"><tr><th className="p-3">Utilisateur</th><th className="p-3">WhatsApp</th><th className="p-3">Autorisation</th><th className="p-3">Actions</th></tr></thead>
+              <tbody>{data.items.map(contact => {
+                const allowed = canContact(contact);
+                const link = whatsappLink(contact, message.trim());
+                return <tr key={contact.id} className="border-b border-slate-100 align-top">
+                  <td className="p-3"><div className="font-semibold text-slate-800">{contact.name || "Sans nom"}</div><div className="break-all text-xs text-slate-500">{contact.email}</div><div className="mt-1 text-xs text-slate-500">{contact.subscription || "free"} · Inscrit le {dateLabel(contact.created_at)}</div></td>
+                  <td className="whitespace-nowrap p-3 font-mono text-xs">{contact.whatsapp_number || "Non renseigné"}</td>
+                  <td className="p-3"><span className={`inline-block rounded-full px-2 py-1 text-xs font-semibold ${allowed ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{allowed ? "Contact autorisé" : "Contact non autorisé"}</span><div className="mt-1 text-xs text-slate-500">{allowed ? `Accord le ${dateLabel(contact.whatsapp_opt_in_at)}` : contact.whatsapp_opt_out_at ? `Retirée le ${dateLabel(contact.whatsapp_opt_out_at)}` : "Aucune autorisation active"}</div></td>
+                  <td className="p-3"><div className="flex flex-wrap gap-2">
+                    {contact.whatsapp_number && <Button type="button" variant="outline" size="sm" aria-label={`Copier le numéro de ${contact.name || contact.email}`} onClick={() => copyNumber(contact.whatsapp_number)}><Copy className="mr-1 h-3.5 w-3.5" />Copier</Button>}
+                    {link && message.trim() && <a href={link} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 rounded-md bg-emerald-600 px-3 py-2 text-xs font-semibold text-white"><MessageCircle className="h-3.5 w-3.5" />Contacter / inviter</a>}
+                  </div></td>
+                </tr>;
+              })}</tbody>
+            </table>
+            {data.items.length === 0 && <p className="py-6 text-center text-sm text-slate-500">Aucun inscrit ne correspond à ces critères.</p>}
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <Button type="button" variant="outline" disabled={page <= 1} onClick={() => setPage(value => value - 1)}>Précédent</Button>
+            <span className="text-xs text-slate-500">Page {data.page} / {data.total_pages}</span>
+            <Button type="button" variant="outline" disabled={page >= data.total_pages} onClick={() => setPage(value => value + 1)}>Suivant</Button>
+          </div>
+        </>
+      )}
     </Card>
   );
 }
