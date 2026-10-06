@@ -19,6 +19,7 @@ Radio,
 Loader2,
 Clock,
 CheckCircle2,
+RefreshCw,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import api from "@/lib/api";
@@ -27,6 +28,28 @@ import dayjs from "dayjs";
 import LiveDataBadge from "@/components/LiveDataBadge";
 
 const REFRESH_INTERVAL_MS = 45_000;
+const LIVE_CACHE_KEY = "winpulse_live_scores_v2";
+const LIVE_CACHE_MAX_AGE_MS = 5 * 60_000;
+
+function readCachedScores() {
+try {
+  const cached = JSON.parse(window.sessionStorage.getItem(LIVE_CACHE_KEY));
+  const updated = Date.parse(cached?.updated_at);
+  const age = Date.now() - updated;
+  if (!Array.isArray(cached?.scores) || !Number.isFinite(updated) || age < 0 || age > LIVE_CACHE_MAX_AGE_MS) return null;
+  return cached;
+} catch {
+  return null;
+}
+}
+
+function writeCachedScores(scores, updatedAt) {
+try {
+  window.sessionStorage.setItem(LIVE_CACHE_KEY, JSON.stringify({ scores, updated_at: updatedAt }));
+} catch {
+  // Le cache est facultatif : stockage bloqué ou quota dépassé.
+}
+}
 
 const SPORT_ICONS = {
 soccer: "⚽",
@@ -65,40 +88,73 @@ return parsed.isValid() ? parsed.format(format) : "";
 }
 
 export default function LivePage() {
-const [scores, setScores] = useState([]);
-const [loading, setLoading] = useState(true);
-const [refreshedAt, setRefreshedAt] = useState(null);
+const [initialCache] = useState(readCachedScores);
+const [scores, setScores] = useState(initialCache?.scores || []);
+const [loading, setLoading] = useState(!initialCache);
+const [refreshedAt, setRefreshedAt] = useState(initialCache?.updated_at || null);
+const [cached, setCached] = useState(Boolean(initialCache));
+const [refreshing, setRefreshing] = useState(false);
+const [awaitingRefresh, setAwaitingRefresh] = useState(false);
+const [error, setError] = useState("");
 
 const mountedRef = useRef(false);
-const requestInFlightRef = useRef(false);
+const requestRef = useRef(null);
 const errorToastShownRef = useRef(false);
 
 const load = useCallback(async ({ silent = false } = {}) => {
-if (requestInFlightRef.current) return;
+if (requestRef.current) return;
 
-requestInFlightRef.current = true;
+const controller = new AbortController();
+requestRef.current = controller;
+setRefreshing(true);
 
 try {
-  const { data } = await api.get("/scores");
-  const nextScores = Array.isArray(data) ? data : [];
+  const { data } = await api.get("/scores", {
+    params: { snapshot: true },
+    timeout: 12_000,
+    signal: controller.signal,
+  });
 
-  if (!mountedRef.current) return;
+  if (!mountedRef.current || controller.signal.aborted) return;
+  // Compatibilité si le frontend est déployé avant le nouveau serveur.
+  const legacy = Array.isArray(data);
+  const status = legacy ? "ready" : data?.status;
+  if (status === "warming") {
+    setAwaitingRefresh(true);
+    setCached(true);
+    setError("");
+    return;
+  }
+  if (status !== "ready" || !Array.isArray(legacy ? data : data?.scores)) {
+    throw new Error("Réponse des scores invalide");
+  }
+  const nextScores = legacy ? data : data.scores;
+  const updatedAt = legacy ? null : data.updated_at;
 
   setScores(nextScores);
-  setRefreshedAt(new Date());
+  setRefreshedAt(updatedAt);
+  setCached(legacy || Boolean(data.stale));
+  setAwaitingRefresh(!legacy && Boolean(data.refreshing));
+  setError("");
+  if (updatedAt) writeCachedScores(nextScores, updatedAt);
   errorToastShownRef.current = false;
-} catch (error) {
-  if (!mountedRef.current) return;
+} catch (requestError) {
+  if (!mountedRef.current || controller.signal.aborted) return;
 
+  setAwaitingRefresh(false);
+  setCached(true);
+  setError("Les scores ne peuvent pas être actualisés pour le moment. Réessayez.");
   if (!silent || !errorToastShownRef.current) {
     toast.error("Impossible de charger les scores en direct");
     errorToastShownRef.current = true;
   }
 } finally {
-  requestInFlightRef.current = false;
-
-  if (mountedRef.current) {
-    setLoading(false);
+  if (requestRef.current === controller) {
+    requestRef.current = null;
+    if (mountedRef.current && !controller.signal.aborted) {
+      setRefreshing(false);
+      setLoading(false);
+    }
   }
 }
 
@@ -125,6 +181,8 @@ document.addEventListener("visibilitychange", handleVisibilityChange);
 
 return () => {
   mountedRef.current = false;
+  requestRef.current?.abort();
+  requestRef.current = null;
   window.clearInterval(intervalId);
   document.removeEventListener(
     "visibilitychange",
@@ -133,6 +191,27 @@ return () => {
 };
 
 }, [load]);
+
+useEffect(() => {
+if (!awaitingRefresh) return;
+const timer = window.setInterval(() => {
+  if (document.visibilityState === "visible") load({ silent: true });
+}, 3_000);
+return () => window.clearInterval(timer);
+}, [awaitingRefresh, load]);
+
+// Ne pas continuer à présenter un vieux cache comme un score en direct.
+useEffect(() => {
+if (!refreshedAt) return;
+const expiresIn = Date.parse(refreshedAt) + LIVE_CACHE_MAX_AGE_MS - Date.now();
+const timer = window.setTimeout(() => {
+  setScores([]);
+  setRefreshedAt(null);
+  setCached(true);
+  setError("Les derniers scores sont trop anciens. Actualisez pour les recharger.");
+}, Math.max(0, expiresIn));
+return () => window.clearTimeout(timer);
+}, [refreshedAt]);
 
 const { live, completed, upcoming } = useMemo(() => {
 const liveMatches = scores
@@ -190,7 +269,7 @@ return (
         </h1>
 
         <Badge className="bg-rose-100 text-rose-700 border-rose-200 text-[10px] ml-1">
-          {live.length} en direct
+          {cached ? "Derniers scores connus" : `${live.length} en direct`}
         </Badge>
 
         <div className="ml-auto">
@@ -205,15 +284,37 @@ return (
 
       {refreshedAt && (
         <p className="text-[10px] text-slate-400 mt-1">
-          Mis à jour à {dayjs(refreshedAt).format("HH:mm:ss")}
+          Scores du {dayjs(refreshedAt).format("DD/MM à HH:mm:ss")}
         </p>
+      )}
+      <button
+        type="button"
+        onClick={() => load()}
+        disabled={refreshing}
+        className="mt-3 inline-flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 disabled:opacity-50"
+        data-testid="live-refresh-btn"
+      >
+        <RefreshCw className={cn("h-3.5 w-3.5", refreshing && "animate-spin")} />
+        {refreshing || awaitingRefresh ? "Actualisation en cours…" : "Actualiser"}
+      </button>
+      {awaitingRefresh && (
+        <p className="mt-2 text-xs text-slate-500" role="status">
+          Le fournisseur prépare les scores. La page se mettra à jour automatiquement.
+        </p>
+      )}
+      {error && (
+        <p className="mt-2 text-sm text-amber-700" role="alert">{error}</p>
       )}
     </div>
 
-    {loading ? (
+    {loading || (awaitingRefresh && !refreshedAt && !scores.length) ? (
       <div className="grid place-items-center py-16">
         <Loader2 className="h-6 w-6 animate-spin text-rose-500" />
       </div>
+    ) : error && !scores.length ? (
+      <Card className="p-8 bg-white border-neutral-200 text-center">
+        <p className="text-sm text-slate-600">Les scores sont temporairement indisponibles.</p>
+      </Card>
     ) : (
       <Tabs defaultValue={defaultTab}>
         <TabsList
@@ -273,6 +374,7 @@ return (
                   key={matchKey(match, index)}
                   match={match}
                   status="live"
+                  cached={cached}
                 />
               ))}
             </div>
@@ -324,7 +426,7 @@ return (
 );
 }
 
-function MatchRow({ match, status }) {
+function MatchRow({ match, status, cached = false }) {
 const home = match?.home_team || "Équipe domicile";
 const away = match?.away_team || "Équipe extérieure";
 
@@ -384,7 +486,7 @@ match?.sport_key ||
     {status === "live" && (
       <span className="flex items-center gap-1 text-rose-600 normal-case font-bold shrink-0">
         <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
-        LIVE
+        {cached ? "Dernier score" : "LIVE"}
       </span>
     )}
 
