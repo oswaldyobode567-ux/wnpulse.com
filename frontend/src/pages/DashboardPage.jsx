@@ -80,10 +80,33 @@ function groupByLeague(matches) {
     return ia - ib;
   });
 }
+
+function getAvailablePickCounts(matches) {
+  const picksByMatch = new Map();
+  for (const [index, match] of (Array.isArray(matches) ? matches : []).entries()) {
+    const prediction = match?.prediction;
+    if (!prediction || prediction.is_finished || match.is_finished || match.completed) continue;
+    // L'API fournit ce booléen avant de masquer le détail des picks Pro.
+    // Sur un ancien serveur, ne compter que les sélections effectivement reçues.
+    const available = typeof prediction.has_prediction === "boolean"
+      ? prediction.has_prediction
+      : typeof prediction.pick === "string" && prediction.pick.trim().length > 0;
+    if (!available) continue;
+    const key = String(match.id || prediction.match_id || `match-${index}`);
+    const accessible = prediction.locked !== true;
+    picksByMatch.set(key, Boolean(picksByMatch.get(key)) || accessible);
+  }
+  const total = picksByMatch.size;
+  const accessible = [...picksByMatch.values()].filter(Boolean).length;
+  return { total, accessible, locked: total - accessible };
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const navigate = useNavigate();
   const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
+  const pickCounts = useMemo(() => getAvailablePickCounts(matches), [matches]);
+  const picksLoading = loading && pickCounts.total === 0;
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
   const [validated,   setValidated]  = useState([]);
@@ -113,7 +136,8 @@ export default function DashboardPage() {
   });
   const [showAll,     setShowAll]    = useState(false);
   const [refreshing,  setRefreshing] = useState(false);
-  const isFree  = !user?.subscription_tier || user.subscription_tier === "free";
+  const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
+  const isFree = subscriptionTier === "free" && !user?.is_admin;
   const isAdmin = Boolean(user?.is_admin);
   useEffect(() => {
     let ok = true;
@@ -196,12 +220,16 @@ export default function DashboardPage() {
               </h1>
               <p className="mt-2 text-slate-300 text-sm">
                 {isFree
-                  ? "1 pick gratuit disponible · Passe Pro pour tout débloquer"
-                  : `${(user?.subscription_tier||"pro").toUpperCase()} actif · Tous les picks disponibles`}
+                  ? picksLoading
+                    ? "Chargement des pronostics…"
+                    : pickCounts.total === 0
+                      ? "Aucun pick disponible actuellement"
+                      : "Accès gratuit · Passe Pro pour débloquer les picks réservés"
+                  : `${(isAdmin ? "admin" : subscriptionTier).toUpperCase()} actif · Tous les picks disponibles`}
               </p>
             </div> <div className="bg-white/10 rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
-                <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Picks</div>
-                <div className="font-heading text-2xl font-black text-white">{topPicks.length}</div>
+                <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Picks disponibles</div>
+                <div className="font-heading text-2xl font-black text-white" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : pickCounts.total}</div>
               </div>
               {liveCount > 0 && (
                 <div className="bg-rose-500/20 rounded-xl ring-1 ring-rose-400/40 px-4 py-2.5 text-center">
@@ -327,9 +355,9 @@ export default function DashboardPage() {
             <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-orange-500 to-rose-500 grid place-items-center text-white flex-shrink-0">
               <Sparkles className="h-5 w-5" />
             </div>     <div className="flex-1">
-              <div className="font-heading font-bold text-slate-900">Tu as vu ton pick gratuit du jour.</div>
+              <div className="font-heading font-bold text-slate-900">Débloque tous les pronostics.</div>
               <div className="text-sm text-slate-700">
-                <strong>{Math.max(0, topPicks.length - 1)}</strong> autres picks t'attendent · Analyse complète · Combos · Super Combos
+                <strong>{picksLoading ? "…" : pickCounts.locked}</strong> pick{pickCounts.locked > 1 ? "s" : ""} réservé{pickCounts.locked > 1 ? "s" : ""} actuellement · Analyse complète · Combos · Super Combos
               </div>
             </div>
             <Button
