@@ -15,6 +15,8 @@ import {
   Smartphone,
   Lock,
   Gift,
+  Pause,
+  Play,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
@@ -22,6 +24,7 @@ import api from "@/lib/api";
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
 const DAILY_RESULTS_ENDPOINT = "/track-record/highlights";
 const RESULTS_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+const STADIUM_IMAGE = "/winpulse-stade-supporters.webp";
 
 // Styles limités à la vitrine ; aucune dépendance d'animation supplémentaire.
 const LANDING_MOTION_CSS = `
@@ -78,6 +81,74 @@ const LANDING_MOTION_CSS = `
   @keyframes wp-landing-sheen {
     to { transform: translateX(120%); }
   }
+  .wp-landing .wp-stadium-hero {
+    position: relative; isolation: isolate; overflow: hidden;
+    background: #07111f; color: #fff;
+  }
+  .wp-landing .wp-stadium-scene { position: absolute; inset: 0; z-index: -1; overflow: hidden; pointer-events: none; }
+  .wp-landing .wp-stadium-photo {
+    position: absolute; inset: 0; height: 100%; width: 100%;
+    object-fit: cover; object-position: 70% center;
+    animation: wp-stadium-camera 16s ease-in-out infinite alternate;
+  }
+  .wp-landing .wp-stadium-shade {
+    position: absolute; inset: 0;
+    background: linear-gradient(90deg, rgb(4 11 21 / .98) 0%, rgb(4 11 21 / .91) 30%, rgb(4 11 21 / .55) 58%, rgb(4 11 21 / .08) 100%), linear-gradient(0deg, rgb(4 11 21 / .85), transparent 42%);
+  }
+  .wp-landing .wp-stadium-beam {
+    position: absolute; top: -25%; left: 72%; width: 12%; height: 140%;
+    opacity: .18; transform-origin: 50% 5%;
+    background: linear-gradient(180deg, rgb(255 171 71 / .6), transparent 85%);
+    clip-path: polygon(42% 0, 58% 0, 100% 100%, 0 100%);
+    animation: wp-stadium-light 9s ease-in-out infinite alternate;
+  }
+  .wp-landing .wp-stadium-beam-second { left: 91%; opacity: .12; animation-delay: -4s; animation-duration: 13s; }
+  .wp-landing .wp-stadium-particle {
+    position: absolute; left: var(--wp-particle-left); bottom: -10px;
+    width: 3px; height: 3px; border-radius: 50%; background: #ffd9a0;
+    animation: wp-stadium-particle 9s linear infinite;
+    animation-delay: var(--wp-particle-delay); opacity: 0;
+  }
+  .wp-landing .wp-stadium-inner { position: relative; width: 100%; max-width: 1280px; margin: 0 auto; padding: 88px 32px 96px; min-height: 740px; display: flex; align-items: center; }
+  .wp-landing .wp-stadium-copy { min-width: 0; width: 58%; max-width: 690px; }
+  .wp-landing .wp-stadium-badge { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 99px; color: #fed7aa; border: 1px solid rgb(251 146 60 / .45); background: rgb(4 11 21 / .7); font-size: 12px; font-weight: 700; letter-spacing: .06em; margin-bottom: 24px; }
+  .wp-landing .wp-stadium-title { margin: 0; font-size: clamp(2.4rem, 4.9vw, 4.5rem); font-weight: 900; letter-spacing: -.045em; line-height: 1.05; color: #fff; text-wrap: balance; }
+  .wp-landing .wp-stadium-title span { display: block; color: #ffb05c; }
+  .wp-landing .wp-stadium-tagline { margin: 22px 0 0; font-size: clamp(1.2rem, 2vw, 1.65rem); line-height: 1.4; font-weight: 700; color: #fff; }
+  .wp-landing .wp-stadium-description { margin: 18px 0 0; max-width: 530px; font-size: 16px; line-height: 1.75; color: #d5dce6; }
+  .wp-landing .wp-stadium-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+  .wp-landing .wp-stadium-primary, .wp-landing .wp-stadium-secondary { min-height: 52px; height: auto; padding: 14px 22px; border-radius: 12px; white-space: normal; font-size: 15px; font-weight: 700; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+  .wp-landing .wp-stadium-primary { background: linear-gradient(105deg, #f97316, #f43f5e); color: #fff; border: 0; box-shadow: 0 12px 35px rgb(249 115 22 / .22); }
+  .wp-landing .wp-stadium-secondary { background: rgb(4 11 21 / .75); color: #fff; border: 1px solid rgb(255 255 255 / .35); }
+  .wp-landing .wp-stadium-secondary:hover { background: #1d293b; color: #fff; }
+  .wp-landing .wp-stadium-proof { display: flex; flex-wrap: wrap; gap: 10px 22px; margin-top: 24px; font-size: 12px; color: #d5dce6; }
+  .wp-landing .wp-stadium-proof span { display: inline-flex; align-items: center; gap: 6px; }
+  .wp-landing .wp-stadium-results { display: inline-flex; min-height: 44px; align-items: center; gap: 8px; margin-top: 12px; color: #f6d0a0; font-size: 13px; font-weight: 600; }
+  .wp-landing .wp-stadium-note { margin-top: 12px; color: #b6c0cd; font-size: 11px; line-height: 1.6; }
+  .wp-landing .wp-stadium-controls { position: absolute; right: 24px; bottom: 20px; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 10px; max-width: calc(100% - 48px); }
+  .wp-landing .wp-stadium-control { display: inline-flex; align-items: center; gap: 7px; min-height: 44px; padding: 10px 14px; border-radius: 99px; border: 1px solid rgb(255 255 255 / .25); background: rgb(4 11 21 / .85); color: #fff; font-size: 12px; cursor: pointer; }
+  .wp-landing .wp-stadium-control:disabled { opacity: 1; cursor: default; }
+  .wp-landing .wp-stadium-hint { margin: 0; padding: 5px 9px; border-radius: 5px; background: rgb(4 11 21 / .85); color: #d5dce6; font-size: 11px; }
+  .wp-landing .wp-stadium-hero[data-motion-paused="true"] .wp-scene-motion { animation-play-state: paused !important; }
+  @keyframes wp-stadium-camera { from { transform: scale(1.015) translateX(0); } to { transform: scale(1.09) translateX(-.7%); } }
+  @keyframes wp-stadium-light { from { transform: rotate(-20deg); } to { transform: rotate(18deg); } }
+  @keyframes wp-stadium-particle { 0% { opacity: 0; transform: translateY(0); } 20% { opacity: .65; } 80% { opacity: .3; } 100% { opacity: 0; transform: translate3d(35px, -560px, 0); } }
+  @media (max-width: 900px) {
+    .wp-landing .wp-stadium-inner { padding: 68px 24px 90px; min-height: 720px; }
+    .wp-landing .wp-stadium-copy { width: 72%; }
+    .wp-landing .wp-stadium-photo { object-position: 80% center; }
+    .wp-landing .wp-stadium-shade { background: linear-gradient(90deg, rgb(4 11 21 / .95), rgb(4 11 21 / .62) 70%, rgb(4 11 21 / .3)), linear-gradient(0deg, rgb(4 11 21 / .8), transparent); }
+  }
+  @media (max-width: 600px) {
+    .wp-landing .wp-stadium-inner { padding: 56px 20px 112px; min-height: 780px; align-items: flex-start; }
+    .wp-landing .wp-stadium-copy { width: 100%; }
+    .wp-landing .wp-stadium-photo { object-position: 79% center; }
+    .wp-landing .wp-stadium-shade { background: linear-gradient(0deg, #07111f 0%, rgb(4 11 21 / .87) 44%, rgb(4 11 21 / .7) 100%); }
+    .wp-landing .wp-stadium-title { font-size: clamp(2.15rem, 9.6vw, 3.25rem); }
+    .wp-landing .wp-stadium-actions { flex-direction: column; }
+    .wp-landing .wp-stadium-primary, .wp-landing .wp-stadium-secondary { width: 100%; }
+    .wp-landing .wp-stadium-controls { left: 20px; right: 20px; max-width: none; justify-content: flex-start; }
+  }
   @media (prefers-reduced-motion: reduce) {
     .wp-landing *, .wp-landing *::before, .wp-landing *::after {
       animation: none !important;
@@ -88,6 +159,19 @@ const LANDING_MOTION_CSS = `
     .wp-landing .wp-interactive-card:hover { transform: none !important; }
   }
 `;
+
+function useReducedMotionPreference() {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const preference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (!preference) return;
+    const update = () => setReduced(preference.matches);
+    update();
+    preference.addEventListener?.("change", update);
+    return () => preference.removeEventListener?.("change", update);
+  }, []);
+  return reduced;
+}
 
 function useLandingMotion() {
   const root = useRef(null);
@@ -184,6 +268,9 @@ function readDailyResults(data, date, now = new Date()) {
 
 export default function LandingPage() {
   const motionRoot = useLandingMotion();
+  const reducedMotion = useReducedMotionPreference();
+  const [motionPaused, setMotionPaused] = useState(false);
+  const [stadiumImageFailed, setStadiumImageFailed] = useState(false);
   const navigate = useNavigate();
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
@@ -342,66 +429,53 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <section className="relative overflow-hidden wp-gradient-hero">
-        {/* Lumières décoratives : une entrée douce, puis un fond stable. */}
-        <div aria-hidden="true" className="wp-hero-glow absolute -top-32 -right-32 h-96 w-96 rounded-full bg-orange-300/40 blur-3xl pointer-events-none" />
-        <div aria-hidden="true" className="wp-hero-glow absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-rose-300/40 blur-3xl pointer-events-none" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-72 w-72 rounded-full bg-amber-300/20 blur-3xl pointer-events-none" />
-
-        <div className="relative mx-auto w-full min-w-0 max-w-7xl px-4 py-12 sm:px-6 sm:py-24 lg:px-8">
-          <div className="grid min-w-0 gap-10 items-center lg:grid-cols-12">
-            <div className="min-w-0 lg:col-span-7">
-              <div className="wp-enter mb-6 inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-[11px] font-bold text-orange-700 shadow-lg shadow-orange-200/50 sm:text-xs">
-                <span aria-hidden="true" className="h-2 w-2 rounded-full bg-orange-500" />
-                Pronostics · Analyses · Résultats publics
-              </div>
-              <h1 className="wp-enter wp-mobile-hero-title font-heading text-4xl font-black leading-tight tracking-tighter text-slate-900 sm:text-5xl lg:text-6xl" style={{ "--wp-delay": "80ms" }}>
-                Le sport te fait vibrer.{" "}
-                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">Nos analyses t’éclairent.</span>
-              </h1>
-              <p className="wp-enter mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg" style={{ "--wp-delay": "160ms" }}>
-                Découvre les pronostics du jour et nos analyses de matchs. Commence gratuitement,
-                puis passe à Pro pour explorer les sélections et combinés réservés aux abonnés.
-              </p>
-              <div className="wp-enter mt-8 flex flex-col sm:flex-row gap-3" style={{ "--wp-delay": "240ms" }}>
-                <Button
-                  size="lg"
-                  className="wp-action group relative h-auto min-h-12 w-full whitespace-normal border-0 px-5 py-3 text-base text-white shadow-2xl shadow-orange-600/40 wp-gradient-warm sm:w-auto sm:px-8"
-                  onClick={showPicks}
-                  data-testid="hero-cta-btn"
-                >
-                  <span className="absolute inset-0 rounded-md bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  Découvrir les pronostics
-                  <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
-                </Button>
-                <Button
-                  size="lg"
-                  variant="outline"
-                  className="wp-action h-auto min-h-12 w-full whitespace-normal border-slate-300 bg-white px-5 py-3 text-base hover:bg-slate-50 sm:w-auto sm:px-8"
-                  onClick={showPricing}
-                  data-testid="hero-pro-btn"
-                >
-                  Découvrir l’offre Pro
-                </Button>
-              </div>
-              <Link to="/resultats" className="wp-result-link mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-slate-600" data-testid="hero-results-btn">Consulter l’historique complet<ArrowRight className="h-3.5 w-3.5" /></Link>
-              <div className="wp-enter mt-5 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6" style={{ "--wp-delay": "320ms" }}>
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Inscription sans carte
-                </div>
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Résultats publics
-                </div>
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Compte gratuit
-                </div>
-              </div>
+      <section className="wp-stadium-hero" data-motion-paused={motionPaused || reducedMotion} aria-labelledby="stadium-title">
+        <div className="wp-stadium-scene" aria-hidden="true">
+          {!stadiumImageFailed && <img className="wp-stadium-photo wp-scene-motion" src={STADIUM_IMAGE} alt="" width={1672} height={941} fetchPriority="high" decoding="async" onError={() => setStadiumImageFailed(true)} />}
+          <div className="wp-stadium-shade" />
+          <div className="wp-stadium-beam wp-scene-motion" />
+          <div className="wp-stadium-beam wp-stadium-beam-second wp-scene-motion" />
+          {[0, 1, 2, 3, 4, 5, 6].map(index => <i key={index} className="wp-stadium-particle wp-scene-motion" style={{ "--wp-particle-left": `${15 + index * 12}%`, "--wp-particle-delay": `${index * -1.3}s` }} />)}
+        </div>
+        <div className="wp-stadium-inner">
+          <div className="wp-stadium-copy">
+            <div className="wp-enter wp-stadium-badge"><Zap className="h-3.5 w-3.5" aria-hidden="true" />WINPULSE · PRONOSTICS SPORTIFS</div>
+            <h1 id="stadium-title" className="wp-enter wp-stadium-title font-heading" style={{ "--wp-delay": "80ms" }}>
+              Vise la victoire<span>avec nos pronostics.</span>
+            </h1>
+            <p className="wp-enter wp-stadium-tagline" style={{ "--wp-delay": "160ms" }}>Garde une longueur d’avance.</p>
+            <p className="wp-enter wp-stadium-description" style={{ "--wp-delay": "220ms" }}>Découvre nos pronostics sportifs et nos analyses de matchs. Crée ton compte gratuit, puis explore toutes les sélections et les combinés de l’offre Pro.</p>
+            <div className="wp-enter wp-stadium-actions" style={{ "--wp-delay": "280ms" }}>
+              <Button size="lg" className="wp-action wp-stadium-primary" onClick={showPicks} data-testid="hero-cta-btn">Découvrir les pronostics<ArrowRight className="h-4 w-4" aria-hidden="true" /></Button>
+              <Button size="lg" variant="outline" className="wp-action wp-stadium-secondary" onClick={showPricing} data-testid="hero-pro-btn">Découvrir WinPulse Pro</Button>
             </div>
+            <div className="wp-enter wp-stadium-proof" style={{ "--wp-delay": "340ms" }}>
+              <span><CheckCircle2 className="h-3.5 w-3.5 text-orange-300" aria-hidden="true" />Compte gratuit</span>
+              <span><CheckCircle2 className="h-3.5 w-3.5 text-orange-300" aria-hidden="true" />Résultats publics</span>
+              <span><CheckCircle2 className="h-3.5 w-3.5 text-orange-300" aria-hidden="true" />Inscription sans carte</span>
+            </div>
+            <Link to="/resultats" className="wp-result-link wp-stadium-results" data-testid="hero-results-btn">Consulter l’historique complet<ArrowRight className="h-3.5 w-3.5" aria-hidden="true" /></Link>
+            <p className="wp-stadium-note">18+ · Les pronostics restent incertains. Aucun gain garanti.</p>
+          </div>
+        </div>
+        <div className="wp-stadium-controls">
+          <button type="button" className="wp-stadium-control" aria-pressed={motionPaused || reducedMotion} aria-label={reducedMotion ? "Animation désactivée selon tes préférences" : motionPaused ? "Reprendre l’animation du stade" : "Mettre l’animation du stade en pause"} onClick={() => setMotionPaused(value => !value)} disabled={reducedMotion} data-testid="stadium-motion-toggle">
+            {motionPaused || reducedMotion ? <Play className="h-3.5 w-3.5" aria-hidden="true" /> : <Pause className="h-3.5 w-3.5" aria-hidden="true" />}
+            {reducedMotion ? "Animation réduite" : motionPaused ? "Reprendre l’animation" : "Pause animation"}
+          </button>
+          <p className="wp-stadium-hint">Visuel d’ambiance généré par IA</p>
+        </div>
+      </section>
 
-            <div className="wp-enter min-w-0 lg:col-span-5" style={{ "--wp-delay": "160ms" }}>
+      <section className="border-b border-neutral-200 bg-white py-12 sm:py-16">
+        <div className="mx-auto grid w-full min-w-0 max-w-7xl items-center gap-8 px-4 sm:px-6 lg:grid-cols-12 lg:px-8">
+          <div data-wp-reveal className="min-w-0 lg:col-span-5">
+            <span className="text-xs font-bold uppercase tracking-widest text-orange-600">AU CŒUR DE WINPULSE</span>
+            <h2 className="mt-3 font-heading text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Tes prochains matchs.<br />Nos pronostics à découvrir.</h2>
+            <p className="mt-4 max-w-lg text-sm leading-relaxed text-slate-600">Explore les sélections disponibles et retrouve les analyses réservées à Pro. Consulte aussi notre historique public pour voir les résultats gagnants comme perdants.</p>
+            <Button variant="outline" className="wp-action mt-5 h-auto min-h-11 whitespace-normal py-3" onClick={() => navigate(user ? "/app/abonnement" : signupUrl)} data-testid="picks-pro-cta">{user ? "Explorer l’offre Pro" : "Créer mon compte gratuit"}<ArrowRight className="ml-2 h-4 w-4" aria-hidden="true" /></Button>
+          </div>
+            <div className="min-w-0 lg:col-span-7">
               <div id="picks-du-jour" className="relative min-w-0 scroll-mt-24">
                 <Card className="relative min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl sm:p-5">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -445,7 +519,6 @@ export default function LandingPage() {
                 </Card>
               </div>
             </div>
-          </div>
         </div>
       </section>
 
