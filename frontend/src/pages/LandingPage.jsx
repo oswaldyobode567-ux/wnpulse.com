@@ -1,5 +1,5 @@
 import { Link, useNavigate } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import {
@@ -22,6 +22,97 @@ import api from "@/lib/api";
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
 const DAILY_RESULTS_ENDPOINT = "/track-record/highlights";
 const RESULTS_TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+
+// Styles limités à la vitrine ; aucune dépendance d'animation supplémentaire.
+const LANDING_MOTION_CSS = `
+  .wp-landing { overflow-x: clip; }
+  .wp-landing .wp-enter {
+    animation: wp-landing-enter .65s cubic-bezier(.22,1,.36,1) backwards;
+    animation-delay: var(--wp-delay, 0ms);
+  }
+  .wp-landing .wp-revealed {
+    animation: wp-landing-enter .55s cubic-bezier(.22,1,.36,1) backwards;
+    animation-delay: var(--wp-delay, 0ms);
+  }
+  .wp-landing .wp-hero-glow {
+    animation: wp-landing-glow 3.5s ease-out backwards;
+  }
+  .wp-landing .wp-interactive-card {
+    transition: transform .25s ease;
+  }
+  .wp-landing .wp-interactive-card:hover {
+    border-color: rgb(251 146 60 / .65);
+  }
+  .wp-landing .wp-action {
+    position: relative;
+    overflow: hidden;
+    transition: transform .2s ease;
+  }
+  .wp-landing .wp-action::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background: linear-gradient(110deg, transparent 25%, rgb(255 255 255 / .22) 50%, transparent 75%);
+    transform: translateX(-120%);
+  }
+  .wp-landing .wp-action:focus-visible::after {
+    animation: wp-landing-sheen .6s ease-out;
+  }
+  .wp-landing .wp-action:active { transform: scale(.98); }
+  .wp-landing .wp-result-link { text-underline-offset: 4px; }
+  .wp-landing .wp-result-link:hover { text-decoration: underline; }
+  @media (hover: hover) and (pointer: fine) {
+    .wp-landing .wp-interactive-card:hover { transform: translateY(-4px); }
+    .wp-landing .wp-action:hover { transform: translateY(-2px); }
+    .wp-landing .wp-action:hover::after { animation: wp-landing-sheen .6s ease-out; }
+  }
+  @keyframes wp-landing-enter {
+    from { opacity: 0; transform: translate3d(0, 18px, 0); }
+    to { opacity: 1; transform: translate3d(0, 0, 0); }
+  }
+  @keyframes wp-landing-glow {
+    from { opacity: .35; transform: translate3d(0, 20px, 0) scale(.94); }
+    to { opacity: 1; transform: translate3d(0, 0, 0) scale(1); }
+  }
+  @keyframes wp-landing-sheen {
+    to { transform: translateX(120%); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .wp-landing *, .wp-landing *::before, .wp-landing *::after {
+      animation: none !important;
+      transition: none !important;
+      scroll-behavior: auto !important;
+    }
+    .wp-landing .wp-action:hover, .wp-landing .wp-action:active,
+    .wp-landing .wp-interactive-card:hover { transform: none !important; }
+  }
+`;
+
+function useLandingMotion() {
+  const root = useRef(null);
+  useEffect(() => {
+    if (!root.current || typeof window.IntersectionObserver !== "function") return;
+    const preference = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+    if (preference?.matches) return;
+    const observer = new window.IntersectionObserver(entries => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        entry.target.classList.add("wp-revealed");
+        observer.unobserve(entry.target);
+      }
+    }, { threshold: 0.08 });
+    // Le contenu reste visible même si l'observateur n'est pas disponible.
+    root.current.querySelectorAll("[data-wp-reveal]").forEach(node => observer.observe(node));
+    const stop = () => { if (preference?.matches) observer.disconnect(); };
+    preference?.addEventListener?.("change", stop);
+    return () => {
+      observer.disconnect();
+      preference?.removeEventListener?.("change", stop);
+    };
+  }, []);
+  return root;
+}
 
 function isAvailablePick(row) {
   if (!row || typeof row !== "object") return false;
@@ -92,6 +183,7 @@ function readDailyResults(data, date, now = new Date()) {
 }
 
 export default function LandingPage() {
+  const motionRoot = useLandingMotion();
   const navigate = useNavigate();
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
@@ -112,6 +204,13 @@ export default function LandingPage() {
   function showPicks() {
     document.getElementById("picks-du-jour")?.scrollIntoView({
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "start",
+    });
+  }
+
+  function showPricing() {
+    document.getElementById("pricing")?.scrollIntoView({
+      behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth",
       block: "start",
     });
   }
@@ -170,7 +269,8 @@ export default function LandingPage() {
   }, [resultsDate, resultsReloadKey]);
 
   return (
-    <div className="min-h-screen w-full min-w-0 bg-neutral-50">
+    <div ref={motionRoot} className="wp-landing min-h-screen w-full min-w-0 bg-neutral-50">
+      <style>{LANDING_MOTION_CSS}</style>
       <header className="sticky top-0 z-50 w-full max-w-full border-b border-neutral-200 bg-white/90 backdrop-blur-xl">
         <div className="mx-auto flex h-16 w-full max-w-7xl items-center gap-2 px-3 sm:px-6 lg:px-8">
           <Link
@@ -204,8 +304,8 @@ export default function LandingPage() {
                 data-testid="public-blog-link"
               >
                 Blog
-                <span className="ml-1.5 rounded bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white animate-pulse">
-                  Live
+                <span className="ml-1.5 rounded bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+                  Articles
                 </span>
               </Button>
             </Link>
@@ -243,51 +343,52 @@ export default function LandingPage() {
       </header>
 
       <section className="relative overflow-hidden wp-gradient-hero">
-        {/* Floating decorative blobs */}
-        <div className="absolute -top-32 -right-32 h-96 w-96 rounded-full bg-orange-300/40 blur-3xl pointer-events-none animate-pulse" style={{ animationDuration: "8s" }} />
-        <div className="absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-rose-300/40 blur-3xl pointer-events-none animate-pulse" style={{ animationDuration: "10s" }} />
+        {/* Lumières décoratives : une entrée douce, puis un fond stable. */}
+        <div aria-hidden="true" className="wp-hero-glow absolute -top-32 -right-32 h-96 w-96 rounded-full bg-orange-300/40 blur-3xl pointer-events-none" />
+        <div aria-hidden="true" className="wp-hero-glow absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-rose-300/40 blur-3xl pointer-events-none" />
         <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-72 w-72 rounded-full bg-amber-300/20 blur-3xl pointer-events-none" />
 
         <div className="relative mx-auto w-full min-w-0 max-w-7xl px-4 py-12 sm:px-6 sm:py-24 lg:px-8">
           <div className="grid min-w-0 gap-10 items-center lg:grid-cols-12">
             <div className="min-w-0 lg:col-span-7">
-              <div className="mb-6 inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-[11px] font-bold text-orange-700 shadow-lg shadow-orange-200/50 sm:text-xs">
-                <span className="h-2 w-2 rounded-full bg-rose-500 live-dot" />
-                Analyses du jour · Historique public
+              <div className="wp-enter mb-6 inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-[11px] font-bold text-orange-700 shadow-lg shadow-orange-200/50 sm:text-xs">
+                <span aria-hidden="true" className="h-2 w-2 rounded-full bg-orange-500" />
+                Pronostics · Analyses · Résultats publics
               </div>
-              <h1 className="wp-mobile-hero-title font-heading text-4xl font-black leading-tight tracking-tighter text-slate-900 sm:text-5xl lg:text-6xl">
-                Des pronostics sportifs{" "}
-                <span className="bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">transparents</span>.
+              <h1 className="wp-enter wp-mobile-hero-title font-heading text-4xl font-black leading-tight tracking-tighter text-slate-900 sm:text-5xl lg:text-6xl" style={{ "--wp-delay": "80ms" }}>
+                Le sport te fait vibrer.{" "}
+                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">Nos analyses t’éclairent.</span>
               </h1>
-              <p className="mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg">
-                Consulte les analyses disponibles et notre historique de résultats,
-                pronostics gagnants comme perdants. Commence gratuitement, sans carte bancaire.
+              <p className="wp-enter mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg" style={{ "--wp-delay": "160ms" }}>
+                Découvre les pronostics du jour et nos analyses de matchs. Commence gratuitement,
+                puis passe à Pro pour explorer les sélections et combinés réservés aux abonnés.
               </p>
-              <div className="mt-8 flex flex-col sm:flex-row gap-3">
+              <div className="wp-enter mt-8 flex flex-col sm:flex-row gap-3" style={{ "--wp-delay": "240ms" }}>
                 <Button
                   size="lg"
-                  className="group relative h-12 w-full border-0 px-5 text-base text-white shadow-2xl shadow-orange-600/40 transition-transform hover:scale-[1.02] wp-gradient-warm sm:w-auto sm:px-8"
+                  className="wp-action group relative h-auto min-h-12 w-full whitespace-normal border-0 px-5 py-3 text-base text-white shadow-2xl shadow-orange-600/40 wp-gradient-warm sm:w-auto sm:px-8"
                   onClick={showPicks}
                   data-testid="hero-cta-btn"
                 >
                   <span className="absolute inset-0 rounded-md bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  Voir les pronostics du jour
+                  Découvrir les pronostics
                   <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
                 </Button>
                 <Button
                   size="lg"
                   variant="outline"
-                  className="h-12 w-full border-slate-300 bg-white px-5 text-base hover:bg-slate-50 sm:w-auto sm:px-8"
-                  onClick={() => navigate("/resultats")}
-                  data-testid="hero-results-btn"
+                  className="wp-action h-auto min-h-12 w-full whitespace-normal border-slate-300 bg-white px-5 py-3 text-base hover:bg-slate-50 sm:w-auto sm:px-8"
+                  onClick={showPricing}
+                  data-testid="hero-pro-btn"
                 >
-                  Voir nos résultats
+                  Découvrir l’offre Pro
                 </Button>
               </div>
-              <div className="mt-8 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6">
+              <Link to="/resultats" className="wp-result-link mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-slate-600" data-testid="hero-results-btn">Consulter l’historique complet<ArrowRight className="h-3.5 w-3.5" /></Link>
+              <div className="wp-enter mt-5 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6" style={{ "--wp-delay": "320ms" }}>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Pas de carte bancaire
+                  Inscription sans carte
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
@@ -300,7 +401,7 @@ export default function LandingPage() {
               </div>
             </div>
 
-            <div className="min-w-0 lg:col-span-5">
+            <div className="wp-enter min-w-0 lg:col-span-5" style={{ "--wp-delay": "160ms" }}>
               <div id="picks-du-jour" className="relative min-w-0 scroll-mt-24">
                 <Card className="relative min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl sm:p-5">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -325,7 +426,7 @@ export default function LandingPage() {
                       const confidence = row.confidence == null || row.confidence === "" ? NaN : Number(row.confidence);
                       const showConfidence = !locked && Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
                       return (
-                        <div key={row.id || i} className="min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3 wp-rise">
+                        <div key={row.id || i} className="wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
                           <p className="break-words text-xs leading-relaxed text-slate-500">{row.home_team} vs {row.away_team}{row.sport_title && <span> · {row.sport_title}</span>}</p>
                           <div className="mt-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
                             <p className="min-w-0 break-words text-sm font-semibold text-slate-900">
@@ -349,7 +450,7 @@ export default function LandingPage() {
       </section>
 
       {DAILY_RESULTS_ENDPOINT && (
-      <section id="resultats-hier" aria-labelledby="resultats-hier-title" className="border-y border-neutral-200 bg-white py-12 sm:py-16">
+      <section data-wp-reveal id="resultats-hier" aria-labelledby="resultats-hier-title" className="border-y border-neutral-200 bg-white py-12 sm:py-16">
         <div className="mx-auto w-full min-w-0 max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 flex-col items-start justify-between gap-5 sm:flex-row sm:items-end">
             <div className="min-w-0">
@@ -396,7 +497,7 @@ export default function LandingPage() {
                 ) : (
                   <div className="mt-6 grid min-w-0 gap-4 md:grid-cols-3">
                     {dailyResults.winners.map((row) => (
-                      <Card key={row.id} className="min-w-0 rounded-2xl border-emerald-200 bg-white p-5 shadow-sm" data-testid="yesterday-winner-card">
+                      <Card key={row.id} className="wp-enter wp-interactive-card min-w-0 rounded-2xl border-emerald-200 bg-white p-5 shadow-sm" data-testid="yesterday-winner-card">
                         <div className="flex flex-wrap items-center justify-between gap-2">
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Gagné</span>
                           <span className="text-xs text-slate-500">{new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: RESULTS_TIME_ZONE }).format(new Date(row.start_time))}</span>
@@ -421,7 +522,7 @@ export default function LandingPage() {
       )}
 
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
-        <div className="text-center mb-12">
+        <div data-wp-reveal className="text-center mb-12">
           <div className="inline-flex items-center gap-2 rounded-full bg-rose-50 border border-rose-200 px-3 py-1 text-xs font-bold text-rose-700 mb-4">
             COMMENT UTILISER WINPULSE
           </div>
@@ -449,7 +550,7 @@ export default function LandingPage() {
               emerald: "bg-emerald-50 text-emerald-600 border-emerald-100",
             }[f.color];
             return (
-              <Card key={i} className="bg-white border-neutral-200 p-6 hover:shadow-lg hover:-translate-y-0.5 transition-all">
+              <Card key={i} data-wp-reveal className="wp-interactive-card bg-white border-neutral-200 p-6" style={{ "--wp-delay": `${(i % 3) * 60}ms` }}>
                 <div className={`h-10 w-10 rounded-xl border grid place-items-center mb-4 ${colorMap}`}>
                   <Icon className="h-5 w-5" strokeWidth={2.2} />
                 </div>
@@ -463,7 +564,7 @@ export default function LandingPage() {
 
       <section className="border-t border-neutral-200 bg-white py-12">
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
-          <Card className="border-0 p-6 text-white wp-gradient-warm sm:p-8">
+          <Card data-wp-reveal className="border-0 p-6 text-white wp-gradient-warm sm:p-8">
             <div className="flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-center">
               <div className="min-w-0"><h2 className="flex items-center gap-2 font-heading text-2xl font-bold"><Gift className="h-5 w-5 shrink-0" />Parrainage</h2><p className="mt-2 text-sm leading-relaxed">Retrouve ton code et les conditions du programme dans ton compte.</p></div>
               <Button className="h-auto min-h-11 whitespace-normal bg-white py-3 font-bold text-slate-900 hover:bg-slate-100" onClick={() => navigate(user ? "/app/parrainage" : signupUrl)} data-testid="referral-cta-landing">{user ? "Voir mon code" : "Créer mon compte gratuit"}</Button>
@@ -475,14 +576,14 @@ export default function LandingPage() {
       <section id="pricing" className="bg-slate-950 text-white border-t border-neutral-200 relative overflow-hidden">
         <div className="absolute inset-0 wp-gradient-hero opacity-20" />
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 relative">
-          <div className="text-center mb-12">
+          <div data-wp-reveal className="text-center mb-12">
             <div className="inline-flex items-center gap-2 rounded-full bg-orange-500/10 border border-orange-500/30 px-3 py-1 text-xs font-bold text-orange-400 mb-4">
               ABONNEMENT
             </div>
             <h2 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight">
               Choisis ton accès
             </h2>
-            <p className="mt-3 text-slate-400">Commence avec Free. Consulte les modalités de paiement dans ton espace avant de choisir Pro.</p>
+            <p className="mt-3 text-slate-400">Découvre WinPulse gratuitement. Passe à Pro pour retrouver les pronostics, les combinés et les outils réservés aux abonnés.</p>
           </div>
           <div className="mx-auto grid max-w-4xl gap-5 md:grid-cols-2">
             {[
@@ -513,14 +614,15 @@ export default function LandingPage() {
                   "Montante premium",
                   "Support WhatsApp prioritaire",
                 ],
-                cta: "Choisir Pro",
+                cta: "Passer à Pro",
                 highlight: true,
               },
             ].map((p) => (
               <Card
                 key={p.id}
+                data-wp-reveal
                 data-testid={`pricing-card-${p.id}`}
-                className={`relative p-6 border ${p.highlight
+                className={`wp-interactive-card relative p-6 border ${p.highlight
                   ? "bg-gradient-to-br from-orange-500/15 to-rose-500/10 border-orange-500/40 ring-2 ring-orange-500 shadow-2xl shadow-orange-500/20"
                   : "bg-slate-900/60 border-slate-800"}`}
               >
@@ -545,7 +647,7 @@ export default function LandingPage() {
                 </ul>
                 <Button
                   data-testid={`pricing-cta-${p.id}`}
-                  className={`h-auto min-h-11 w-full whitespace-normal py-3 ${p.highlight
+                  className={`wp-action h-auto min-h-11 w-full whitespace-normal py-3 ${p.highlight
                     ? "wp-gradient-warm text-white border-0 hover:opacity-90"
                     : "bg-white text-slate-900 hover:bg-slate-100"}`}
                   onClick={() => navigate(user ? (p.id === "free" ? "/app" : "/app/abonnement") : signupUrl)}
