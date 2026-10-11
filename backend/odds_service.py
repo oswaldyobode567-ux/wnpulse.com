@@ -5,7 +5,7 @@ CORRECTIONS v7.1 :
 - JAMAIS d'appel API sur requête utilisateur → toujours depuis le cache
 - Filtre matchs amicaux automatique
 - Inclut matchs live et terminés (24h) — ne disparaissent plus
-- Fetch scores GRATUIT (0 crédit) pour les scores live
+- Scores via un endpoint distinct des cotes ; coût selon daysFrom et l'offre fournisseur
 
 CORRECTIONS v8.4 :
 - Integration odds-api.io comme source secondaire de cotes (ligues mineures)
@@ -1374,13 +1374,143 @@ async def refresh_matches_worker(db) -> Dict:
     }
 
 
+class LiveScoresProviderError(RuntimeError):
+    """Code de diagnostic public, sans clé API ni contenu fournisseur."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(code)
+
+
+async def fetch_live_scores(db) -> List[Dict]:
+    """Collecte dédiée au Live : cache distinct, durée bornée et erreurs explicites.
+
+    La réconciliation du Track Record conserve son propre cache all_scores.
+    Les scores ne sont jamais remplacés par une fausse réponse vide après panne.
+    """
+    if not ODDS_API_KEY:
+        raise LiveScoresProviderError("provider_not_configured")
+
+    odds_cache = await db.odds_cache.find_one({"_id": "all_matches"})
+    keys = list(dict.fromkeys(
+        row.get("sport_key") for row in (odds_cache or {}).get("data", [])
+        if isinstance(row, dict) and isinstance(row.get("sport_key"), str)
+        and row["sport_key"].startswith(("soccer_", "basketball_", "tennis_", "icehockey_", "baseball_", "mma_", "americanfootball_"))
+    ))
+    # Sans cache de cotes, la découverte est elle-même limitée dans le temps.
+    if not keys:
+        try:
+            keys = await asyncio.wait_for(_discover_active_sport_keys(), timeout=5)
+        except asyncio.TimeoutError:
+            keys = []
+    keys = keys or list(dict.fromkeys(REAL_SPORT_KEYS))
+
+    now = datetime.now(timezone.utc)
+    old = await db.scores_cache.find_one({"_id": "live_scores"})
+    succeeded: Dict[str, List[Dict]] = {}
+    failures: Dict[str, str] = {}
+    semaphore = asyncio.Semaphore(5)
+    # Une connexion partagée évite un nouveau handshake pour chaque championnat.
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        async def collect(key):
+            async with semaphore:
+                try:
+                    response = await client.get(
+                        f"{ODDS_API_BASE}/sports/{key}/scores",
+                        params={"apiKey": ODDS_API_KEY, "daysFrom": 1, "dateFormat": "iso"},
+                    )
+                    if response.status_code != 200:
+                        code = "provider_unavailable"
+                        if response.status_code in (401, 403):
+                            try:
+                                provider_code = response.json().get("error_code", "")
+                            except (ValueError, AttributeError):
+                                provider_code = ""
+                            code = "provider_quota_exhausted" if provider_code in ("OUT_OF_USAGE_CREDITS", "USAGE_LIMIT_REACHED") else "provider_access_denied"
+                        elif response.status_code == 429:
+                            code = "provider_rate_limited"
+                        elif response.status_code in (400, 404, 422):
+                            code = "sport_not_supported"
+                        failures[key] = code
+                        return
+                    rows = response.json()
+                    if not isinstance(rows, list):
+                        failures[key] = "invalid_provider_response"
+                        return
+                    succeeded[key] = [
+                        {**row, "sport_key": row.get("sport_key") or key, "_score_fetched_at": now.isoformat()}
+                        for row in rows if isinstance(row, dict)
+                    ]
+                except (httpx.TimeoutException, asyncio.TimeoutError):
+                    failures[key] = "provider_timeout"
+                except Exception as exc:
+                    # Ne jamais journaliser une URL contenant apiKey.
+                    logger.warning("Live scores %s: %s", key, type(exc).__name__)
+                    failures[key] = "provider_unavailable"
+
+        tasks = [asyncio.create_task(collect(key)) for key in keys]
+        try:
+            _done, pending = await asyncio.wait(tasks, timeout=30)
+            for task in pending:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    for key in keys:
+        if key not in succeeded and key not in failures:
+            failures[key] = "provider_timeout"
+    if not succeeded:
+        codes = set(failures.values())
+        code = next((c for c in ("provider_quota_exhausted", "provider_access_denied", "provider_rate_limited", "provider_timeout", "sport_not_supported") if c in codes), "provider_unavailable")
+        raise LiveScoresProviderError(code)
+
+    rows = [row for items in succeeded.values() for row in items]
+    # Conserver au maximum cinq minutes les compétitions en échec, sans modifier
+    # leur timestamp réel ni les présenter comme fraîchement collectées.
+    for row in (old or {}).get("data", []):
+        if not isinstance(row, dict) or row.get("sport_key") not in failures:
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(row.get("_score_fetched_at") or old.get("updated_at")).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            if 0 <= (now - stamp).total_seconds() <= 300:
+                rows.append(row)
+        except (ValueError, TypeError):
+            continue
+    deduplicated = {}
+    for index, row in enumerate(rows):
+        identity = str(row.get("id") or f"{row.get('sport_key')}:{row.get('home_team')}:{row.get('away_team')}:{row.get('commence_time')}:{index}")
+        deduplicated[identity] = row
+    rows = list(deduplicated.values())
+    # Pour l'expiration du snapshot, utiliser le plus ancien score conservé.
+    oldest = min((row.get("_score_fetched_at", now.isoformat()) for row in rows), default=now.isoformat())
+    await db.scores_cache.update_one(
+        {"_id": "live_scores"},
+        {"$set": {"data": rows, "updated_at": oldest, "collected_at": now.isoformat(),
+                  "partial": bool(failures), "failed_sports": len(failures),
+                  "sport_keys": list(succeeded)}},
+        upsert=True,
+    )
+    # Publier le cache AVANT l'archivage : une archive lente ne bloque pas le Live.
+    try:
+        await asyncio.wait_for(_archive_scores(db, rows), timeout=10)
+    except asyncio.TimeoutError:
+        logger.warning("Live score archive: timeout; snapshot already published")
+    return rows
+
+
 async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dict]:
     """Fetch scores live/terminés depuis The Odds API.
 
     The Odds API limite ``daysFrom`` aux valeurs 1..3. On borne donc toujours
     explicitement la valeur et on journalise les erreurs au lieu de les masquer.
-    L'endpoint scores ne consomme pas les crédits d'odds, il peut donc être utilisé
-    régulièrement pour fiabiliser le Track Record.
+    L'endpoint scores consomme des crédits fournisseur : daysFrom coûte actuellement
+    deux crédits par appel. Le cache limite les appels de réconciliation.
     """
     if not ODDS_API_KEY or not sport_key:
         return []
