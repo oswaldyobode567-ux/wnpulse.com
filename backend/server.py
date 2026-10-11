@@ -40,6 +40,7 @@ from auth import (
 )
 from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
+    fetch_live_scores,
     fetch_odds_api_io_scores_map, diagnose_sport_key,
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
@@ -4550,21 +4551,22 @@ async def admin_sweep_expired_simple(key: str = Header(default="", alias="X-Admi
 
 LIVE_SCORES_FRESH_SECONDS = 60
 LIVE_SCORES_MAX_AGE_SECONDS = 5 * 60
-LIVE_SCORES_REFRESH_TIMEOUT_SECONDS = 120
+LIVE_SCORES_REFRESH_TIMEOUT_SECONDS = 60
 _live_scores_refresh_task = None
 _live_scores_retry_at = 0.0
 _live_scores_refresh_error = False
+_live_scores_error_code = None
 
 
 async def _refresh_live_scores_in_background():
     """La collecte fournisseur et l'archivage ne bloquent plus la page Live."""
-    global _live_scores_retry_at, _live_scores_refresh_error
+    global _live_scores_retry_at, _live_scores_refresh_error, _live_scores_error_code
     ran = False
 
     async def collect():
         nonlocal ran
         ran = True
-        return await fetch_all_scores(db)
+        return await fetch_live_scores(db)
 
     try:
         await asyncio.wait_for(
@@ -4576,12 +4578,15 @@ async def _refresh_live_scores_in_background():
         )
         if ran:
             _live_scores_refresh_error = False
+            _live_scores_error_code = None
+            _live_scores_retry_at = time.monotonic() + LIVE_SCORES_FRESH_SECONDS
         else:
             _live_scores_retry_at = time.monotonic() + 5
-    except Exception:
+    except Exception as exc:
         # Conserver le dernier cache valide et temporiser les nouvelles tentatives.
         _live_scores_refresh_error = True
-        _live_scores_retry_at = time.monotonic() + 30
+        _live_scores_error_code = getattr(exc, "code", "provider_timeout" if isinstance(exc, asyncio.TimeoutError) else "scores_service_unavailable")
+        _live_scores_retry_at = time.monotonic() + 60
     finally:
         if ran:
             try:
@@ -4606,7 +4611,15 @@ def _start_live_scores_refresh():
 async def get_scores(snapshot: bool = False):
     # Lire directement Mongo : fetch_all_scores archive même un cache frais,
     # puis attend les réponses de toutes les compétitions si le cache a expiré.
-    cached = await db.scores_cache.find_one({"_id": "all_scores"})
+    try:
+        cached = await asyncio.wait_for(db.scores_cache.find_one({"_id": "live_scores"}), timeout=3)
+        if cached is None:
+            cached = await asyncio.wait_for(db.scores_cache.find_one({"_id": "all_scores"}), timeout=3)
+    except Exception:
+        data = {"scores": [], "updated_at": None, "stale": True, "refreshing": False,
+                "status": "error", "error_code": "scores_cache_unavailable", "retry_after": 60}
+        return JSONResponse(content=data if snapshot else [], status_code=503,
+                            headers={"Cache-Control": "no-store", "Retry-After": "60"})
     scores = cached.get("data") if cached else None
     updated_at = cached.get("updated_at") if cached else None
     age = float("inf")
@@ -4615,12 +4628,17 @@ async def get_scores(snapshot: bool = False):
             updated = datetime.fromisoformat(str(updated_at).replace("Z", "+00:00"))
             if updated.tzinfo is None:
                 updated = updated.replace(tzinfo=timezone.utc)
-            age = max(0.0, (datetime.now(timezone.utc) - updated).total_seconds())
+            elapsed = (datetime.now(timezone.utc) - updated).total_seconds()
+            age = elapsed if elapsed >= 0 else float("inf")
         except (TypeError, ValueError):
             pass
 
+    # Un cache de réconciliation ciblé peut être partiel : il sert uniquement
+    # d'aperçu temporaire pendant la première collecte dédiée au Live.
+    dedicated = bool(cached and cached.get("_id") == "live_scores")
+    partial = bool(cached and cached.get("partial")) or not dedicated
     valid = isinstance(scores, list) and age <= LIVE_SCORES_MAX_AGE_SECONDS
-    stale = not valid or age >= LIVE_SCORES_FRESH_SECONDS
+    stale = not valid or age >= LIVE_SCORES_FRESH_SECONDS or partial or _live_scores_refresh_error
     if stale:
         _start_live_scores_refresh()
     refreshing = bool(_live_scores_refresh_task and not _live_scores_refresh_task.done())
@@ -4633,6 +4651,9 @@ async def get_scores(snapshot: bool = False):
             "stale": stale,
             "refreshing": refreshing,
             "status": "ready" if valid else ("error" if _live_scores_refresh_error else "warming"),
+            "partial": partial,
+            "error_code": _live_scores_error_code if _live_scores_refresh_error else None,
+            "retry_after": max(3, int(_live_scores_retry_at - time.monotonic()) + 1) if _live_scores_retry_at > time.monotonic() else 3,
         }
     # /scores reste compatible avec les clients existants : un tableau JSON.
     return JSONResponse(content=data, status_code=status_code, headers={"Cache-Control": "no-store"})
