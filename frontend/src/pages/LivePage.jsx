@@ -30,6 +30,24 @@ import LiveDataBadge from "@/components/LiveDataBadge";
 const REFRESH_INTERVAL_MS = 45_000;
 const LIVE_CACHE_KEY = "winpulse_live_scores_v2";
 const LIVE_CACHE_MAX_AGE_MS = 5 * 60_000;
+const LIVE_WARMUP_MAX_MS = 90_000;
+
+function scoresErrorMessage(code, status) {
+const messages = {
+  provider_not_configured: "Le service de scores n’est pas configuré. Contactez l’équipe WinPulse.",
+  provider_access_denied: "Le fournisseur refuse l’accès aux scores. L’équipe WinPulse doit vérifier sa configuration.",
+  provider_quota_exhausted: "Le quota du fournisseur de scores est épuisé. L’équipe WinPulse doit rétablir le service.",
+  provider_rate_limited: "Le fournisseur limite les demandes. Une nouvelle tentative sera effectuée automatiquement.",
+  provider_timeout: "Le fournisseur de scores met trop de temps à répondre. Nouvelle tentative automatique à venir.",
+  scores_cache_unavailable: "Le service de scores est temporairement indisponible. Nouvelle tentative automatique à venir.",
+  sport_not_supported: "Les scores de ces compétitions ne sont pas disponibles auprès du fournisseur.",
+};
+if (messages[code]) return messages[code];
+if (status === 401 || status === 403) return "Votre session a expiré ou l’accès est refusé. Reconnectez-vous pour réessayer.";
+if (status === 404) return "Le service de scores n’est pas disponible sur cette version du serveur.";
+if (code === "ECONNABORTED" || code === "ETIMEDOUT") return "Le serveur met trop de temps à répondre. Nouvelle tentative automatique à venir.";
+return "Les scores ne peuvent pas être actualisés pour le moment. Nouvelle tentative automatique à venir.";
+}
 
 function readCachedScores() {
 try {
@@ -100,6 +118,7 @@ const [error, setError] = useState("");
 const mountedRef = useRef(false);
 const requestRef = useRef(null);
 const errorToastShownRef = useRef(false);
+const warmupStartedRef = useRef(null);
 
 const load = useCallback(async ({ silent = false } = {}) => {
 if (requestRef.current) return;
@@ -109,17 +128,25 @@ requestRef.current = controller;
 setRefreshing(true);
 
 try {
-  const { data } = await api.get("/scores", {
+  const response = await api.get("/scores", {
     params: { snapshot: true },
     timeout: 12_000,
     signal: controller.signal,
   });
+  const { data } = response;
 
   if (!mountedRef.current || controller.signal.aborted) return;
   // Compatibilité si le frontend est déployé avant le nouveau serveur.
   const legacy = Array.isArray(data);
-  const status = legacy ? "ready" : data?.status;
+  const status = legacy ? (response.status === 202 ? "warming" : "ready") : data?.status;
   if (status === "warming") {
+    if (warmupStartedRef.current === null) warmupStartedRef.current = Date.now();
+    if (Date.now() - warmupStartedRef.current >= LIVE_WARMUP_MAX_MS) {
+      setAwaitingRefresh(false);
+      setCached(true);
+      setError("La préparation des scores prend plus de temps que prévu. Une nouvelle tentative sera effectuée automatiquement.");
+      return;
+    }
     setAwaitingRefresh(true);
     setCached(true);
     setError("");
@@ -130,22 +157,26 @@ try {
   }
   const nextScores = legacy ? data : data.scores;
   const updatedAt = legacy ? null : data.updated_at;
+  warmupStartedRef.current = null;
 
-  setScores(nextScores);
+  const validScores = nextScores.filter(match => match && typeof match === "object" && !Array.isArray(match));
+  setScores(validScores);
   setRefreshedAt(updatedAt);
-  setCached(legacy || Boolean(data.stale));
+  setCached(legacy || Boolean(data.stale) || Boolean(data.partial));
   setAwaitingRefresh(!legacy && Boolean(data.refreshing));
-  setError("");
-  if (updatedAt) writeCachedScores(nextScores, updatedAt);
+  setError(!legacy && data.error_code ? scoresErrorMessage(data.error_code) : !legacy && data.partial ? "Certaines compétitions ne sont pas disponibles. Les scores reçus restent affichés." : "");
+  if (updatedAt) writeCachedScores(validScores, updatedAt);
   errorToastShownRef.current = false;
 } catch (requestError) {
   if (!mountedRef.current || controller.signal.aborted) return;
 
   setAwaitingRefresh(false);
+  warmupStartedRef.current = null;
   setCached(true);
-  setError("Les scores ne peuvent pas être actualisés pour le moment. Réessayez.");
+  const message = scoresErrorMessage(requestError?.response?.data?.error_code || requestError?.code, requestError?.response?.status);
+  setError(message);
   if (!silent || !errorToastShownRef.current) {
-    toast.error("Impossible de charger les scores en direct");
+    toast.error(message);
     errorToastShownRef.current = true;
   }
 } finally {
