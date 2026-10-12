@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
@@ -12,6 +12,39 @@ import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { toast } from "sonner";
+
+function analysisPayload(response) {
+  const value = response?.ai_analysis ?? response?.analysis;
+  if (typeof value === "string" && value.trim()) {
+    return { verdict: value.trim(), key_factors: [], source: "unknown" };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const verdict = typeof value.verdict === "string" ? value.verdict : typeof value.summary === "string" ? value.summary : "";
+  const factors = Array.isArray(value.key_factors) ? value.key_factors.filter(item => typeof item === "string" && item.trim()) : [];
+  if (!verdict.trim() && !factors.length) return null;
+  return { ...value, verdict, key_factors: factors,
+    risk_alert: typeof value.risk_alert === "string" ? value.risk_alert : "",
+    alternative_bet: typeof value.alternative_bet === "string" ? value.alternative_bet : "" };
+}
+
+function readableNumber(value, suffix = "") {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return "Non communiqué";
+  const number = Number(value);
+  return Number.isFinite(number) ? `${new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 1 }).format(number)}${suffix}` : "Non communiqué";
+}
+
+function pickExplanation(prediction) {
+  const pick = String(prediction?.pick || "");
+  const market = `${prediction?.market || ""} ${prediction?.market_label || ""} ${pick}`.toLowerCase();
+  if (/double.chance/.test(market)) return "Cette sélection couvre deux issues du match : celles indiquées dans le pronostic. Elle ne désigne pas nécessairement un vainqueur unique.";
+  if (/draw_no_bet|nul rembours/.test(market)) return "L’équipe indiquée doit gagner. Si la rencontre se termine sur un nul, la mise est remboursée selon les règles du marché.";
+  if (/btts|équipes marquent/.test(market)) return "Le pronostic porte sur le fait que les deux équipes marquent ou non pendant la période indiquée par le marché.";
+  if (/handicap|spreads/.test(market)) return "Le résultat est évalué après application du handicap indiqué dans la sélection. La période et les règles de règlement du bookmaker sont à vérifier.";
+  if (/total|plus de|moins de/.test(market)) return `La sélection « ${pick} » porte sur le total de buts ou de points pour les équipes et la période indiquées par le marché. Elle ne dépend pas uniquement du vainqueur de la rencontre.`;
+  if (/h2h|vainqueur|1x2|victoire/.test(market)) return /nul|draw/i.test(pick) ? "La sélection prévoit un match nul pendant la période indiquée par le marché." : `La sélection prévoit la victoire de ${pick}, selon la période et les règles du marché.`;
+  return `La sélection « ${pick} » décrit l’événement attendu dans le marché indiqué. Vérifie la période et les règles de règlement du bookmaker.`;
+}
+
 export default function MatchDetailPage() {
   const { matchId } = useParams();
   const navigate = useNavigate();
@@ -20,23 +53,53 @@ export default function MatchDetailPage() {
   const [analysis, setAnalysis] = useState(null);
   const [loadingMatch, setLoadingMatch] = useState(true);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
+  const [matchError, setMatchError] = useState("");
+  const [analysisError, setAnalysisError] = useState("");
+  const analysisRequest = useRef(null);
   const [payState, setPayState] = useState({ isOpen: false, tier: "PRO" });
   const isAdmin = Boolean(user?.is_admin);
   useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    analysisRequest.current?.abort();
+    analysisRequest.current = null;
+    setData(null);
+    setAnalysis(null);
+    setAnalysisError("");
+    setMatchError("");
+    setLoadingAnalysis(false);
     setLoadingMatch(true);
-    api.get(`/matches/${matchId}`)
-      .then((r) => setData(r.data))
-      .finally(() => setLoadingMatch(false));
+    api.get(`/matches/${encodeURIComponent(matchId)}`, { signal: controller.signal, timeout: 15_000 })
+      .then((r) => { if (active) setData(r.data); })
+      .catch(error => {
+        if (!active || controller.signal.aborted) return;
+        setMatchError(error?.response?.status === 404 ? "Cette rencontre n’est plus disponible dans les matchs actuels." : "La rencontre ne peut pas être chargée pour le moment. Réessaie depuis le dashboard.");
+      })
+      .finally(() => { if (active) setLoadingMatch(false); });
+    return () => { active = false; controller.abort(); analysisRequest.current?.abort(); analysisRequest.current = null; };
   }, [matchId]);
   const fetchAnalysis = async () => {
+    if (analysisRequest.current) return;
+    const controller = new AbortController();
+    analysisRequest.current = controller;
+    setAnalysisError("");
     setLoadingAnalysis(true);
     try {
-      const { data: a } = await api.get(`/matches/${matchId}/analysis`);
-      setAnalysis(a.analysis);
+      const { data: a } = await api.get(`/matches/${encodeURIComponent(matchId)}/analysis`, { signal: controller.signal, timeout: 20_000 });
+      if (controller.signal.aborted || analysisRequest.current !== controller) return;
+      const content = analysisPayload(a);
+      if (!content) throw new Error("EMPTY_ANALYSIS");
+      setAnalysis(content);
     } catch (e) {
-      // ignore
+      if (controller.signal.aborted || analysisRequest.current !== controller) return;
+      setAnalysisError(e?.response?.status === 403
+        ? "Le serveur réserve cette analyse à Pro. L’explication du pronostic reste disponible ci-dessus."
+        : "L’explication complémentaire est indisponible pour le moment. Les informations du pronostic restent affichées.");
     } finally {
-      setLoadingAnalysis(false);
+      if (analysisRequest.current === controller) {
+        analysisRequest.current = null;
+        if (!controller.signal.aborted) setLoadingAnalysis(false);
+      }
     }
   };
   const handleBack = () => {
@@ -60,18 +123,18 @@ export default function MatchDetailPage() {
   if (!data) {
     return (
       <AppLayout>
-        <div className="max-w-4xl mx-auto px-4 py-8">Match introuvable.</div>
+        <div className="max-w-4xl mx-auto px-4 py-8"><p role="alert">{matchError || "Match introuvable."}</p><Button asChild variant="outline" className="mt-4"><Link to="/app">Retour au dashboard</Link></Button></div>
       </AppLayout>
     );
   }
-  const p = data.prediction;
+  const p = data.prediction || {};
   const locked = p.locked || !p.pick;
   const labelColor = {
     safe: "bg-emerald-50 border-emerald-200",
     value: "bg-amber-50 border-amber-200",
     risky: "bg-rose-50 border-rose-200",
   }[p.label] || "bg-orange-50 border-orange-200";
-  const isPaid = user?.subscription_tier && user.subscription_tier !== "free";
+  const isPaid = Boolean(user?.is_admin || (user && String(user.subscription || user.subscription_tier || "free").toLowerCase() !== "free"));
   return (
     <AppLayout>
       <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
@@ -125,7 +188,7 @@ export default function MatchDetailPage() {
               </div>
             </div>
             <Button className="wp-gradient-warm text-white border-0 hover:opacity-90" data-testid="upgrade-cta-match" onClick={() => setPayState({ isOpen: true, tier: "PRO" })}>
-              Débloquer dès 4 900 FCFA / mois <ChevronLeft className="h-4 w-4 ml-2 rotate-180" />
+              Découvrir l’offre Pro <ChevronLeft className="h-4 w-4 ml-2 rotate-180" />
             </Button>
           </Card>
         ) : (
@@ -148,8 +211,8 @@ export default function MatchDetailPage() {
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-200/60">
             <Stat label="Bookmakers" value={p.num_books} />
-            <Stat label="Edge value" value={`${p.edge >= 0 ? "+" : ""}${p.edge}%`} />
-            <Stat label="Prob. pick" value={`${(p.model_probability ?? p.confidence ?? 0).toFixed(1)}%`} />
+            <Stat label="Écart estimé" value={readableNumber(p.edge, " points")} />
+            <Stat label="Estimation du moteur" value={readableNumber(p.model_probability ?? p.confidence, " %")} />
             <Stat label="Cote optimale" value={p.pick_odds} mono />
           </div>
           {isAdmin && (
@@ -174,6 +237,15 @@ export default function MatchDetailPage() {
           )}
         </Card>
         )}
+        {!locked && <Card className="mb-6 border-orange-200 bg-orange-50/40 p-6" data-testid="pick-explanation">
+          <h2 className="font-heading text-lg font-bold text-slate-900">Comprendre ce pronostic</h2>
+          <div className="mt-3 space-y-3 text-sm leading-relaxed text-slate-700">
+            <p>{pickExplanation(p)}</p>
+            <p>Le moteur compare les marchés et les cotes disponibles pour classer les sélections. L’estimation affichée est un indicateur calculé ; elle ne garantit pas le résultat du match.</p>
+            {p.num_books != null && <p>Nombre de bookmakers annoncé pour cette analyse : <strong>{readableNumber(p.num_books)}</strong>. Cote de la sélection : <strong>{readableNumber(p.pick_odds)}</strong>.</p>}
+            {p.reasoning?.real_data_used ? <p>Des statistiques externes sont disponibles pour compléter cette analyse. Leur détail figure plus bas.</p> : <p>Les informations disponibles ne permettent pas ici d’ajouter une analyse vérifiée de la forme des équipes ou des absences.</p>}
+          </div>
+        </Card>}
         {/* All markets analyzed (Pro feature) */}
         {!locked && p.markets && p.markets.length > 1 && (
           <Card className="bg-white border-neutral-200 p-6 mb-6" data-testid="all-markets-card">
@@ -213,7 +285,7 @@ export default function MatchDetailPage() {
             <div className="flex items-center gap-2 mb-4">
               <TrendingUp className="h-5 w-5 text-emerald-600" />
               <h2 className="font-heading text-lg font-bold text-slate-900">Analyse détaillée</h2>
-              <Badge className="bg-purple-100 text-purple-700 border-purple-200 text-[10px] ml-1">IA</Badge>
+              <Badge className="bg-slate-100 text-slate-700 border-slate-200 text-[10px] ml-1">Données du moteur</Badge>
             </div>
             <p className="text-sm text-slate-700 leading-relaxed mb-4">{p.reasoning.summary}</p>
             {p.reasoning.real_data_used ? (
@@ -244,7 +316,7 @@ export default function MatchDetailPage() {
                 {p.reasoning.key_absences && (
                   <ReasonBox
                     label="Absences clés"
-                    value={`${data.home_team.split(" ")[0]}: ${p.reasoning.key_absences.home} · ${data.away_team.split(" ")[0]}: ${p.reasoning.key_absences.away}`}
+                    value={`${String(data.home_team || "Domicile").split(" ")[0]}: ${p.reasoning.key_absences.home} · ${String(data.away_team || "Extérieur").split(" ")[0]}: ${p.reasoning.key_absences.away}`}
                   />
                 )}
                 {p.reasoning.referee_yellows_avg != null && (
@@ -267,11 +339,11 @@ export default function MatchDetailPage() {
           </Card>
         )}
         {/* AI Analysis */}
-        <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
+        {!locked && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-2">
               <Brain className="h-5 w-5 text-orange-600" />
-              <h2 className="font-heading text-lg font-bold text-slate-900">Analyse experte IA</h2>
+              <h2 className="font-heading text-lg font-bold text-slate-900">Explication complémentaire</h2>
             </div>
             {!analysis && !locked && (
               <Button
@@ -281,21 +353,22 @@ export default function MatchDetailPage() {
                 disabled={loadingAnalysis}
                 data-testid="run-analysis-btn"
               >
-                {loadingAnalysis ? <Loader2 className="h-4 w-4 animate-spin" /> : "Lancer l'analyse"}
+                {loadingAnalysis ? <Loader2 className="h-4 w-4 animate-spin" /> : analysisError ? "Réessayer" : "Enrichir l’explication"}
               </Button>
             )}
           </div>
           {!analysis && !loadingAnalysis && (
             <div className="text-sm text-slate-500">
-              Cliquez sur "Lancer l'analyse" pour obtenir une analyse complète : facteurs clés, alertes risque et pari alternatif suggéré.
+              Demande une présentation complémentaire des éléments disponibles. Selon la configuration du service, le texte peut être rédigé avec l’aide d’une IA ou par le moteur statistique.
               {!isPaid && (
                 <div className="mt-3 flex items-center gap-2 text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <Lock className="h-4 w-4" />
-                  <span className="text-xs">Compte Free : analyse statistique uniquement. <Link to="/app/abonnement" className="font-semibold underline">Passe Pro</Link> pour l'analyse IA complète.</span>
+                  <span className="text-xs">Certaines analyses complémentaires sont réservées à Pro. <Link to="/app/abonnement" className="font-semibold underline">Découvrir l’offre Pro</Link>.</span>
                 </div>
               )}
             </div>
           )}
+          {analysisError && <p className="mb-3 text-sm text-amber-800" role="alert">{analysisError}</p>}
           {analysis && (
             <div className="space-y-4" data-testid="analysis-content">
               <div className="rounded-lg bg-orange-50 border border-orange-200 p-4">
@@ -330,13 +403,13 @@ export default function MatchDetailPage() {
                 </div>
               )}
               <div className="text-[10px] text-slate-400 pt-2">
-                Source : {["gemini", "anthropic"].includes(analysis.source)
-                  ? `Analyse IA experte (${analysis.source === "gemini" ? "Gemini" : "Claude"})`
-                  : "Moteur statistique (repli automatique)"}
+                Source : {["gemini", "anthropic", "openai"].includes(analysis.source)
+                  ? `Rédaction assistée par IA (${analysis.source === "gemini" ? "Gemini" : analysis.source === "anthropic" ? "Claude" : "OpenAI"})`
+                  : analysis.source === "unknown" || !analysis.source ? "Source non précisée par le service" : "Moteur statistique"}
               </div>
             </div>
           )}
-        </Card>
+        </Card>}
         {/* Bookmakers */}
         <Card className="bg-white border-slate-200 p-6 mb-6">
           <h2 className="font-heading text-lg font-bold text-slate-900 mb-4">Cotes par bookmaker</h2>
