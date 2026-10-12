@@ -2761,9 +2761,13 @@ async def admin_reject_subscription_request(
 MONTANTE_DOC_ID = "active"
 MONTANTE_DEFAULT_DAYS = 10
 MONTANTE_MAX_PICKS = 2
-MONTANTE_MIN_CONFIDENCE = 0.70
-MONTANTE_MIN_ODDS = 1.20
-MONTANTE_MAX_ODDS = 1.50
+MONTANTE_MIN_CONFIDENCE = 0.70  # Minimum verified estimate; not UI confidence.
+MONTANTE_MIN_ODDS = 1.15
+MONTANTE_MAX_ODDS = 3.50
+MONTANTE_MIN_BOOKS = 3
+MONTANTE_MIN_STABILITY = 65.0
+MONTANTE_MAX_ODDS_AGE_MINUTES = 30
+_montante_selection_lock = asyncio.Lock()
 # Résultats Montante : contrôle ciblé, indépendant du Track Record général.
 # 5 minutes = progression quasi immédiate une fois le score final publié,
 # sans relancer toutes les cotes de la plateforme.
@@ -2776,9 +2780,10 @@ montante_selector = MontanteService(
     min_confidence=MONTANTE_MIN_CONFIDENCE,
     min_odds=MONTANTE_MIN_ODDS,
     max_odds=MONTANTE_MAX_ODDS,
-    # L'edge sert au classement des candidats mais ne doit pas être un critère
-    # bloquant : l'interface Montante annonce uniquement confiance + cote.
-    min_edge=float("-inf"),
+    min_edge=-3.0,  # Percentage points; do not claim positive expected returns.
+    min_books=MONTANTE_MIN_BOOKS,
+    min_stability=MONTANTE_MIN_STABILITY,
+    max_odds_age_minutes=MONTANTE_MAX_ODDS_AGE_MINUTES,
     initial_bankroll=10000.0,
 )
 
@@ -2786,7 +2791,7 @@ montante_selector = MontanteService(
 def _montante_public(doc: Optional[Dict]) -> Dict:
     if not doc:
         return {"status": "NONE", "message": "Aucune montante active."}
-    out = dict(doc)
+    out = copy.deepcopy(doc)
     out.pop("_id", None)
     return out
 
@@ -2796,11 +2801,28 @@ async def _montante_get() -> Optional[Dict]:
     return doc
 
 
-async def _montante_save(state: Dict) -> Dict:
+async def _montante_save(state: Dict, reset: bool = False) -> Dict:
     state = dict(state)
     state["_id"] = MONTANTE_DOC_ID
-    await db.montantes.replace_one({"_id": MONTANTE_DOC_ID}, state, upsert=True)
-    return _montante_public(state)
+    if reset:
+        await db.montantes.replace_one({"_id": MONTANTE_DOC_ID}, state, upsert=True)
+        return _montante_public(state)
+    values = {k: v for k, v in state.items() if k != "_id"}
+    saved = await db.montantes.find_one_and_update(
+        {"_id": MONTANTE_DOC_ID, "id": state.get("id"), "current_day": state.get("current_day"), "status": state.get("status"),
+         "current_picks": state.get("current_picks") or []},
+        {"$set": values}, return_document=ReturnDocument.AFTER,
+    )
+    return _montante_public(saved) if saved else _montante_public(await _montante_get() or state)
+
+
+async def _montante_commit_settlement(state: Dict, expected_day: int) -> Dict:
+    saved = await db.montantes.find_one_and_update(
+        {"_id": MONTANTE_DOC_ID, "id": state.get("id"), "current_day": expected_day, "status": "ACTIVE",
+         "current_picks": (state.get("history") or [{}])[-1].get("picks") or []},
+        {"$set": {k: v for k, v in state.items() if k != "_id"}}, return_document=ReturnDocument.AFTER,
+    )
+    return _montante_public(saved) if saved else _montante_public(await _montante_get() or state)
 
 
 async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Dict:
@@ -2823,7 +2845,7 @@ async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Di
     }
 
     history = list(public.get("history") or [])
-    completed_days = len(history)
+    completed_days = len({item.get("day") for item in history if item.get("status") == "WIN"})
     total_days = max(1, int(public.get("days") or MONTANTE_DEFAULT_DAYS))
 
     public["viewer"] = {
@@ -2849,6 +2871,9 @@ async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Di
     public["picks_locked"] = not has_paid_access
     public["current_pick_count"] = current_pick_count
     public["has_current_picks"] = current_pick_count > 0
+    public["selection_version"] = public.get("selection_version") or "legacy"
+    public["minimum_matches_per_step"] = 2
+    public["selection_policy"] = {"model_estimates_only": True, "requires_two_distinct_matches": True, "low_odds_bonus": False, "minimum_sources": MONTANTE_MIN_BOOKS, "historically_validated": False}
     public["current_picks_preview"] = [
         {"slot": index + 1, "locked": not has_paid_access}
         for index in range(current_pick_count)
@@ -2862,6 +2887,7 @@ async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Di
     if not has_paid_access:
         # Free : même nombre de picks, zéro fuite du contenu premium.
         public["current_picks"] = []
+        public.pop("selection_summary", None)
 
         safe_history = []
         for history_item in history:
@@ -2943,8 +2969,8 @@ async def _montante_find_resolved_prediction(pick: Dict) -> Optional[Dict]:
             doc for doc in docs
             if target_market and _montante_norm_text(doc.get("market")) == target_market
         ]
-        if len(same_market) == 1:
-            return same_market[0]
+        # A market can have opposite selections: never resolve by market alone.
+
 
     # 3) Migration/anciens états : rapprochement équipes + horaire (±12 h).
     home = str(pick.get("home_team") or "").strip()
@@ -2961,7 +2987,7 @@ async def _montante_find_resolved_prediction(pick: Dict) -> Optional[Dict]:
         candidates = []
         for doc in docs:
             doc_dt = _parse_iso(doc.get("commence_time"))
-            if pick_dt and doc_dt and abs((doc_dt - pick_dt).total_seconds()) > 12 * 3600:
+            if not pick_dt or not doc_dt or abs((doc_dt - pick_dt).total_seconds()) > 15 * 60:
                 continue
             candidates.append(doc)
             if target_pick and _montante_norm_text(doc.get("pick")) == target_pick:
@@ -2970,8 +2996,8 @@ async def _montante_find_resolved_prediction(pick: Dict) -> Optional[Dict]:
             doc for doc in candidates
             if target_market and _montante_norm_text(doc.get("market")) == target_market
         ]
-        if len(same_market) == 1:
-            return same_market[0]
+        # A market can have opposite selections: never resolve by market alone.
+
 
     return None
 
@@ -2983,6 +3009,7 @@ async def _montante_reconcile(state: Dict) -> Dict:
     picks = state.get("current_picks") or []
     if not picks:
         return state
+    expected_day = int(state.get("current_day", 1))
 
     statuses = []
     settlement_details = []
@@ -3042,8 +3069,7 @@ async def _montante_reconcile(state: Dict) -> Dict:
             "bankroll_after": 0.0,
             "picks": picks,
         })
-        await _montante_save(state)
-        return state
+        return await _montante_commit_settlement(state, expected_day)
 
     if statuses and all(x in ("WIN", "VOID") for x in statuses):
         # Un pari void/push est remboursé : multiplicateur 1.00 dans la montante.
@@ -3071,7 +3097,10 @@ async def _montante_reconcile(state: Dict) -> Dict:
             "bankroll_after": bankroll_after,
             "picks": picks,
         })
-        if int(state.get("current_day", 1)) >= int(state.get("days", 10)):
+        if not any(x == "WIN" for x in statuses):
+            state["current_picks"] = []
+            state["waiting_reason"] = "Étape annulée : recherche de deux nouveaux matchs pour cette même étape."
+        elif int(state.get("current_day", 1)) >= int(state.get("days", 10)):
             state["status"] = "COMPLETED"
             state["completed_at"] = datetime.now(timezone.utc).isoformat()
             state["waiting_reason"] = None
@@ -3080,196 +3109,124 @@ async def _montante_reconcile(state: Dict) -> Dict:
             state["current_day"] = int(state.get("current_day", 1)) + 1
             state["current_picks"] = []
             state["waiting_reason"] = "Jour gagné. Recherche des picks du prochain jour."
-        await _montante_save(state)
+        return await _montante_commit_settlement(state, expected_day)
     return state
+
+
+def _montante_selection_fields() -> List[str]:
+    return ["current_picks", "waiting_reason", "diagnostic", "selection_summary", "selection_version", "updated_at", "last_settlement_check"]
+
+
+async def _montante_publish_selection(state: Dict) -> Dict:
+    # CAS across replicas: the first published pair remains the official pair.
+    saved = await db.montantes.find_one_and_update(
+        {"_id": MONTANTE_DOC_ID, "id": state.get("id"), "status": "ACTIVE", "current_day": state.get("current_day"),
+         "$or": [{"current_picks": {"$exists": False}}, {"current_picks": {"$size": 0}}]},
+        {"$set": {key: state[key] for key in _montante_selection_fields() if key in state}},
+        return_document=ReturnDocument.AFTER,
+    )
+    return _montante_public(saved) if saved else _montante_public(await _montante_get() or state)
 
 
 async def _montante_prepare_next_day(state: Dict) -> Dict:
     if state.get("status") != "ACTIVE" or state.get("current_picks"):
         return state
+    async with _montante_selection_lock:
+        latest = await _montante_get()
+        if latest:
+            if latest.get("id") != state.get("id") or latest.get("status") != "ACTIVE" or latest.get("current_picks"):
+                return _montante_public(latest)
+            state = _montante_public(latest)
+            checked = _parse_iso((state.get("diagnostic") or {}).get("generated_at"))
+            if checked and (state.get("diagnostic") or {}).get("day") == state.get("current_day") and (datetime.now(timezone.utc) - checked).total_seconds() < 45:
+                return state
+        try:
+            return await asyncio.wait_for(_montante_choose_pair(state), timeout=18)
+        except asyncio.TimeoutError:
+            state["waiting_reason"] = "Le flux est temporairement indisponible. La sélection reste en attente de deux matchs vérifiés."
+            state["updated_at"] = datetime.now(timezone.utc).isoformat()
+            return await _montante_publish_selection(state)
 
+
+async def _montante_choose_pair(state: Dict) -> Dict:
     matches = await fetch_all_matches(db)
-    real_stats_map = await get_real_stats_map(db, matches)
-    predictions = analyze_all(matches, real_stats_map=real_stats_map)
-
     now = datetime.now(timezone.utc)
-    search_until = now + timedelta(hours=72)
-    candidates = []
-
-    diagnostic = {
-        "generated_at": now.isoformat(),
-        "window_hours": 72,
-        "matches_received": len(matches) if isinstance(matches, list) else 0,
-        "predictions_generated": len(predictions) if isinstance(predictions, list) else 0,
-        "within_72h": 0,
-        "with_pick": 0,
-        "with_valid_odds": 0,
-        "odds_in_range": 0,
-        "with_valid_confidence": 0,
-        "confidence_at_least_70": 0,
-        "eligible_before_selector": 0,
-        "selected": 0,
-        "criteria": {
-            "min_confidence": MONTANTE_MIN_CONFIDENCE,
-            "min_odds": MONTANTE_MIN_ODDS,
-            "max_odds": MONTANTE_MAX_ODDS,
-            "max_picks": MONTANTE_MAX_PICKS,
-        },
-    }
-
-    # Le diagnostic de fraicheur permet de distinguer un vrai manque de valeur
-    # d'un cache de cotes trop ancien. Une erreur de lecture du statut du cache
-    # ne doit toutefois jamais bloquer la Montante.
+    diagnostic = {"generated_at": now.isoformat(), "day": state.get("current_day"), "window_hours": 72, "matches_received": len(matches),
+                  "criteria": {"min_probability": MONTANTE_MIN_CONFIDENCE, "min_odds": MONTANTE_MIN_ODDS,
+                               "max_odds": MONTANTE_MAX_ODDS, "minimum_sources": MONTANTE_MIN_BOOKS,
+                               "minimum_stability": MONTANTE_MIN_STABILITY, "required_matches": 2}}
     try:
-        cache_status = await get_odds_cache_status(db)
-        diagnostic["odds_cache_updated_at"] = cache_status.get("updated_at")
-        diagnostic["odds_cache_hard_stale"] = bool(cache_status.get("hard_stale"))
-        diagnostic["odds_cache_stale"] = bool(cache_status.get("stale"))
+        status = await get_odds_cache_status(db)
     except Exception:
-        diagnostic["odds_cache_updated_at"] = None
-        diagnostic["odds_cache_hard_stale"] = None
-        diagnostic["odds_cache_stale"] = None
-
-    for p in predictions:
-        if not isinstance(p, dict):
+        status = {}
+    diagnostic["odds_cache_updated_at"] = status.get("updated_at")
+    diagnostic["odds_cache_hard_stale"] = status.get("hard_stale")
+    if status.get("hard_stale") is True:
+        state["diagnostic"] = diagnostic
+        state["waiting_reason"] = "Les cotes sont trop anciennes : attente d’un flux actualisé pour vérifier deux matchs."
+        state["updated_at"] = now.isoformat()
+        return await _montante_publish_selection(state)
+    stats = await get_real_stats_map(db, matches)
+    predictions = analyze_all(matches, real_stats_map=stats)
+    raw_by_id = {str(m.get("id") or m.get("match_id")): m for m in matches if isinstance(m, dict)}
+    previously_used = {str(p.get("match_id")) for h in state.get("history", []) for p in h.get("picks", []) if p.get("match_id")}
+    candidates = []
+    for prediction in predictions:
+        if not isinstance(prediction, dict):
             continue
-
-        ct = p.get("commence_time")
-        try:
-            dt = datetime.fromisoformat(str(ct).replace("Z", "+00:00"))
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=timezone.utc)
-        except Exception:
+        match_id = str(prediction.get("match_id") or "")
+        raw = raw_by_id.get(match_id)
+        start = _parse_iso(prediction.get("commence_time"))
+        if not raw or match_id in previously_used or not start or not now + timedelta(minutes=5) <= start <= now + timedelta(hours=72):
             continue
-
-        # Recherche les matchs encore jouables dans les 72 prochaines heures.
-        if dt < now - timedelta(minutes=15) or dt > search_until:
+        if raw.get("completed") or raw.get("is_finished"):
             continue
-        diagnostic["within_72h"] += 1
-
-        if not p.get("pick"):
-            continue
-        diagnostic["with_pick"] += 1
-
-        # Les prédictions WinPulse utilisent principalement pick_odds et confidence.
-        # On reproduit ici les mêmes conversions que MontanteService afin que le
-        # diagnostic explique fidèlement pourquoi un candidat est accepté/rejeté.
-        try:
-            odds = float(p.get("pick_odds"))
-            if not math.isfinite(odds):
-                raise ValueError
-            diagnostic["with_valid_odds"] += 1
-        except (TypeError, ValueError):
-            odds = None
-
-        if odds is not None and MONTANTE_MIN_ODDS <= odds <= MONTANTE_MAX_ODDS:
-            diagnostic["odds_in_range"] += 1
-
-        try:
-            confidence = float(p.get("confidence"))
-            if not math.isfinite(confidence):
-                raise ValueError
-            if confidence > 1:
-                confidence /= 100.0
-            diagnostic["with_valid_confidence"] += 1
-        except (TypeError, ValueError):
-            confidence = None
-
-        if confidence is not None and confidence >= MONTANTE_MIN_CONFIDENCE:
-            diagnostic["confidence_at_least_70"] += 1
-
-        if (
-            odds is not None
-            and confidence is not None
-            and MONTANTE_MIN_ODDS <= odds <= MONTANTE_MAX_ODDS
-            and confidence >= MONTANTE_MIN_CONFIDENCE
-        ):
-            diagnostic["eligible_before_selector"] += 1
-
-        candidates.append(p)
-
-    selected = montante_selector.select_daily_picks(
-        candidates,
-        limit=MONTANTE_MAX_PICKS,
-    )
-
-    # Lier immédiatement chaque pick Montante au Track Record. Ainsi le résultat
-    # futur ne dépend plus d'une nouvelle génération du même libellé de pick.
+        # Keep official predictions unchanged; attach observed odds only for checks.
+        candidate = dict(prediction)
+        candidate["_bookmakers"] = raw.get("bookmakers", [])
+        candidate["_odds_snapshot_at"] = status.get("updated_at")
+        candidates.append(candidate)
+    selected = montante_selector.select_daily_picks(candidates, limit=2)
+    diagnostic.update(montante_selector.last_diagnostic)
+    diagnostic["predictions_generated"] = len(predictions)
+    state["diagnostic"] = diagnostic
+    state["selection_version"] = montante_selector.VERSION
+    state["updated_at"] = now.isoformat()
+    if len(selected) != 2:
+        state["current_picks"] = []
+        state["selection_summary"] = None
+        state["waiting_reason"] = "Deux matchs distincts ne respectent pas encore les contrôles. La montante reste en attente sans ajouter une sélection faible."
+        return await _montante_publish_selection(state)
     for item in selected:
-        match_id = item.get("match_id")
-        pick_text = item.get("pick")
-        if not match_id or not pick_text:
-            continue
-        signature = _pick_signature(str(match_id), str(pick_text))
+        signature = _pick_signature(str(item["match_id"]), item["pick"])
         item["history_signature"] = signature
         await db.predictions_history.update_one(
             {"signature": signature},
-            {"$setOnInsert": {
-                "signature": signature,
-                "match_id": match_id,
-                "home_team": item.get("home_team"),
-                "away_team": item.get("away_team"),
-                "sport_title": item.get("sport_title"),
-                "sport_key": item.get("sport_key"),
-                "commence_time": item.get("start_time"),
-                "pick": pick_text,
-                "market": item.get("market"),
-                "pick_odds": item.get("odds"),
-                "confidence": round(float(item.get("confidence") or 0) * 100.0, 1),
-                "edge": item.get("edge"),
-                "model_version": MODEL_VERSION,
-                "is_combo": False,
-                "official_track_eligible": False,
-                "result": "pending",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "source": "montante",
-            }},
-            upsert=True,
+            {"$setOnInsert": {"signature": signature, "match_id": item["match_id"],
+                "home_team": item["home_team"], "away_team": item["away_team"],
+                "sport_title": item.get("sport_title"), "sport_key": item.get("sport_key"),
+                "commence_time": item["start_time"], "pick": item["pick"], "market": item["market"],
+                "pick_raw": item.get("pick_raw"), "pick_point": item.get("pick_point"),
+                "pick_odds": item["odds"], "confidence": (item["confidence"] * 100 if item["confidence"] is not None else None),
+                "model_probability": item["model_probability"] * 100, "edge": item["edge"],
+                "model_version": MODEL_VERSION, "selector_version": montante_selector.VERSION,
+                "is_combo": False, "official_track_eligible": False, "result": "pending",
+                "created_at": now.isoformat(), "source": "montante"}}, upsert=True,
         )
-
-    diagnostic["selected"] = len(selected)
-    state["diagnostic"] = diagnostic
-
-    if not selected:
-        if diagnostic.get("odds_cache_hard_stale") is True:
-            state["waiting_reason"] = (
-                "Montante en attente : les donnees de cotes sont trop anciennes. "
-                "Lance un refresh des donnees puis actualise la Montante."
-            )
-        else:
-            state["waiting_reason"] = (
-                "Aucun pick qualifie pour la Montante. "
-                f"Diagnostic 72h : {diagnostic['matches_received']} matchs recus, "
-                f"{diagnostic['predictions_generated']} predictions, "
-                f"{diagnostic['within_72h']} dans la fenetre, "
-                f"{diagnostic['with_pick']} avec pick, "
-                f"{diagnostic['odds_in_range']} avec cote 1.20-1.50, "
-                f"{diagnostic['confidence_at_least_70']} avec confiance >= 70%, "
-                f"{diagnostic['eligible_before_selector']} respectent les deux criteres."
-            )
-        state["updated_at"] = datetime.now(timezone.utc).isoformat()
-        await _montante_save(state)
-        return state
-
     state["current_picks"] = selected
-    state["last_settlement_check"] = {
-        "day": int(state.get("current_day", 1) or 1),
-        "checked_at": datetime.now(timezone.utc).isoformat(),
-        "statuses": ["PENDING" for _ in selected],
-        "details": [
-            {
-                "slot": index + 1,
-                "match_id": pick.get("match_id"),
-                "history_signature": pick.get("history_signature"),
-                "status": "PENDING",
-            }
-            for index, pick in enumerate(selected)
-        ],
-    }
     state["waiting_reason"] = None
-    state["updated_at"] = datetime.now(timezone.utc).isoformat()
-    await _montante_save(state)
-    return state
+    state["selection_summary"] = {
+        "combined_odds": round(math.prod(p["odds"] for p in selected), 3),
+        "independence_estimate": round(math.prod(p["model_probability"] for p in selected) * 100, 1),
+        "assumption": "Indépendance supposée ; estimation du moteur, pas une fréquence de réussite vérifiée.",
+        "minimum_sources": min(p["num_books"] for p in selected), "published_at": now.isoformat(),
+    }
+    state["last_settlement_check"] = {"day": int(state.get("current_day", 1)), "checked_at": now.isoformat(),
+        "statuses": ["PENDING", "PENDING"], "details": [{"slot": i+1, "match_id": p["match_id"],
+        "history_signature": p["history_signature"], "status": "PENDING"} for i,p in enumerate(selected)]}
+    return await _montante_publish_selection(state)
+
+
 
 
 def _montante_expected_result_delay_minutes(pick: Dict) -> int:
@@ -3524,7 +3481,7 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     state = await _montante_reconcile(state)
     if state.get("status") == "ACTIVE" and state.get("current_picks") and _montante_provider_check_due(state):
         try:
-            state, _ = await _montante_sync_current_results(force_provider=False)
+            state, _ = await asyncio.wait_for(_montante_sync_current_results(force_provider=False), timeout=6)
         except Exception:
             # L'affichage reste disponible même si le fournisseur de scores est indisponible.
             state = await _montante_get() or state
@@ -3544,12 +3501,18 @@ async def start_montante(
     await _require_admin(payload)
     if days not in (10, 15):
         raise HTTPException(status_code=400, detail="days doit être 10 ou 15")
-    if initial_bankroll <= 0:
+    if not math.isfinite(initial_bankroll) or initial_bankroll <= 0:
         raise HTTPException(status_code=400, detail="initial_bankroll doit être positif")
     state = montante_selector.create(days=days, initial_bankroll=initial_bankroll)
+    previous = await _montante_get()
+    if previous and previous.get("id"):
+        archive = copy.deepcopy(previous)
+        archive["_id"] = str(previous["id"])
+        archive["archived_at"] = datetime.now(timezone.utc).isoformat()
+        await db.montante_archives.replace_one({"_id": archive["_id"]}, archive, upsert=True)
     state["current_picks"] = []
     state["waiting_reason"] = "Sélection des meilleurs picks du jour..."
-    state = await _montante_save(state)
+    state = await _montante_save(state, reset=True)
     state = await _montante_prepare_next_day(state)
     return await _montante_view_for_payload(state, payload)
 
