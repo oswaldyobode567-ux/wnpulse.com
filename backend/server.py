@@ -4,6 +4,8 @@ Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
 import asyncio
+import copy
+import logging
 import time
 import httpx
 import uuid
@@ -3634,41 +3636,78 @@ async def get_ultra_safe_combo(payload: dict = Depends(get_current_user_payload)
     return build_ultra_safe_combo(today_matches)
 
 
+def _prepare_today_combo_tier(tier: dict, tier_key: str, is_paid: bool) -> dict:
+    """Copy before masking: never alter engine data or expose hidden picks."""
+    prepared = copy.deepcopy(tier)
+    legs = prepared.get("legs") or []
+    prepared["leg_count"] = len(legs)
+    prepared["locked"] = not is_paid and (tier_key != "sure" or len(legs) > 1)
+    public_fields = (
+        "match_id", "id", "home_team", "away_team", "sport_key", "sport_title",
+        "commence_time", "country", "country_name", "league", "league_name",
+    )
+    visible = []
+    for index, leg in enumerate(legs):
+        if is_paid or (tier_key == "sure" and index == 0):
+            leg["locked"] = False
+            visible.append(leg)
+        else:
+            visible.append({**{field: leg[field] for field in public_fields if field in leg},
+                            "locked": True, "pick": None, "pick_odds": None,
+                            "confidence": None, "market_label": None})
+    prepared["legs"] = visible
+    if prepared["locked"]:
+        # In a two-leg preview, the total odds would reveal the hidden leg's odds.
+        for field in ("total_odds", "avg_confidence", "combined_probability", "correlation_penalty"):
+            prepared[field] = None
+        prepared["tagline"] = "Sélections complètes réservées aux abonnés"
+        prepared["description"] = "Consulte les rencontres ; débloque leurs sélections avec Pro."
+    return prepared
+
+
+async def _load_today_combo_data(payload: Optional[dict]) -> dict:
+    is_paid = await _has_paid_access(payload)  # Includes subscription expiry.
+    matches = await fetch_all_matches(db)
+    now = datetime.now(timezone.utc)
+    upcoming = []
+    for match in matches:
+        if not isinstance(match, dict) or match.get("is_finished") or match.get("completed"):
+            continue
+        try:
+            start = datetime.fromisoformat(str(match.get("commence_time") or "").replace("Z", "+00:00"))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            if start > now:
+                upcoming.append(match)
+        except (ValueError, TypeError):
+            continue
+    # Keep the engine's selections and scores; only exclude unavailable events.
+    result = copy.deepcopy(build_today_combos_by_sport(upcoming))
+    for family in result.get("families", {}).values():
+        family["tiers"] = {
+            key: _prepare_today_combo_tier(tier, key, is_paid)
+            for key, tier in family.get("tiers", {}).items()
+        }
+    if isinstance(result.get("ultra_safe"), dict):
+        result["ultra_safe"] = _prepare_today_combo_tier(result["ultra_safe"], "ultra_safe", is_paid)
+    result["access"] = {"is_paid": is_paid}
+    result["upcoming_matches_today"] = result.get("total_matches_today", 0)
+    result["schedule_timezone"] = "UTC"  # The existing engine's today boundary.
+    result["loaded_at"] = now.isoformat()
+    return result
+
+
 @app.get("/api/combos/today")
 async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_payload)):
     try:
-        matches = await fetch_all_matches(db)
-        result = build_today_combos_by_sport(matches)
-        is_paid = False
-        if payload:
-            user = await db.users.find_one({"id": payload.get("sub")})
-            if user and (user.get("is_admin") or user.get("subscription", "free") != "free"):
-                is_paid = True
-        if not is_paid:
-            for family in result.get("families", {}).values():
-                for tkey, tier in family.get("tiers", {}).items():
-                    if tkey == "sure":
-                        legs = tier.get("legs", [])
-                        for i, leg in enumerate(legs):
-                            if i == 0:
-                                leg["locked"] = False
-                            else:
-                                leg["locked"] = True
-                                leg["pick"] = None
-                                leg["pick_odds"] = None
-                                leg["market_label"] = None
-                        tier["locked"] = len(legs) > 1
-                    else:
-                        tier["locked"] = True
-                        tier["legs"] = []
-        return result
-    except Exception as e:
-        return {
-            "generated_at": datetime.now(timezone.utc).isoformat(),
-            "total_matches_today": 0,
-            "families": {},
-            "error": str(e),
-        }
+        return await asyncio.wait_for(_load_today_combo_data(payload), timeout=16)
+    except HTTPException:
+        raise
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Le chargement des combinés a pris trop de temps. Réessaie.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Today combos unavailable: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Les combinés sont temporairement indisponibles. Réessaie.")
 
 
 # ─── Alias de routes attendues par le frontend ──
