@@ -9,7 +9,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Trophy, Flame, ChevronRight, Activity, Lock,
   Sparkles, Radio, Send, CheckCircle2, XCircle,
-  Clock, TrendingUp, RefreshCw, Filter, ShieldCheck
+  Clock, TrendingUp, RefreshCw, Filter, ShieldCheck, Search, X
 } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -81,6 +81,62 @@ function groupByLeague(matches) {
   });
 }
 
+function normalizeSearch(value) {
+  return String(value ?? "").toLowerCase().normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").replace(/ł/g, "l").replace(/œ/g, "oe")
+    .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+}
+
+// Les alias permettent par exemple "Espagne" quand l'API transmet "Spain".
+const SEARCH_COUNTRIES = [
+  ["spain espagne espana", ["spain", "espagne", "espana"]],
+  ["france francais", ["france"]],
+  ["germany allemagne deutschland", ["germany", "allemagne", "deutschland"]],
+  ["england angleterre royaume uni", ["england", "angleterre", "epl", "efl"]],
+  ["italy italie italia", ["italy", "italie", "italia"]],
+  ["poland pologne polska", ["poland", "pologne", "ekstraklasa"]],
+  ["finland finlande", ["finland", "finlande", "veikkausliiga"]],
+  ["japan japon", ["japan", "japon", "j league", "jleague"]],
+  ["south korea coree du sud", ["korea", "coree", "k league", "kleague"]],
+  ["china chine", ["china", "chine"]],
+  ["usa etats unis amerique", ["usa", "united states", "nba", "wnba", "nfl", "mlb"]],
+  ["portugal portugais", ["portugal", "primeira liga"]],
+  ["netherlands pays bas hollande", ["netherlands", "pays bas", "eredivisie"]],
+  ["belgium belgique", ["belgium", "belgique"]],
+  ["brazil bresil brasil", ["brazil", "bresil", "brasil"]],
+  ["argentina argentine", ["argentina", "argentine"]],
+  ["turkey turquie turkiye", ["turkey", "turquie", "super lig"]],
+  ["switzerland suisse", ["switzerland", "suisse"]],
+  ["austria autriche", ["austria", "autriche"]],
+  ["scotland ecosse", ["scotland", "ecosse"]],
+];
+
+function matchSearchText(match) {
+  const prediction = match?.prediction || {};
+  const competition = normalizeSearch([
+    match?.sport_title, match?.sport_key, match?.league, match?.league_name,
+    match?.competition_name, match?.league?.name, match?.country, match?.country?.name, match?.country_name,
+    prediction.sport_title, prediction.sport_key,
+  ].filter(value => typeof value === "string").join(" "));
+  const aliases = SEARCH_COUNTRIES.filter(([, terms]) => terms.some(term =>
+    ` ${competition} `.includes(` ${term} `))).map(([names]) => names);
+  const family = String(match?.sport_key || prediction.sport_key || "").split("_")[0];
+  const sports = { soccer: "football foot soccer", basketball: "basket basketball", tennis: "tennis", icehockey: "hockey", baseball: "baseball", mma: "mma ufc boxe" };
+  const risk = { safe: "sur safe", value: "modere value", risky: "risque risky" };
+  const teams = normalizeSearch(`${match?.home_team || ""} ${match?.away_team || ""} ${prediction.home_team || ""} ${prediction.away_team || ""}`);
+  const teamAliases = teams.includes("paris saint germain") ? "psg" : "";
+  // Ne pas indexer un pronostic verrouillé, même si un ancien serveur le transmet.
+  const pickText = prediction.locked ? "" : `${prediction.pick || ""} ${prediction.market_label || ""}`;
+  return normalizeSearch(`${competition} ${teams} ${aliases.join(" ")} ${sports[family] || ""} ${risk[prediction.label] || ""} ${teamAliases} ${pickText}`);
+}
+
+function matchesSearch(match, query) {
+  const terms = normalizeSearch(String(query || "").slice(0, 200)).split(" ").filter(Boolean);
+  if (!terms.length) return true;
+  const text = matchSearchText(match);
+  return terms.every(term => text.includes(term));
+}
+
 function getAvailablePickCounts(matches) {
   const picksByMatch = new Map();
   for (const [index, match] of (Array.isArray(matches) ? matches : []).entries()) {
@@ -119,6 +175,13 @@ export default function DashboardPage() {
   const sport = searchParams.get("sport") || "all";
   const betFilter = searchParams.get("bet") || "all";
   const riskFilter = searchParams.get("risk") || "all";
+  const searchQuery = (searchParams.get("q") || "").slice(0, 200);
+  const hasSearch = Boolean(normalizeSearch(searchQuery));
+  const setSearchQuery = (value) => setSearchParams(prev => {
+    const p = new URLSearchParams(prev);
+    value ? p.set("q", value.slice(0, 200)) : p.delete("q");
+    return p;
+  }, { replace: true });
   const setSport = (val) => setSearchParams(prev => {
     const p = new URLSearchParams(prev);
     val === "all" ? p.delete("sport") : p.set("sport", val);
@@ -172,8 +235,13 @@ export default function DashboardPage() {
     setRefreshing(false);
     toast.success("Données mises à jour");
   }, [refresh]);
+  const searchIndex = useMemo(() => new Map(matches.map(match => [match, matchSearchText(match)])), [matches]);
   const filtered = useMemo(() => {
     let list = matches;
+    if (hasSearch) {
+      const terms = normalizeSearch(searchQuery).split(" ").filter(Boolean);
+      list = list.filter(match => terms.every(term => searchIndex.get(match)?.includes(term)));
+    }
     if (sport !== "all")
       list = list.filter(m => (m.sport_key || "").toLowerCase().includes(sport));
     if (betFilter !== "all")
@@ -181,7 +249,13 @@ export default function DashboardPage() {
     if (riskFilter !== "all")
       list = list.filter(m => (m.prediction?.label || "") === riskFilter);
     return list;
-  }, [matches, sport, betFilter, riskFilter]);
+  }, [matches, sport, betFilter, riskFilter, hasSearch, searchQuery, searchIndex]);
+  const visibleTopPicks = useMemo(() => hasSearch
+    ? topPicks.filter(p => matchesSearch({ ...p, prediction: p }, searchQuery)
+      && (sport === "all" || (p.sport_key || "").toLowerCase().includes(sport))
+      && matchesBetFilter(p.pick || "", betFilter)
+      && (riskFilter === "all" || p.label === riskFilter))
+    : topPicks, [topPicks, hasSearch, searchQuery, sport, betFilter, riskFilter]);
   const sportCounts = useMemo(() => {
     const c = {};
     matches.forEach(m => {
@@ -203,7 +277,7 @@ export default function DashboardPage() {
     return c;
   }, [matches]);
   const leagueGroups  = useMemo(() => groupByLeague(filtered), [filtered]);
-  const visibleGroups = showAll ? leagueGroups : leagueGroups.slice(0, 6);
+  const visibleGroups = showAll || hasSearch ? leagueGroups : leagueGroups.slice(0, 6);
   const liveCount     = matches.filter(m => m.prediction?.is_live || m.is_live).length;return (
     <AppLayout>
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
@@ -249,6 +323,20 @@ export default function DashboardPage() {
               </button>
             </div>
         </Card>
+        <Card className="border-orange-200 bg-white p-4 sm:p-5" data-testid="dashboard-search">
+          <label htmlFor="dashboard-search-input" className="mb-2 block text-sm font-bold text-slate-900">Rechercher une rencontre</label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-orange-500" aria-hidden="true" />
+            <input id="dashboard-search-input" type="search" value={searchQuery} maxLength={200}
+              onChange={event => setSearchQuery(event.target.value)}
+              placeholder="Équipe, championnat, pays, sport ou marché…"
+              className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 pl-11 pr-12 text-base text-slate-900 placeholder:text-slate-400 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-200 [&::-webkit-search-cancel-button]:appearance-none"
+              aria-describedby="dashboard-search-help" data-testid="dashboard-search-input" />
+            {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label="Effacer la recherche" className="absolute right-1 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-lg text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" aria-hidden="true" /></button>}
+          </div>
+          <p id="dashboard-search-help" className="mt-2 text-xs text-slate-500">Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.</p>
+          {hasSearch && <p className="mt-2 text-sm font-semibold text-orange-700" aria-live="polite">{filtered.length} rencontre{filtered.length === 1 ? "" : "s"} trouvée{filtered.length === 1 ? "" : "s"} dans les matchs chargés.</p>}
+        </Card>
         {/* Top picks */}
         <section>
           <div className="flex items-center justify-between mb-3">
@@ -264,15 +352,15 @@ export default function DashboardPage() {
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
               {[1,2,3].map(i => <Skeleton key={i} className="h-36" />)}
             </div>
-          ) : topPicks.length === 0 ? (
+          ) : visibleTopPicks.length === 0 ? (
             <Card className="p-8 text-center bg-slate-50 border-dashed">
               <div className="text-2xl mb-2">🔍</div>
-              <p className="text-slate-600 font-medium">Analyse en cours...</p>
-              <p className="text-slate-500 text-sm mt-1">Les picks arrivent à 06h00 WAT</p>
+              <p className="text-slate-600 font-medium">{hasSearch ? "Aucune sélection à la une pour cette recherche." : "Analyse en cours..."}</p>
+              <p className="text-slate-500 text-sm mt-1">{hasSearch ? "Consulte aussi les résultats par championnat ci-dessous." : "Les picks arrivent à 06h00 WAT"}</p>
             </Card>
           ) : (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {topPicks.slice(0,3).map(p => {
+              {visibleTopPicks.slice(0,3).map(p => {
                 const locked = p.locked || !p.pick;
                 return (
                   <Link key={p.match_id} to={`/app/match/${p.match_id}`}>
@@ -449,9 +537,9 @@ export default function DashboardPage() {
           ) : filtered.length === 0 ? (
             <Card className="p-12 text-center bg-white border-slate-200">
               <div className="text-3xl mb-3">🔍</div>
-              <div className="text-slate-700 font-semibold text-lg">Aucun match pour ce filtre</div>
-              <div className="text-slate-500 text-sm mt-2">Essaie "Tous les sports" ou change le type de pari</div>
-              <Button variant="outline" className="mt-4" onClick={() => { setSport("all"); setBetFilter("all"); setRiskFilter("all"); }}>
+              <div className="text-slate-700 font-semibold text-lg">{hasSearch ? "Aucune rencontre ne correspond à cette recherche et aux filtres." : "Aucun match pour ce filtre"}</div>
+              <div className="text-slate-500 text-sm mt-2">Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.</div>
+              <Button variant="outline" className="mt-4" onClick={() => setSearchParams(prev => { const p = new URLSearchParams(prev); ["q", "sport", "bet", "risk"].forEach(key => p.delete(key)); return p; })}>
                 Réinitialiser les filtres
               </Button>
             </Card>
@@ -467,7 +555,7 @@ export default function DashboardPage() {
                   onUpgrade={() => navigate("/app/abonnement")}
                 />
               ))}
-              {!showAll && leagueGroups.length > 6 && (
+              {!showAll && !hasSearch && leagueGroups.length > 6 && (
                 <div className="text-center">
                   <Button variant="outline" onClick={() => setShowAll(true)} className="gap-2">
                     <Filter className="h-4 w-4" />
