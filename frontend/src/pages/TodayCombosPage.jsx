@@ -16,10 +16,10 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 const LEVELS = {
-  ultra_safe: { label: "Sélection prudente", icon: ShieldCheck, color: "text-teal-700", tint: "bg-teal-50", border: "border-teal-200", gradient: "from-teal-600 to-cyan-700", description: "Les favoris retenus par le moteur, réunis dans une sélection dédiée." },
-  sure: { label: "Essentiel", icon: Shield, color: "text-emerald-700", tint: "bg-emerald-50", border: "border-emerald-200", gradient: "from-emerald-600 to-teal-700", description: "Un format court pour parcourir les sélections et comprendre chaque rencontre." },
-  booster: { label: "Booster", icon: Zap, color: "text-orange-700", tint: "bg-orange-50", border: "border-orange-200", gradient: "from-orange-500 to-amber-600", description: "Des sélections regroupées autour d’une cible de cote plus élevée." },
-  extra: { label: "Extra", icon: Flame, color: "text-rose-700", tint: "bg-rose-50", border: "border-rose-200", gradient: "from-rose-500 to-pink-600", description: "Un combiné plus fourni : prends le temps de lire chacun de ses marchés." },
+  ultra_safe: { label: "Sélection prudente", icon: ShieldCheck, color: "text-teal-700", tint: "bg-teal-50", border: "border-teal-200", gradient: "from-teal-700 to-cyan-800", description: "Les favoris retenus par le moteur, réunis dans une sélection dédiée." },
+  sure: { label: "Essentiel", icon: Shield, color: "text-emerald-700", tint: "bg-emerald-50", border: "border-emerald-200", gradient: "from-emerald-700 to-teal-800", description: "Un format court pour parcourir les sélections et comprendre chaque rencontre." },
+  booster: { label: "Booster", icon: Zap, color: "text-orange-700", tint: "bg-orange-50", border: "border-orange-200", gradient: "from-orange-700 to-amber-800", description: "Des sélections regroupées autour d’une cible de cote plus élevée." },
+  extra: { label: "Extra", icon: Flame, color: "text-rose-700", tint: "bg-rose-50", border: "border-rose-200", gradient: "from-rose-700 to-pink-800", description: "Un combiné plus fourni : prends le temps de lire chacun de ses marchés." },
   jackpot: { label: "Jackpot", icon: Rocket, color: "text-violet-700", tint: "bg-violet-50", border: "border-violet-200", gradient: "from-violet-600 to-purple-700", description: "Les cotes cumulées les plus ambitieuses, avec davantage d’incertitude." },
 };
 const LEVEL_ORDER = Object.keys(LEVELS);
@@ -251,28 +251,33 @@ export default function TodayCombosPage() {
     <AppLayout>
       <style>{`
         .wn-combo-in { animation: wn-combo-in .35s ease-out both; }
+        .wn-today-readable { font-size: 16px; line-height: 1.6; }
+        .wn-today-readable summary { min-height: 44px; display: flex; align-items: center; }
+        .wn-today-readable button, .wn-today-readable select { min-height: 44px; }
+        .wn-today-readable button:focus-visible, .wn-today-readable summary:focus-visible { outline: 3px solid #fb923c; outline-offset: 3px; }
+        .wn-today-readable .wn-team { overflow-wrap: anywhere; }
         @keyframes wn-combo-in { from { opacity: .5; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
         @media (prefers-reduced-motion: reduce) { .wn-combo-in { animation: none; } }
       `}</style>
-      <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8 pb-24">
+      <div className="wn-today-readable mx-auto max-w-7xl px-4 py-6 sm:px-6 sm:py-8 lg:px-8 pb-24">
         <section className="relative overflow-hidden rounded-3xl bg-slate-950 px-6 py-8 text-white sm:p-10 mb-7">
           <div className="pointer-events-none absolute -right-16 -top-20 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl" aria-hidden="true" />
           <div className="pointer-events-none absolute bottom-0 right-20 h-40 w-40 rounded-full bg-teal-400/10 blur-3xl" aria-hidden="true" />
           <div className="relative flex flex-col gap-7 lg:flex-row lg:items-center lg:justify-between">
             <div className="max-w-2xl">
-              <div className="mb-4 flex flex-wrap items-center gap-2 text-xs font-semibold tracking-wide">
+              <div className="mb-4 flex flex-wrap items-center gap-2 text-[14px] font-semibold tracking-wide">
                 <span className="inline-flex items-center gap-1.5 rounded-full bg-white/10 px-3 py-1.5"><Layers className="h-3.5 w-3.5" /> COMBINÉS DU JOUR</span>
                 {!loading && data && <span className="rounded-full border border-white/15 px-3 py-1.5 text-slate-300">{generatedLabel}</span>}
               </div>
-              <h1 className="font-heading text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">Un combiné.<br /><span className="text-orange-400">Chaque match compte.</span></h1>
-              <p className="mt-4 max-w-xl text-sm leading-relaxed text-slate-300 sm:text-base">Explore les rencontres, comprends les sélections et choisis le format qui te correspond.</p>
-              <div className="mt-5 flex flex-wrap items-center gap-3 text-xs text-slate-400">
+              <h1 className="font-heading text-[34px] font-extrabold leading-tight tracking-tight sm:text-[44px]">Un combiné.<br /><span className="text-orange-400">Chaque match compte.</span></h1>
+              <p className="mt-4 max-w-xl text-[16px] leading-relaxed text-slate-300 sm:text-base">Explore les rencontres, comprends les sélections et choisis le format qui te correspond.</p>
+              <div className="mt-5 flex flex-wrap items-center gap-3 text-[14px] text-slate-400">
                 <span className="inline-flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> Horaires : {localZone}</span>
                 {receivedAt && <span>Chargé à {formatDate(receivedAt, { hour: "2-digit", minute: "2-digit" })}</span>}
               </div>
             </div>
-            <div className="grid grid-cols-3 gap-2 lg:min-w-[320px]">
-              <HeroStat value={loading ? "—" : formatNumber(upcoming, 0)} label="Matchs à venir" />
+            <div className="grid grid-cols-3 gap-3 lg:min-w-[360px]">
+              <HeroStat value={loading || upcoming === null ? "—" : formatNumber(upcoming, 0)} label="Matchs à venir" />
               <HeroStat value={loading ? "—" : available} label="Combinés prêts" />
               <HeroStat value={loading ? "—" : accessible} label="Accessibles" />
             </div>
@@ -280,45 +285,45 @@ export default function TodayCombosPage() {
         </section>
 
         {error && <div role="alert" className="mb-5 flex flex-col gap-3 rounded-2xl border border-rose-200 bg-rose-50 p-4 sm:flex-row sm:items-center sm:justify-between">
-          <p className="text-sm text-rose-800">{error}{data && " Les dernières données chargées restent affichées ; leur actualisation a échoué."}</p>
+          <p className="text-[16px] text-rose-800">{error}{data && " Les dernières données chargées restent affichées ; leur actualisation a échoué."}</p>
           <Button variant="outline" size="sm" onClick={() => load(Boolean(data))} disabled={loading || refreshing}><RefreshCw className="mr-2 h-4 w-4" />Réessayer</Button>
         </div>}
 
         <div className="mb-5 rounded-2xl border border-neutral-200 bg-white p-4 sm:p-5">
           <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="flex items-center gap-2 text-sm font-bold text-slate-900"><SlidersHorizontal className="h-4 w-4 text-orange-600" />Trouve ton combiné</div>
+            <div className="flex items-center gap-2 text-[16px] font-bold text-slate-900"><SlidersHorizontal className="h-4 w-4 text-orange-600" />Trouve ton combiné</div>
             <Button variant="outline" size="sm" onClick={() => load(Boolean(data))} disabled={loading || refreshing} className="self-start sm:self-auto">
               <RefreshCw className={cn("mr-2 h-4 w-4", refreshing && "animate-spin")} />{refreshing ? "Actualisation…" : "Actualiser"}
             </Button>
           </div>
           <div className="mb-4 flex gap-2 overflow-x-auto pb-1" aria-label="Filtrer par sport">
             {families.map(f => <button type="button" key={f.family_key} aria-pressed={sportKey === f.family_key} onClick={() => setSportKey(f.family_key)}
-              className={cn("shrink-0 rounded-xl border px-4 py-2.5 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500", sportKey === f.family_key ? "border-slate-900 bg-slate-900 text-white" : "border-neutral-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50")}>
-              {f.family_label}<span className="ml-2 text-xs opacity-60">{formatNumber(f.matches_today, 0)}</span>
+              className={cn("shrink-0 min-h-[48px] rounded-xl border px-5 py-3 text-[16px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500", sportKey === f.family_key ? "border-slate-900 bg-slate-900 text-white" : "border-neutral-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50")}>
+              {f.family_label}<span className="ml-2 text-[14px] opacity-60">{formatNumber(f.matches_today, 0)}</span>
             </button>)}
             {loading && !families.length && <div className="h-10 w-64 animate-pulse rounded-xl bg-slate-100" />}
           </div>
           <div className="flex flex-col gap-3 md:flex-row">
             <div className="relative flex-1">
               <label htmlFor="wn-combo-search" className="sr-only">Rechercher une équipe, un pays ou un championnat</label>
-              <Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" />
-              <input id="wn-combo-search" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Équipe, pays, championnat…" className="h-10 w-full rounded-xl border border-neutral-200 bg-slate-50 pl-9 pr-10 text-sm text-slate-900 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100" />
-              {query && <button type="button" onClick={() => setQuery("")} aria-label="Effacer la recherche" className="absolute right-3 top-3 text-slate-500"><X className="h-4 w-4" /></button>}
+              <Search className="pointer-events-none absolute left-4 top-4 h-4 w-4 text-slate-400" />
+              <input id="wn-combo-search" type="search" value={query} onChange={e => setQuery(e.target.value)} placeholder="Équipe, pays, championnat…" className="h-12 w-full rounded-xl border border-neutral-200 bg-slate-50 pl-11 pr-12 text-[16px] text-slate-900 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100" />
+              {query && <button type="button" onClick={() => setQuery("")} aria-label="Effacer la recherche" className="absolute right-1 top-0 flex h-12 w-10 items-center justify-center rounded-lg text-slate-600"><X className="h-5 w-5" /></button>}
             </div>
             <div className="relative md:w-56">
               <label htmlFor="wn-combo-level" className="sr-only">Choisir un niveau de combiné</label>
-              <select id="wn-combo-level" value={levelKey} onChange={e => setLevelKey(e.target.value)} className="h-10 w-full appearance-none rounded-xl border border-neutral-200 bg-white px-3 pr-9 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-orange-200">
+              <select id="wn-combo-level" value={levelKey} onChange={e => setLevelKey(e.target.value)} className="h-12 w-full appearance-none rounded-xl border border-neutral-200 bg-white px-3 pr-9 text-[16px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-orange-200">
                 <option value="all">Tous les formats</option>
                 {LEVEL_ORDER.map(key => <option key={key} value={key}>{LEVELS[key].label}</option>)}
               </select>
-              <ChevronDown className="pointer-events-none absolute right-3 top-3 h-4 w-4 text-slate-400" />
+              <ChevronDown className="pointer-events-none absolute right-4 top-4 h-4 w-4 text-slate-400" />
             </div>
           </div>
         </div>
 
-        <details className="mb-6 rounded-2xl border border-orange-100 bg-orange-50/60 px-4 py-3 text-sm text-slate-700">
-          <summary className="flex cursor-pointer items-center gap-2 font-semibold text-slate-800"><Info className="h-4 w-4 text-orange-600" />Comment lire ces combinés ?</summary>
-          <div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-600">
+        <details className="mb-6 rounded-2xl border border-orange-100 bg-orange-50/60 px-4 py-3 text-[16px] text-slate-700">
+          <summary className="flex cursor-pointer items-center gap-2 font-semibold text-slate-800"><Info className="h-5 w-5 text-orange-700" />Comment lire ces combinés ?<ChevronDown className="ml-auto h-5 w-5" /></summary>
+          <div className="mt-3 space-y-2 text-[14px] leading-relaxed text-slate-600">
             <p>Toutes les sélections doivent réussir pour que le combiné soit gagnant. Une cote plus élevée ne signifie pas une meilleure chance de réussite.</p>
             <p>La confiance moyenne concerne les sélections individuelles. L’estimation combinée, si le moteur la fournit, est indicative et dépend de ses hypothèses et des corrélations entre événements.</p>
             <p>Les sélections viennent du moteur statistique WinPulse. Les explications décrivent les marchés et les données disponibles ; elles ne garantissent aucun résultat.</p>
@@ -329,17 +334,21 @@ export default function TodayCombosPage() {
         {loading ? <LoadingCards /> : !data ? <EmptyState title="Les combinés ne sont pas encore chargés" description="Utilise Réessayer pour récupérer les données du jour." /> : !tiers.length ?
           <EmptyState title="Aucun combiné disponible pour ce sport" description="De nouvelles sélections apparaîtront lorsque les matchs et les marchés seront disponibles." /> : !filtered.length ?
           <EmptyState title="Aucun combiné ne correspond à ta recherche" description="Essaie un autre championnat, une autre équipe ou un autre format." action={() => { setQuery(""); setLevelKey("all"); }} /> : <>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500" aria-live="polite">
+            <div className="mb-4 flex flex-wrap items-center justify-between gap-2 text-[14px] text-slate-500" aria-live="polite">
               <span>{filtered.length} format{filtered.length > 1 ? "s" : ""} affiché{filtered.length > 1 ? "s" : ""} · {family?.family_label}</span>
               {query.trim() && <span>Le combiné entier est conservé lorsqu’une rencontre correspond.</span>}
             </div>
-            <div className="grid items-start gap-5 lg:grid-cols-2">
+            <div className="mb-5">
+              <h2 className="font-heading text-[24px] font-extrabold text-slate-900">Choisis ton format</h2>
+              <p className="mt-1 text-[16px] text-slate-600">Un format par couleur, puis les rencontres dans l’ordre. Ouvre une explication quand tu veux en savoir plus.</p>
+            </div>
+            <div className="grid items-start gap-7 xl:grid-cols-2">
               {filtered.map(([key, tier], index) => <TierCard key={`${sportKey}-${key}`} tier={tier} tierKey={key} isFree={isFree} now={now} query={query}
                 featured={key === "ultra_safe"} index={index} onUpgrade={() => setPayOpen(true)} onShare={() => shareWhatsApp(tier, key)} />)}
             </div>
           </>}
         {!loading && isFree && data && <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex items-start gap-3"><Sparkles className="mt-1 h-5 w-5 shrink-0 text-orange-600" /><div><p className="font-heading font-bold text-slate-900">Passe de l’aperçu à l’analyse complète.</p><p className="mt-1 text-sm text-slate-600">Débloque les sélections de chaque rencontre et les différents formats de combinés.</p></div></div>
+          <div className="flex items-start gap-3"><Sparkles className="mt-1 h-5 w-5 shrink-0 text-orange-600" /><div><p className="font-heading font-bold text-slate-900">Passe de l’aperçu à l’analyse complète.</p><p className="mt-1 text-[16px] text-slate-600">Débloque les sélections de chaque rencontre et les différents formats de combinés.</p></div></div>
           <Button onClick={() => setPayOpen(true)} className="shrink-0 bg-orange-600 text-white hover:bg-orange-700">Découvrir Pro<ArrowRight className="ml-2 h-4 w-4" /></Button>
         </div>}
       </div>
@@ -353,13 +362,13 @@ export default function TodayCombosPage() {
 }
 
 function HeroStat({ value, label }) {
-  return <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-4 text-center"><div className="font-mono text-2xl font-bold text-white">{value}</div><div className="mt-2 text-[10px] font-medium leading-relaxed text-slate-400 sm:text-xs">{label}</div></div>;
+  return <div className="rounded-2xl border border-white/10 bg-white/5 px-3 py-4 text-center"><div className="font-mono text-[30px] font-bold text-white">{value}</div><div className="mt-2 text-[14px] font-medium leading-relaxed text-slate-300">{label}</div></div>;
 }
 function LoadingCards() {
-  return <div role="status" aria-label="Chargement des combinés" className="grid gap-5 lg:grid-cols-2">{[0, 1, 2, 3].map(i => <Card key={i} className="overflow-hidden rounded-2xl border-neutral-200 p-5"><div className="mb-6 flex items-center gap-3"><div className="h-12 w-12 animate-pulse rounded-2xl bg-slate-100" /><div className="h-5 w-36 animate-pulse rounded-lg bg-slate-100" /></div>{[0, 1].map(n => <div key={n} className="mb-3 h-24 animate-pulse rounded-xl bg-slate-50" />)}</Card>)}</div>;
+  return <div role="status" aria-label="Chargement des combinés" className="grid gap-7 xl:grid-cols-2">{[0, 1, 2, 3].map(i => <Card key={i} className="overflow-hidden rounded-2xl border-neutral-200 p-5"><div className="mb-6 flex items-center gap-3"><div className="h-12 w-12 animate-pulse rounded-2xl bg-slate-100" /><div className="h-5 w-36 animate-pulse rounded-lg bg-slate-100" /></div>{[0, 1].map(n => <div key={n} className="mb-3 h-24 animate-pulse rounded-xl bg-slate-50" />)}</Card>)}</div>;
 }
 function EmptyState({ title, description, action }) {
-  return <Card className="rounded-2xl border-dashed border-neutral-200 bg-white px-6 py-12 text-center"><CalendarDays className="mx-auto mb-4 h-9 w-9 text-slate-300" /><h2 className="font-heading text-lg font-bold text-slate-800">{title}</h2><p className="mx-auto mt-2 max-w-md text-sm leading-relaxed text-slate-500">{description}</p>{action && <Button variant="outline" onClick={action} className="mt-5">Réinitialiser les filtres</Button>}</Card>;
+  return <Card className="rounded-2xl border-dashed border-neutral-200 bg-white px-6 py-12 text-center"><CalendarDays className="mx-auto mb-4 h-9 w-9 text-slate-300" /><h2 className="font-heading text-lg font-bold text-slate-800">{title}</h2><p className="mx-auto mt-2 max-w-md text-[16px] leading-relaxed text-slate-500">{description}</p>{action && <Button variant="outline" onClick={action} className="mt-5">Réinitialiser les filtres</Button>}</Card>;
 }
 function TierCard({ tier, tierKey, isFree, now, query, featured, index, onUpgrade, onShare }) {
   const meta = LEVELS[tierKey] || { ...LEVELS.sure, label: text(tier.label, "Combiné") };
@@ -372,39 +381,36 @@ function TierCard({ tier, tierKey, isFree, now, query, featured, index, onUpgrad
   const odds = number(tier.total_odds);
   const combined = number(tier.combined_probability);
   const statsVisible = !locked && state === "ready";
-  return <Card className={cn("wn-combo-in overflow-hidden rounded-2xl bg-white shadow-sm", featured ? "border-teal-200 ring-2 ring-teal-500/10" : "border-neutral-200")} style={{ animationDelay: `${Math.min(index, 5) * 45}ms` }} data-testid={`today-tier-${tierKey}`}>
-    <div className="border-b border-neutral-100 p-5 sm:p-6">
-      <div className="flex items-start justify-between gap-3">
-        <div className="flex items-center gap-3"><div className={cn("grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-gradient-to-br text-white shadow-sm", meta.gradient)}><Icon className="h-6 w-6" /></div><div>
-          <div className="flex flex-wrap items-center gap-2"><h2 className="font-heading text-xl font-extrabold text-slate-900">{meta.label}</h2>{featured && <Badge className="border-teal-200 bg-teal-50 text-[9px] text-teal-700">TOUS SPORTS</Badge>}</div>
-          <p className="mt-1 text-xs text-slate-500">{count} sélection{count > 1 ? "s" : ""}{locked ? ` · ${hidden || count} à débloquer` : ""}</p>
-        </div></div>
-        <div className="text-right"><p className="text-[10px] font-bold uppercase tracking-wider text-slate-400">Cote totale</p><p className={cn("mt-1 font-mono text-2xl font-extrabold", meta.color)}>{locked ? "PRO" : statsVisible && odds > 1 ? formatNumber(odds, 2) : "—"}</p></div>
+  return <Card className={cn("wn-combo-in overflow-hidden rounded-3xl bg-white shadow-md", featured ? "border-teal-200 ring-2 ring-teal-500/10" : "border-neutral-200")} style={{ animationDelay: `${Math.min(index, 5) * 45}ms` }} data-testid={`today-tier-${tierKey}`}>
+    <div className={cn("relative overflow-hidden bg-gradient-to-br p-5 text-white sm:p-7", meta.gradient)}>
+      <div aria-hidden="true" className="pointer-events-none absolute -right-8 -top-12 h-40 w-40 rounded-full border-[18px] border-white/10" />
+      <div className="relative flex flex-wrap items-start justify-between gap-5">
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl border border-white/20 bg-white/15"><Icon className="h-7 w-7" /></div>
+          <div className="min-w-0"><h2 className="font-heading text-[25px] font-extrabold leading-tight sm:text-[28px]">{meta.label}</h2><p className="mt-2 text-[16px] text-white/90">{count} sélection{count > 1 ? "s" : ""}{locked ? ` · ${hidden || count} à débloquer` : ""}</p></div>
+        </div>
+        <div className="shrink-0 rounded-2xl border border-white/20 bg-black/15 px-4 py-3 text-right"><p className="text-[14px] font-medium text-white/90">Cote totale</p><p className="mt-1 font-mono text-[32px] font-extrabold leading-none sm:text-[36px]">{locked ? "PRO" : statsVisible && odds > 1 ? formatNumber(odds, 2) : "—"}</p></div>
       </div>
-      <p className="mt-4 text-xs leading-relaxed text-slate-500">{meta.description}</p>
-      <div className="mt-4 flex flex-wrap gap-2">
-        <Badge className={cn("text-[10px]", state === "started" ? "border-amber-200 bg-amber-50 text-amber-800" : state === "incomplete" ? "border-neutral-200 bg-slate-50 text-slate-500" : locked ? "border-orange-200 bg-orange-50 text-orange-700" : "border-emerald-200 bg-emerald-50 text-emerald-700")}>
-          {state === "started" ? "À actualiser · rencontre commencée" : state === "incomplete" ? "En préparation" : locked ? "Aperçu Pro" : "Disponible"}
-        </Badge>
-        {statsVisible && <Badge className="border-neutral-200 bg-slate-50 text-[10px] text-slate-600">Confiance moyenne : {percent(tier.avg_confidence)}</Badge>}
+      <div className="relative mt-5 flex flex-wrap items-center gap-2">
+        {featured && <span className="rounded-full border border-white/20 bg-white/15 px-3 py-1.5 text-[14px] font-semibold">Tous sports</span>}
+        <span className="rounded-full border border-white/20 bg-black/15 px-3 py-1.5 text-[14px] font-semibold">{state === "started" ? "À actualiser · rencontre commencée" : state === "incomplete" ? "En préparation" : locked ? "Aperçu Pro" : "Disponible"}</span>
       </div>
-      {statsVisible && combined !== null && combined >= 0 && combined <= 100 && <div className="mt-3 rounded-xl bg-slate-50 px-3 py-2.5">
-        <div className="flex items-center justify-between gap-3 text-xs"><span className="text-slate-500">Estimation combinée du moteur</span><span className="font-mono font-semibold text-slate-800">{percent(combined)}</span></div>
-        <p className="mt-1 text-[10px] leading-relaxed text-slate-400">Indicative ; différente de la moyenne des confiances. Les hypothèses du moteur restent à valider.</p>
-      </div>}
     </div>
-    <div className="space-y-3 p-4 sm:p-5">
-      {state === "started" && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs leading-relaxed text-amber-800">Une rencontre a commencé ou est terminée. Ce combiné ne peut plus être partagé ; actualise pour retrouver les sélections à venir.</p>}
-      {legs.map((leg, legIndex) => <LegCard key={`${leg.match_id || leg.id || legIndex}-${legIndex}`} leg={leg} index={legIndex} locked={isLegLocked(leg, tier, tierKey, isFree, legIndex)} allowAnalysis={!isFree} query={query} now={now} />)}
-      {!legs.length && <div className={cn("rounded-xl border border-dashed p-6 text-center", meta.border, meta.tint)}>
-        {locked ? <Lock className={cn("mx-auto mb-2 h-6 w-6", meta.color)} /> : <Clock className="mx-auto mb-2 h-6 w-6 text-slate-400" />}
-        <p className="text-sm font-semibold text-slate-700">{locked && count > 0 ? `${count} sélections à découvrir` : "Le moteur attend davantage de sélections"}</p>
-        <p className="mt-2 text-xs leading-relaxed text-slate-500">{locked && count > 0 ? "Le détail de ce format est disponible avec Pro." : "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement."}</p>
+    <div className="space-y-5 p-4 sm:p-6">
+      <p className="text-[16px] leading-relaxed text-slate-600">{meta.description}</p>
+      {statsVisible && <div className={cn("rounded-2xl border p-4", meta.border, meta.tint)}>
+        <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[15px] font-semibold text-slate-700">Confiance moyenne des sélections</span><strong className={cn("font-mono text-[22px]", meta.color)}>{percent(tier.avg_confidence)}</strong></div>
+        {combined !== null && combined >= 0 && combined <= 100 && <details className="mt-2 border-t border-black/5 pt-2"><summary className="cursor-pointer gap-2 text-[14px] font-semibold text-slate-700"><Info className="h-4 w-4" />Estimation combinée du moteur : {percent(combined)}</summary><p className="mt-2 text-[15px] leading-relaxed text-slate-600">Cette estimation est indicative et différente de la moyenne des confiances. Les hypothèses du moteur restent à valider.</p></details>}
       </div>}
-      {state === "incomplete" && legs.length > 0 && <p className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">Cette sélection ne constitue pas encore un combiné complet. Le partage sera disponible dès qu’au moins deux rencontres seront retenues.</p>}
-      {locked && count >= 2 ? <div className="rounded-xl border border-orange-100 bg-orange-50/60 p-4"><p className="text-sm font-bold text-slate-900">Découvre toutes les sélections</p><p className="mb-3 mt-1 text-xs leading-relaxed text-slate-500">Les rencontres sont visibles. Les marchés, les cotes et les analyses complètes se débloquent avec Pro.</p><Button className="w-full bg-orange-600 text-white hover:bg-orange-700" onClick={onUpgrade} data-testid={`today-upgrade-${tierKey}`}><Lock className="mr-2 h-4 w-4" />Découvrir Pro<ArrowRight className="ml-2 h-4 w-4" /></Button></div> :
-        <Button onClick={onShare} disabled={!canShare(tier, tierKey, isFree, now)} size="sm" className="h-10 w-full rounded-xl bg-[#25D366] text-white hover:bg-[#1ebe5c]" data-testid={`today-share-${tierKey}`}><Send className="mr-2 h-4 w-4" />Partager le combiné sur WhatsApp</Button>}
-      {count > 0 && <p className="px-1 text-center text-[10px] leading-relaxed text-slate-400">Les cotes peuvent évoluer. Aucun format ne garantit un résultat.</p>}
+      {state === "started" && <p role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-[16px] leading-relaxed text-amber-900">Une rencontre a commencé ou est terminée. Ce combiné ne peut plus être partagé ; actualise pour retrouver les sélections à venir.</p>}
+      {legs.length > 0 && <div><div className="mb-3 flex items-center gap-2 text-[15px] font-bold text-slate-700"><Layers className="h-4 w-4" />Les rencontres</div><div className="space-y-4">{legs.map((leg, legIndex) => <LegCard key={`${leg.match_id || leg.id || legIndex}-${legIndex}`} leg={leg} index={legIndex} locked={isLegLocked(leg, tier, tierKey, isFree, legIndex)} allowAnalysis={!isFree} query={query} now={now} />)}</div></div>}
+      {!legs.length && <div className={cn("rounded-2xl border border-dashed p-6 text-center", meta.border, meta.tint)}>
+        {locked ? <Lock className={cn("mx-auto mb-3 h-8 w-8", meta.color)} /> : <Clock className="mx-auto mb-3 h-8 w-8 text-slate-500" />}
+        <p className="text-[18px] font-bold text-slate-800">{locked && count > 0 ? `${count} sélections à découvrir` : "Le moteur attend davantage de sélections"}</p><p className="mt-2 text-[16px] leading-relaxed text-slate-600">{locked && count > 0 ? "Le détail de ce format est disponible avec Pro." : "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement."}</p>
+      </div>}
+      {state === "incomplete" && legs.length > 0 && <p className="rounded-2xl bg-slate-50 p-4 text-[16px] leading-relaxed text-slate-600">Cette sélection ne constitue pas encore un combiné complet. Le partage sera disponible dès qu’au moins deux rencontres seront retenues.</p>}
+      {locked && count >= 2 ? <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5"><p className="text-[19px] font-bold text-slate-900">Découvre toutes les sélections</p><p className="mb-4 mt-2 text-[16px] leading-relaxed text-slate-600">Les rencontres sont visibles. Les marchés, les cotes et les analyses complètes se débloquent avec Pro.</p><Button className="h-12 w-full rounded-xl bg-orange-700 text-[16px] text-white hover:bg-orange-800" onClick={onUpgrade} data-testid={`today-upgrade-${tierKey}`}><Lock className="mr-2 h-5 w-5" />Découvrir Pro<ArrowRight className="ml-2 h-5 w-5" /></Button></div> : <Button onClick={onShare} disabled={!canShare(tier, tierKey, isFree, now)} className="h-12 w-full rounded-xl bg-emerald-700 text-[16px] text-white hover:bg-emerald-800" data-testid={`today-share-${tierKey}`}><Send className="mr-2 h-5 w-5" />Partager sur WhatsApp</Button>}
+      {count > 0 && <p className="text-center text-[14px] leading-relaxed text-slate-500">Les cotes peuvent évoluer. Aucun format ne garantit un résultat.</p>}
     </div>
   </Card>;
 }
@@ -417,15 +423,18 @@ function LegCard({ leg, index, locked, allowAnalysis, query, now }) {
   const location = country(leg);
   const probability = leg.model_probability ?? leg.estimated_win_probability;
   const risk = RISK_META[normalize(leg.label)];
-  return <div className={cn("rounded-xl border p-3.5", highlight ? "border-orange-300 bg-orange-50/40" : "border-neutral-200 bg-slate-50/50")}>
-    <div className="mb-2 flex items-start gap-2"><span className="grid h-5 w-5 shrink-0 place-items-center rounded-md bg-white text-[10px] font-bold text-slate-400">{index + 1}</span><div className="min-w-0 flex-1"><p className="break-words text-[10px] font-semibold uppercase tracking-wide text-slate-500">{competition}{location && !normalize(competition).includes(normalize(location)) ? ` · ${location}` : ""}</p><p className="mt-1 flex items-center gap-1 text-[10px] text-slate-400"><CalendarDays className="h-3 w-3 shrink-0" /><span>{formatDate(leg.commence_time, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>{started && <span className="ml-1 font-semibold text-amber-700">Commencée / terminée</span>}</p></div></div>
-    <p className="break-words text-sm font-bold leading-relaxed text-slate-900">{text(leg.home_team, "Domicile")} <span className="px-1 font-normal text-slate-400">vs</span> {text(leg.away_team, "Extérieur")}</p>
-    {locked ? <div className="mt-3 flex items-center gap-2 rounded-lg border border-neutral-200 bg-white px-3 py-2.5 text-xs text-slate-500"><Lock className="h-3.5 w-3.5 shrink-0 text-orange-500" />Sélection et cote réservées aux abonnés</div> : <>
-      <div className="mt-3 flex items-start justify-between gap-2 rounded-lg border border-orange-100 bg-white p-3"><div className="min-w-0"><p className="text-[10px] text-slate-400">{text(leg.market_label, "Marché non communiqué")}</p><p className="mt-1 break-words text-xs font-bold text-orange-700">{text(leg.pick, "Sélection non communiquée")}</p></div><span className="shrink-0 rounded-lg bg-orange-50 px-2 py-1 font-mono text-sm font-bold text-orange-700">{number(leg.pick_odds) > 1 ? formatNumber(leg.pick_odds, 2) : "—"}</span></div>
-      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-slate-500"><span>Confiance fournie : <strong className="text-slate-700">{percent(leg.confidence)}</strong></span>{number(probability) !== null && <span>Estimation du moteur : <strong className="text-slate-700">{percent(probability)}</strong></span>}</div>
-      {risk && <Badge className={cn("mt-2 text-[10px]", risk.className)}>Niveau du moteur : {risk.label}</Badge>}
-      <details className="mt-3"><summary className="cursor-pointer text-xs font-semibold text-slate-600">Comprendre cette sélection</summary><div className="mt-2 rounded-lg bg-white p-3 text-xs leading-relaxed text-slate-500"><p>{explainPick(leg)}</p><p className="mt-2">Cette explication décrit le marché. Elle ne suppose aucune forme récente, blessure ou statistique absente des données.</p></div></details>
-      {allowAnalysis && id !== null && id !== undefined && String(id) && <Link to={`/app/match/${encodeURIComponent(String(id))}`} className="mt-3 inline-flex items-center gap-1 text-xs font-bold text-orange-700 hover:text-orange-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">Voir l’analyse du match<ArrowRight className="h-3.5 w-3.5" /></Link>}
-    </>}
+  return <div className={cn("overflow-hidden rounded-2xl border-2 bg-white", highlight ? "border-orange-400" : "border-slate-200")}>
+    <div className={cn("flex items-start gap-3 border-b border-slate-100 px-4 py-3.5", highlight ? "bg-orange-50" : "bg-slate-50")}>
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-full border border-orange-200 bg-white text-[15px] font-bold text-orange-700">{index + 1}</span>
+      <div className="min-w-0 flex-1"><p className="break-words text-[15px] font-semibold leading-relaxed text-slate-700">{competition}{location && !normalize(competition).includes(normalize(location)) ? ` · ${location}` : ""}</p><p className="mt-1 flex flex-wrap items-center gap-1.5 text-[14px] leading-relaxed text-slate-600"><CalendarDays className="h-4 w-4 shrink-0" /><span>{formatDate(leg.commence_time, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}</span>{started && <span className="rounded bg-amber-100 px-2 py-0.5 font-semibold text-amber-900">Commencée / terminée</span>}</p></div>
+    </div>
+    <div className="p-4 sm:p-5"><div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-heading text-[21px] font-extrabold leading-snug text-slate-900 sm:text-[23px]"><span className="wn-team">{text(leg.home_team, "Domicile")}</span><span className="text-[15px] font-medium text-slate-500">vs</span><span className="wn-team">{text(leg.away_team, "Extérieur")}</span></div>
+      {locked ? <div className="mt-4 flex items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 text-[16px] leading-relaxed text-slate-600"><Lock className="h-5 w-5 shrink-0 text-orange-700" />Sélection et cote réservées aux abonnés</div> : <>
+        <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-orange-200 bg-orange-50 p-4"><div className="min-w-0"><p className="text-[14px] font-medium text-orange-800">{text(leg.market_label, "Marché non communiqué")}</p><p className="mt-1.5 break-words text-[18px] font-bold leading-relaxed text-orange-950">{text(leg.pick, "Sélection non communiquée")}</p></div><div className="shrink-0 rounded-xl bg-white px-3 py-2.5 text-center shadow-sm"><span className="block text-[14px] text-slate-600">Cote</span><strong className="block font-mono text-[27px] font-extrabold text-orange-800">{number(leg.pick_odds) > 1 ? formatNumber(leg.pick_odds, 2) : "—"}</strong></div></div>
+        <div className="mt-4 flex flex-wrap items-center gap-2"><span className="rounded-lg bg-slate-100 px-3 py-2 text-[14px] text-slate-700">Confiance fournie : <strong>{percent(leg.confidence)}</strong></span>{risk && <Badge className={cn("px-3 py-2 text-[14px]", risk.className)}>Niveau du moteur : {risk.label}</Badge>}</div>
+        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-1"><summary className="cursor-pointer gap-2 text-[15px] font-semibold text-slate-700"><Info className="h-4 w-4 shrink-0 text-orange-700" />Comprendre cette sélection<ChevronDown className="ml-auto h-4 w-4 shrink-0" /></summary><div className="space-y-3 border-t border-slate-200 pb-3 pt-3 text-[16px] leading-relaxed text-slate-600"><p>{explainPick(leg)}</p>{number(probability) !== null && <p>Estimation du moteur pour ce pari : <strong className="text-slate-800">{percent(probability)}</strong>.</p>}<p>Cette explication décrit le marché. Elle ne suppose aucune forme récente, blessure ou statistique absente des données.</p></div></details>
+        {allowAnalysis && id !== null && id !== undefined && String(id) && <Link to={`/app/match/${encodeURIComponent(String(id))}`} className="mt-4 inline-flex min-h-[44px] items-center gap-2 rounded-lg px-1 text-[16px] font-bold text-orange-800 hover:text-orange-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">Voir l’analyse du match<ArrowRight className="h-4 w-4" /></Link>}
+      </>}
+    </div>
   </div>;
 }
