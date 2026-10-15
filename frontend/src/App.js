@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import LandingPage from "@/pages/LandingPage";
@@ -28,7 +28,7 @@ import WhatsAppWidget from "@/components/WhatsAppWidget";
 import PageTracker from "@/components/PageTracker";
 
 import api from "@/lib/api";
-import AppLayout from "@/components/AppLayout";
+import AppLayout, { LanguageProvider, LanguageSwitcher, useLanguage } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -40,37 +40,37 @@ import {
   Clock3,
   ShieldCheck,
 } from "lucide-react";
-import dayjs from "dayjs";
 
-function statusLabel(status) {
+function statusLabel(status, t) {
   if (status === "ACTIVE") {
     return {
-      text: "EN COURS",
+      text: t("EN COURS"),
       cls: "bg-emerald-100 text-emerald-700 border-emerald-200",
     };
   }
 
   if (status === "FAILED") {
     return {
-      text: "ÉCHOUÉE",
+      text: t("ÉCHOUÉE"),
       cls: "bg-rose-100 text-rose-700 border-rose-200",
     };
   }
 
   if (status === "COMPLETED") {
     return {
-      text: "TERMINÉE",
+      text: t("TERMINÉE"),
       cls: "bg-blue-100 text-blue-700 border-blue-200",
     };
   }
 
   return {
-    text: "AUCUNE",
+    text: t("AUCUNE"),
     cls: "bg-slate-100 text-slate-600 border-slate-200",
   };
 }
 
 function MontantePage() {
+  const { t, formatNumber, formatDate } = useLanguage();
   const { user } = useAuth();
 
   const [data, setData] = useState(null);
@@ -93,14 +93,14 @@ function MontantePage() {
       setData(
         response?.data || {
           status: "NONE",
-          message: "Aucune montante active.",
+          message: t("Aucune montante active."),
         }
       );
     } catch (err) {
       const detail =
         err?.response?.data?.detail ||
         err?.message ||
-        "Impossible de charger la montante.";
+        t("Impossible de charger la montante.");
 
       setError(String(detail));
       setData({
@@ -126,14 +126,14 @@ function MontantePage() {
       setData(
         response?.data || {
           status: "NONE",
-          message: "Aucune montante active.",
+          message: t("Aucune montante active."),
         }
       );
     } catch (err) {
       const detail =
         err?.response?.data?.detail ||
         err?.message ||
-        "Impossible d'actualiser la montante.";
+        t("Impossible d'actualiser la montante.");
 
       setError(String(detail));
     } finally {
@@ -145,12 +145,12 @@ function MontantePage() {
     const capital = Number(bankroll);
 
     if (!Number.isFinite(capital) || capital <= 0) {
-      setError("Le capital initial doit être un nombre positif.");
+      setError(t("Le capital initial doit être un nombre positif."));
       return;
     }
 
     if (![10, 15].includes(Number(days))) {
-      setError("La montante doit durer 10 ou 15 jours.");
+      setError(t("La montante doit durer 10 ou 15 jours."));
       return;
     }
 
@@ -174,7 +174,7 @@ function MontantePage() {
       const detail =
         err?.response?.data?.detail ||
         err?.message ||
-        "Impossible de démarrer la montante.";
+        t("Impossible de démarrer la montante.");
 
       setError(String(detail));
     } finally {
@@ -182,7 +182,7 @@ function MontantePage() {
     }
   };
 
-  const status = statusLabel(data?.status);
+  const status = statusLabel(data?.status, t);
   const progress =
     data?.status === "COMPLETED"
       ? 100
@@ -198,17 +198,15 @@ function MontantePage() {
             <div>
               <div className="flex items-center gap-2 text-orange-300 text-xs font-bold uppercase tracking-[0.18em]">
                 <TrendingUp className="h-4 w-4" />
-                Montante WinPulse
+                {t("Montante WinPulse")}
               </div>
 
               <h1 className="font-heading text-3xl sm:text-4xl font-black tracking-tight mt-2">
-                10 → 15 jours
+                {t("10 → 15 jours")}
               </h1>
 
               <p className="text-slate-300 text-sm mt-2 max-w-2xl">
-                Chaque jour, le moteur sélectionne 1 ou 2 pronostics existants
-                répondant aux critères de la montante. Une journée gagnée fait
-                avancer la progression ; une journée perdue met fin à la série.
+                {t("Le moteur retient les pronostics existants qui respectent ses critères. Une journée gagnée fait avancer la série ; une journée perdue y met fin. Si aucune sélection ne convient, le module attend.")}
               </p>
             </div>
 
@@ -229,7 +227,7 @@ function MontantePage() {
                     refreshing ? "animate-spin" : ""
                   }`}
                 />
-                Actualiser
+                {t("Actualiser")}
               </Button>
             </div>
           </div>
@@ -237,7 +235,7 @@ function MontantePage() {
 
         {error && (
           <Card className="border-rose-200 bg-rose-50 p-4 text-sm text-rose-800">
-            <div className="font-bold">Montante indisponible</div>
+            <div className="font-bold">{t("Montante indisponible")}</div>
             <div className="mt-1">{error}</div>
           </Card>
         )}
@@ -248,7 +246,7 @@ function MontantePage() {
               <ShieldCheck className="h-5 w-5 text-orange-600" />
 
               <h2 className="font-heading font-bold text-slate-900">
-                Contrôle administrateur
+                {t("Contrôle administrateur")}
               </h2>
             </div>
 
@@ -258,8 +256,8 @@ function MontantePage() {
                 onChange={(event) => setDays(Number(event.target.value))}
                 className="h-10 rounded-md border border-slate-200 px-3 text-sm"
               >
-                <option value={10}>Montante 10 jours</option>
-                <option value={15}>Montante 15 jours</option>
+                <option value={10}>{t("Montante 10 jours")}</option>
+                <option value={15}>{t("Montante 15 jours")}</option>
               </select>
 
               <input
@@ -268,7 +266,7 @@ function MontantePage() {
                 value={bankroll}
                 onChange={(event) => setBankroll(event.target.value)}
                 className="h-10 rounded-md border border-slate-200 px-3 text-sm"
-                placeholder="Capital initial"
+                placeholder={t("Capital initial")}
               />
 
               <div className="flex gap-2">
@@ -278,7 +276,7 @@ function MontantePage() {
                   disabled={starting}
                   className="wp-gradient-warm text-white border-0 flex-1"
                 >
-                  Démarrer
+                  {t("Démarrer")}
                 </Button>
 
                 <Button
@@ -288,74 +286,69 @@ function MontantePage() {
                   variant="outline"
                   className="flex-1"
                 >
-                  Recommencer
+                  {t("Recommencer")}
                 </Button>
               </div>
             </div>
 
             <p className="text-xs text-slate-500 mt-3">
-              Le démarrage et le redémarrage sont réservés à l'administrateur
-              afin d'éviter qu'un utilisateur ne réinitialise la série.
+              {t("Le démarrage et le redémarrage sont réservés à l'administrateur afin d'éviter qu'un utilisateur ne réinitialise la série.")}
             </p>
           </Card>
         )}
 
         {loading ? (
           <Card className="p-10 text-center">
-            Chargement de la montante…
+            {t("Chargement de la montante…")}
           </Card>
         ) : !data || data.status === "NONE" ? (
           <Card className="p-10 text-center bg-white">
             <TrendingUp className="h-9 w-9 mx-auto text-orange-500 mb-3" />
 
             <h2 className="font-heading text-xl font-bold text-slate-900">
-              Aucune montante active
+              {t("Aucune montante active")}
             </h2>
 
             <p className="text-sm text-slate-500 mt-2">
-              L'administrateur doit lancer une montante de 10 ou 15 jours.
+              {t("L'administrateur doit lancer une montante de 10 ou 15 jours.")}
             </p>
           </Card>
         ) : (
           <>
             <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4">
               <Kpi
-                label="Jour"
-                value={`${data.current_day}/${data.days}`}
-                sub="progression"
+                label={t("Jour")}
+                value={`${formatNumber(data.current_day)}/${formatNumber(data.days)}`}
+                sub={t("progression")}
               />
 
               <Kpi
-                label="Capital initial"
-                value={`${Number(
-                  data.initial_bankroll || 0
-                ).toLocaleString()} FCFA`}
-                sub="mise de départ"
+                label={t("Capital initial")}
+                value={`${formatNumber(data.initial_bankroll || 0)} FCFA`}
+                sub={t("mise de départ")}
               />
 
               <Kpi
-                label="Capital théorique"
-                value={`${Number(
-                  data.theoretical_bankroll || 0
-                ).toLocaleString()} FCFA`}
-                sub="si les journées passent"
+                label={t("Capital théorique")}
+                value={`${formatNumber(data.theoretical_bankroll || 0)} FCFA`}
+                sub={t("si les journées passent")}
               />
 
               <Kpi
-                label="Progression"
-                value={`${progress}%`}
-                sub="de la série"
+                label={t("Progression")}
+                value={`${formatNumber(progress)}%`}
+                sub={t("de la série")}
               />
             </div>
 
             <Card className="p-5 bg-white border-neutral-200">
               <div className="flex items-center justify-between mb-2">
                 <span className="text-sm font-semibold text-slate-800">
-                  Progression de la série
+                  {t("Progression de la série")}
                 </span>
 
                 <span className="text-xs text-slate-500">
-                  Jour {data.current_day} sur {data.days}
+                  {t("Jour {{day}} sur {{total}}", { day: formatNumber(data.current_day), total: formatNumber(data.days) })}
                 </span>
               </div>
 
@@ -376,12 +369,11 @@ function MontantePage() {
               <div className="flex items-center justify-between mb-4 gap-3">
                 <div>
                   <h2 className="font-heading text-xl font-bold text-slate-900">
-                    Pronostics du jour
+                    {t("Pronostics du jour")}
                   </h2>
 
                   <p className="text-xs text-slate-500 mt-1">
-                    Confiance ≥ 70% · cote 1.20–1.50 · marchés réellement
-                    présents dans le moteur.
+                    {t("Les sélections dépendent des critères et des données disponibles. Aucun intervalle de cotes fixe n’est garanti.")}
                   </p>
                 </div>
 
@@ -402,7 +394,7 @@ function MontantePage() {
                     >
                       <div className="flex items-center justify-between mb-3">
                         <span className="text-[10px] uppercase tracking-wider font-bold text-orange-700">
-                          Pick {index + 1}
+                          {t("Pick {{number}}", { number: formatNumber(index + 1) })}
                         </span>
 
                         <span className="font-mono font-black text-orange-600">
@@ -424,7 +416,7 @@ function MontantePage() {
                         <span>{pick.market}</span>
                         <span>·</span>
                         <span>
-                          Confiance{" "}
+                          {t("Confiance")}{" "}
                           {Math.round(Number(pick.confidence || 0) * 100)}%
                         </span>
 
@@ -440,10 +432,8 @@ function MontantePage() {
 
                       {(pick.start_time || pick.commence_time) && (
                         <div className="text-xs text-slate-400 mt-2">
-                          Début :{" "}
-                          {dayjs(
-                            pick.start_time || pick.commence_time
-                          ).format("DD/MM/YYYY HH:mm")}
+                          {t("Début :")}{" "}
+                          {formatDate(pick.start_time || pick.commence_time, { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" })}
                         </div>
                       )}
                     </div>
@@ -454,12 +444,11 @@ function MontantePage() {
                   <Clock3 className="h-7 w-7 mx-auto text-slate-400 mb-2" />
 
                   <p className="font-semibold text-slate-700">
-                    En attente d'un pick qualifié
+                    {t("En attente d'un pick qualifié")}
                   </p>
 
                   <p className="text-xs text-slate-500 mt-1">
-                    Le module ne force jamais un pronostic s'il ne respecte pas
-                    ses critères.
+                    {t("Le module ne force jamais un pronostic s'il ne respecte pas ses critères.")}
                   </p>
                 </div>
               )}
@@ -468,13 +457,13 @@ function MontantePage() {
             <Card className="bg-white border-neutral-200 overflow-hidden">
               <div className="px-5 py-4 border-b border-neutral-100">
                 <h2 className="font-heading font-bold text-slate-900">
-                  Historique
+                  {t("Historique")}
                 </h2>
               </div>
 
               {!Array.isArray(data.history) || data.history.length === 0 ? (
                 <div className="p-6 text-sm text-slate-500">
-                  Aucune journée terminée.
+                  {t("Aucune journée terminée.")}
                 </div>
               ) : (
                 <div className="divide-y divide-neutral-100">
@@ -494,12 +483,12 @@ function MontantePage() {
 
                         <div>
                           <div className="font-semibold text-sm">
-                            Jour {historyItem.day} ·{" "}
+                            {t("Jour")} {historyItem.day} ·{" "}
                             {historyItem.status === "WIN"
-                              ? "GAGNÉ"
+                              ? t("GAGNÉ")
                               : historyItem.status === "VOID"
-                                ? "REMBOURSÉ"
-                                : "PERDU"}
+                                ? t("REMBOURSÉ")
+                                : t("PERDU")}
                           </div>
 
                           <div className="text-xs text-slate-500">
@@ -527,8 +516,7 @@ function MontantePage() {
             </Card>
 
             <p className="text-xs text-slate-400 text-center">
-              Aucun pari sportif n'est garanti. La montante réduit le nombre de
-              sélections mais n'élimine pas le risque. 18+ · Jeu responsable.
+              {t("Aucun pari sportif n'est garanti. La montante réduit le nombre de sélections mais n'élimine pas le risque. 18+ · Jeu responsable.")}
             </p>
           </>
         )}
@@ -556,13 +544,14 @@ function Kpi({ label, value, sub }) {
 }
 
 function RequireAuth({ children, admin = false }) {
+  const { t } = useLanguage();
   const { user, loading } = useAuth();
 
   if (loading) {
     return (
       <div className="min-h-screen grid place-items-center bg-neutral-50">
         <div className="text-slate-500 text-sm">
-          Chargement…
+          {t("Chargement…")}
         </div>
       </div>
     );
@@ -581,8 +570,10 @@ function RequireAuth({ children, admin = false }) {
 
 export default function App() {
   return (
+    <LanguageProvider>
     <AuthProvider>
       <BrowserRouter>
+        <PublicLanguageBar />
         <Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
@@ -752,8 +743,25 @@ export default function App() {
 
         <PageTracker />
         <WhatsAppWidget />
-        <Toaster position="top-right" richColors />
+        <LocalizedToaster />
       </BrowserRouter>
     </AuthProvider>
+    </LanguageProvider>
   );
+}
+function PublicLanguageBar() {
+  const { pathname } = useLocation();
+  const { t } = useLanguage();
+  if (pathname === "/app" || pathname.startsWith("/app/")) return null;
+  return <div className="border-b border-neutral-200 bg-white px-4 py-2" data-testid="public-language-bar">
+    <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-end gap-3">
+      <span className="text-sm font-semibold text-slate-600">{t("Langue de l’interface")}</span>
+      <LanguageSwitcher compact />
+    </div>
+  </div>;
+}
+
+function LocalizedToaster() {
+  const { direction } = useLanguage();
+  return <Toaster position={direction === "rtl" ? "top-left" : "top-right"} richColors />;
 }
