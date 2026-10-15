@@ -17,6 +17,7 @@ import {
   Gift,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLanguage } from "@/components/AppLayout";
 import api from "@/lib/api";
 
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
@@ -183,6 +184,7 @@ function readDailyResults(data, date, now = new Date()) {
 }
 
 export default function LandingPage() {
+  const { t, locale, formatNumber } = useLanguage();
   const motionRoot = useLandingMotion();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -193,7 +195,7 @@ export default function LandingPage() {
   const [dailyResults, setDailyResults] = useState(null);
   const [resultsStatus, setResultsStatus] = useState(DAILY_RESULTS_ENDPOINT ? "loading" : "disabled");
   const [resultsReloadKey, setResultsReloadKey] = useState(0);
-  const resultsDateLabel = new Intl.DateTimeFormat("fr-FR", {
+  const resultsDateLabel = new Intl.DateTimeFormat(locale, {
     day: "numeric", month: "long", year: "numeric", timeZone: "UTC",
   }).format(new Date(`${resultsDate}T12:00:00Z`));
   const signupUrl = typeof window === "undefined" ? "/register" : (() => {
@@ -272,7 +274,7 @@ export default function LandingPage() {
     <div ref={motionRoot} className="wp-landing min-h-screen w-full min-w-0 bg-neutral-50">
       <style>{LANDING_MOTION_CSS}</style>
       <header className="sticky top-0 z-50 w-full max-w-full border-b border-neutral-200 bg-white/90 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 w-full max-w-7xl items-center gap-2 px-3 sm:px-6 lg:px-8">
+        <div className="mx-auto flex min-h-16 flex-wrap py-2 w-full max-w-7xl items-center gap-2 px-3 sm:px-6 lg:px-8">
           <Link
             to="/"
             className="flex min-w-0 shrink-0 items-center gap-2 sm:gap-2.5"
@@ -283,16 +285,16 @@ export default function LandingPage() {
             </div>
             <div className="min-w-0">
               <div className="font-heading text-base font-extrabold leading-none sm:text-lg">WinPulse</div>
-              <div className="mt-1 hidden text-[10px] font-semibold uppercase tracking-[0.18em] text-orange-600 md:block">
-                Analyses sportives
+              <div className="mt-1 hidden text-xs font-semibold uppercase tracking-[0.18em] text-orange-600 md:block">
+                {t("Analyses sportives")}
               </div>
             </div>
           </Link>
 
-          <nav className="ml-auto flex min-w-0 shrink-0 items-center gap-1 sm:gap-2">
+          <nav className="ms-auto flex max-w-full flex-wrap min-w-0 items-center gap-1 sm:gap-2">
             <Link to="/resultats" className="hidden lg:inline-flex">
               <Button variant="ghost" size="sm" data-testid="public-trackrecord-link">
-                Historique des résultats
+                {t("Historique des résultats")}
               </Button>
             </Link>
 
@@ -303,9 +305,9 @@ export default function LandingPage() {
                 className="relative font-bold text-orange-700 hover:bg-orange-50"
                 data-testid="public-blog-link"
               >
-                Blog
-                <span className="ml-1.5 rounded bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
-                  Articles
+                {t("Blog")}
+                <span className="ms-1.5 rounded bg-orange-500 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-white">
+                  {t("Articles")}
                 </span>
               </Button>
             </Link>
@@ -316,7 +318,7 @@ export default function LandingPage() {
                 className="h-9 shrink-0 border-0 px-3 text-xs text-white hover:opacity-90 wp-gradient-warm sm:px-4 sm:text-sm"
                 onClick={() => navigate("/app")}
               >
-                Ouvrir l'app
+                {t("Ouvrir l'app")}
               </Button>
             ) : (
               <>
@@ -326,15 +328,15 @@ export default function LandingPage() {
                   data-testid="header-login-btn"
                   className="h-9 shrink-0 px-2 text-xs sm:px-3 sm:text-sm"
                 >
-                  Connexion
+                  {t("Connexion")}
                 </Button>
                 <Button
                   className="h-9 shrink-0 border-0 px-3 text-xs text-white hover:opacity-90 wp-gradient-warm sm:px-4 sm:text-sm"
                   onClick={() => navigate(signupUrl)}
                   data-testid="header-signup-btn"
                 >
-                  <span className="sm:hidden">S'inscrire</span>
-                  <span className="hidden sm:inline">Démarrer gratuit</span>
+                  <span className="sm:hidden">{t("S'inscrire")}</span>
+                  <span className="hidden sm:inline">{t("Démarrer gratuit")}</span>
                 </Button>
               </>
             )}
@@ -353,15 +355,14 @@ export default function LandingPage() {
             <div className="min-w-0 lg:col-span-7">
               <div className="wp-enter mb-6 inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-[11px] font-bold text-orange-700 shadow-lg shadow-orange-200/50 sm:text-xs">
                 <span aria-hidden="true" className="h-2 w-2 rounded-full bg-orange-500" />
-                Pronostics · Analyses · Résultats publics
+                {t("Pronostics · Analyses · Résultats publics")}
               </div>
               <h1 className="wp-enter wp-mobile-hero-title font-heading text-4xl font-black leading-tight tracking-tighter text-slate-900 sm:text-5xl lg:text-6xl" style={{ "--wp-delay": "80ms" }}>
-                Vise la victoire avec nos pronostics.{" "}
-                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">Garde une longueur d’avance.</span>
+                {t("Vise la victoire avec nos pronostics.")}{" "}
+                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">{t("Garde une longueur d’avance.")}</span>
               </h1>
               <p className="wp-enter mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg" style={{ "--wp-delay": "160ms" }}>
-                Découvre les pronostics du jour et nos analyses de matchs. Commence gratuitement,
-                puis passe à Pro pour explorer les sélections et combinés réservés aux abonnés.
+                {t("Découvre les pronostics du jour et nos analyses de matchs. Commence gratuitement, puis passe à Pro pour explorer les sélections et combinés réservés aux abonnés.")}
               </p>
               <div className="wp-enter mt-8 flex flex-col sm:flex-row gap-3" style={{ "--wp-delay": "240ms" }}>
                 <Button
@@ -371,8 +372,8 @@ export default function LandingPage() {
                   data-testid="hero-cta-btn"
                 >
                   <span className="absolute inset-0 rounded-md bg-white/20 opacity-0 group-hover:opacity-100 transition-opacity" />
-                  Découvrir les pronostics
-                  <ArrowRight className="ml-2 h-4 w-4 group-hover:translate-x-1 transition-transform" />
+                  {t("Découvrir les pronostics")}
+                  <ArrowRight className="ms-2 h-4 w-4 group-hover:translate-x-1 transition-transform rtl:rotate-180 rtl:group-hover:-translate-x-1" />
                 </Button>
                 <Button
                   size="lg"
@@ -381,22 +382,22 @@ export default function LandingPage() {
                   onClick={showPricing}
                   data-testid="hero-pro-btn"
                 >
-                  Découvrir l’offre Pro
+                  {t("Découvrir l’offre Pro")}
                 </Button>
               </div>
-              <Link to="/resultats" className="wp-result-link mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-slate-600" data-testid="hero-results-btn">Consulter l’historique complet<ArrowRight className="h-3.5 w-3.5" /></Link>
+              <Link to="/resultats" className="wp-result-link mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-slate-600" data-testid="hero-results-btn">{t("Consulter l’historique complet")}<ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" /></Link>
               <div className="wp-enter mt-5 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6" style={{ "--wp-delay": "320ms" }}>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Inscription sans carte
+                  {t("Inscription sans carte")}
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Résultats publics
+                  {t("Résultats publics")}
                 </div>
                 <div className="flex items-center gap-2">
                   <CheckCircle2 className="h-4 w-4 text-emerald-500" />
-                  Compte gratuit
+                  {t("Compte gratuit")}
                 </div>
               </div>
             </div>
@@ -405,21 +406,21 @@ export default function LandingPage() {
               <div id="picks-du-jour" className="relative min-w-0 scroll-mt-24">
                 <Card className="relative min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl sm:p-5">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-2"><Trophy className="h-4 w-4 shrink-0 text-orange-500" /><h2 className="text-sm font-bold text-slate-700">Pronostics disponibles</h2></div>
-                    <Link to="/resultats" className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">Résultats publics</Link>
+                    <div className="flex items-center gap-2"><Trophy className="h-4 w-4 shrink-0 text-orange-500" /><h2 className="text-sm font-bold text-slate-700">{t("Pronostics disponibles")}</h2></div>
+                    <Link to="/resultats" className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-bold text-emerald-700">{t("Résultats publics")}</Link>
                   </div>
                   <div className="space-y-3" aria-live="polite" aria-busy={picksStatus === "loading"}>
                     {picksStatus === "loading" ? (
-                      <p className="rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Chargement des analyses…</p>
+                      <p className="rounded-xl bg-slate-50 p-5 text-sm text-slate-600">{t("Chargement des analyses…")}</p>
                     ) : picksStatus === "error" ? (
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-sm text-slate-600">
-                        <p>Les analyses ne sont pas disponibles pour le moment.</p>
-                        <button type="button" onClick={() => setReloadKey((value) => value + 1)} className="mt-3 font-semibold text-orange-700 underline">Réessayer</button>
+                        <p>{t("Les analyses ne sont pas disponibles pour le moment.")}</p>
+                        <button type="button" onClick={() => setReloadKey((value) => value + 1)} className="mt-3 font-semibold text-orange-700 underline">{t("Réessayer")}</button>
                       </div>
                     ) : livePicks.length === 0 ? (
                       <div className="rounded-xl border border-slate-200 bg-slate-50 p-5 text-center">
-                        <p className="font-semibold text-slate-800">Les analyses du jour arrivent prochainement.</p>
-                        <p className="mt-2 text-sm text-slate-500">Consulte l’historique de résultats en attendant les prochaines sélections.</p>
+                        <p className="font-semibold text-slate-800">{t("Les analyses du jour arrivent prochainement.")}</p>
+                        <p className="mt-2 text-sm text-slate-500">{t("Consulte l’historique de résultats en attendant les prochaines sélections.")}</p>
                       </div>
                     ) : livePicks.map((row, i) => {
                       const locked = !isAvailablePick(row);
@@ -427,20 +428,20 @@ export default function LandingPage() {
                       const showConfidence = !locked && Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
                       return (
                         <div key={row.id || i} className="wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
-                          <p className="break-words text-xs leading-relaxed text-slate-500">{row.home_team} vs {row.away_team}{row.sport_title && <span> · {row.sport_title}</span>}</p>
+                          <p className="break-words text-xs leading-relaxed text-slate-500"><bdi>{row.home_team}</bdi> vs <bdi>{row.away_team}</bdi>{row.sport_title && <span> · {row.sport_title}</span>}</p>
                           <div className="mt-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
                             <p className="min-w-0 break-words text-sm font-semibold text-slate-900">
-                              {locked ? <span className="inline-flex items-center gap-1 text-slate-500"><Lock className="h-3 w-3 shrink-0" />Analyse réservée Pro</span> : <>{row.pick}{row.pick_odds != null && <span className="ml-1 font-normal text-slate-500">@ {row.pick_odds}</span>}</>}
+                              {locked ? <span className="inline-flex items-center gap-1 text-slate-500"><Lock className="h-3 w-3 shrink-0" />{t("Analyse réservée Pro")}</span> : <>{row.pick}{row.pick_odds != null && <span className="ms-1 font-normal text-slate-500">@ {row.pick_odds}</span>}</>}
                             </p>
-                            {showConfidence && <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-700">Indice : {Math.round(confidence)} %</span>}
+                            {showConfidence && <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-700">{t("Indice : {{value}} %", { value: formatNumber(Math.round(confidence)) })}</span>}
                           </div>
                         </div>
                       );
                     })}
                   </div>
                   <div className="mt-4 border-t border-neutral-100 pt-4">
-                    <p className="mb-3 text-xs leading-relaxed text-slate-500">Les indices d’analyse ne garantissent aucun résultat.</p>
-                    <Button className="h-auto min-h-11 w-full whitespace-normal border-0 py-3 font-bold text-white wp-gradient-warm" onClick={() => navigate(user ? "/app" : signupUrl)} data-testid="picks-signup-btn">{user ? "Ouvrir l’application" : "Créer mon compte gratuit"}</Button>
+                    <p className="mb-3 text-xs leading-relaxed text-slate-500">{t("Les indices d’analyse ne garantissent aucun résultat.")}</p>
+                    <Button className="h-auto min-h-11 w-full whitespace-normal border-0 py-3 font-bold text-white wp-gradient-warm" onClick={() => navigate(user ? "/app" : signupUrl)} data-testid="picks-signup-btn">{user ? t("Ouvrir l’application") : t("Créer mon compte gratuit")}</Button>
                   </div>
                 </Card>
               </div>
@@ -454,66 +455,66 @@ export default function LandingPage() {
         <div className="mx-auto w-full min-w-0 max-w-7xl px-4 sm:px-6 lg:px-8">
           <div className="flex min-w-0 flex-col items-start justify-between gap-5 sm:flex-row sm:items-end">
             <div className="min-w-0">
-              <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Historique des pronostics</span>
-              <h2 id="resultats-hier-title" className="font-heading text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">Les résultats d’hier</h2>
-              <p className="mt-2 text-sm leading-relaxed text-slate-500">Matchs du {resultsDateLabel}.</p>
-              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">Quelques paris gagnants de la veille, classés par cote décroissante, issus de notre Track Record.</p>
+              <span className="mb-3 inline-flex items-center gap-2 rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />{t("Historique des pronostics")}</span>
+              <h2 id="resultats-hier-title" className="font-heading text-3xl font-extrabold tracking-tight text-slate-900 sm:text-4xl">{t("Les résultats d’hier")}</h2>
+              <p className="mt-2 text-sm leading-relaxed text-slate-500">{t("Matchs du {{date}}.", { date: resultsDateLabel })}</p>
+              <p className="mt-2 max-w-2xl text-sm leading-relaxed text-slate-600">{t("Quelques paris gagnants de la veille, classés par cote décroissante, issus de notre Track Record.")}</p>
             </div>
-            <Link to="/resultats" className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50" data-testid="yesterday-all-results-link">Voir tous les résultats<ArrowRight className="h-4 w-4 shrink-0" /></Link>
+            <Link to="/resultats" className="inline-flex min-h-11 max-w-full items-center justify-center gap-2 rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-800 hover:bg-slate-50" data-testid="yesterday-all-results-link">{t("Voir tous les résultats")}<ArrowRight className="h-4 w-4 shrink-0 rtl:rotate-180" /></Link>
           </div>
 
           <div className="mt-7" aria-live="polite" aria-busy={resultsStatus === "loading"}>
             {resultsStatus === "loading" || (dailyResults && dailyResults.date !== resultsDate) ? (
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">Chargement des résultats d’hier…</div>
+              <div className="rounded-xl border border-slate-200 bg-slate-50 p-6 text-sm text-slate-600">{t("Chargement des résultats d’hier…")}</div>
             ) : resultsStatus === "error" ? (
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-6">
-                <p className="font-semibold text-slate-800">Le bilan d’hier n’est pas disponible pour le moment.</p>
-                <p className="mt-2 text-sm leading-relaxed text-slate-500">Tu peux consulter l’historique complet des résultats.</p>
-                <button type="button" onClick={() => setResultsReloadKey((value) => value + 1)} className="mt-3 min-h-11 text-sm font-semibold text-orange-700 underline">Réessayer</button>
+                <p className="font-semibold text-slate-800">{t("Le bilan d’hier n’est pas disponible pour le moment.")}</p>
+                <p className="mt-2 text-sm leading-relaxed text-slate-500">{t("Tu peux consulter l’historique complet des résultats.")}</p>
+                <button type="button" onClick={() => setResultsReloadKey((value) => value + 1)} className="mt-3 min-h-11 text-sm font-semibold text-orange-700 underline">{t("Réessayer")}</button>
               </div>
             ) : dailyResults && (
               <>
                 <dl className="grid grid-cols-2 gap-3 sm:grid-cols-4" data-testid="yesterday-summary">
                   {[
-                    { key: "won", label: "Gagnants", color: "text-emerald-700" },
-                    { key: "lost", label: "Perdants", color: "text-rose-700" },
-                    { key: "pending", label: "En attente", color: "text-amber-700" },
-                    { key: "void", label: "Annulés / remboursés", color: "text-slate-600" },
+                    { key: "won", label: t("Gagnants"), color: "text-emerald-700" },
+                    { key: "lost", label: t("Perdants"), color: "text-rose-700" },
+                    { key: "pending", label: t("En attente"), color: "text-amber-700" },
+                    { key: "void", label: t("Annulés / remboursés"), color: "text-slate-600" },
                   ].map(({ key, label, color }) => (
                     <div key={key} className="min-w-0 rounded-xl border border-neutral-200 bg-neutral-50 p-4">
                       <dt className="break-words text-xs font-semibold text-slate-500">{label}</dt>
-                      <dd className={`mt-1 font-heading text-3xl font-extrabold ${color}`}>{dailyResults.summary[key]}</dd>
+                      <dd className={`mt-1 font-heading text-3xl font-extrabold ${color}`}>{formatNumber(dailyResults.summary[key])}</dd>
                     </div>
                   ))}
                 </dl>
-                <p className="mt-3 text-xs leading-relaxed text-slate-500">Bilan complet : {dailyResults.summary.total} pronostic{dailyResults.summary.total === 1 ? "" : "s"}. Les cartes ci-dessous montrent uniquement une sélection des gagnants.</p>
+                <p className="mt-3 text-xs leading-relaxed text-slate-500">{t("Nombre total de pronostics : {{count}}. Les cartes ci-dessous montrent uniquement une sélection des gagnants.", { count: formatNumber(dailyResults.summary.total) })}</p>
 
                 {dailyResults.summary.total === 0 ? (
-                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Aucun pronostic publié pour les matchs de cette journée.</p>
+                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">{t("Aucun pronostic publié pour les matchs de cette journée.")}</p>
                 ) : dailyResults.summary.won === 0 ? (
-                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Aucun pronostic gagnant confirmé pour cette journée. Le bilan reste visible ci-dessus.</p>
+                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">{t("Aucun pronostic gagnant confirmé pour cette journée. Le bilan reste visible ci-dessus.")}</p>
                 ) : dailyResults.winners.length === 0 ? (
-                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">Les détails des pronostics gagnants ne sont pas encore disponibles ici. Consulte l’historique complet.</p>
+                  <p className="mt-5 rounded-xl bg-slate-50 p-5 text-sm text-slate-600">{t("Les détails des pronostics gagnants ne sont pas encore disponibles ici. Consulte l’historique complet.")}</p>
                 ) : (
                   <div className="mt-6 grid min-w-0 gap-4 md:grid-cols-3">
                     {dailyResults.winners.map((row) => (
                       <Card key={row.id} className="wp-enter wp-interactive-card min-w-0 rounded-2xl border-emerald-200 bg-white p-5 shadow-sm" data-testid="yesterday-winner-card">
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />Gagné</span>
-                          <span className="text-xs text-slate-500">{new Intl.DateTimeFormat("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: RESULTS_TIME_ZONE }).format(new Date(row.start_time))}</span>
+                          <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />{t("Gagné")}</span>
+                          <span className="text-xs text-slate-500">{new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: RESULTS_TIME_ZONE }).format(new Date(row.start_time))}</span>
                         </div>
-                        <h3 className="mt-4 break-words font-heading text-lg font-bold text-slate-900">{row.home_team} <span className="font-normal text-slate-400">vs</span> {row.away_team}</h3>
+                        <h3 className="mt-4 break-words font-heading text-lg font-bold text-slate-900"><bdi>{row.home_team}</bdi> <span className="font-normal text-slate-400">vs</span> <bdi>{row.away_team}</bdi></h3>
                         <p className="mt-3 break-words text-sm font-semibold leading-relaxed text-slate-700">{row.pick}</p>
                         <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-100 pt-4">
-                          <div className="min-w-0"><dt className="text-xs text-slate-500">Cote publiée</dt><dd className="mt-1 font-bold text-slate-900">{row.pick_odds.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</dd></div>
-                          <div className="min-w-0"><dt className="text-xs text-slate-500">Score final</dt><dd className="mt-1 break-words font-bold text-slate-900">{row.final_score}</dd></div>
+                          <div className="min-w-0"><dt className="text-xs text-slate-500">{t("Cote publiée")}</dt><dd className="mt-1 font-bold text-slate-900">{row.pick_odds.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</dd></div>
+                          <div className="min-w-0"><dt className="text-xs text-slate-500">{t("Score final")}</dt><dd className="mt-1 break-words font-bold text-slate-900">{row.final_score}</dd></div>
                         </dl>
-                        <p className="mt-4 text-xs leading-relaxed text-slate-500">Pronostic publié avant le match · résultat confirmé.</p>
+                        <p className="mt-4 text-xs leading-relaxed text-slate-500">{t("Pronostic publié avant le match · résultat confirmé.")}</p>
                       </Card>
                     ))}
                   </div>
                 )}
-                <p className="mt-5 text-xs leading-relaxed text-slate-500">Les résultats passés ne garantissent pas les prochains résultats.</p>
+                <p className="mt-5 text-xs leading-relaxed text-slate-500">{t("Les résultats passés ne garantissent pas les prochains résultats.")}</p>
               </>
             )}
           </div>
@@ -524,23 +525,23 @@ export default function LandingPage() {
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20">
         <div data-wp-reveal className="text-center mb-12">
           <div className="inline-flex items-center gap-2 rounded-full bg-rose-50 border border-rose-200 px-3 py-1 text-xs font-bold text-rose-700 mb-4">
-            COMMENT UTILISER WINPULSE
+            {t("COMMENT UTILISER WINPULSE")}
           </div>
           <h2 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">
-            Une analyse pro, claire et immédiate
+            {t("Une analyse pro, claire et immédiate")}
           </h2>
           <p className="mt-3 text-slate-600 max-w-2xl mx-auto">
-            Consulte les analyses, vérifie les résultats et garde la maîtrise de tes décisions.
+            {t("Consulte les analyses, vérifie les résultats et garde la maîtrise de tes décisions.")}
           </p>
         </div>
         <div className="grid md:grid-cols-3 gap-5">
           {[
-            { icon: Brain, title: "IA experte intégrée", txt: "Analyse textuelle claire de chaque match : forme, H2H, contexte, paris alternatifs.", color: "orange" },
-            { icon: BarChart3, title: "Scoring rigoureux", txt: "Consulte les indicateurs disponibles pour comparer les sélections. Un indice n’est pas une garantie de réussite.", color: "rose" },
-            { icon: Sparkles, title: "3 combinés par jour", txt: "Prudent, Équilibré et Audacieux : compare les niveaux de risque. Aucun combiné n’est sans risque.", color: "amber" },
-            { icon: Shield, title: "Track record transparent", txt: "Historique public, ROI, win-rate, cotes moyennes. On assume nos picks gagnants ET perdants.", color: "emerald" },
-            { icon: TrendingUp, title: "Value bets détectés", txt: "Compare les estimations et les cotes proposées. Les estimations restent incertaines.", color: "orange" },
-            { icon: Smartphone, title: "Découverte gratuite", txt: "Crée ton compte sans paiement. Consulte ensuite les modalités de l’offre Pro depuis ton espace.", color: "rose" },
+            { icon: Brain, title: t("Explications de match"), txt: t("Comprends les sélections à partir des données disponibles, avec une explication locale ou une aide IA lorsqu’elle est configurée."), color: "orange" },
+            { icon: BarChart3, title: t("Scoring rigoureux"), txt: t("Consulte les indicateurs disponibles pour comparer les sélections. Un indice n’est pas une garantie de réussite."), color: "rose" },
+            { icon: Sparkles, title: t("Combinés par profil"), txt: t("Compare les sélections et les niveaux de risque disponibles. Aucun combiné n’est sans risque."), color: "amber" },
+            { icon: Shield, title: t("Track record transparent"), txt: t("Historique public, ROI, win-rate, cotes moyennes. On assume nos picks gagnants ET perdants."), color: "emerald" },
+            { icon: TrendingUp, title: t("Value bets détectés"), txt: t("Compare les estimations et les cotes proposées. Les estimations restent incertaines."), color: "orange" },
+            { icon: Smartphone, title: t("Découverte gratuite"), txt: t("Crée ton compte sans paiement. Consulte ensuite les modalités de l’offre Pro depuis ton espace."), color: "rose" },
           ].map((f, i) => {
             const Icon = f.icon;
             const colorMap = {
@@ -566,8 +567,8 @@ export default function LandingPage() {
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8">
           <Card data-wp-reveal className="border-0 p-6 text-white wp-gradient-warm sm:p-8">
             <div className="flex flex-col items-start justify-between gap-5 sm:flex-row sm:items-center">
-              <div className="min-w-0"><h2 className="flex items-center gap-2 font-heading text-2xl font-bold"><Gift className="h-5 w-5 shrink-0" />Parrainage</h2><p className="mt-2 text-sm leading-relaxed">Retrouve ton code et les conditions du programme dans ton compte.</p></div>
-              <Button className="h-auto min-h-11 whitespace-normal bg-white py-3 font-bold text-slate-900 hover:bg-slate-100" onClick={() => navigate(user ? "/app/parrainage" : signupUrl)} data-testid="referral-cta-landing">{user ? "Voir mon code" : "Créer mon compte gratuit"}</Button>
+              <div className="min-w-0"><h2 className="flex items-center gap-2 font-heading text-2xl font-bold"><Gift className="h-5 w-5 shrink-0" />{t("Parrainage")}</h2><p className="mt-2 text-sm leading-relaxed">{t("Retrouve ton code et les conditions du programme dans ton compte.")}</p></div>
+              <Button className="h-auto min-h-11 whitespace-normal bg-white py-3 font-bold text-slate-900 hover:bg-slate-100" onClick={() => navigate(user ? "/app/parrainage" : signupUrl)} data-testid="referral-cta-landing">{user ? t("Voir mon code") : t("Créer mon compte gratuit")}</Button>
             </div>
           </Card>
         </div>
@@ -578,43 +579,43 @@ export default function LandingPage() {
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 relative">
           <div data-wp-reveal className="text-center mb-12">
             <div className="inline-flex items-center gap-2 rounded-full bg-orange-500/10 border border-orange-500/30 px-3 py-1 text-xs font-bold text-orange-400 mb-4">
-              ABONNEMENT
+              {t("ABONNEMENT")}
             </div>
             <h2 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight">
-              Choisis ton accès
+              {t("Choisis ton accès")}
             </h2>
-            <p className="mt-3 text-slate-400">Découvre WinPulse gratuitement. Passe à Pro pour retrouver les pronostics, les combinés et les outils réservés aux abonnés.</p>
+            <p className="mt-3 text-slate-400">{t("Découvre WinPulse gratuitement. Passe à Pro pour retrouver les pronostics, les combinés et les outils réservés aux abonnés.")}</p>
           </div>
           <div className="mx-auto grid max-w-4xl gap-5 md:grid-cols-2">
             {[
               {
                 id: "free",
-                name: "Free",
-                price: "0 FCFA",
-                desc: "Pour découvrir",
+                name: t("Free"),
+                price: `${formatNumber(0)} FCFA`,
+                desc: t("Pour découvrir"),
                 features: [
-                  "1 pick gratuit du jour",
-                  "Tous les matchs (cotes visibles)",
-                  "Track record public",
+                  t("Sélections gratuites disponibles"),
+                  t("Tous les matchs (cotes visibles)"),
+                  t("Track record public"),
                 ],
-                cta: "Démarrer gratuit",
+                cta: t("Démarrer gratuit"),
                 highlight: false,
               },
               {
                 id: "pro",
                 name: "Pro",
-                price: "10 500 FCFA",
-                per: "/mois",
-                desc: "Accès complet",
+                price: `${formatNumber(10500)} FCFA`,
+                per: t("pour 30 jours"),
+                desc: t("Accès complet"),
                 features: [
-                  "Tous les pronostics débloqués",
-                  "Tous les combinés du jour",
-                  "Analyse IA experte sur chaque match",
-                  "Value bets et Combo Builder",
-                  "Montante premium",
-                  "Support WhatsApp prioritaire",
+                  t("Tous les pronostics débloqués"),
+                  t("Tous les combinés du jour"),
+                  t("Explications des pronostics"),
+                  t("Value bets et Combo Builder"),
+                  t("Montante premium"),
+                  t("Support WhatsApp prioritaire"),
                 ],
-                cta: "Passer à Pro",
+                cta: t("Passer à Pro"),
                 highlight: true,
               },
             ].map((p) => (
@@ -627,8 +628,8 @@ export default function LandingPage() {
                   : "bg-slate-900/60 border-slate-800"}`}
               >
                 {p.highlight && (
-                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 wp-gradient-warm text-white text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full shadow-lg">
-                    Accès complet
+                  <div className="absolute -top-3 left-1/2 -translate-x-1/2 wp-gradient-warm text-white text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full shadow-lg">
+                    {t("Accès complet")}
                   </div>
                 )}
                 <div className="text-sm text-slate-400 mb-1">{p.desc}</div>
@@ -663,20 +664,20 @@ export default function LandingPage() {
       <footer className="border-t border-neutral-200 bg-white">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 flex flex-col items-center gap-4">
           <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-xs">
-            <Link to="/legal/mentions-legales" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-mentions">Mentions légales</Link>
+            <Link to="/legal/mentions-legales" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-mentions">{t("Mentions légales")}</Link>
             <span className="text-slate-300">·</span>
-            <Link to="/legal/cgv" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-cgv">CGV</Link>
+            <Link to="/legal/cgv" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-cgv">{t("CGV")}</Link>
             <span className="text-slate-300">·</span>
-            <Link to="/legal/confidentialite" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-confidentialite">Confidentialité</Link>
+            <Link to="/legal/confidentialite" className="text-slate-600 hover:text-orange-600 font-semibold" data-testid="footer-legal-confidentialite">{t("Confidentialité")}</Link>
             <span className="text-slate-300">·</span>
-            <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold" data-testid="footer-legal-jeu">Jeu responsable · 18+</Link>
+            <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold" data-testid="footer-legal-jeu">{t("Jeu responsable · 18+")}</Link>
             <span className="text-slate-300">·</span>
-            <Link to="/resultats" className="text-slate-600 hover:text-orange-600 font-semibold">Track record</Link>
+            <Link to="/resultats" className="text-slate-600 hover:text-orange-600 font-semibold">{t("Track record")}</Link>
             <span className="text-slate-300">·</span>
-            <Link to="/blog" className="text-slate-600 hover:text-orange-600 font-semibold">Blog</Link>
+            <Link to="/blog" className="text-slate-600 hover:text-orange-600 font-semibold">{t("Blog")}</Link>
           </div>
-          <div className="text-sm text-slate-500 text-center">© 2026 WinPulse · Joue responsable · 18+</div>
-          <div className="text-xs text-slate-400 max-w-2xl text-center">Les pronostics sont des analyses statistiques, pas des garanties. Mise ce que tu peux perdre. WinPulse n'accepte aucun pari et ne joue pas pour ses utilisateurs.</div>
+          <div className="text-sm text-slate-500 text-center">{t("© 2026 WinPulse · Joue responsable · 18+")}</div>
+          <div className="text-xs text-slate-400 max-w-2xl text-center">{t("Les pronostics sont des analyses statistiques, pas des garanties. Mise ce que tu peux perdre. WinPulse n'accepte aucun pari et ne joue pas pour ses utilisateurs.")}</div>
         </div>
       </footer>
     </div>
