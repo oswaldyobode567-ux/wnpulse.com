@@ -1,41 +1,92 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, BarChart3, CalendarDays, Check, ChevronDown, Clock, Copy, Info, Loader2, Lock, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, Sparkles, Trash2, Trophy, X } from "lucide-react";
-import AppLayout from "@/components/AppLayout";
+import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import api from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
-
 const FRESH_MS = 5 * 60 * 1000;
-const SPORT_TABS = [
-  { key: "all", label: "Tous les sports" }, { key: "soccer", label: "Football" },
-  { key: "basketball", label: "Basketball" }, { key: "tennis", label: "Tennis" },
-  { key: "americanfootball", label: "Foot US" }, { key: "icehockey", label: "Hockey" },
-  { key: "mma", label: "MMA" }, { key: "other", label: "Autres" },
-];
-const GROUPS = { all: "Tous les marchés", winner: "Vainqueur", totals: "Buts / points", other: "Autres marchés" };
-function record(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
-function string(value, fallback = "") { return typeof value === "string" && value.trim() ? value.trim() : fallback; }
+const SPORT_TABS = [{
+  key: "all",
+  label: "Tous les sports"
+}, {
+  key: "soccer",
+  label: "Football"
+}, {
+  key: "basketball",
+  label: "Basketball"
+}, {
+  key: "tennis",
+  label: "Tennis"
+}, {
+  key: "americanfootball",
+  label: "Foot US"
+}, {
+  key: "icehockey",
+  label: "Hockey"
+}, {
+  key: "mma",
+  label: "MMA"
+}, {
+  key: "other",
+  label: "Autres"
+}];
+const GROUPS = {
+  all: "Tous les marchés",
+  winner: "Vainqueur",
+  totals: "Buts / points",
+  other: "Autres marchés"
+};
+function record(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function string(value, fallback = "") {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
 function numeric(value) {
   if (!["number", "string"].includes(typeof value) || typeof value === "string" && !/^\s*-?\d+(?:[.,]\d+)?\s*$/.test(value)) return null;
   const result = Number(typeof value === "string" ? value.replace(",", ".") : value);
   return Number.isFinite(result) ? result : null;
 }
-function percent(value) { const n = numeric(value); return n !== null && n >= 0 && n <= 100 ? n : null; }
-function price(value) { const n = numeric(value); return n !== null && n > 1 ? n : null; }
-function format(value, digits = 2) { return value === null || value === undefined ? "—" : new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits }).format(value); }
-function normalize(value) { return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
+function percent(value) {
+  const n = numeric(value);
+  return n !== null && n >= 0 && n <= 100 ? n : null;
+}
+function price(value) {
+  const n = numeric(value);
+  return n !== null && n > 1 ? n : null;
+}
+function format(i18n, value, digits = 2) {
+  return value === null || value === undefined ? "—" : new Intl.NumberFormat(i18n.locale, {
+    maximumFractionDigits: digits
+  }).format(value);
+}
+function normalize(value) {
+  return String(value ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
 function dateValue(value) {
   if (typeof value !== "string" || !value.includes("T")) return null;
   const iso = /^\d{4}-\d\d-\d\dT\d\d:\d\d(?::\d\d(?:\.\d+)?)?$/.test(value) ? `${value}Z` : value;
-  const n = Date.parse(iso); return Number.isFinite(n) ? n : null;
+  const n = Date.parse(iso);
+  return Number.isFinite(n) ? n : null;
 }
-function dateLabel(value) { const n = dateValue(value); return n === null ? "Horaire non communiqué" : new Intl.DateTimeFormat("fr-FR", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" }).format(new Date(n)); }
+function dateLabel(i18n, value) {
+  const n = dateValue(value);
+  return n === null ? "Horaire non communiqué" : new Intl.DateTimeFormat(i18n.locale, {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(new Date(n));
+}
 function paidAccount(user, now = Date.now()) {
   if (!record(user)) return false;
   if (user.is_admin === true) return true;
   const tier = string(user.subscription, string(user.subscription_tier)).toLowerCase();
   if (!tier || ["free", "none", "expired", "inactive", "null", "undefined"].includes(tier)) return false;
-  if (user.subscription_expires_at) { const expiration = dateValue(user.subscription_expires_at); if (expiration === null || expiration <= now) return false; }
+  if (user.subscription_expires_at) {
+    const expiration = dateValue(user.subscription_expires_at);
+    if (expiration === null || expiration <= now) return false;
+  }
   return true;
 }
 function sportKey(match) {
@@ -53,132 +104,254 @@ function countryName(match) {
   if (supplied) return supplied;
   const title = string(match.league_name, string(match.league, string(match.sport_title)));
   if (/uefa|fifa|world cup|champions league|europa league/i.test(title)) return "International";
-  const aliases = { Spain: "Espagne", Germany: "Allemagne", France: "France", Italy: "Italie", England: "Angleterre", Poland: "Pologne", Finland: "Finlande", Japan: "Japon", China: "Chine", Portugal: "Portugal", Netherlands: "Pays-Bas", Brazil: "Brésil", Argentina: "Argentine" };
+  const aliases = {
+    Spain: "Espagne",
+    Germany: "Allemagne",
+    France: "France",
+    Italy: "Italie",
+    England: "Angleterre",
+    Poland: "Pologne",
+    Finland: "Finlande",
+    Japan: "Japon",
+    China: "Chine",
+    Portugal: "Portugal",
+    Netherlands: "Pays-Bas",
+    Brazil: "Brésil",
+    Argentina: "Argentine"
+  };
   return Object.entries(aliases).find(([source]) => new RegExp(`\\b${source}\\b`, "i").test(title))?.[1] || "";
 }
-function pickKey(matchId, pick) { return JSON.stringify([String(matchId), string(pick.market), string(pick.pick), numeric(pick.pick_point)]); }
+function pickKey(matchId, pick) {
+  return JSON.stringify([String(matchId), string(pick.market), string(pick.pick), numeric(pick.pick_point)]);
+}
 function marketGroup(pick) {
   const value = normalize(`${pick.market} ${pick.market_label}`);
   if (/total|over|under|btts|equipes marquent/.test(value)) return "totals";
   if (/h2h|1x2|vainqueur|double.?chance|draw_no_bet|nul rembourse/.test(value)) return "winner";
   return "other";
 }
-function explainMarket(pick) {
-  const market = normalize(`${pick.market} ${pick.market_label}`), choice = normalize(pick.pick);
-  if (/double.?chance/.test(market)) return "Deux issues sont couvertes : celles indiquées dans la sélection, sur la période du marché.";
+function explainMarket(i18n, pick) {
+  const market = normalize(`${pick.market} ${pick.market_label}`),
+    choice = normalize(pick.pick);
+  if (/double.?chance/.test(market)) return i18n.t("Deux issues sont couvertes : celles indiquées dans la sélection, sur la période du marché.");
   if (/draw_no_bet|nul rembourse/.test(market)) return "Le choix porte sur une victoire ; le nul relève de la règle de remboursement propre à ce marché.";
-  if (/btts|equipes marquent/.test(market)) return "Le marché porte sur le fait que les deux équipes marquent, ou non, pendant la période indiquée.";
-  if (/handicap|spreads/.test(market)) return "Le résultat est évalué après application du handicap affiché. La ligne et la période du marché déterminent son règlement.";
+  if (/btts|equipes marquent/.test(market)) return i18n.t("Le marché porte sur le fait que les deux équipes marquent, ou non, pendant la période indiquée.");
+  if (/handicap|spreads/.test(market)) return i18n.t("Le résultat est évalué après application du handicap affiché. La ligne et la période du marché déterminent son règlement.");
   if (/total/.test(market) || /moins de|plus de|over|under/.test(choice)) {
-    const values = pick.pick.match(/\d+(?:[.,]\d+)?/g), threshold = pick.pick_point ?? (values?.length ? numeric(values[values.length - 1]) : null);
+    const values = pick.pick.match(/\d+(?:[.,]\d+)?/g),
+      threshold = pick.pick_point ?? (values?.length ? numeric(values[values.length - 1]) : null);
     if (threshold !== null && threshold % 1 === 0.5) {
-      if (/moins de|under/.test(choice)) return `Le total doit rester inférieur à ${format(threshold)} sur la période couverte.`;
-      if (/plus de|over/.test(choice)) return `Le total doit dépasser ${format(threshold)} sur la période couverte.`;
+      if (/moins de|under/.test(choice)) return i18n.t("Le total doit rester inf\xE9rieur \xE0 {{v0}} sur la p\xE9riode couverte.", {
+        v0: format(i18n, threshold)
+      });
+      if (/plus de|over/.test(choice)) return i18n.t("Le total doit d\xE9passer {{v0}} sur la p\xE9riode couverte.", {
+        v0: format(i18n, threshold)
+      });
     }
-    return "Le pari porte sur le total indiqué. Vérifie les règles de la ligne et de la période choisies.";
+    return i18n.t("Le pari porte sur le total indiqué. Vérifie les règles de la ligne et de la période choisies.");
   }
-  if (/vainqueur|victoire|h2h|1x2/.test(market)) return /^(nul|draw|match nul)$/.test(choice) ? "La sélection prévoit un match nul sur la période couverte." : `Le moteur retient ${pick.pick} comme vainqueur sur la période couverte.`;
-  return "Lis cette sélection avec son marché et sa période. La fiche du match présente les informations disponibles.";
+  if (/vainqueur|victoire|h2h|1x2/.test(market)) return /^(nul|draw|match nul)$/.test(choice) ? i18n.t("La sélection prévoit un match nul sur la période couverte.") : i18n.t("Le moteur retient {{v0}} comme vainqueur sur la p\xE9riode couverte.", {
+    v0: i18n.bet(pick.pick)
+  });
+  return i18n.t("Lis cette sélection avec son marché et sa période. La fiche du match présente les informations disponibles.");
 }
 function normalizeCatalogue(payload) {
   if (!record(payload) || !Array.isArray(payload.matches)) throw new Error("INVALID_CATALOGUE");
-  const seen = new Set(); let skipped = 0;
-  const matches = payload.matches.flatMap((raw) => {
+  const seen = new Set();
+  let skipped = 0;
+  const matches = payload.matches.flatMap(raw => {
     const id = record(raw) && ["number", "string"].includes(typeof (raw.match_id ?? raw.id)) ? String(raw.match_id ?? raw.id) : "";
-    if (!id || !record(raw) || !Array.isArray(raw.picks) || seen.has(id)) { skipped += 1; return []; }
+    if (!id || !record(raw) || !Array.isArray(raw.picks) || seen.has(id)) {
+      skipped += 1;
+      return [];
+    }
     seen.add(id);
     const pickIds = new Set();
     const picks = raw.picks.flatMap((value, index) => {
       if (!record(value)) return [];
       const locked = value.locked === true;
-      const pick = { market: string(value.market), market_label: string(value.market_label, locked ? "Marché réservé" : "Marché non communiqué"), pick: locked ? "" : string(value.pick),
-        pick_odds: locked ? null : price(value.pick_odds), confidence: locked ? null : percent(value.confidence), label: locked ? "" : string(value.label),
-        synthetic: value.synthetic === true, pick_point: numeric(value.pick_point), locked };
+      const pick = {
+        market: string(value.market),
+        market_label: string(value.market_label, locked ? "Marché réservé" : "Marché non communiqué"),
+        pick: locked ? "" : string(value.pick),
+        pick_odds: locked ? null : price(value.pick_odds),
+        confidence: locked ? null : percent(value.confidence),
+        label: locked ? "" : string(value.label),
+        synthetic: value.synthetic === true,
+        pick_point: numeric(value.pick_point),
+        locked
+      };
       pick._key = locked ? `${id}:locked:${index}` : pickKey(id, pick);
-      if (pickIds.has(pick._key)) return []; pickIds.add(pick._key);
+      if (pickIds.has(pick._key)) return [];
+      pickIds.add(pick._key);
       return [pick];
     });
-    return [{ match_id: id, home_team: string(raw.home_team), away_team: string(raw.away_team),
-      sport_key: string(raw.sport_key), sport_title: string(raw.sport_title), sport: sportKey(raw),
+    return [{
+      match_id: id,
+      home_team: string(raw.home_team),
+      away_team: string(raw.away_team),
+      sport_key: string(raw.sport_key),
+      sport_title: string(raw.sport_title),
+      sport: sportKey(raw),
       competition: string(raw.league_name, string(raw.league, string(raw.sport_title, "Compétition non communiquée"))),
-      country: countryName(raw), commence_time: dateValue(raw.commence_time) === null ? null : raw.commence_time,
-      completed: raw.completed === true || raw.is_finished === true, picks }];
+      country: countryName(raw),
+      commence_time: dateValue(raw.commence_time) === null ? null : raw.commence_time,
+      completed: raw.completed === true || raw.is_finished === true,
+      picks
+    }];
   });
   if (payload.matches.length && !matches.length) throw new Error("INVALID_CATALOGUE");
-  return { matches, skipped };
+  return {
+    matches,
+    skipped
+  };
 }
-function upcoming(match, now) { const start = dateValue(match.commence_time); return !match.completed && start !== null && start > now; }
-function selectable(match, pick, now) { return Boolean(upcoming(match, now) && match.home_team && match.away_team && !pick.locked && pick.pick && pick.pick_odds !== null); }
+function upcoming(match, now) {
+  const start = dateValue(match.commence_time);
+  return !match.completed && start !== null && start > now;
+}
+function selectable(match, pick, now) {
+  return Boolean(upcoming(match, now) && match.home_team && match.away_team && !pick.locked && pick.pick && pick.pick_odds !== null);
+}
 function toSelection(match, pick) {
-  return { _key: pick._key, match_id: match.match_id, home_team: match.home_team, away_team: match.away_team,
-    sport_title: match.sport_title, sport: match.sport, competition: match.competition, country: match.country,
-    commence_time: match.commence_time, pick: pick.pick, pick_odds: pick.pick_odds, confidence: pick.confidence,
-    market: pick.market, market_label: pick.market_label, pick_point: pick.pick_point, synthetic: pick.synthetic,
-    _available: true, _issue: "", _previous_odds: null };
+  return {
+    _key: pick._key,
+    match_id: match.match_id,
+    home_team: match.home_team,
+    away_team: match.away_team,
+    sport_title: match.sport_title,
+    sport: match.sport,
+    competition: match.competition,
+    country: match.country,
+    commence_time: match.commence_time,
+    pick: pick.pick,
+    pick_odds: pick.pick_odds,
+    confidence: pick.confidence,
+    market: pick.market,
+    market_label: pick.market_label,
+    pick_point: pick.pick_point,
+    synthetic: pick.synthetic,
+    _available: true,
+    _issue: "",
+    _previous_odds: null
+  };
 }
 function reconcileSelections(previous, matches, now) {
-  const byId = new Map(matches.map((match) => [match.match_id, match]));
-  return previous.map((old) => {
-    const match = byId.get(old.match_id), pick = match?.picks.find((p) => p._key === old._key);
-    if (!match || !pick || !selectable(match, pick, now)) return { ...old, _available: false, _issue: match && !upcoming(match, now) ? "Rencontre commencée ou horaire à vérifier" : "Sélection à vérifier : elle n’est plus proposée avec une cote disponible" };
-    return { ...toSelection(match, pick), _previous_odds: old.pick_odds !== pick.pick_odds ? old.pick_odds : null };
+  const byId = new Map(matches.map(match => [match.match_id, match]));
+  return previous.map(old => {
+    const match = byId.get(old.match_id),
+      pick = match?.picks.find(p => p._key === old._key);
+    if (!match || !pick || !selectable(match, pick, now)) return {
+      ...old,
+      _available: false,
+      _issue: match && !upcoming(match, now) ? "Rencontre commencée ou horaire à vérifier" : "Sélection à vérifier : elle n’est plus proposée avec une cote disponible"
+    };
+    return {
+      ...toSelection(match, pick),
+      _previous_odds: old.pick_odds !== pick.pick_odds ? old.pick_odds : null
+    };
   });
 }
 function applyPick(previous, match, pick, now) {
   if (!selectable(match, pick, now)) return previous;
-  if (previous.some((p) => p._key === pick._key)) return previous.filter((p) => p._key !== pick._key);
-  return [...previous.filter((p) => p.match_id !== match.match_id), toSelection(match, pick)];
+  if (previous.some(p => p._key === pick._key)) return previous.filter(p => p._key !== pick._key);
+  return [...previous.filter(p => p.match_id !== match.match_id), toSelection(match, pick)];
 }
 function ticketMetrics(picks) {
-  if (!picks.length) return { totalOdds: null, confidence: null, sports: 0 };
-  const product = picks.every((p) => price(p.pick_odds) !== null) ? picks.reduce((total, p) => total * p.pick_odds, 1) : null;
-  return { totalOdds: product !== null && Number.isFinite(product) ? product : null,
-    confidence: picks.every((p) => percent(p.confidence) !== null) ? picks.reduce((total, p) => total + p.confidence, 0) / picks.length : null,
-    sports: new Set(picks.map((p) => p.sport).filter(Boolean)).size };
+  if (!picks.length) return {
+    totalOdds: null,
+    confidence: null,
+    sports: 0
+  };
+  const product = picks.every(p => price(p.pick_odds) !== null) ? picks.reduce((total, p) => total * p.pick_odds, 1) : null;
+  return {
+    totalOdds: product !== null && Number.isFinite(product) ? product : null,
+    confidence: picks.every(p => percent(p.confidence) !== null) ? picks.reduce((total, p) => total + p.confidence, 0) / picks.length : null,
+    sports: new Set(picks.map(p => p.sport).filter(Boolean)).size
+  };
 }
 function ticketUsable(picks, loadedAt, now) {
-  return Boolean(picks.length && loadedAt !== null && now >= loadedAt && now - loadedAt < FRESH_MS && ticketMetrics(picks).totalOdds !== null
-    && picks.every((p) => p._available && p.pick && price(p.pick_odds) !== null && dateValue(p.commence_time) !== null && dateValue(p.commence_time) > now));
+  return Boolean(picks.length && loadedAt !== null && now >= loadedAt && now - loadedAt < FRESH_MS && ticketMetrics(picks).totalOdds !== null && picks.every(p => p._available && p.pick && price(p.pick_odds) !== null && dateValue(p.commence_time) !== null && dateValue(p.commence_time) > now));
 }
 function savePayload(name, picks) {
-  return { name: name.trim().slice(0, 100), legs: picks.map((p) => ({ match_id: p.match_id, home_team: p.home_team, away_team: p.away_team, sport_title: p.sport_title,
-    commence_time: p.commence_time, pick: p.pick, pick_odds: p.pick_odds, confidence: p.confidence, market: p.market, market_label: p.market_label,
-    synthetic: p.synthetic, ...(p.pick_point !== null ? { pick_point: p.pick_point } : {}) })) };
+  return {
+    name: name.trim().slice(0, 100),
+    legs: picks.map(p => ({
+      match_id: p.match_id,
+      home_team: p.home_team,
+      away_team: p.away_team,
+      sport_title: p.sport_title,
+      commence_time: p.commence_time,
+      pick: p.pick,
+      pick_odds: p.pick_odds,
+      confidence: p.confidence,
+      market: p.market,
+      market_label: p.market_label,
+      synthetic: p.synthetic,
+      ...(p.pick_point !== null ? {
+        pick_point: p.pick_point
+      } : {})
+    }))
+  };
 }
-function ticketMessage(name, picks) {
+function ticketMessage(i18n, name, picks) {
   const metrics = ticketMetrics(picks);
-  return [`🎯 ${name.trim() || "Mon ticket WNPulse"}`, `Horaires : ${Intl.DateTimeFormat().resolvedOptions().timeZone || "heure locale du navigateur"}`,
-    ...picks.map((p, index) => `${index + 1}. ${p.home_team} vs ${p.away_team}\n${p.competition || p.sport_title}${p.country ? ` · ${p.country}` : ""}\n${dateLabel(p.commence_time)}\n${p.market_label} : ${p.pick}\nCote : ${format(p.pick_odds)}${p.synthetic ? " · Marché estimé, cote à confirmer" : ""}`),
-    `Cote cumulée : ${format(metrics.totalOdds)}`, metrics.confidence !== null ? `Confiance moyenne du moteur : ${format(metrics.confidence, 1)} % (indicateur, pas un taux de réussite)` : "Confiance moyenne non disponible",
-    "Sélections et cotes à vérifier avant les rencontres.", "https://wnpulse.com"].join("\n\n");
+  return [`🎯 ${name.trim() || i18n.t("Mon ticket WNPulse")}`, i18n.t("Horaires : {{v0}}", {
+    v0: Intl.DateTimeFormat().resolvedOptions().timeZone || i18n.t("heure locale du navigateur")
+  }), ...picks.map((p, index) => i18n.t("{{v0}}. {{v1}} vs {{v2}}\n{{v3}}{{v4}}\n{{v5}}\n{{v6}} : {{v7}}\nCote : {{v8}}{{v9}}", {
+    v0: index + 1,
+    v1: p.home_team,
+    v2: p.away_team,
+    v3: p.competition || p.sport_title,
+    v4: p.country ? ` · ${p.country}` : "",
+    v5: dateLabel(i18n, p.commence_time),
+    v6: i18n.bet(p.market_label),
+    v7: i18n.bet(p.pick),
+    v8: format(i18n, p.pick_odds),
+    v9: p.synthetic ? i18n.t(" · Marché estimé, cote à confirmer") : ""
+  })), i18n.t("Cote cumul\xE9e : {{v0}}", {
+    v0: format(i18n, metrics.totalOdds)
+  }), metrics.confidence !== null ? i18n.t("Confiance moyenne du moteur : {{v0}} % (indicateur, pas un taux de r\xE9ussite)", {
+    v0: format(i18n, metrics.confidence, 1)
+  }) : i18n.t("Confiance moyenne non disponible"), i18n.t("Sélections et cotes à vérifier avant les rencontres."), "https://wnpulse.com"].join("\n\n");
 }
 function normalizeSaved(payload) {
   if (!record(payload) || !Array.isArray(payload.combos)) throw new Error("INVALID_SAVED");
   const ids = new Set();
-  return payload.combos.flatMap((raw) => {
+  return payload.combos.flatMap(raw => {
     if (!record(raw) || !["number", "string"].includes(typeof raw.id) || ids.has(String(raw.id))) return [];
     ids.add(String(raw.id));
-    return [{ id: String(raw.id), name: string(raw.name, "Ticket enregistré"), total_odds: price(raw.total_odds),
+    return [{
+      id: String(raw.id),
+      name: string(raw.name, "Ticket enregistré"),
+      total_odds: price(raw.total_odds),
       num_legs: Number.isInteger(raw.num_legs) && raw.num_legs >= 0 ? raw.num_legs : Array.isArray(raw.legs) ? raw.legs.length : null,
-      created_at: raw.created_at, legs: Array.isArray(raw.legs) ? raw.legs.filter(record) : [] }];
+      created_at: raw.created_at,
+      legs: Array.isArray(raw.legs) ? raw.legs.filter(record) : []
+    }];
   });
 }
-function statsValues(payload, sport) {
+function statsValues(i18n, payload, sport) {
   if (!record(payload)) throw new Error("INVALID_STATS");
-  const fields = [["home_win", "Domicile", payload.probs], ["draw", "Nul", payload.probs], ["away_win", "Extérieur", payload.probs]];
-  if (sport === "soccer") fields.push(["btts_yes_pct", "Les deux équipes marquent", payload.expectations], ["over_2_5_pct", "Plus de 2,5 buts", payload.expectations], ["over_1_5_pct", "Plus de 1,5 but", payload.expectations], ["clean_sheet_home_pct", "Domicile : aucun but encaissé", payload.expectations], ["clean_sheet_away_pct", "Extérieur : aucun but encaissé", payload.expectations]);
+  const fields = [["home_win", i18n.t("Domicile"), payload.probs], ["draw", i18n.t("Nul"), payload.probs], ["away_win", i18n.t("Extérieur"), payload.probs]];
+  if (sport === "soccer") fields.push(["btts_yes_pct", i18n.t("Les deux équipes marquent"), payload.expectations], ["over_2_5_pct", i18n.t("Plus de 2,5 buts"), payload.expectations], ["over_1_5_pct", i18n.t("Plus de 1,5 but"), payload.expectations], ["clean_sheet_home_pct", i18n.t("Domicile : aucun but encaissé"), payload.expectations], ["clean_sheet_away_pct", i18n.t("Extérieur : aucun but encaissé"), payload.expectations]);
   // This server uses zero for missing market estimates. Do not present its
   // placeholders as measured probabilities.
-  return fields.flatMap(([key, label, values]) => { const n = percent(values?.[key]); return n !== null && n > 0 ? [{ label, value: n }] : []; });
+  return fields.flatMap(([key, label, values]) => {
+    const n = percent(values?.[key]);
+    return n !== null && n > 0 ? [{
+      label,
+      value: n
+    }] : [];
+  });
 }
-function requestError(error, fallback) {
-  if (error?.response?.status === 401) return "Ta session a expiré. Reconnecte-toi.";
-  if (error?.response?.status === 403) return "Cette fonction est réservée aux abonnés. Vérifie ton accès.";
-  if (error?.response?.status === 429) return "Les actualisations sont temporairement limitées. Réessaie dans quelques instants.";
-  if (["ECONNABORTED", "ETIMEDOUT"].includes(error?.code)) return "Le serveur met trop de temps à répondre. Réessaie.";
+function requestError(i18n, error, fallback) {
+  if (error?.response?.status === 401) return i18n.t("Ta session a expiré. Reconnecte-toi.");
+  if (error?.response?.status === 403) return i18n.t("Cette fonction est réservée aux abonnés. Vérifie ton accès.");
+  if (error?.response?.status === 429) return i18n.t("Les actualisations sont temporairement limitées. Réessaie dans quelques instants.");
+  if (["ECONNABORTED", "ETIMEDOUT"].includes(error?.code)) return i18n.t("Le serveur met trop de temps à répondre. Réessaie.");
   return fallback;
 }
-
 const BUILDER_CSS = `.cb-page { --cb-ink:#162338; --cb-muted:#526176; --cb-line:#e1e7ef; width:100%; max-width:1320px; margin:0 auto; padding:28px 24px 48px; color:var(--cb-ink); font-size:16px; line-height:1.6; }
 .cb-page *, .cb-page *::before, .cb-page *::after { box-sizing:border-box; }
 .cb-page :is(h1,h2,h3,p,dl,dd) { margin:0; }
@@ -428,29 +601,56 @@ const BUILDER_CSS = `.cb-page { --cb-ink:#162338; --cb-muted:#526176; --cb-line:
   .cb-page *, .cb-page *::before, .cb-page *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
 }
 `;
-
 export default function ComboBuilderPage() {
-  const { user, loading: authLoading = false } = useAuth();
-  const [matches, setMatches] = useState([]), [loadedAt, setLoadedAt] = useState(null);
-  const [account, setAccount] = useState(null), [verifiedAt, setVerifiedAt] = useState(null);
-  const [loading, setLoading] = useState(true), [refreshing, setRefreshing] = useState(false);
-  const [loadError, setLoadError] = useState(""), [accessError, setAccessError] = useState("");
-  const [unauthorized, setUnauthorized] = useState(false), [skipped, setSkipped] = useState(0);
-  const [sport, setSport] = useState("all"), [query, setQuery] = useState(""), [day, setDay] = useState("all");
-  const [order, setOrder] = useState("time"), [limit, setLimit] = useState(12);
-  const [selectedPicks, setSelectedPicks] = useState([]), [comboName, setComboName] = useState("");
-  const [expandedMatchId, setExpandedMatchId] = useState(null), [matchStats, setMatchStats] = useState({});
-  const [saving, setSaving] = useState(false), [lastSaved, setLastSaved] = useState("");
-  const [savedCombos, setSavedCombos] = useState([]), [savedStatus, setSavedStatus] = useState("idle"), [savedError, setSavedError] = useState("");
-  const [deleting, setDeleting] = useState([]), [notice, setNotice] = useState(""), [manualCopy, setManualCopy] = useState("");
+  const i18n = usePageLanguage();
+  const {
+    user,
+    loading: authLoading = false
+  } = useAuth();
+  const [matches, setMatches] = useState([]),
+    [loadedAt, setLoadedAt] = useState(null);
+  const [account, setAccount] = useState(null),
+    [verifiedAt, setVerifiedAt] = useState(null);
+  const [loading, setLoading] = useState(true),
+    [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState(""),
+    [accessError, setAccessError] = useState("");
+  const [unauthorized, setUnauthorized] = useState(false),
+    [skipped, setSkipped] = useState(0);
+  const [sport, setSport] = useState("all"),
+    [query, setQuery] = useState(""),
+    [day, setDay] = useState("all");
+  const [order, setOrder] = useState("time"),
+    [limit, setLimit] = useState(12);
+  const [selectedPicks, setSelectedPicks] = useState([]),
+    [comboName, setComboName] = useState("");
+  const [expandedMatchId, setExpandedMatchId] = useState(null),
+    [matchStats, setMatchStats] = useState({});
+  const [saving, setSaving] = useState(false),
+    [lastSaved, setLastSaved] = useState("");
+  const [savedCombos, setSavedCombos] = useState([]),
+    [savedStatus, setSavedStatus] = useState("idle"),
+    [savedError, setSavedError] = useState("");
+  const [deleting, setDeleting] = useState([]),
+    [notice, setNotice] = useState(""),
+    [manualCopy, setManualCopy] = useState("");
   const [ticketOpen, setTicketOpen] = useState(false);
   const [mobile, setMobile] = useState(() => typeof window !== "undefined" && typeof window.matchMedia === "function" ? window.matchMedia("(max-width: 980px)").matches : false);
   const [now, setNow] = useState(Date.now);
-  const mounted = useRef(false), epoch = useRef(0), mainRequest = useRef(null), savedRequest = useRef(null);
-  const statsRequests = useRef(new Map()), statsCache = useRef({}), accountRef = useRef(null), verifiedRef = useRef(null);
-  const catalogueStamp = useRef(null), savingRef = useRef(null), deletingRef = useRef(new Set()), copyGeneration = useRef(0);
+  const mounted = useRef(false),
+    epoch = useRef(0),
+    mainRequest = useRef(null),
+    savedRequest = useRef(null);
+  const statsRequests = useRef(new Map()),
+    statsCache = useRef({}),
+    accountRef = useRef(null),
+    verifiedRef = useRef(null);
+  const catalogueStamp = useRef(null),
+    savingRef = useRef(null),
+    deletingRef = useRef(new Set()),
+    copyGeneration = useRef(0);
   const sessionKey = user?.id || user?.email || "anonymous";
-  const active = (token) => mounted.current && epoch.current === token;
+  const active = token => mounted.current && epoch.current === token;
   const isPaid = paidAccount(account, now);
   const accessFresh = verifiedAt !== null && now >= verifiedAt && now - verifiedAt < FRESH_MS;
   const canPersist = isPaid && accessFresh;
@@ -459,271 +659,575 @@ export default function ComboBuilderPage() {
   const usable = ticketUsable(selectedPicks, loadedAt, now);
   const fingerprint = useMemo(() => JSON.stringify(savePayload(comboName, selectedPicks)), [comboName, selectedPicks]);
   const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "heure locale du navigateur", []);
-
   const loadSaved = useCallback(async () => {
     if (!mounted.current || savedRequest.current || !paidAccount(accountRef.current)) return;
-    const token = epoch.current, controller = new AbortController(); savedRequest.current = controller;
-    setSavedStatus("loading"); setSavedError("");
+    const token = epoch.current,
+      controller = new AbortController();
+    savedRequest.current = controller;
+    setSavedStatus("loading");
+    setSavedError("");
     try {
-      const response = await api.get("/builder/my-combos", { timeout: 10000, signal: controller.signal });
+      const response = await api.get("/builder/my-combos", {
+        timeout: 10000,
+        signal: controller.signal
+      });
       const items = normalizeSaved(response.data);
-      if (mounted.current && epoch.current === token && !controller.signal.aborted) { setSavedCombos(items); setSavedStatus("ready"); }
+      if (mounted.current && epoch.current === token && !controller.signal.aborted) {
+        setSavedCombos(items);
+        setSavedStatus("ready");
+      }
     } catch (error) {
       if (mounted.current && epoch.current === token && !controller.signal.aborted) {
         if ([401, 403].includes(error?.response?.status)) setSavedCombos([]);
-        setSavedError(requestError(error, "Impossible de charger les tickets enregistrés.")); setSavedStatus("error");
+        setSavedError(requestError(i18n, error, "Impossible de charger les tickets enregistrés."));
+        setSavedStatus("error");
       }
-    } finally { if (savedRequest.current === controller) savedRequest.current = null; }
-  }, []);
-
+    } finally {
+      if (savedRequest.current === controller) savedRequest.current = null;
+    }
+  }, [i18n]);
   const loadCatalogue = useCallback(async () => {
     if (!mounted.current || mainRequest.current) return;
-    const token = epoch.current, controller = new AbortController(); mainRequest.current = controller;
+    const token = epoch.current,
+      controller = new AbortController();
+    mainRequest.current = controller;
     setRefreshing(true);
     try {
-      const [profile, catalogue] = await Promise.allSettled([
-        api.get("/auth/me", { timeout: 8000, signal: controller.signal }),
-        api.get("/builder/matches", { timeout: 20000, signal: controller.signal }),
-      ]);
+      const [profile, catalogue] = await Promise.allSettled([api.get("/auth/me", {
+        timeout: 8000,
+        signal: controller.signal
+      }), api.get("/builder/matches", {
+        timeout: 20000,
+        signal: controller.signal
+      })]);
       if (!mounted.current || epoch.current !== token || controller.signal.aborted) return;
-      if ([profile, catalogue].some((result) => result.status === "rejected" && result.reason?.response?.status === 401)) {
-        accountRef.current = null; verifiedRef.current = null; catalogueStamp.current = null;
-        setAccount(null); setVerifiedAt(null); setMatches([]); setSelectedPicks([]); setSavedCombos([]); setLoadedAt(null);
-        setUnauthorized(true); setLoadError(""); setAccessError(""); return;
+      if ([profile, catalogue].some(result => result.status === "rejected" && result.reason?.response?.status === 401)) {
+        accountRef.current = null;
+        verifiedRef.current = null;
+        catalogueStamp.current = null;
+        setAccount(null);
+        setVerifiedAt(null);
+        setMatches([]);
+        setSelectedPicks([]);
+        setSavedCombos([]);
+        setLoadedAt(null);
+        setUnauthorized(true);
+        setLoadError("");
+        setAccessError("");
+        return;
       }
       setUnauthorized(false);
       if (profile.status === "fulfilled" && record(profile.value.data)) {
-        const stamp = Date.now(); accountRef.current = profile.value.data; verifiedRef.current = stamp;
-        setAccount(profile.value.data); setVerifiedAt(stamp); setAccessError("");
-      } else { verifiedRef.current = null; setVerifiedAt(null); setAccessError("Ton accès n’a pas pu être actualisé. L’enregistrement sera disponible après vérification."); }
+        const stamp = Date.now();
+        accountRef.current = profile.value.data;
+        verifiedRef.current = stamp;
+        setAccount(profile.value.data);
+        setVerifiedAt(stamp);
+        setAccessError("");
+      } else {
+        verifiedRef.current = null;
+        setVerifiedAt(null);
+        setAccessError("Ton accès n’a pas pu être actualisé. L’enregistrement sera disponible après vérification.");
+      }
       if (catalogue.status === "rejected") throw catalogue.reason;
-      const data = normalizeCatalogue(catalogue.value.data), stamp = Date.now();
-      catalogueStamp.current = stamp; setMatches(data.matches); setLoadedAt(stamp); setNow(stamp); setSkipped(data.skipped);
-      setSelectedPicks((previous) => reconcileSelections(previous, data.matches, stamp)); setLoadError("");
+      const data = normalizeCatalogue(catalogue.value.data),
+        stamp = Date.now();
+      catalogueStamp.current = stamp;
+      setMatches(data.matches);
+      setLoadedAt(stamp);
+      setNow(stamp);
+      setSkipped(data.skipped);
+      setSelectedPicks(previous => reconcileSelections(previous, data.matches, stamp));
+      setLoadError("");
     } catch (error) {
-      if (mounted.current && epoch.current === token && !controller.signal.aborted) setLoadError(requestError(error, "Impossible d’actualiser les rencontres. La dernière liste chargée reste disponible."));
+      if (mounted.current && epoch.current === token && !controller.signal.aborted) setLoadError(requestError(i18n, error, "Impossible d’actualiser les rencontres. La dernière liste chargée reste disponible."));
     } finally {
       if (mainRequest.current === controller) {
         mainRequest.current = null;
-        if (mounted.current && epoch.current === token && !controller.signal.aborted) { setLoading(false); setRefreshing(false); }
+        if (mounted.current && epoch.current === token && !controller.signal.aborted) {
+          setLoading(false);
+          setRefreshing(false);
+        }
       }
     }
-  }, []);
-
+  }, [i18n]);
   useEffect(() => {
     if (authLoading) return;
-    mounted.current = true; epoch.current += 1;
-    accountRef.current = null; verifiedRef.current = null; catalogueStamp.current = null;
-    statsCache.current = {}; savingRef.current = null; deletingRef.current = new Set();
-    setMatches([]); setLoadedAt(null); setAccount(null); setVerifiedAt(null); setSelectedPicks([]); setComboName("");
-    setSavedCombos([]); setSavedStatus("idle"); setSavedError(""); setMatchStats({}); setExpandedMatchId(null);
-    setLoading(true); setRefreshing(false); setSaving(false); setDeleting([]); setLastSaved(""); setNotice(""); setManualCopy("");
+    mounted.current = true;
+    epoch.current += 1;
+    accountRef.current = null;
+    verifiedRef.current = null;
+    catalogueStamp.current = null;
+    statsCache.current = {};
+    savingRef.current = null;
+    deletingRef.current = new Set();
+    setMatches([]);
+    setLoadedAt(null);
+    setAccount(null);
+    setVerifiedAt(null);
+    setSelectedPicks([]);
+    setComboName("");
+    setSavedCombos([]);
+    setSavedStatus("idle");
+    setSavedError("");
+    setMatchStats({});
+    setExpandedMatchId(null);
+    setLoading(true);
+    setRefreshing(false);
+    setSaving(false);
+    setDeleting([]);
+    setLastSaved("");
+    setNotice("");
+    setManualCopy("");
     loadCatalogue();
-    const poll = () => { if (document.visibilityState === "visible") { setNow(Date.now()); if (catalogueStamp.current === null || Date.now() - catalogueStamp.current >= 120000) loadCatalogue(); } };
+    const poll = () => {
+      if (document.visibilityState === "visible") {
+        setNow(Date.now());
+        if (catalogueStamp.current === null || Date.now() - catalogueStamp.current >= 120000) loadCatalogue();
+      }
+    };
     const timer = window.setInterval(poll, 120000);
-    document.addEventListener("visibilitychange", poll); window.addEventListener("focus", poll);
+    document.addEventListener("visibilitychange", poll);
+    window.addEventListener("focus", poll);
     return () => {
-      mounted.current = false; epoch.current += 1; copyGeneration.current += 1;
-      mainRequest.current?.abort(); mainRequest.current = null;
-      savedRequest.current?.abort(); savedRequest.current = null;
-      statsRequests.current.forEach((controller) => controller.abort()); statsRequests.current.clear();
-      window.clearInterval(timer); document.removeEventListener("visibilitychange", poll); window.removeEventListener("focus", poll);
+      mounted.current = false;
+      epoch.current += 1;
+      copyGeneration.current += 1;
+      mainRequest.current?.abort();
+      mainRequest.current = null;
+      savedRequest.current?.abort();
+      savedRequest.current = null;
+      statsRequests.current.forEach(controller => controller.abort());
+      statsRequests.current.clear();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", poll);
+      window.removeEventListener("focus", poll);
     };
   }, [authLoading, sessionKey, loadCatalogue]);
-
-  useEffect(() => { if (mounted.current) loadCatalogue(); }, [user?.subscription, user?.subscription_tier, loadCatalogue]);
+  useEffect(() => {
+    if (mounted.current) loadCatalogue();
+  }, [user?.subscription, user?.subscription_tier, loadCatalogue]);
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), 30000);
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
     if (typeof window.matchMedia !== "function") return;
-    const media = window.matchMedia("(max-width: 980px)"), change = () => setMobile(media.matches);
+    const media = window.matchMedia("(max-width: 980px)"),
+      change = () => setMobile(media.matches);
     change();
-    if (media.addEventListener) { media.addEventListener("change", change); return () => media.removeEventListener("change", change); }
-    media.addListener(change); return () => media.removeListener(change);
+    if (media.addEventListener) {
+      media.addEventListener("change", change);
+      return () => media.removeEventListener("change", change);
+    }
+    media.addListener(change);
+    return () => media.removeListener(change);
   }, []);
   useEffect(() => {
-    if (isPaid && account) loadSaved();
-    else { savedRequest.current?.abort(); savedRequest.current = null; setSavedCombos([]); setSavedStatus("idle"); setSavedError(""); }
+    if (isPaid && account) loadSaved();else {
+      savedRequest.current?.abort();
+      savedRequest.current = null;
+      setSavedCombos([]);
+      setSavedStatus("idle");
+      setSavedError("");
+    }
   }, [account, isPaid, loadSaved]);
-  useEffect(() => { setLimit(12); }, [sport, query, day, order]);
-  useEffect(() => { copyGeneration.current += 1; setManualCopy(""); setNotice(""); }, [fingerprint]);
-
-  const eligible = useMemo(() => matches.filter((match) => !match.completed && (dateValue(match.commence_time) === null || dateValue(match.commence_time) > now)), [matches, now]);
+  useEffect(() => {
+    setLimit(12);
+  }, [sport, query, day, order]);
+  useEffect(() => {
+    copyGeneration.current += 1;
+    setManualCopy("");
+    setNotice("");
+  }, [fingerprint]);
+  const eligible = useMemo(() => matches.filter(match => !match.completed && (dateValue(match.commence_time) === null || dateValue(match.commence_time) > now)), [matches, now]);
   const sportCounts = useMemo(() => {
-    const counts = { all: eligible.length }; eligible.forEach((match) => { counts[match.sport] = (counts[match.sport] || 0) + 1; }); return counts;
+    const counts = {
+      all: eligible.length
+    };
+    eligible.forEach(match => {
+      counts[match.sport] = (counts[match.sport] || 0) + 1;
+    });
+    return counts;
   }, [eligible]);
   const filtered = useMemo(() => {
-    const wanted = normalize(query).trim().split(/\s+/).filter(Boolean), today = new Date(now), tomorrow = new Date(now);
+    const wanted = normalize(query).trim().split(/\s+/).filter(Boolean),
+      today = new Date(now),
+      tomorrow = new Date(now);
     tomorrow.setDate(tomorrow.getDate() + 1);
     const sameDay = (a, b) => a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
-    return eligible.filter((match) => {
+    return eligible.filter(match => {
       if (sport !== "all" && match.sport !== sport) return false;
-      const haystack = normalize([match.home_team, match.away_team, match.competition, match.country, match.sport_title, SPORT_TABS.find((s) => s.key === match.sport)?.label].join(" "));
-      if (!wanted.every((word) => haystack.includes(word))) return false;
+      const haystack = normalize([match.home_team, match.away_team, match.competition, match.country, i18n.tx(match.country), match.sport_title, SPORT_TABS.find(s => s.key === match.sport)?.label, i18n.tx(SPORT_TABS.find(s => s.key === match.sport)?.label)].join(" "));
+      if (!wanted.every(word => haystack.includes(word))) return false;
       const start = dateValue(match.commence_time);
       return day === "all" || start !== null && sameDay(new Date(start), day === "today" ? today : tomorrow);
-    }).sort((a, b) => order === "competition" ? a.competition.localeCompare(b.competition, "fr") || (dateValue(a.commence_time) ?? Infinity) - (dateValue(b.commence_time) ?? Infinity)
-      : (dateValue(a.commence_time) ?? Infinity) - (dateValue(b.commence_time) ?? Infinity) || a.match_id.localeCompare(b.match_id));
-  }, [eligible, sport, query, day, order, now]);
-  const selectedKeys = useMemo(() => new Set(selectedPicks.map((p) => p._key)), [selectedPicks]);
-  const availableOptions = useMemo(() => eligible.reduce((sum, match) => sum + match.picks.filter((p) => selectable(match, p, now)).length, 0), [eligible, now]);
-
+    }).sort((a, b) => order === "competition" ? a.competition.localeCompare(b.competition, i18n.locale) || (dateValue(a.commence_time) ?? Infinity) - (dateValue(b.commence_time) ?? Infinity) : (dateValue(a.commence_time) ?? Infinity) - (dateValue(b.commence_time) ?? Infinity) || a.match_id.localeCompare(b.match_id));
+  }, [eligible, sport, query, day, order, now, i18n, i18n.language]);
+  const selectedKeys = useMemo(() => new Set(selectedPicks.map(p => p._key)), [selectedPicks]);
+  const availableOptions = useMemo(() => eligible.reduce((sum, match) => sum + match.picks.filter(p => selectable(match, p, now)).length, 0), [eligible, now]);
   function togglePick(match, pick) {
-    if (!fresh || !selectable(match, pick, Date.now())) { setNotice("Cette sélection n’est pas disponible avec une cote et un horaire utilisables. Actualise le catalogue."); return; }
-    setSelectedPicks((previous) => applyPick(previous, match, pick, Date.now()));
+    if (!fresh || !selectable(match, pick, Date.now())) {
+      setNotice("Cette sélection n’est pas disponible avec une cote et un horaire utilisables. Actualise le catalogue.");
+      return;
+    }
+    setSelectedPicks(previous => applyPick(previous, match, pick, Date.now()));
   }
   async function loadStats(match) {
-    if (!paidAccount(accountRef.current) || verifiedRef.current === null || Date.now() - verifiedRef.current >= FRESH_MS) { setMatchStats((previous) => ({ ...previous, [match.match_id]: { status: "error", error: "Actualise le catalogue pour vérifier ton accès aux repères." } })); return; }
+    if (!paidAccount(accountRef.current) || verifiedRef.current === null || Date.now() - verifiedRef.current >= FRESH_MS) {
+      setMatchStats(previous => ({
+        ...previous,
+        [match.match_id]: {
+          status: "error",
+          error: "Actualise le catalogue pour vérifier ton accès aux repères."
+        }
+      }));
+      return;
+    }
     if (statsRequests.current.has(match.match_id)) return;
     const cached = statsCache.current[match.match_id];
-    if (cached && Date.now() - cached.timestamp < FRESH_MS) { setMatchStats((previous) => ({ ...previous, [match.match_id]: cached })); return; }
-    const token = epoch.current, controller = new AbortController(); statsRequests.current.set(match.match_id, controller);
-    setMatchStats((previous) => ({ ...previous, [match.match_id]: { status: "loading" } }));
+    if (cached && Date.now() - cached.timestamp < FRESH_MS) {
+      setMatchStats(previous => ({
+        ...previous,
+        [match.match_id]: cached
+      }));
+      return;
+    }
+    const token = epoch.current,
+      controller = new AbortController();
+    statsRequests.current.set(match.match_id, controller);
+    setMatchStats(previous => ({
+      ...previous,
+      [match.match_id]: {
+        status: "loading"
+      }
+    }));
     try {
-      const response = await api.get(`/builder/stats/${encodeURIComponent(match.match_id)}`, { timeout: 12000, signal: controller.signal });
-      const entry = { status: "ready", values: statsValues(response.data, match.sport), timestamp: Date.now() };
-      if (active(token) && !controller.signal.aborted) { statsCache.current[match.match_id] = entry; setMatchStats((previous) => ({ ...previous, [match.match_id]: entry })); }
+      const response = await api.get(`/builder/stats/${encodeURIComponent(match.match_id)}`, {
+        timeout: 12000,
+        signal: controller.signal
+      });
+      const entry = {
+        status: "ready",
+        values: statsValues(i18n, response.data, match.sport),
+        timestamp: Date.now()
+      };
+      if (active(token) && !controller.signal.aborted) {
+        statsCache.current[match.match_id] = entry;
+        setMatchStats(previous => ({
+          ...previous,
+          [match.match_id]: entry
+        }));
+      }
     } catch (error) {
-      if (active(token) && !controller.signal.aborted) setMatchStats((previous) => ({ ...previous, [match.match_id]: { status: "error", error: requestError(error, "Les repères de marché ne sont pas disponibles. Réessaie.") } }));
-    } finally { if (statsRequests.current.get(match.match_id) === controller) statsRequests.current.delete(match.match_id); }
+      if (active(token) && !controller.signal.aborted) setMatchStats(previous => ({
+        ...previous,
+        [match.match_id]: {
+          status: "error",
+          error: requestError(i18n, error, "Les repères de marché ne sont pas disponibles. Réessaie.")
+        }
+      }));
+    } finally {
+      if (statsRequests.current.get(match.match_id) === controller) statsRequests.current.delete(match.match_id);
+    }
   }
   async function saveCombo() {
     if (savingRef.current) return;
-    if (!paidAccount(accountRef.current) || verifiedRef.current === null || Date.now() - verifiedRef.current >= FRESH_MS) { setNotice("Actualise le catalogue pour vérifier ton accès à l’enregistrement."); return; }
-    if (!ticketUsable(selectedPicks, catalogueStamp.current, Date.now())) { setNotice("Actualise les rencontres et vérifie les sélections signalées avant d’enregistrer."); return; }
-    const payload = savePayload(comboName, selectedPicks), signature = JSON.stringify(payload);
-    if (signature === lastSaved) { setNotice("Ce ticket est déjà enregistré."); return; }
-    const token = epoch.current, operation = {}; savingRef.current = operation; setSaving(true); setNotice("");
+    if (!paidAccount(accountRef.current) || verifiedRef.current === null || Date.now() - verifiedRef.current >= FRESH_MS) {
+      setNotice("Actualise le catalogue pour vérifier ton accès à l’enregistrement.");
+      return;
+    }
+    if (!ticketUsable(selectedPicks, catalogueStamp.current, Date.now())) {
+      setNotice("Actualise les rencontres et vérifie les sélections signalées avant d’enregistrer.");
+      return;
+    }
+    const payload = savePayload(comboName, selectedPicks),
+      signature = JSON.stringify(payload);
+    if (signature === lastSaved) {
+      setNotice("Ce ticket est déjà enregistré.");
+      return;
+    }
+    const token = epoch.current,
+      operation = {};
+    savingRef.current = operation;
+    setSaving(true);
+    setNotice("");
     try {
-      const response = await api.post("/builder/save", payload, { timeout: 15000 });
+      const response = await api.post("/builder/save", payload, {
+        timeout: 15000
+      });
       if (response.data?.ok !== true) throw new Error("INVALID_SAVE");
-      if (active(token)) { setLastSaved(signature); setNotice("Ticket enregistré dans tes combinés."); loadSaved(); }
-    } catch (error) { if (active(token)) setNotice(requestError(error, "L’enregistrement n’a pas été confirmé. Vérifie la liste des tickets avant de réessayer.")); }
-    finally { if (savingRef.current === operation) { savingRef.current = null; if (active(token)) setSaving(false); } }
+      if (active(token)) {
+        setLastSaved(signature);
+        setNotice("Ticket enregistré dans tes combinés.");
+        loadSaved();
+      }
+    } catch (error) {
+      if (active(token)) setNotice(requestError(i18n, error, "L’enregistrement n’a pas été confirmé. Vérifie la liste des tickets avant de réessayer."));
+    } finally {
+      if (savingRef.current === operation) {
+        savingRef.current = null;
+        if (active(token)) setSaving(false);
+      }
+    }
   }
   async function copyTicket() {
     if (!ticketUsable(selectedPicks, catalogueStamp.current, Date.now())) return;
-    const content = ticketMessage(comboName, selectedPicks), token = epoch.current, generation = copyGeneration.current;
+    const content = ticketMessage(i18n, comboName, selectedPicks),
+      token = epoch.current,
+      generation = copyGeneration.current;
     try {
       if (!navigator.clipboard?.writeText) throw new Error("NO_CLIPBOARD");
       await navigator.clipboard.writeText(content);
-      if (active(token) && generation === copyGeneration.current) { setNotice("Ticket copié."); setManualCopy(""); }
-    } catch { if (active(token) && generation === copyGeneration.current) { setNotice("Sélectionne le texte ci-dessous pour le copier."); setManualCopy(content); } }
+      if (active(token) && generation === copyGeneration.current) {
+        setNotice("Ticket copié.");
+        setManualCopy("");
+      }
+    } catch {
+      if (active(token) && generation === copyGeneration.current) {
+        setNotice("Sélectionne le texte ci-dessous pour le copier.");
+        setManualCopy(content);
+      }
+    }
   }
   function shareWhatsApp() {
     if (!ticketUsable(selectedPicks, catalogueStamp.current, Date.now())) return;
-    const content = ticketMessage(comboName, selectedPicks), url = `https://wa.me/?text=${encodeURIComponent(content)}`;
-    if (url.length > 8000) { setManualCopy(content); setNotice("Ce ticket est long. Copie le texte ci-dessous pour le partager sans couper les sélections."); return; }
+    const content = ticketMessage(i18n, comboName, selectedPicks),
+      url = `https://wa.me/?text=${encodeURIComponent(content)}`;
+    if (url.length > 8000) {
+      setManualCopy(content);
+      setNotice("Ce ticket est long. Copie le texte ci-dessous pour le partager sans couper les sélections.");
+      return;
+    }
     window.open(url, "_blank", "noopener,noreferrer");
   }
   async function deleteSaved(id) {
     if (deletingRef.current.has(id) || !paidAccount(accountRef.current)) return;
-    const token = epoch.current; deletingRef.current.add(id); setDeleting((previous) => [...previous, id]);
+    const token = epoch.current;
+    deletingRef.current.add(id);
+    setDeleting(previous => [...previous, id]);
     try {
-      await api.delete(`/builder/my-combos/${encodeURIComponent(id)}`, { timeout: 10000 });
-      if (active(token)) { setSavedCombos((previous) => previous.filter((combo) => combo.id !== id)); setNotice("Ticket supprimé."); setLastSaved(""); }
-    } catch (error) { if (active(token)) setNotice(requestError(error, "La suppression n’a pas été confirmée. Actualise la liste.")); }
-    finally { deletingRef.current.delete(id); if (active(token)) setDeleting((previous) => previous.filter((value) => value !== id)); }
+      await api.delete(`/builder/my-combos/${encodeURIComponent(id)}`, {
+        timeout: 10000
+      });
+      if (active(token)) {
+        setSavedCombos(previous => previous.filter(combo => combo.id !== id));
+        setNotice("Ticket supprimé.");
+        setLastSaved("");
+      }
+    } catch (error) {
+      if (active(token)) setNotice(requestError(i18n, error, "La suppression n’a pas été confirmée. Actualise la liste."));
+    } finally {
+      deletingRef.current.delete(id);
+      if (active(token)) setDeleting(previous => previous.filter(value => value !== id));
+    }
   }
-
   return <AppLayout>
-    <style>{BUILDER_CSS}</style>
+    <style>{i18n.tx(BUILDER_CSS)}</style>
     <div className="cb-page" data-testid="builder-page">
-      <header className="cb-hero"><div><p className="cb-eyebrow"><Sparkles aria-hidden="true" />WNPULSE · COMBO BUILDER</p><h1>Ton combiné.<br /><span>Tes choix.</span></h1><p className="cb-intro">Explore les rencontres, compare les marchés et réunis tes sélections dans un ticket qui se lit en un coup d’œil.</p><p className="cb-time"><Clock aria-hidden="true" />Horaires : {timeZone}{loadedAt !== null ? ` · Chargé à ${new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(new Date(loadedAt))}` : ""}</p></div><div className="cb-hero-aside"><div><strong>{loading ? "—" : eligible.length}</strong><span>rencontres au catalogue</span></div><div><strong>{loading ? "—" : availableOptions}</strong><span>options sélectionnables</span></div><button type="button" className="cb-button cb-button--hero" onClick={loadCatalogue} disabled={loading || refreshing || authLoading} data-testid="builder-refresh-btn"><RefreshCw aria-hidden="true" className={refreshing ? "cb-spin" : ""} />{refreshing ? "Actualisation…" : "Actualiser"}</button></div></header>
-      {(loadError || accessError) && <div role="alert" className="cb-alert"><Info aria-hidden="true" /><div>{loadError && <p>{loadError}</p>}{accessError && <p>{accessError}</p>}<button type="button" className="cb-button cb-button--outline" onClick={loadCatalogue} disabled={refreshing}>Réessayer</button></div></div>}
-      {unauthorized ? <section className="cb-empty"><Lock aria-hidden="true" /><h2>Reconnecte-toi pour continuer</h2><p>Ta session a expiré. Les sélections de la session précédente ont été retirées.</p><Link to="/login" className="cb-button cb-button--primary">Se connecter</Link></section> : <>
-        <section className="cb-controls" aria-label="Rechercher et filtrer les rencontres"><div className="cb-search"><label htmlFor="cb-search"><Search aria-hidden="true" />Quelle rencontre cherches-tu ?</label><div><input id="cb-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Équipe, championnat ou pays…" type="search" data-testid="builder-search" />{query && <button type="button" onClick={() => setQuery("")} aria-label="Effacer la recherche"><X aria-hidden="true" /></button>}</div></div><label className="cb-filter" htmlFor="cb-day">Date<select id="cb-day" value={day} onChange={(event) => setDay(event.target.value)}><option value="all">Toutes les dates</option><option value="today">Aujourd’hui</option><option value="tomorrow">Demain</option></select></label><label className="cb-filter" htmlFor="cb-order">Classer par<select id="cb-order" value={order} onChange={(event) => setOrder(event.target.value)}><option value="time">Horaire</option><option value="competition">Compétition</option></select></label></section>
-        <div className="cb-sports" aria-label="Choisir un sport" data-testid="builder-sport-tabs">{SPORT_TABS.filter((tab) => tab.key !== "other" || sportCounts.other).map((tab) => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key} data-testid={`builder-tab-${tab.key}`}>{tab.label}<span>{loading ? "—" : sportCounts[tab.key] || 0}</span></button>)}</div>
+      <header className="cb-hero"><div><p className="cb-eyebrow"><Sparkles aria-hidden="true" />{i18n.t("WNPULSE \xB7 COMBO BUILDER")}</p><h1>{i18n.rich("Ton combin\xE9.{{v0}}{{v1}}", {
+              v0: <br />,
+              v1: <span>{i18n.t("Tes choix.")}</span>
+            })}</h1><p className="cb-intro">{i18n.t("Explore les rencontres, compare les march\xE9s et r\xE9unis tes s\xE9lections dans un ticket qui se lit en un coup d\u2019\u0153il.")}</p><p className="cb-time"><Clock aria-hidden="true" />{i18n.rich("Horaires : {{v0}}{{v1}}", {
+              v0: i18n.tx(timeZone),
+              v1: i18n.tx(loadedAt !== null ? i18n.t(" \xB7 Charg\xE9 \xE0 {{v0}}", {
+                v0: new Intl.DateTimeFormat(i18n.locale, {
+                  hour: "2-digit",
+                  minute: "2-digit"
+                }).format(new Date(loadedAt))
+              }) : "")
+            })}</p></div><div className="cb-hero-aside"><div><strong>{i18n.tx(loading ? "—" : eligible.length)}</strong><span>{i18n.t("rencontres au catalogue")}</span></div><div><strong>{i18n.tx(loading ? "—" : availableOptions)}</strong><span>{i18n.t("options s\xE9lectionnables")}</span></div><button type="button" className="cb-button cb-button--hero" onClick={loadCatalogue} disabled={loading || refreshing || authLoading} data-testid="builder-refresh-btn"><RefreshCw aria-hidden="true" className={refreshing ? "cb-spin" : ""} />{i18n.tx(refreshing ? "Actualisation…" : "Actualiser")}</button></div></header>
+      {i18n.tx((loadError || accessError) && <div role="alert" className="cb-alert"><Info aria-hidden="true" /><div>{i18n.tx(loadError && <p>{i18n.tx(loadError)}</p>)}{i18n.tx(accessError && <p>{i18n.tx(accessError)}</p>)}<button type="button" className="cb-button cb-button--outline" onClick={loadCatalogue} disabled={refreshing}>{i18n.t("R\xE9essayer")}</button></div></div>)}
+      {i18n.tx(unauthorized ? <section className="cb-empty"><Lock aria-hidden="true" /><h2>{i18n.t("Reconnecte-toi pour continuer")}</h2><p>{i18n.t("Ta session a expir\xE9. Les s\xE9lections de la session pr\xE9c\xE9dente ont \xE9t\xE9 retir\xE9es.")}</p><Link to="/login" className="cb-button cb-button--primary">{i18n.t("Se connecter")}</Link></section> : <>
+        <section className="cb-controls" aria-label={i18n.t("Rechercher et filtrer les rencontres")}><div className="cb-search"><label htmlFor="cb-search"><Search aria-hidden="true" />{i18n.t("Quelle rencontre cherches-tu ?")}</label><div><input id="cb-search" value={query} onChange={event => setQuery(event.target.value)} placeholder={i18n.t("Équipe, championnat ou pays…")} type="search" data-testid="builder-search" />{i18n.tx(query && <button type="button" onClick={() => setQuery("")} aria-label={i18n.t("Effacer la recherche")}><X aria-hidden="true" /></button>)}</div></div><label className="cb-filter" htmlFor="cb-day">{i18n.rich("Date{{v0}}", {
+              v0: <select id="cb-day" value={day} onChange={event => setDay(event.target.value)}><option value="all">{i18n.t("Toutes les dates")}</option><option value="today">{i18n.t("Aujourd\u2019hui")}</option><option value="tomorrow">{i18n.t("Demain")}</option></select>
+            })}</label><label className="cb-filter" htmlFor="cb-order">{i18n.rich("Classer par{{v0}}", {
+              v0: <select id="cb-order" value={order} onChange={event => setOrder(event.target.value)}><option value="time">{i18n.t("Horaire")}</option><option value="competition">{i18n.t("Comp\xE9tition")}</option></select>
+            })}</label></section>
+        <div className="cb-sports" aria-label={i18n.t("Choisir un sport")} data-testid="builder-sport-tabs">{i18n.tx(SPORT_TABS.filter(tab => tab.key !== "other" || sportCounts.other).map(tab => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key} data-testid={`builder-tab-${tab.key}`}>{i18n.tx(tab.label)}<span>{i18n.tx(loading ? "—" : sportCounts[tab.key] || 0)}</span></button>))}</div>
         <div className="cb-main">
-          <section className="cb-catalogue" aria-labelledby="cb-matches-heading"><div className="cb-section-title"><div><p className="cb-kicker">01 · Compose ton ticket</p><h2 id="cb-matches-heading">Les rencontres à explorer</h2><p>{loading ? "Chargement du programme…" : `${filtered.length} rencontre${filtered.length > 1 ? "s" : ""} correspond${filtered.length > 1 ? "ent" : ""} à tes filtres`}</p></div></div>
-            {selectedPicks.length > 0 && <a href="#builder-ticket" onClick={() => setTicketOpen(true)} className="cb-ticket-jump"><span><Trophy aria-hidden="true" />{selectedPicks.length} sélection{selectedPicks.length > 1 ? "s" : ""}<b>Cote {format(metrics.totalOdds)}</b></span><strong>Voir le ticket<ArrowRight aria-hidden="true" /></strong></a>}
-            {loadedAt !== null && !fresh && <p className="cb-alert" role="status">Le catalogue n’a pas été vérifié depuis plus de cinq minutes. Actualise avant d’ajouter ou de partager une sélection.</p>}
-            {skipped > 0 && <p className="cb-small-note">Certaines données incomplètes n’ont pas pu être affichées.</p>}
-            {loading || authLoading ? <div className="cb-empty" role="status"><Loader2 aria-hidden="true" className="cb-spin" /><h3>Chargement des rencontres</h3><p>Les options disponibles apparaîtront ici.</p></div> : !filtered.length ? <div className="cb-empty"><Search aria-hidden="true" /><h3>{eligible.length ? "Aucune rencontre pour ces filtres" : "Aucune rencontre disponible actuellement"}</h3><p>{eligible.length ? "Essaie une autre équipe ou élargis les filtres." : "Actualise plus tard pour retrouver les prochains marchés proposés."}</p>{eligible.length > 0 && <button type="button" className="cb-button cb-button--outline" onClick={() => { setSport("all"); setDay("all"); setQuery(""); }}>Réinitialiser les filtres</button>}</div> : <><div className="cb-matches">{filtered.slice(0, limit).map((match) => <MatchCard key={match.match_id} match={match} expanded={expandedMatchId === match.match_id} onToggle={() => setExpandedMatchId((value) => value === match.match_id ? null : match.match_id)} onPickToggle={togglePick} selectedKeys={selectedKeys} now={now} fresh={fresh} canStats={canPersist} stats={canPersist ? matchStats[match.match_id] : null} onStats={() => loadStats(match)} />)}</div><p className="cb-results-count">{Math.min(limit, filtered.length)} sur {filtered.length} rencontres affichées</p>{limit < filtered.length && <button type="button" className="cb-button cb-button--outline cb-show-more" onClick={() => setLimit((value) => value + 12)}>Afficher les rencontres suivantes<Plus aria-hidden="true" /></button>}</>}
+          <section className="cb-catalogue" aria-labelledby="cb-matches-heading"><div className="cb-section-title"><div><p className="cb-kicker">{i18n.t("01 \xB7 Compose ton ticket")}</p><h2 id="cb-matches-heading">{i18n.t("Les rencontres \xE0 explorer")}</h2><p>{i18n.tx(loading ? "Chargement du programme…" : i18n.t("{{v0}} rencontre{{v1}} correspond{{v2}} \xE0 tes filtres", {
+                    v0: filtered.length,
+                    v1: filtered.length > 1 ? "s" : "",
+                    v2: filtered.length > 1 ? "ent" : ""
+                  }))}</p></div></div>
+            {i18n.tx(selectedPicks.length > 0 && <a href="#builder-ticket" onClick={() => setTicketOpen(true)} className="cb-ticket-jump"><span><Trophy aria-hidden="true" />{i18n.rich("{{v0}} s\xE9lection{{v1}}{{v2}}", {
+                  v0: i18n.tx(selectedPicks.length),
+                  v1: i18n.tx(selectedPicks.length > 1 ? "s" : ""),
+                  v2: <b>{i18n.rich("Cote {{v0}}", {
+                      v0: i18n.tx(format(i18n, metrics.totalOdds))
+                    })}</b>
+                })}</span><strong>{i18n.t("Voir le ticket")}<ArrowRight aria-hidden="true" /></strong></a>)}
+            {i18n.tx(loadedAt !== null && !fresh && <p className="cb-alert" role="status">{i18n.t("Le catalogue n\u2019a pas \xE9t\xE9 v\xE9rifi\xE9 depuis plus de cinq minutes. Actualise avant d\u2019ajouter ou de partager une s\xE9lection.")}</p>)}
+            {i18n.tx(skipped > 0 && <p className="cb-small-note">{i18n.t("Certaines donn\xE9es incompl\xE8tes n\u2019ont pas pu \xEAtre affich\xE9es.")}</p>)}
+            {i18n.tx(loading || authLoading ? <div className="cb-empty" role="status"><Loader2 aria-hidden="true" className="cb-spin" /><h3>{i18n.t("Chargement des rencontres")}</h3><p>{i18n.t("Les options disponibles appara\xEEtront ici.")}</p></div> : !filtered.length ? <div className="cb-empty"><Search aria-hidden="true" /><h3>{i18n.tx(eligible.length ? "Aucune rencontre pour ces filtres" : "Aucune rencontre disponible actuellement")}</h3><p>{i18n.tx(eligible.length ? "Essaie une autre équipe ou élargis les filtres." : "Actualise plus tard pour retrouver les prochains marchés proposés.")}</p>{i18n.tx(eligible.length > 0 && <button type="button" className="cb-button cb-button--outline" onClick={() => {
+                setSport("all");
+                setDay("all");
+                setQuery("");
+              }}>{i18n.t("R\xE9initialiser les filtres")}</button>)}</div> : <><div className="cb-matches">{i18n.tx(filtered.slice(0, limit).map(match => <MatchCard key={match.match_id} match={match} expanded={expandedMatchId === match.match_id} onToggle={() => setExpandedMatchId(value => value === match.match_id ? null : match.match_id)} onPickToggle={togglePick} selectedKeys={selectedKeys} now={now} fresh={fresh} canStats={canPersist} stats={canPersist ? matchStats[match.match_id] : null} onStats={() => loadStats(match)} />))}</div><p className="cb-results-count">{i18n.rich("{{v0}} sur {{v1}} rencontres affich\xE9es", {
+                  v0: i18n.tx(Math.min(limit, filtered.length)),
+                  v1: i18n.tx(filtered.length)
+                })}</p>{i18n.tx(limit < filtered.length && <button type="button" className="cb-button cb-button--outline cb-show-more" onClick={() => setLimit(value => value + 12)}>{i18n.t("Afficher les rencontres suivantes")}<Plus aria-hidden="true" /></button>)}</>)}
           </section>
-          <aside className="cb-sidebar" aria-label="Ton ticket et tes sauvegardes">
-            <section className="cb-ticket" id="builder-ticket" data-testid="builder-panel"><header><div><p className="cb-kicker">02 · Ton ticket</p><h2>Mon combiné</h2><p>{selectedPicks.length ? `${selectedPicks.length} sélection${selectedPicks.length > 1 ? "s" : ""} · Cote ${format(metrics.totalOdds)}` : "Une sélection par rencontre"}</p></div><Trophy aria-hidden="true" /></header>
-              {mobile && <button type="button" className="cb-ticket-toggle" aria-expanded={ticketOpen} aria-controls="cb-ticket-content" onClick={() => setTicketOpen((value) => !value)}>{ticketOpen ? "Replier le ticket" : "Ouvrir mon ticket"}<ChevronDown aria-hidden="true" className={ticketOpen ? "cb-rotated" : ""} /></button>}
+          <aside className="cb-sidebar" aria-label={i18n.t("Ton ticket et tes sauvegardes")}>
+            <section className="cb-ticket" id="builder-ticket" data-testid="builder-panel"><header><div><p className="cb-kicker">{i18n.t("02 \xB7 Ton ticket")}</p><h2>{i18n.t("Mon combin\xE9")}</h2><p>{i18n.tx(selectedPicks.length ? i18n.t("{{v0}} s\xE9lection{{v1}} \xB7 Cote {{v2}}", {
+                      v0: selectedPicks.length,
+                      v1: selectedPicks.length > 1 ? "s" : "",
+                      v2: format(i18n, metrics.totalOdds)
+                    }) : "Une sélection par rencontre")}</p></div><Trophy aria-hidden="true" /></header>
+              {i18n.tx(mobile && <button type="button" className="cb-ticket-toggle" aria-expanded={ticketOpen} aria-controls="cb-ticket-content" onClick={() => setTicketOpen(value => !value)}>{i18n.tx(ticketOpen ? "Replier le ticket" : "Ouvrir mon ticket")}<ChevronDown aria-hidden="true" className={ticketOpen ? "cb-rotated" : ""} /></button>)}
               <div id="cb-ticket-content" hidden={mobile && !ticketOpen} className="cb-ticket-content">
-                {!selectedPicks.length ? <div className="cb-ticket-empty"><Plus aria-hidden="true" /><h3>Ton ticket commence ici</h3><p>Ajoute une option sur une rencontre. Tu peux remplacer ton choix sans ajouter deux paris sur le même match.</p></div> : <>
-                  <div className="cb-ticket-total"><span>Cote cumulée</span><strong data-testid="builder-total-odds">{format(metrics.totalOdds)}</strong><p>Produit des cotes des sélections du ticket.</p></div>
-                  <dl className="cb-ticket-metrics"><div><dt>Confiance moyenne du moteur</dt><dd>{metrics.confidence === null ? "Non disponible" : `${format(metrics.confidence, 1)} %`}</dd></div><div><dt>Sports représentés</dt><dd>{metrics.sports}</dd></div></dl><p className="cb-small-note">La confiance moyenne ne représente pas la probabilité que le combiné passe.</p>
-                  <div className="cb-ticket-list" data-testid="builder-legs-list">{selectedPicks.map((pick, index) => {
-                    const outdated = !pick._available || dateValue(pick.commence_time) === null || dateValue(pick.commence_time) <= now;
-                    return <div key={pick._key} className={`cb-ticket-leg${outdated ? " cb-ticket-leg--warning" : ""}`}><div className="cb-leg-number">{index + 1}</div><div><p>{pick.home_team} <span>contre</span> {pick.away_team}</p><p>{pick.market_label} · <strong>{pick.pick}</strong></p><p>{dateLabel(pick.commence_time)} · Cote {format(pick.pick_odds)}</p>{pick.synthetic && <p className="cb-estimated">Marché estimé · cote à confirmer</p>}{pick._previous_odds !== null && <p className="cb-estimated">Cote actualisée : {format(pick._previous_odds)} → {format(pick.pick_odds)}</p>}{outdated && <p className="cb-leg-warning">{pick._issue || "Rencontre commencée ou horaire à vérifier"}</p>}</div><button type="button" className="cb-icon-button" onClick={() => setSelectedPicks((previous) => previous.filter((item) => item._key !== pick._key))} aria-label={`Retirer ${pick.home_team} contre ${pick.away_team}`} data-testid={`builder-remove-${index}`}><Trash2 aria-hidden="true" /></button></div>;
-                  })}</div>
-                  <button type="button" className="cb-clear" onClick={() => setSelectedPicks([])} data-testid="builder-clear-btn"><Trash2 aria-hidden="true" />Vider le ticket</button>
-                  <label className="cb-name" htmlFor="cb-name">Nom du ticket <span>(facultatif)</span><input id="cb-name" maxLength={100} value={comboName} onChange={(event) => setComboName(event.target.value)} placeholder="Mon combiné du week-end" data-testid="builder-name-input" /></label>
-                  {!usable && <p className="cb-action-help">Actualise le catalogue et retire ou remplace les sélections signalées pour enregistrer ou partager le ticket.</p>}
-                  {canPersist ? <button type="button" className="cb-button cb-button--primary cb-wide" onClick={saveCombo} disabled={saving || !usable || fingerprint === lastSaved} data-testid="builder-save-btn">{saving ? <Loader2 aria-hidden="true" className="cb-spin" /> : fingerprint === lastSaved ? <Check aria-hidden="true" /> : <Save aria-hidden="true" />}{saving ? "Enregistrement…" : fingerprint === lastSaved ? "Ticket enregistré" : "Enregistrer le ticket"}</button> : account && !isPaid && accessFresh ? <Link to="/app/abonnement" className="cb-button cb-button--primary cb-wide"><Lock aria-hidden="true" />Enregistrer avec Pro</Link> : <button type="button" className="cb-button cb-button--outline cb-wide" onClick={loadCatalogue} disabled={refreshing}>Vérifier mon accès<RefreshCw aria-hidden="true" /></button>}
-                  <div className="cb-share-actions"><button type="button" className="cb-button cb-button--outline" onClick={copyTicket} disabled={!usable} data-testid="builder-copy-btn"><Copy aria-hidden="true" />Copier</button><button type="button" className="cb-button cb-button--whatsapp" onClick={shareWhatsApp} disabled={!usable} data-testid="builder-whatsapp-btn"><Send aria-hidden="true" />WhatsApp</button></div>
-                </>}
-                {account && !isPaid && <div className="cb-free-note"><Lock aria-hidden="true" /><p>Les options avec un cadenas demandent un abonnement. L’enregistrement des tickets est réservé aux abonnés.</p><Link to="/app/abonnement">Voir les formules<ArrowRight aria-hidden="true" /></Link></div>}
-                {notice && <p className="cb-notice" role="status">{notice}</p>}
-                {manualCopy && usable && <div className="cb-manual-copy"><label htmlFor="cb-copy-text">Texte du ticket</label><textarea id="cb-copy-text" readOnly value={manualCopy} onFocus={(event) => event.target.select()} /><button type="button" className="cb-button cb-button--outline" onClick={() => setManualCopy("")}>Fermer<X aria-hidden="true" /></button></div>}
+                {i18n.tx(!selectedPicks.length ? <div className="cb-ticket-empty"><Plus aria-hidden="true" /><h3>{i18n.t("Ton ticket commence ici")}</h3><p>{i18n.t("Ajoute une option sur une rencontre. Tu peux remplacer ton choix sans ajouter deux paris sur le m\xEAme match.")}</p></div> : <>
+                  <div className="cb-ticket-total"><span>{i18n.t("Cote cumul\xE9e")}</span><strong data-testid="builder-total-odds">{i18n.tx(format(i18n, metrics.totalOdds))}</strong><p>{i18n.t("Produit des cotes des s\xE9lections du ticket.")}</p></div>
+                  <dl className="cb-ticket-metrics"><div><dt>{i18n.t("Confiance moyenne du moteur")}</dt><dd>{i18n.tx(metrics.confidence === null ? "Non disponible" : `${format(i18n, metrics.confidence, 1)} %`)}</dd></div><div><dt>{i18n.t("Sports repr\xE9sent\xE9s")}</dt><dd>{i18n.tx(metrics.sports)}</dd></div></dl><p className="cb-small-note">{i18n.t("La confiance moyenne ne repr\xE9sente pas la probabilit\xE9 que le combin\xE9 passe.")}</p>
+                  <div className="cb-ticket-list" data-testid="builder-legs-list">{i18n.tx(selectedPicks.map((pick, index) => {
+                      const outdated = !pick._available || dateValue(pick.commence_time) === null || dateValue(pick.commence_time) <= now;
+                      return <div key={pick._key} className={`cb-ticket-leg${outdated ? " cb-ticket-leg--warning" : ""}`}><div className="cb-leg-number">{i18n.tx(index + 1)}</div><div><p>{pick.home_team} <span>{i18n.t("contre")}</span> {pick.away_team}</p><p>{i18n.bet(pick.market_label)} · <strong>{i18n.bet(pick.pick)}</strong></p><p>{i18n.rich("{{v0}} \xB7 Cote {{v1}}", {
+                              v0: i18n.tx(dateLabel(i18n, pick.commence_time)),
+                              v1: i18n.tx(format(i18n, pick.pick_odds))
+                            })}</p>{i18n.tx(pick.synthetic && <p className="cb-estimated">{i18n.t("March\xE9 estim\xE9 \xB7 cote \xE0 confirmer")}</p>)}{i18n.tx(pick._previous_odds !== null && <p className="cb-estimated">{i18n.rich("Cote actualis\xE9e : {{v0}} \u2192 {{v1}}", {
+                              v0: i18n.tx(format(i18n, pick._previous_odds)),
+                              v1: i18n.tx(format(i18n, pick.pick_odds))
+                            })}</p>)}{i18n.tx(outdated && <p className="cb-leg-warning">{i18n.tx(pick._issue || "Rencontre commencée ou horaire à vérifier")}</p>)}</div><button type="button" className="cb-icon-button" onClick={() => setSelectedPicks(previous => previous.filter(item => item._key !== pick._key))} aria-label={i18n.tx(i18n.t("Retirer {{v0}} contre {{v1}}", {
+                          v0: pick.home_team,
+                          v1: pick.away_team
+                        }))} data-testid={`builder-remove-${index}`}><Trash2 aria-hidden="true" /></button></div>;
+                    }))}</div>
+                  <button type="button" className="cb-clear" onClick={() => setSelectedPicks([])} data-testid="builder-clear-btn"><Trash2 aria-hidden="true" />{i18n.t("Vider le ticket")}</button>
+                  <label className="cb-name" htmlFor="cb-name">{i18n.rich("Nom du ticket {{v0}}{{v1}}", {
+                      v0: <span>{i18n.t("(facultatif)")}</span>,
+                      v1: <input id="cb-name" maxLength={100} value={comboName} onChange={event => setComboName(event.target.value)} placeholder={i18n.t("Mon combiné du week-end")} data-testid="builder-name-input" />
+                    })}</label>
+                  {i18n.tx(!usable && <p className="cb-action-help">{i18n.t("Actualise le catalogue et retire ou remplace les s\xE9lections signal\xE9es pour enregistrer ou partager le ticket.")}</p>)}
+                  {i18n.tx(canPersist ? <button type="button" className="cb-button cb-button--primary cb-wide" onClick={saveCombo} disabled={saving || !usable || fingerprint === lastSaved} data-testid="builder-save-btn">{i18n.tx(saving ? <Loader2 aria-hidden="true" className="cb-spin" /> : fingerprint === lastSaved ? <Check aria-hidden="true" /> : <Save aria-hidden="true" />)}{i18n.tx(saving ? "Enregistrement…" : fingerprint === lastSaved ? "Ticket enregistré" : "Enregistrer le ticket")}</button> : account && !isPaid && accessFresh ? <Link to="/app/abonnement" className="cb-button cb-button--primary cb-wide"><Lock aria-hidden="true" />{i18n.t("Enregistrer avec Pro")}</Link> : <button type="button" className="cb-button cb-button--outline cb-wide" onClick={loadCatalogue} disabled={refreshing}>{i18n.t("V\xE9rifier mon acc\xE8s")}<RefreshCw aria-hidden="true" /></button>)}
+                  <div className="cb-share-actions"><button type="button" className="cb-button cb-button--outline" onClick={copyTicket} disabled={!usable} data-testid="builder-copy-btn"><Copy aria-hidden="true" />{i18n.t("Copier")}</button><button type="button" className="cb-button cb-button--whatsapp" onClick={shareWhatsApp} disabled={!usable} data-testid="builder-whatsapp-btn"><Send aria-hidden="true" />{i18n.t("WhatsApp")}</button></div>
+                </>)}
+                {i18n.tx(account && !isPaid && <div className="cb-free-note"><Lock aria-hidden="true" /><p>{i18n.t("Les options avec un cadenas demandent un abonnement. L\u2019enregistrement des tickets est r\xE9serv\xE9 aux abonn\xE9s.")}</p><Link to="/app/abonnement">{i18n.t("Voir les formules")}<ArrowRight aria-hidden="true" /></Link></div>)}
+                {i18n.tx(notice && <p className="cb-notice" role="status">{i18n.tx(notice)}</p>)}
+                {i18n.tx(manualCopy && usable && <div className="cb-manual-copy"><label htmlFor="cb-copy-text">{i18n.t("Texte du ticket")}</label><textarea id="cb-copy-text" readOnly value={manualCopy} onFocus={event => event.target.select()} /><button type="button" className="cb-button cb-button--outline" onClick={() => setManualCopy("")}>{i18n.t("Fermer")}<X aria-hidden="true" /></button></div>)}
               </div>
             </section>
-            <section className="cb-saved" data-testid="builder-saved-list"><details className="cb-saved-drawer" open={!mobile}><summary><span>Mes tickets enregistrés</span><ChevronDown aria-hidden="true" /></summary><div className="cb-saved-body"><div className="cb-saved-heading"><p>Historique de tes tickets</p>{isPaid && <button type="button" className="cb-icon-button" onClick={loadSaved} disabled={savedStatus === "loading"} aria-label="Actualiser les tickets enregistrés"><RefreshCw aria-hidden="true" className={savedStatus === "loading" ? "cb-spin" : ""} /></button>}</div>
-              {!account || !accessFresh ? <p>Ton accès est en cours de vérification.</p> : !isPaid ? <p>Retrouve tes tickets enregistrés avec un abonnement.</p> : <>
-                {savedStatus === "loading" && <p role="status">Chargement des sauvegardes…</p>}{savedError && <p role="alert">{savedError}</p>}
-                {savedStatus === "ready" && !savedCombos.length && <p>Aucun ticket enregistré pour le moment.</p>}
-                {savedCombos.map((combo) => <div key={combo.id} className="cb-saved-item"><details><summary><span><strong>{combo.name}</strong><span>Cote {format(combo.total_odds)} · {combo.num_legs ?? "—"} sélection{combo.num_legs > 1 ? "s" : ""}</span><span>{dateLabel(combo.created_at)}</span></span><ChevronDown aria-hidden="true" /></summary><div className="cb-saved-legs">{combo.legs.length ? combo.legs.map((leg, index) => <p key={index}><strong>{string(leg.home_team, "Équipe à confirmer")} contre {string(leg.away_team, "Équipe à confirmer")}</strong><span>{string(leg.pick, "Sélection non communiquée")} · Cote {format(price(leg.pick_odds))}</span></p>) : <p>Le détail de ce ticket n’est pas disponible.</p>}<p>Ticket archivé : les horaires et cotes ne sont pas actualisés ici.</p></div></details><button type="button" className="cb-icon-button" disabled={deleting.includes(combo.id)} onClick={() => deleteSaved(combo.id)} aria-label={`Supprimer le ticket ${combo.name}`} data-testid={`saved-delete-${combo.id}`}>{deleting.includes(combo.id) ? <Loader2 aria-hidden="true" className="cb-spin" /> : <Trash2 aria-hidden="true" />}</button></div>)}
-              </>}
+            <section className="cb-saved" data-testid="builder-saved-list"><details className="cb-saved-drawer" open={!mobile}><summary><span>{i18n.t("Mes tickets enregistr\xE9s")}</span><ChevronDown aria-hidden="true" /></summary><div className="cb-saved-body"><div className="cb-saved-heading"><p>{i18n.t("Historique de tes tickets")}</p>{i18n.tx(isPaid && <button type="button" className="cb-icon-button" onClick={loadSaved} disabled={savedStatus === "loading"} aria-label={i18n.t("Actualiser les tickets enregistrés")}><RefreshCw aria-hidden="true" className={savedStatus === "loading" ? "cb-spin" : ""} /></button>)}</div>
+              {i18n.tx(!account || !accessFresh ? <p>{i18n.t("Ton acc\xE8s est en cours de v\xE9rification.")}</p> : !isPaid ? <p>{i18n.t("Retrouve tes tickets enregistr\xE9s avec un abonnement.")}</p> : <>
+                {i18n.tx(savedStatus === "loading" && <p role="status">{i18n.t("Chargement des sauvegardes\u2026")}</p>)}{i18n.tx(savedError && <p role="alert">{i18n.tx(savedError)}</p>)}
+                {i18n.tx(savedStatus === "ready" && !savedCombos.length && <p>{i18n.t("Aucun ticket enregistr\xE9 pour le moment.")}</p>)}
+                {i18n.tx(savedCombos.map(combo => <div key={combo.id} className="cb-saved-item"><details><summary><span><strong>{i18n.tx(combo.name)}</strong><span>{i18n.rich("Cote {{v0}} \xB7 {{v1}} s\xE9lection{{v2}}", {
+                                v0: i18n.tx(format(i18n, combo.total_odds)),
+                                v1: i18n.tx(combo.num_legs ?? "—"),
+                                v2: i18n.tx(combo.num_legs > 1 ? "s" : "")
+                              })}</span><span>{i18n.tx(dateLabel(i18n, combo.created_at))}</span></span><ChevronDown aria-hidden="true" /></summary><div className="cb-saved-legs">{i18n.tx(combo.legs.length ? combo.legs.map((leg, index) => <p key={index}><strong>{i18n.rich("{{v0}} contre {{v1}}", {
+                                v0: i18n.tx(string(leg.home_team, "Équipe à confirmer")),
+                                v1: i18n.tx(string(leg.away_team, "Équipe à confirmer"))
+                              })}</strong><span>{i18n.rich("{{v0}} \xB7 Cote {{v1}}", {
+                                v0: i18n.bet(string(leg.pick, "Sélection non communiquée")),
+                                v1: i18n.tx(format(i18n, price(leg.pick_odds)))
+                              })}</span></p>) : <p>{i18n.t("Le d\xE9tail de ce ticket n\u2019est pas disponible.")}</p>)}<p>{i18n.t("Ticket archiv\xE9 : les horaires et cotes ne sont pas actualis\xE9s ici.")}</p></div></details><button type="button" className="cb-icon-button" disabled={deleting.includes(combo.id)} onClick={() => deleteSaved(combo.id)} aria-label={i18n.tx(i18n.t("Supprimer le ticket {{v0}}", {
+                        v0: combo.name
+                      }))} data-testid={`saved-delete-${combo.id}`}>{i18n.tx(deleting.includes(combo.id) ? <Loader2 aria-hidden="true" className="cb-spin" /> : <Trash2 aria-hidden="true" />)}</button></div>))}
+              </>)}
               </div></details>
             </section>
           </aside>
         </div>
-      </>}
+      </>)}
     </div>
   </AppLayout>;
 }
-
-
-function RiskLabel({ value }) {
+function RiskLabel({
+  value
+}) {
+  const i18n = usePageLanguage();
   if (!value) return null;
-  const label = normalize(value), kind = /risqu|risky/.test(label) ? "risky" : /modere|value/.test(label) ? "moderate" : /safe|sur/.test(label) ? "safe" : "neutral";
-  const labels = { safe: "Prudent", value: "Modéré", risky: "Risqué" };
-  return <span className={`cb-risk cb-risk--${kind}`}>{labels[value] || value}</span>;
+  const label = normalize(value),
+    kind = /risqu|risky/.test(label) ? "risky" : /modere|value/.test(label) ? "moderate" : /safe|sur/.test(label) ? "safe" : "neutral";
+  const labels = {
+    safe: "Prudent",
+    value: "Modéré",
+    risky: "Risqué"
+  };
+  return <span className={`cb-risk cb-risk--${kind}`}>{i18n.tx(labels[value] || value)}</span>;
 }
-
-function MatchCard({ match, expanded, onToggle, onPickToggle, selectedKeys, now, fresh, canStats, stats, onStats }) {
-  const [group, setGroup] = useState("all"), [visible, setVisible] = useState(6), [statsOpen, setStatsOpen] = useState(false);
-  const available = match.picks.filter((pick) => selectable(match, pick, now));
-  const primary = available[0], selected = match.picks.find((pick) => selectedKeys.has(pick._key));
-  const options = match.picks.filter((pick) => group === "all" || marketGroup(pick) === group);
+function MatchCard({
+  match,
+  expanded,
+  onToggle,
+  onPickToggle,
+  selectedKeys,
+  now,
+  fresh,
+  canStats,
+  stats,
+  onStats
+}) {
+  const i18n = usePageLanguage();
+  const [group, setGroup] = useState("all"),
+    [visible, setVisible] = useState(6),
+    [statsOpen, setStatsOpen] = useState(false);
+  const available = match.picks.filter(pick => selectable(match, pick, now));
+  const primary = available[0],
+    selected = match.picks.find(pick => selectedKeys.has(pick._key));
+  const options = match.picks.filter(pick => group === "all" || marketGroup(pick) === group);
   const selectedPrimary = primary && selectedKeys.has(primary._key);
   return <article className={`cb-match${selected ? " cb-match--selected" : ""}`} data-testid={`builder-match-${match.match_id}`}>
     <button type="button" className="cb-match-header" onClick={onToggle} aria-expanded={expanded} aria-controls={`cb-markets-${encodeURIComponent(match.match_id)}`}>
-      <span className="cb-match-competition"><span>{match.competition}</span>{match.country && <span className="cb-country">{match.country}</span>}</span>
-      <span className="cb-match-date"><CalendarDays aria-hidden="true" />{dateLabel(match.commence_time)}</span>
-      <span className="cb-team-pair"><strong>{match.home_team || "Équipe à confirmer"}</strong><span>contre</span><strong>{match.away_team || "Équipe à confirmer"}</strong></span>
-      <span className="cb-market-count"><span>{available.length} option{available.length > 1 ? "s" : ""} sélectionnable{available.length > 1 ? "s" : ""} · {match.picks.length} proposée{match.picks.length > 1 ? "s" : ""}</span><span>{expanded ? "Replier" : "Voir les marchés"}<ChevronDown aria-hidden="true" className={expanded ? "cb-rotated" : ""} /></span></span>
+      <span className="cb-match-competition"><span>{i18n.tx(match.competition)}</span>{i18n.tx(match.country && <span className="cb-country">{i18n.tx(match.country)}</span>)}</span>
+      <span className="cb-match-date"><CalendarDays aria-hidden="true" />{i18n.tx(dateLabel(i18n, match.commence_time))}</span>
+      <span className="cb-team-pair"><strong>{i18n.tx(match.home_team || "Équipe à confirmer")}</strong><span>{i18n.t("contre")}</span><strong>{i18n.tx(match.away_team || "Équipe à confirmer")}</strong></span>
+      <span className="cb-market-count"><span>{i18n.rich("{{v0}} option{{v1}} s\xE9lectionnable{{v2}} \xB7 {{v3}} propos\xE9e{{v4}}", {
+            v0: i18n.tx(available.length),
+            v1: i18n.tx(available.length > 1 ? "s" : ""),
+            v2: i18n.tx(available.length > 1 ? "s" : ""),
+            v3: i18n.tx(match.picks.length),
+            v4: i18n.tx(match.picks.length > 1 ? "s" : "")
+          })}</span><span>{i18n.tx(expanded ? "Replier" : "Voir les marchés")}<ChevronDown aria-hidden="true" className={expanded ? "cb-rotated" : ""} /></span></span>
     </button>
-    {primary ? <div className="cb-primary"><div><span className="cb-label">Choix proposé · {primary.market_label}</span><strong>{primary.pick}</strong><div><span>Cote <b>{format(primary.pick_odds)}</b></span><span>Confiance {primary.confidence === null ? "non fournie" : `${format(primary.confidence, 1)} %`}</span></div>{primary.synthetic && <span className="cb-estimated">Marché estimé · cote à confirmer</span>}</div><button type="button" className={`cb-button ${selectedPrimary ? "cb-button--selected" : "cb-button--primary"}`} disabled={!fresh} aria-pressed={Boolean(selectedPrimary)} onClick={() => onPickToggle(match, primary)} data-testid={`builder-quick-${match.match_id}`}>{selectedPrimary ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />}{selectedPrimary ? "Retirer" : "Ajouter"}</button></div> : <div className="cb-no-pick"><Lock aria-hidden="true" /><p>{match.picks.some((pick) => pick.locked) ? "Des marchés de cette rencontre sont réservés aux abonnés." : "Aucune option avec une cote et un horaire disponibles."}</p>{match.picks.some((pick) => pick.locked) && <Link to="/app/abonnement">Voir les formules<ArrowRight aria-hidden="true" /></Link>}</div>}
-    {selected && selected._key !== primary?._key && <p className="cb-other-selected"><Check aria-hidden="true" />Une autre option de cette rencontre est dans ton ticket.</p>}
-    {expanded && <div className="cb-expanded" id={`cb-markets-${encodeURIComponent(match.match_id)}`}>
-      <div className="cb-market-filters" aria-label={`Filtrer les marchés de ${match.home_team}`}><SlidersHorizontal aria-hidden="true" />{Object.entries(GROUPS).filter(([key]) => key === "all" || match.picks.some((pick) => marketGroup(pick) === key)).map(([key, label]) => <button type="button" key={key} aria-pressed={group === key} onClick={() => { setGroup(key); setVisible(6); }}>{label}</button>)}</div>
-      <p className="cb-small-note">Un seul choix par rencontre : ajouter une autre option remplace la précédente.</p>
-      <div className="cb-option-grid">{options.slice(0, visible).map((pick, index) => {
-        const picked = selectedKeys.has(pick._key), allowed = selectable(match, pick, now), disabled = !allowed || !fresh;
-        return <div className={`cb-option${picked ? " cb-option--selected" : ""}${pick.locked ? " cb-option--locked" : ""}`} key={pick._key}>
+    {i18n.tx(primary ? <div className="cb-primary"><div><span className="cb-label">{i18n.rich("Choix propos\xE9 \xB7 {{v0}}", {
+            v0: i18n.bet(primary.market_label)
+          })}</span><strong>{i18n.bet(primary.pick)}</strong><div><span>{i18n.rich("Cote {{v0}}", {
+              v0: <b>{i18n.tx(format(i18n, primary.pick_odds))}</b>
+            })}</span><span>{i18n.rich("Confiance {{v0}}", {
+              v0: i18n.tx(primary.confidence === null ? "non fournie" : `${format(i18n, primary.confidence, 1)} %`)
+            })}</span></div>{i18n.tx(primary.synthetic && <span className="cb-estimated">{i18n.t("March\xE9 estim\xE9 \xB7 cote \xE0 confirmer")}</span>)}</div><button type="button" className={`cb-button ${selectedPrimary ? "cb-button--selected" : "cb-button--primary"}`} disabled={!fresh} aria-pressed={Boolean(selectedPrimary)} onClick={() => onPickToggle(match, primary)} data-testid={`builder-quick-${match.match_id}`}>{i18n.tx(selectedPrimary ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />)}{i18n.tx(selectedPrimary ? "Retirer" : "Ajouter")}</button></div> : <div className="cb-no-pick"><Lock aria-hidden="true" /><p>{i18n.tx(match.picks.some(pick => pick.locked) ? "Des marchés de cette rencontre sont réservés aux abonnés." : "Aucune option avec une cote et un horaire disponibles.")}</p>{i18n.tx(match.picks.some(pick => pick.locked) && <Link to="/app/abonnement">{i18n.t("Voir les formules")}<ArrowRight aria-hidden="true" /></Link>)}</div>)}
+    {i18n.tx(selected && selected._key !== primary?._key && <p className="cb-other-selected"><Check aria-hidden="true" />{i18n.t("Une autre option de cette rencontre est dans ton ticket.")}</p>)}
+    {i18n.tx(expanded && <div className="cb-expanded" id={`cb-markets-${encodeURIComponent(match.match_id)}`}>
+      <div className="cb-market-filters" aria-label={i18n.tx(i18n.t("Filtrer les march\xE9s de {{v0}}", {
+        v0: match.home_team
+      }))}><SlidersHorizontal aria-hidden="true" />{i18n.tx(Object.entries(GROUPS).filter(([key]) => key === "all" || match.picks.some(pick => marketGroup(pick) === key)).map(([key, label]) => <button type="button" key={key} aria-pressed={group === key} onClick={() => {
+          setGroup(key);
+          setVisible(6);
+        }}>{i18n.tx(label)}</button>))}</div>
+      <p className="cb-small-note">{i18n.t("Un seul choix par rencontre : ajouter une autre option remplace la pr\xE9c\xE9dente.")}</p>
+      <div className="cb-option-grid">{i18n.tx(options.slice(0, visible).map((pick, index) => {
+          const picked = selectedKeys.has(pick._key),
+            allowed = selectable(match, pick, now),
+            disabled = !allowed || !fresh;
+          return <div className={`cb-option${picked ? " cb-option--selected" : ""}${pick.locked ? " cb-option--locked" : ""}`} key={pick._key}>
           <button type="button" className="cb-option-select" disabled={disabled} aria-pressed={picked} onClick={() => onPickToggle(match, pick)} data-testid={`builder-pick-${match.match_id}-${pick.market}-${index}`}>
-            <span className="cb-option-market">{pick.market_label}{pick.locked ? <Lock aria-hidden="true" /> : picked ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />}</span>
-            <strong className="cb-option-pick">{pick.locked ? "Sélection réservée" : pick.pick || "Sélection non communiquée"}</strong>
-            <span className="cb-option-metrics"><span>Cote <b>{pick.locked ? "Réservée" : format(pick.pick_odds)}</b></span>{!pick.locked && <span>Confiance <b>{pick.confidence === null ? "—" : `${format(pick.confidence, 1)} %`}</b></span>}</span>
-            {!pick.locked && <RiskLabel value={pick.label} />}{pick.synthetic && <span className="cb-estimated">Marché estimé · cote à confirmer</span>}
+            <span className="cb-option-market">{i18n.bet(pick.market_label)}{i18n.tx(pick.locked ? <Lock aria-hidden="true" /> : picked ? <Check aria-hidden="true" /> : <Plus aria-hidden="true" />)}</span>
+            <strong className="cb-option-pick">{i18n.tx(pick.locked ? "Sélection réservée" : pick.pick || "Sélection non communiquée")}</strong>
+            <span className="cb-option-metrics"><span>{i18n.rich("Cote {{v0}}", {
+                    v0: <b>{i18n.tx(pick.locked ? "Réservée" : format(i18n, pick.pick_odds))}</b>
+                  })}</span>{i18n.tx(!pick.locked && <span>{i18n.rich("Confiance {{v0}}", {
+                    v0: <b>{i18n.tx(pick.confidence === null ? "—" : `${format(i18n, pick.confidence, 1)} %`)}</b>
+                  })}</span>)}</span>
+            {i18n.tx(!pick.locked && <RiskLabel value={pick.label} />)}{i18n.tx(pick.synthetic && <span className="cb-estimated">{i18n.t("March\xE9 estim\xE9 \xB7 cote \xE0 confirmer")}</span>)}
           </button>
-          {!pick.locked && pick.pick && <details className="cb-pick-explanation"><summary>Comprendre ce marché<ChevronDown aria-hidden="true" /></summary><p>{explainMarket(pick)}</p></details>}
+          {i18n.tx(!pick.locked && pick.pick && <details className="cb-pick-explanation"><summary>{i18n.t("Comprendre ce march\xE9")}<ChevronDown aria-hidden="true" /></summary><p>{i18n.tx(explainMarket(i18n, pick))}</p></details>)}
         </div>;
-      })}</div>
-      {visible < options.length && <button type="button" className="cb-button cb-button--outline cb-wide" onClick={() => setVisible((value) => value + 8)}>Afficher plus de marchés ({options.length - visible})<Plus aria-hidden="true" /></button>}
-      {match.picks.some((pick) => pick.locked) && <Link className="cb-unlock-link" to="/app/abonnement"><Lock aria-hidden="true" />Débloquer les marchés réservés<ArrowRight aria-hidden="true" /></Link>}
-      <div className="cb-stats-block"><button type="button" className="cb-stats-toggle" aria-expanded={statsOpen} onClick={() => { setStatsOpen((value) => !value); if (!statsOpen && canStats) onStats(); }}><BarChart3 aria-hidden="true" />Repères de marché<ChevronDown aria-hidden="true" className={statsOpen ? "cb-rotated" : ""} /></button>
-        {statsOpen && <div className="cb-stats-content">{!canStats ? <p>Les repères supplémentaires demandent un accès abonné vérifié. <Link to="/app/abonnement">Voir les formules</Link></p> : !stats || stats.status === "loading" ? <p role="status">Chargement des repères…</p> : stats.status === "error" ? <div><p role="alert">{stats.error}</p><button type="button" className="cb-button cb-button--outline" onClick={onStats}>Réessayer</button></div> : stats.values.length ? <><p>Estimations de marché disponibles pour cette rencontre. Les données insuffisantes ne sont pas affichées.</p><dl>{stats.values.map((item) => <div key={item.label}><dt>{item.label}</dt><dd>{format(item.value, 1)} %</dd></div>)}</dl></> : <p>Les repères ne sont pas renseignés pour cette rencontre.</p>}</div>}
+        }))}</div>
+      {i18n.tx(visible < options.length && <button type="button" className="cb-button cb-button--outline cb-wide" onClick={() => setVisible(value => value + 8)}>{i18n.rich("Afficher plus de march\xE9s ({{v0}})", {
+          v0: i18n.tx(options.length - visible)
+        })}<Plus aria-hidden="true" /></button>)}
+      {i18n.tx(match.picks.some(pick => pick.locked) && <Link className="cb-unlock-link" to="/app/abonnement"><Lock aria-hidden="true" />{i18n.t("D\xE9bloquer les march\xE9s r\xE9serv\xE9s")}<ArrowRight aria-hidden="true" /></Link>)}
+      <div className="cb-stats-block"><button type="button" className="cb-stats-toggle" aria-expanded={statsOpen} onClick={() => {
+          setStatsOpen(value => !value);
+          if (!statsOpen && canStats) onStats();
+        }}><BarChart3 aria-hidden="true" />{i18n.t("Rep\xE8res de march\xE9")}<ChevronDown aria-hidden="true" className={statsOpen ? "cb-rotated" : ""} /></button>
+        {i18n.tx(statsOpen && <div className="cb-stats-content">{i18n.tx(!canStats ? <p>{i18n.rich("Les rep\xE8res suppl\xE9mentaires demandent un acc\xE8s abonn\xE9 v\xE9rifi\xE9. {{v0}}", {
+              v0: <Link to="/app/abonnement">{i18n.t("Voir les formules")}</Link>
+            })}</p> : !stats || stats.status === "loading" ? <p role="status">{i18n.t("Chargement des rep\xE8res\u2026")}</p> : stats.status === "error" ? <div><p role="alert">{i18n.tx(stats.error)}</p><button type="button" className="cb-button cb-button--outline" onClick={onStats}>{i18n.t("R\xE9essayer")}</button></div> : stats.values.length ? <><p>{i18n.t("Estimations de march\xE9 disponibles pour cette rencontre. Les donn\xE9es insuffisantes ne sont pas affich\xE9es.")}</p><dl>{i18n.tx(stats.values.map(item => <div key={item.label}><dt>{i18n.tx(item.label)}</dt><dd>{i18n.tx(format(i18n, item.value, 1))} %</dd></div>))}</dl></> : <p>{i18n.t("Les rep\xE8res ne sont pas renseign\xE9s pour cette rencontre.")}</p>)}</div>)}
       </div>
-      <Link className="cb-match-link" to={`/app/match/${encodeURIComponent(match.match_id)}`}>Ouvrir la fiche de la rencontre<ArrowRight aria-hidden="true" /></Link>
-    </div>}
+      <Link className="cb-match-link" to={`/app/match/${encodeURIComponent(match.match_id)}`}>{i18n.t("Ouvrir la fiche de la rencontre")}<ArrowRight aria-hidden="true" /></Link>
+    </div>)}
   </article>;
 }
