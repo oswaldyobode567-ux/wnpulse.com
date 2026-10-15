@@ -1,0 +1,349 @@
+"""Official YouTube match discovery. No video proxy, rehosting or paid access.
+
+Public reads use Mongo only. A shared lease, search budget and persisted retry
+dates bound provider requests across replicas and restarts. Credentials stay
+server-side, in a request header. Cached video metadata expires after 10 min.
+"""
+import asyncio
+import hashlib
+import html
+import json
+import logging
+import os
+import re
+import uuid
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
+from zoneinfo import ZoneInfo
+
+import httpx
+from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
+
+BASE_URL = "https://www.googleapis.com/youtube/v3"
+VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
+CHANNEL_ID = re.compile(r"^UC[A-Za-z0-9_-]{22}$")
+MAX_CACHE_AGE_SECONDS = 600
+STATE_ID = "youtube"
+
+
+def now_utc():
+    return datetime.now(timezone.utc)
+
+
+def date_value(value):
+    if not isinstance(value, str) or "T" not in value:
+        return None
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return result.astimezone(timezone.utc) if result.tzinfo else result.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
+def configuration():
+    key = os.environ.get("YOUTUBE_API_KEY", "").strip()
+    raw = os.environ.get("YOUTUBE_CHANNEL_HANDLES", "@fifa,@fiba")
+    handles = list(dict.fromkeys("@" + value.strip().lstrip("@").lower() for value in raw.split(",")
+                                if re.fullmatch(r"@?[A-Za-z0-9._-]{3,30}", value.strip())))[:3]
+    enabled = os.environ.get("LIVE_VIDEO_ENABLED", "true").lower().strip() not in {"0", "false", "no"}
+    return {"key": key, "handles": handles, "enabled": enabled,
+            "configured": bool(key and handles and enabled),
+            "signature": hashlib.sha256(",".join(handles).encode()).hexdigest(),
+            "discovery_minutes": 60, "metadata_minutes": 5, "search_daily_limit": 80}
+
+
+def public_configuration(settings):
+    return {name: settings[name] for name in ("enabled", "configured", "handles", "discovery_minutes", "metadata_minutes", "search_daily_limit")}
+
+
+def sport_for(handle, title):
+    if handle == "@fiba" or re.search(r"basket|\bfiba\b|\bnba\b", title, re.I):
+        return "basketball"
+    if handle == "@fifa" or re.search(r"football|soccer|\bfifa\b", title, re.I):
+        return "soccer"
+    if re.search(r"tennis|\batp\b|\bwta\b", title, re.I):
+        return "tennis"
+    if "rugby" in title.lower():
+        return "rugby"
+    return "other"
+
+
+def normalize_video(row, channels, now=None):
+    now = now or now_utc()
+    if not isinstance(row, dict) or not VIDEO_ID.fullmatch(str(row.get("id", ""))):
+        return None
+    snippet = row.get("snippet") or {}
+    status = row.get("status") or {}
+    details = row.get("liveStreamingDetails") or {}
+    content = row.get("contentDetails") or {}
+    if not all(isinstance(value, dict) for value in (snippet, status, details, content)):
+        return None
+    channel = channels.get(snippet.get("channelId"))
+    if not channel or status.get("privacyStatus") != "public" or status.get("embeddable") is not True:
+        return None
+    if str(snippet.get("categoryId")) != "17":
+        return None
+    raw_title = snippet.get("title")
+    if not isinstance(raw_title, str) or not raw_title.strip():
+        return None
+    title = re.sub(r"\s+", " ", html.unescape(raw_title)).strip()[:240]
+    excluded = r"highlights?|résumé|replay|archive|press conference|conférence de presse|interview|training|entraînement|watch.?along|chat party|simulation|efootball|\bea ?fc\b|live.?scores?|ceremony|cerémonie|\bdraw\b"
+    if re.search(excluded, title, re.I) or not re.search(r"\b(vs?\.?|versus|live|match|game)\b|en direct", title, re.I):
+        return None
+    years = re.findall(r"\b20\d{2}\b", title)
+    if years and all(int(year) < now.year for year in years):
+        return None
+    if details.get("actualEndTime"):
+        return None
+    started = date_value(details.get("actualStartTime"))
+    scheduled = date_value(details.get("scheduledStartTime"))
+    if snippet.get("liveBroadcastContent") == "live" and started and now - timedelta(hours=24) <= started <= now + timedelta(minutes=2):
+        state = "live"
+    elif snippet.get("liveBroadcastContent") == "upcoming" and scheduled and now - timedelta(minutes=15) <= scheduled <= now + timedelta(hours=48):
+        state = "upcoming"
+    else:
+        return None
+    regions = content.get("regionRestriction") or {}
+    if not isinstance(regions, dict):
+        return None
+    restriction = {}
+    for field in ("allowed", "blocked"):
+        if field not in regions:
+            continue
+        if not isinstance(regions[field], list) or any(not isinstance(code, str) or not re.fullmatch(r"[A-Z]{2}", code) for code in regions[field]):
+            return None
+        restriction[field] = regions[field]
+    if "allowed" in restriction and not restriction["allowed"]:
+        return None
+    return {"video_id": row["id"], "title": title, "channel_id": snippet["channelId"],
+            "channel_title": channel["title"], "channel_handle": channel["handle"],
+            "sport": sport_for(channel["handle"], title), "status": state,
+            "scheduled_start": scheduled.isoformat() if scheduled else None,
+            "actual_start": started.isoformat() if started else None,
+            "watch_url": "https://www.youtube.com/watch?v=" + row["id"],
+            "verified_at": now.isoformat(), "region_restriction": restriction}
+
+
+def region_available(item, region):
+    restrictions = item.get("region_restriction") or {}
+    if not isinstance(restrictions, dict):
+        return False
+    if not region:
+        return True
+    return ("allowed" not in restrictions or region in restrictions["allowed"]) and region not in restrictions.get("blocked", [])
+
+
+def eligible_cached(item, now):
+    if not isinstance(item, dict) or not VIDEO_ID.fullmatch(str(item.get("video_id", ""))):
+        return False
+    verified = date_value(item.get("verified_at"))
+    if not verified or not 0 <= (now - verified).total_seconds() <= MAX_CACHE_AGE_SECONDS:
+        return False
+    start = date_value(item.get("actual_start") if item.get("status") == "live" else item.get("scheduled_start"))
+    return bool(start and (now - timedelta(hours=24) <= start <= now + timedelta(minutes=2) if item.get("status") == "live"
+                         else item.get("status") == "upcoming" and now - timedelta(minutes=15) <= start <= now + timedelta(hours=48)))
+
+
+async def public_streams(db, region=""):
+    settings = configuration()
+    state = await db.live_stream_state.find_one({"_id": STATE_ID}) or {}
+    cache = await db.live_stream_cache.find_one({"_id": STATE_ID}) or {}
+    now = now_utc()
+    rows = []
+    if settings["configured"] and cache.get("signature") == settings["signature"]:
+        candidates = cache.get("items")
+        rows = [item for item in (candidates if isinstance(candidates, list) else []) if eligible_cached(item, now) and region_available(item, region)]
+    rows.sort(key=lambda item: (item["status"] != "live", item.get("scheduled_start") or item.get("actual_start") or "", item["video_id"]))
+    fields = ("video_id", "title", "channel_id", "channel_title", "channel_handle", "sport", "status", "scheduled_start", "actual_start", "watch_url", "verified_at")
+    items = [{**{key: item.get(key) for key in fields}, "geographically_restricted": bool(item.get("region_restriction"))} for item in rows]
+    error = state.get("error_code") if settings["configured"] else "video_not_configured"
+    return {"items": items, "status": "not_configured" if not settings["configured"] else "ready" if items or cache.get("updated_at") else "warming",
+            "error_code": error, "updated_at": cache.get("updated_at"),
+            "next_refresh_at": state.get("next_sync_at"), "region": region,
+            "refreshing": state.get("status") == "running" and bool(date_value(state.get("lease_until")) and date_value(state["lease_until"]) > now),
+            "provider": "YouTube", "configured": settings["configured"]}
+
+
+class StreamProviderError(Exception):
+    def __init__(self, code, retry_seconds=900):
+        self.code, self.retry_seconds = code, retry_seconds
+
+
+async def youtube_request(client, method, params, key):
+    try:
+        async with client.stream("GET", BASE_URL + "/" + method, params=params,
+                                 headers={"X-Goog-Api-Key": key}) as response:
+            chunks, size = [], 0
+            async for part in response.aiter_bytes():
+                size += len(part)
+                if size > 1000000:
+                    raise StreamProviderError("video_invalid_response")
+                chunks.append(part)
+            try:
+                data = json.loads(b"".join(chunks))
+            except (ValueError, TypeError):
+                raise StreamProviderError("video_invalid_response")
+            if response.status_code != 200:
+                errors = ((data.get("error") or {}).get("errors") or []) if isinstance(data, dict) else []
+                reasons = {error.get("reason") for error in errors if isinstance(error, dict)}
+                if reasons.intersection({"quotaExceeded", "dailyLimitExceeded"}):
+                    pacific = now_utc().astimezone(ZoneInfo("America/Los_Angeles"))
+                    reset = (pacific + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+                    raise StreamProviderError("video_quota_exhausted", int((reset - pacific).total_seconds()))
+                if response.status_code == 429 or "rateLimitExceeded" in reasons:
+                    raw_retry = response.headers.get("Retry-After", "900")
+                    try:
+                        retry = int(raw_retry)
+                    except (TypeError, ValueError):
+                        try:
+                            retry = int((parsedate_to_datetime(raw_retry) - now_utc()).total_seconds())
+                        except (TypeError, ValueError, OverflowError):
+                            retry = 900
+                    retry = max(900, min(retry, 86400))
+                    raise StreamProviderError("video_rate_limited", retry)
+                if response.status_code in {400, 401, 403}:
+                    raise StreamProviderError("video_access_denied", 1800)
+                raise StreamProviderError("video_provider_unavailable")
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                raise StreamProviderError("video_invalid_response")
+            return data["items"]
+    except StreamProviderError:
+        raise
+    except httpx.HTTPError:
+        raise StreamProviderError("video_provider_unavailable")
+
+
+async def resolve_channels(db, client, settings):
+    cached = await db.live_stream_cache.find_one({"_id": "channels"}) or {}
+    stamp = date_value(cached.get("updated_at"))
+    if cached.get("signature") == settings["signature"] and stamp and 0 <= (now_utc() - stamp).total_seconds() < 86400:
+        return cached.get("channels", {})
+    channels = {}
+    for handle in settings["handles"]:
+        rows = await youtube_request(client, "channels", {"part": "snippet", "forHandle": handle,
+                                                          "fields": "items(id,snippet(title))"}, settings["key"])
+        for row in rows:
+            if not isinstance(row, dict) or not isinstance(row.get("snippet") or {}, dict):
+                continue
+            identifier = row.get("id")
+            if CHANNEL_ID.fullmatch(str(identifier or "")):
+                channels[identifier] = {"handle": handle, "title": str((row.get("snippet") or {}).get("title") or handle)[:100]}
+    if not channels:
+        raise StreamProviderError("video_channels_unavailable", 3600)
+    await db.live_stream_cache.update_one({"_id": "channels"}, {"$set": {"channels": channels, "signature": settings["signature"], "updated_at": now_utc().isoformat()}}, upsert=True)
+    return channels
+
+
+async def reserve_search(db, maximum):
+    now = now_utc()
+    day = now.astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    try:
+        result = await db.live_stream_budget.find_one_and_update(
+            {"_id": day, "$or": [{"calls": {"$lt": maximum}}, {"calls": {"$exists": False}}]},
+            {"$inc": {"calls": 1}, "$set": {"expires_at": now + timedelta(days=3)}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+        return bool(result and result.get("calls", maximum + 1) <= maximum)
+    except DuplicateKeyError:
+        return False
+
+
+async def bootstrap_streams(db):
+    await db.live_stream_budget.create_index("expires_at", expireAfterSeconds=0)
+    await db.live_stream_state.update_one({"_id": STATE_ID}, {"$setOnInsert": {"status": "waiting"}}, upsert=True)
+
+
+async def synchronize_streams(db):
+    settings = configuration()
+    if not settings["configured"]:
+        return {"status": "not_configured"}
+    now, owner = now_utc(), str(uuid.uuid4())
+    try:
+        state = await db.live_stream_state.find_one_and_update(
+            {"_id": STATE_ID, "$and": [
+                {"$or": [{"lease_until": {"$lte": now.isoformat()}}, {"lease_until": {"$exists": False}}]},
+                {"$or": [{"next_sync_at": {"$lte": now.isoformat()}}, {"next_sync_at": {"$exists": False}}]},
+            ]}, {"$set": {"owner": owner, "lease_until": (now + timedelta(seconds=90)).isoformat(), "status": "running", "last_attempt_at": now.isoformat()}},
+            upsert=True, return_document=ReturnDocument.AFTER)
+    except DuplicateKeyError:
+        return {"status": "not_due_or_running"}
+    if not state or state.get("owner") != owner:
+        return {"status": "not_due_or_running"}
+    update = {}
+    try:
+        cache = await db.live_stream_cache.find_one({"_id": STATE_ID}) or {}
+        discovery_due = not date_value(state.get("next_discovery_at")) or date_value(state["next_discovery_at"]) <= now
+        if cache.get("signature") != settings["signature"]:
+            discovery_due = True
+        candidates = cache.get("items")
+        ids = list(dict.fromkeys(item.get("video_id") for item in (candidates if isinstance(candidates, list) else [])
+                                 if isinstance(item, dict) and VIDEO_ID.fullmatch(str(item.get("video_id", "")))))[:30]
+        budget_limited = False
+        async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+            channels = await resolve_channels(db, client, settings)
+            if discovery_due:
+                channel_ids = list(channels)
+                rotation = int(state.get("rotation", 0)) % len(channel_ids)
+                requests = [(identifier, "live") for identifier in channel_ids] + [(channel_ids[rotation], "upcoming")]
+                for identifier, event in requests:
+                    if not await reserve_search(db, settings["search_daily_limit"]):
+                        budget_limited = True
+                        break
+                    rows = await youtube_request(client, "search", {
+                        "part": "snippet", "channelId": identifier, "type": "video", "eventType": event,
+                        "videoEmbeddable": "true", "maxResults": 10, "fields": "items(id/videoId)",
+                    }, settings["key"])
+                    ids.extend(row.get("id", {}).get("videoId") for row in rows
+                               if isinstance(row, dict) and isinstance(row.get("id"), dict)
+                               and VIDEO_ID.fullmatch(str(row["id"].get("videoId", ""))))
+                update.update(next_discovery_at=(now + timedelta(minutes=settings["discovery_minutes"])).isoformat(), rotation=rotation + 1)
+            ids = list(dict.fromkeys(ids))[:50]
+            items = []
+            if ids:
+                rows = await youtube_request(client, "videos", {
+                    "part": "snippet,status,liveStreamingDetails,contentDetails", "id": ",".join(ids),
+                    "fields": "items(id,snippet(channelId,channelTitle,title,categoryId,liveBroadcastContent),status(privacyStatus,embeddable),liveStreamingDetails(actualStartTime,actualEndTime,scheduledStartTime),contentDetails(regionRestriction))",
+                }, settings["key"])
+                items = [item for row in rows if (item := normalize_video(row, channels)) is not None]
+        # A lease that expired or changed cannot publish an older provider response.
+        latest = await db.live_stream_state.find_one({"_id": STATE_ID}) or {}
+        if latest.get("owner") != owner or not date_value(latest.get("lease_until")) or date_value(latest["lease_until"]) <= now_utc():
+            return {"status": "superseded"}
+        stamp = now_utc().isoformat()
+        # Compare the observed cache version as well: a delayed response must
+        # never overwrite a newer snapshot published by another process.
+        try:
+            await db.live_stream_cache.update_one({"_id": STATE_ID,
+                "updated_at": cache["updated_at"] if "updated_at" in cache else {"$exists": False}}, {"$set": {
+                "items": items, "signature": settings["signature"], "updated_at": stamp,
+            }}, upsert=True)
+        except DuplicateKeyError:
+            update.update(status="superseded", next_sync_at=(now_utc() + timedelta(minutes=5)).isoformat())
+            return {"status": "superseded"}
+        update.update(status="ready", last_success_at=stamp, error_code="video_search_budget" if budget_limited else None,
+                      next_sync_at=(now_utc() + timedelta(minutes=settings["metadata_minutes"])).isoformat())
+        return {"status": "ready", "count": len(items)}
+    except StreamProviderError as exc:
+        update.update(status="error", error_code=exc.code, next_sync_at=(now_utc() + timedelta(seconds=exc.retry_seconds)).isoformat())
+        return {"status": "error", "error_code": exc.code}
+    except asyncio.CancelledError:
+        update.update(status="interrupted", error_code="video_sync_interrupted", next_sync_at=(now_utc() + timedelta(minutes=5)).isoformat())
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Live video synchronization failed: %s", type(exc).__name__)
+        update.update(status="error", error_code="video_service_unavailable", next_sync_at=(now_utc() + timedelta(minutes=5)).isoformat())
+        return {"status": "error", "error_code": "video_service_unavailable"}
+    finally:
+        if update:
+            await asyncio.shield(db.live_stream_state.update_one({"_id": STATE_ID, "owner": owner}, {"$set": {**update, "lease_until": now_utc().isoformat()}}))
+
+
+async def stream_diagnostics(db, scheduler_active=False):
+    settings = configuration()
+    state = await db.live_stream_state.find_one({"_id": STATE_ID}) or {}
+    day = now_utc().astimezone(ZoneInfo("America/Los_Angeles")).date().isoformat()
+    budget = await db.live_stream_budget.find_one({"_id": day}) or {}
+    return {**public_configuration(settings), "scheduler_active": scheduler_active,
+            "status": state.get("status", "waiting"), "error_code": state.get("error_code"),
+            "last_success_at": state.get("last_success_at"), "next_sync_at": state.get("next_sync_at"),
+            "search_calls_today": budget.get("calls", 0)}
