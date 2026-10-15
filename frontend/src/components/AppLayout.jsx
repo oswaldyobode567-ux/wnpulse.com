@@ -6825,7 +6825,43 @@ export function LanguageProvider({
 }) {
   const [language, setCurrentLanguage] = useState(initialLanguage);
   const selected = SUPPORTED_LANGUAGES.find(item => item.code === language) || SUPPORTED_LANGUAGES[0];
-  const t = useCallback((source, values) => translateText(language, source, values), [language]);
+  const [remoteCatalogue, setRemoteCatalogue] = useState(null);
+  const remoteCatalogues = useRef(new Map());
+  const t = useCallback((source, values = {}) => {
+    const messages = remoteCatalogue?.language === language ? remoteCatalogue.messages : null;
+    if (typeof source === "string" && Object.prototype.hasOwnProperty.call(messages || {}, source)) {
+      return messages[source].replace(/\{\{(\w+)\}\}/g, (placeholder, key) =>
+        Object.prototype.hasOwnProperty.call(values || {}, key) ? String(values[key] ?? "") : placeholder);
+    }
+    return translateText(language, source, values);
+  }, [language, remoteCatalogue]);
+  useEffect(() => {
+    // Seul le client API WNPulse reçoit ce choix, sans toucher au jeton d'accès.
+    api.defaults.headers.common["X-WNPulse-Language"] = language;
+    const cached = remoteCatalogues.current.get(language);
+    if (cached && cached.expiresAt > Date.now()) {
+      setRemoteCatalogue(cached);
+      return undefined;
+    }
+    const controller = new AbortController();
+    let active = true;
+    api.get("/i18n", { params: { lang: language }, signal: controller.signal })
+      .then(({ data }) => {
+        if (!active || data?.language !== language || !data.messages ||
+            typeof data.messages !== "object" || Array.isArray(data.messages)) return;
+        const messages = Object.create(null);
+        for (const [key, value] of Object.entries(data.messages).slice(0, 3000)) {
+          if (typeof value === "string") messages[key] = value;
+        }
+        const next = { language, messages, expiresAt: Date.now() + 3600000 };
+        remoteCatalogues.current.set(language, next);
+        setRemoteCatalogue(next);
+      })
+      .catch(() => {
+        // Ancien backend, panne réseau ou accès expiré : le catalogue local reste utilisable.
+      });
+    return () => { active = false; controller.abort(); };
+  }, [language]);
   const setLanguage = useCallback(value => {
     const supported = normalizeLanguage(value);
     if (supported) setCurrentLanguage(supported);
