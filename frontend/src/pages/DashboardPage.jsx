@@ -1,20 +1,850 @@
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import api from "@/lib/api";
-import AppLayout from "@/components/AppLayout";
+import AppLayout, { useLanguage } from "@/components/AppLayout";
 import MatchCard from "@/components/MatchCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
-  Trophy, Flame, ChevronRight, Activity, Lock,
-  Sparkles, Radio, Send, CheckCircle2, XCircle,
+  Trophy,  ChevronRight, Activity, 
+  Sparkles, Radio,  CheckCircle2, XCircle,
   Clock, TrendingUp, RefreshCw, Filter, ShieldCheck, Search, X
 } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
 import { useRealtimeMatches } from "@/services/realtimeService";
 import { toast } from "sonner";
+
+// Catalogue local : aucun remplacement supplémentaire d’AppLayout n’est requis.
+// Les autres écrans continuent d’utiliser le même choix global de langue.
+const DASHBOARD_MESSAGES = {
+  "fr": {
+    "Tous": "Tous",
+    "Football": "Football",
+    "Basketball": "Basketball",
+    "Tennis": "Tennis",
+    "Hockey": "Hockey",
+    "Baseball": "Baseball",
+    "MMA": "MMA",
+    "Tous les marchés": "Tous les marchés",
+    "🏆 Victoire": "🏆 Victoire",
+    "🔄 Double chance": "🔄 Double chance",
+    "📈 Plus de 2,5 buts": "📈 Plus de 2,5 buts",
+    "🎯 Les deux équipes marquent": "🎯 Les deux équipes marquent",
+    "⚖️ Handicap": "⚖️ Handicap",
+    "🟨 Cartons": "🟨 Cartons",
+    "📐 Corners": "📐 Corners",
+    "⏱ Mi-temps": "⏱ Mi-temps",
+    "Tous les niveaux": "Tous les niveaux",
+    "🟢 Sûr": "🟢 Sûr",
+    "🟡 Modéré": "🟡 Modéré",
+    "🔴 Risqué": "🔴 Risqué",
+    "🟢 SÛR": "🟢 SÛR",
+    "🟡 MODÉRÉ": "🟡 MODÉRÉ",
+    "🔴 RISQUÉ": "🔴 RISQUÉ",
+    "Autre": "Autre",
+    "Chargement des pronostics…": "Chargement des pronostics…",
+    "Aucun pick disponible actuellement": "Aucun pick disponible actuellement",
+    "Accès gratuit · Passe Pro pour débloquer les picks réservés": "Accès gratuit · Passe Pro pour débloquer les picks réservés",
+    "{{plan}} actif · Tous les picks disponibles": "{{plan}} actif · Tous les picks disponibles",
+    "Tes pronostics, en un coup d’œil 🎯": "Tes pronostics, en un coup d’œil 🎯",
+    "Picks disponibles": "Picks disponibles",
+    "En direct": "En direct",
+    "Actualiser les données": "Actualiser les données",
+    "Actualisation en cours…": "Actualisation en cours…",
+    "Données mises à jour": "Données mises à jour",
+    "Impossible d’actualiser les données. Réessaie dans un instant.": "Impossible d’actualiser les données. Réessaie dans un instant.",
+    "Rechercher une rencontre": "Rechercher une rencontre",
+    "Équipe, championnat, pays, sport ou marché…": "Équipe, championnat, pays, sport ou marché…",
+    "Effacer la recherche": "Effacer la recherche",
+    "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.": "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.",
+    "{{count}} rencontre trouvée dans les matchs chargés.": "{{count}} rencontre trouvée dans les matchs chargés.",
+    "{{count}} rencontres trouvées dans les matchs chargés.": "{{count}} rencontres trouvées dans les matchs chargés.",
+    "À la une": "À la une",
+    "Confiance du moteur": "Confiance du moteur",
+    "Tout voir": "Tout voir",
+    "Aucune sélection à la une pour cette recherche.": "Aucune sélection à la une pour cette recherche.",
+    "Aucune sélection à la une pour le moment.": "Aucune sélection à la une pour le moment.",
+    "Consulte aussi les résultats par championnat ci-dessous.": "Consulte aussi les résultats par championnat ci-dessous.",
+    "Les sélections apparaîtront dès qu’elles seront disponibles.": "Les sélections apparaîtront dès qu’elles seront disponibles.",
+    "Impossible de charger les sélections à la une.": "Impossible de charger les sélections à la une.",
+    "Réessayer": "Réessayer",
+    "LIVE": "LIVE",
+    "Verrouillé": "Verrouillé",
+    "Passe Pro pour débloquer": "Passe Pro pour débloquer",
+    "Pronostic": "Pronostic",
+    "Cote": "Cote",
+    "chez {{bookmaker}}": "chez {{bookmaker}}",
+    "Partager sur WhatsApp": "Partager sur WhatsApp",
+    "🎯 Confiance : {{confidence}}%": "🎯 Confiance : {{confidence}}%",
+    "💳 Pro dès {{price}} · Paiement mobile": "💳 Pro dès {{price}} · Paiement mobile",
+    "WhatsApp ouvert !": "WhatsApp ouvert !",
+    "Débloque tous les pronostics.": "Débloque tous les pronostics.",
+    "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos": "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos",
+    "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos": "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos",
+    "Passer Pro · {{price}}": "Passer Pro · {{price}}",
+    "Matchs par championnat": "Matchs par championnat",
+    "Aucune rencontre ne correspond à cette recherche et aux filtres.": "Aucune rencontre ne correspond à cette recherche et aux filtres.",
+    "Aucun match pour ce filtre": "Aucun match pour ce filtre",
+    "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.": "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.",
+    "Réinitialiser les filtres": "Réinitialiser les filtres",
+    "Voir {{count}} championnats supplémentaires": "Voir {{count}} championnats supplémentaires",
+    "Picks validés": "Picks validés",
+    "Track record": "Track record",
+    "Aujourd’hui ({{date}})": "Aujourd’hui ({{date}})",
+    "Cette semaine · hors aujourd’hui": "Cette semaine · hors aujourd’hui",
+    "Aucun pick pour cette période.": "Aucun pick pour cette période.",
+    "Gagnés": "Gagnés",
+    "Perdus": "Perdus",
+    "En attente": "En attente",
+    "{{rate}} de réussite": "{{rate}} de réussite",
+    "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.": "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.",
+    "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.": "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.",
+    "Voir le track record": "Voir le track record",
+    "Vainqueur (1X2)": "Vainqueur (1X2)",
+    "Vainqueur": "Vainqueur",
+    "Total buts/points": "Total buts/points",
+    "Total de buts": "Total de buts",
+    "Double chance": "Double chance",
+    "Les deux équipes marquent": "Les deux équipes marquent",
+    "Handicap": "Handicap",
+    "Cartons": "Cartons",
+    "Corners": "Corners",
+    "Mi-temps": "Mi-temps",
+    "Match nul": "Match nul",
+    "Plus de {{line}} buts": "Plus de {{line}} buts",
+    "Moins de {{line}} buts": "Moins de {{line}} buts",
+    "Plus de {{line}} points": "Plus de {{line}} points",
+    "Moins de {{line}} points": "Moins de {{line}} points",
+    "Plus de {{line}} corners": "Plus de {{line}} corners",
+    "Moins de {{line}} corners": "Moins de {{line}} corners",
+    "Plus de {{line}} cartons": "Plus de {{line}} cartons",
+    "Moins de {{line}} cartons": "Moins de {{line}} cartons",
+    "Accessibles avec ton compte": "Accessibles avec ton compte",
+    "Trouve ton prochain match": "Trouve ton prochain match",
+    "Recherche une équipe ou explore les championnats. Les filtres se combinent.": "Recherche une équipe ou explore les championnats. Les filtres se combinent.",
+    "Sport": "Sport",
+    "Marché": "Marché",
+    "Niveau de risque": "Niveau de risque",
+    "Affiner les résultats": "Affiner les résultats",
+    "Filtres actifs": "Filtres actifs",
+    "Effacer les filtres": "Effacer les filtres",
+    "Retirer le filtre {{filter}}": "Retirer le filtre {{filter}}",
+    "{{count}} filtres avancés actifs": "{{count}} filtres avancés actifs",
+    "Sélections à la une": "Sélections à la une",
+    "Ouvrir la sélection": "Ouvrir la sélection",
+    "Explorer les rencontres": "Explorer les rencontres",
+    "{{count}} rencontres · {{leagues}} championnats": "{{count}} rencontres · {{leagues}} championnats",
+    "Trier les matchs": "Trier les matchs",
+    "Par horaire": "Par horaire",
+    "Par confiance": "Par confiance",
+    "Par cote": "Par cote",
+    "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.": "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.",
+    "{{shown}} championnats affichés sur {{total}}": "{{shown}} championnats affichés sur {{total}}",
+    "Voir {{count}} autres rencontres": "Voir {{count}} autres rencontres",
+    "Réduire cette liste": "Réduire cette liste",
+    "Résultats récents": "Résultats récents",
+    "Déplier pour consulter les résultats de la période.": "Déplier pour consulter les résultats de la période.",
+    "{{count}} pronostics sur la période": "{{count}} pronostics sur la période",
+    "Plus de sélections avec Pro": "Plus de sélections avec Pro",
+    "{{count}} pronostics réservés aux abonnés actuellement.": "{{count}} pronostics réservés aux abonnés actuellement.",
+    "{{price}} / 30 jours": "{{price}} / 30 jours",
+    "Découvrir Pro": "Découvrir Pro"
+  },
+  "en": {
+    "Tous": "All",
+    "Football": "Football",
+    "Basketball": "Basketball",
+    "Tennis": "Tennis",
+    "Hockey": "Hockey",
+    "Baseball": "Baseball",
+    "MMA": "MMA",
+    "Tous les marchés": "All markets",
+    "🏆 Victoire": "🏆 Winner",
+    "🔄 Double chance": "🔄 Double chance",
+    "📈 Plus de 2,5 buts": "📈 Over 2.5 goals",
+    "🎯 Les deux équipes marquent": "🎯 Both teams to score",
+    "⚖️ Handicap": "⚖️ Handicap",
+    "🟨 Cartons": "🟨 Cards",
+    "📐 Corners": "📐 Corners",
+    "⏱ Mi-temps": "⏱ Half-time",
+    "Tous les niveaux": "All risk levels",
+    "🟢 Sûr": "🟢 Lower risk",
+    "🟡 Modéré": "🟡 Moderate",
+    "🔴 Risqué": "🔴 Higher risk",
+    "🟢 SÛR": "🟢 LOWER RISK",
+    "🟡 MODÉRÉ": "🟡 MODERATE",
+    "🔴 RISQUÉ": "🔴 HIGHER RISK",
+    "Autre": "Other",
+    "Chargement des pronostics…": "Loading predictions…",
+    "Aucun pick disponible actuellement": "No picks available right now",
+    "Accès gratuit · Passe Pro pour débloquer les picks réservés": "Free access · Upgrade to Pro to unlock reserved picks",
+    "{{plan}} actif · Tous les picks disponibles": "{{plan}} active · All available picks",
+    "Tes pronostics, en un coup d’œil 🎯": "Your predictions at a glance 🎯",
+    "Picks disponibles": "Available picks",
+    "En direct": "Live",
+    "Actualiser les données": "Refresh data",
+    "Actualisation en cours…": "Refreshing…",
+    "Données mises à jour": "Data updated",
+    "Impossible d’actualiser les données. Réessaie dans un instant.": "Unable to refresh data. Try again shortly.",
+    "Rechercher une rencontre": "Find a match",
+    "Équipe, championnat, pays, sport ou marché…": "Team, league, country, sport or market…",
+    "Effacer la recherche": "Clear search",
+    "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.": "Examples: Spain, Ligue 1, Atlético, PSG, over 2.5. Combine your search with sport, market and risk filters.",
+    "{{count}} rencontre trouvée dans les matchs chargés.": "{{count}} match found in the loaded matches.",
+    "{{count}} rencontres trouvées dans les matchs chargés.": "{{count}} matches found in the loaded matches.",
+    "À la une": "Highlights",
+    "Confiance du moteur": "Engine confidence",
+    "Tout voir": "View all",
+    "Aucune sélection à la une pour cette recherche.": "No highlighted picks match this search.",
+    "Aucune sélection à la une pour le moment.": "No highlighted picks right now.",
+    "Consulte aussi les résultats par championnat ci-dessous.": "Browse matches by league below too.",
+    "Les sélections apparaîtront dès qu’elles seront disponibles.": "Picks will appear as soon as they are available.",
+    "Impossible de charger les sélections à la une.": "Unable to load highlighted picks.",
+    "Réessayer": "Try again",
+    "LIVE": "LIVE",
+    "Verrouillé": "Locked",
+    "Passe Pro pour débloquer": "Upgrade to Pro to unlock",
+    "Pronostic": "Prediction",
+    "Cote": "Odds",
+    "chez {{bookmaker}}": "at {{bookmaker}}",
+    "Partager sur WhatsApp": "Share on WhatsApp",
+    "🎯 Confiance : {{confidence}}%": "🎯 Confidence: {{confidence}}%",
+    "💳 Pro dès {{price}} · Paiement mobile": "💳 Pro from {{price}} · Mobile payment",
+    "WhatsApp ouvert !": "WhatsApp opened!",
+    "Débloque tous les pronostics.": "Unlock all predictions.",
+    "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos": "{{count}} reserved pick right now · Analyses · Combos · Super Combos",
+    "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos": "{{count}} reserved picks right now · Analyses · Combos · Super Combos",
+    "Passer Pro · {{price}}": "Upgrade to Pro · {{price}}",
+    "Matchs par championnat": "Matches by league",
+    "Aucune rencontre ne correspond à cette recherche et aux filtres.": "No matches fit this search and these filters.",
+    "Aucun match pour ce filtre": "No matches for this filter",
+    "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.": "Try a team, country or league name, or clear the filters.",
+    "Réinitialiser les filtres": "Reset filters",
+    "Voir {{count}} championnats supplémentaires": "Show {{count}} more leagues",
+    "Picks validés": "Prediction results",
+    "Track record": "Track record",
+    "Aujourd’hui ({{date}})": "Today ({{date}})",
+    "Cette semaine · hors aujourd’hui": "This week · excluding today",
+    "Aucun pick pour cette période.": "No picks for this period.",
+    "Gagnés": "Won",
+    "Perdus": "Lost",
+    "En attente": "Pending",
+    "{{rate}} de réussite": "{{rate}} win rate",
+    "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.": "Win rate is based on won and lost picks; pending picks are excluded.",
+    "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.": "The first 15 picks are shown. See the track record for the rest.",
+    "Voir le track record": "View track record",
+    "Vainqueur (1X2)": "Match winner (1X2)",
+    "Vainqueur": "Winner",
+    "Total buts/points": "Total goals/points",
+    "Total de buts": "Total goals",
+    "Double chance": "Double chance",
+    "Les deux équipes marquent": "Both teams to score",
+    "Handicap": "Handicap",
+    "Cartons": "Cards",
+    "Corners": "Corners",
+    "Mi-temps": "Half-time",
+    "Match nul": "Draw",
+    "Plus de {{line}} buts": "Over {{line}} goals",
+    "Moins de {{line}} buts": "Under {{line}} goals",
+    "Plus de {{line}} points": "Over {{line}} points",
+    "Moins de {{line}} points": "Under {{line}} points",
+    "Plus de {{line}} corners": "Over {{line}} corners",
+    "Moins de {{line}} corners": "Under {{line}} corners",
+    "Plus de {{line}} cartons": "Over {{line}} cards",
+    "Moins de {{line}} cartons": "Under {{line}} cards",
+    "Accessibles avec ton compte": "Available with your account",
+    "Trouve ton prochain match": "Find your next match",
+    "Recherche une équipe ou explore les championnats. Les filtres se combinent.": "Search for a team or browse leagues. Filters work together.",
+    "Sport": "Sport",
+    "Marché": "Market",
+    "Niveau de risque": "Risk level",
+    "Affiner les résultats": "Refine results",
+    "Filtres actifs": "Active filters",
+    "Effacer les filtres": "Clear filters",
+    "Retirer le filtre {{filter}}": "Remove {{filter}} filter",
+    "{{count}} filtres avancés actifs": "{{count}} advanced filters active",
+    "Sélections à la une": "Featured picks",
+    "Ouvrir la sélection": "Open picks",
+    "Explorer les rencontres": "Browse matches",
+    "{{count}} rencontres · {{leagues}} championnats": "{{count}} matches · {{leagues}} leagues",
+    "Trier les matchs": "Sort matches",
+    "Par horaire": "By kick-off time",
+    "Par confiance": "By confidence",
+    "Par cote": "By odds",
+    "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.": "Sorting applies within each league using data available with your account.",
+    "{{shown}} championnats affichés sur {{total}}": "{{shown}} of {{total}} leagues shown",
+    "Voir {{count}} autres rencontres": "Show {{count}} more matches",
+    "Réduire cette liste": "Show fewer matches",
+    "Résultats récents": "Recent results",
+    "Déplier pour consulter les résultats de la période.": "Expand to view results for this period.",
+    "{{count}} pronostics sur la période": "{{count}} predictions in this period",
+    "Plus de sélections avec Pro": "More picks with Pro",
+    "{{count}} pronostics réservés aux abonnés actuellement.": "{{count}} subscriber-only predictions right now.",
+    "{{price}} / 30 jours": "{{price}} / 30 days",
+    "Découvrir Pro": "Explore Pro"
+  },
+  "es": {
+    "Tous": "Todos",
+    "Football": "Fútbol",
+    "Basketball": "Baloncesto",
+    "Tennis": "Tenis",
+    "Hockey": "Hockey",
+    "Baseball": "Béisbol",
+    "MMA": "MMA",
+    "Tous les marchés": "Todos los mercados",
+    "🏆 Victoire": "🏆 Ganador",
+    "🔄 Double chance": "🔄 Doble oportunidad",
+    "📈 Plus de 2,5 buts": "📈 Más de 2,5 goles",
+    "🎯 Les deux équipes marquent": "🎯 Ambos equipos marcan",
+    "⚖️ Handicap": "⚖️ Hándicap",
+    "🟨 Cartons": "🟨 Tarjetas",
+    "📐 Corners": "📐 Córneres",
+    "⏱ Mi-temps": "⏱ Descanso",
+    "Tous les niveaux": "Todos los niveles de riesgo",
+    "🟢 Sûr": "🟢 Menor riesgo",
+    "🟡 Modéré": "🟡 Moderado",
+    "🔴 Risqué": "🔴 Arriesgado",
+    "🟢 SÛR": "🟢 MENOR RIESGO",
+    "🟡 MODÉRÉ": "🟡 MODERADO",
+    "🔴 RISQUÉ": "🔴 ARRIESGADO",
+    "Autre": "Otros",
+    "Chargement des pronostics…": "Cargando pronósticos…",
+    "Aucun pick disponible actuellement": "No hay selecciones disponibles ahora",
+    "Accès gratuit · Passe Pro pour débloquer les picks réservés": "Acceso gratuito · Pásate a Pro para desbloquear las selecciones reservadas",
+    "{{plan}} actif · Tous les picks disponibles": "{{plan}} activo · Todas las selecciones disponibles",
+    "Tes pronostics, en un coup d’œil 🎯": "Tus pronósticos de un vistazo 🎯",
+    "Picks disponibles": "Selecciones disponibles",
+    "En direct": "En directo",
+    "Actualiser les données": "Actualizar datos",
+    "Actualisation en cours…": "Actualizando…",
+    "Données mises à jour": "Datos actualizados",
+    "Impossible d’actualiser les données. Réessaie dans un instant.": "No se han podido actualizar los datos. Inténtalo de nuevo en un momento.",
+    "Rechercher une rencontre": "Buscar un encuentro",
+    "Équipe, championnat, pays, sport ou marché…": "Equipo, liga, país, deporte o mercado…",
+    "Effacer la recherche": "Borrar búsqueda",
+    "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.": "Ejemplos: España, Ligue 1, Atlético, PSG, más de 2,5. Combina la búsqueda con los filtros de deporte, mercado y riesgo.",
+    "{{count}} rencontre trouvée dans les matchs chargés.": "{{count}} encuentro encontrado entre los partidos cargados.",
+    "{{count}} rencontres trouvées dans les matchs chargés.": "{{count}} encuentros encontrados entre los partidos cargados.",
+    "À la une": "Destacados",
+    "Confiance du moteur": "Confianza del motor",
+    "Tout voir": "Ver todo",
+    "Aucune sélection à la une pour cette recherche.": "No hay selecciones destacadas para esta búsqueda.",
+    "Aucune sélection à la une pour le moment.": "No hay selecciones destacadas por ahora.",
+    "Consulte aussi les résultats par championnat ci-dessous.": "Consulta también los encuentros por liga más abajo.",
+    "Les sélections apparaîtront dès qu’elles seront disponibles.": "Las selecciones aparecerán en cuanto estén disponibles.",
+    "Impossible de charger les sélections à la une.": "No se han podido cargar las selecciones destacadas.",
+    "Réessayer": "Reintentar",
+    "LIVE": "EN DIRECTO",
+    "Verrouillé": "Bloqueado",
+    "Passe Pro pour débloquer": "Pásate a Pro para desbloquear",
+    "Pronostic": "Pronóstico",
+    "Cote": "Cuota",
+    "chez {{bookmaker}}": "en {{bookmaker}}",
+    "Partager sur WhatsApp": "Compartir en WhatsApp",
+    "🎯 Confiance : {{confidence}}%": "🎯 Confianza: {{confidence}}%",
+    "💳 Pro dès {{price}} · Paiement mobile": "💳 Pro desde {{price}} · Pago móvil",
+    "WhatsApp ouvert !": "¡WhatsApp abierto!",
+    "Débloque tous les pronostics.": "Desbloquea todos los pronósticos.",
+    "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos": "{{count}} selección reservada ahora · Análisis · Combinadas · Súper combinadas",
+    "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos": "{{count}} selecciones reservadas ahora · Análisis · Combinadas · Súper combinadas",
+    "Passer Pro · {{price}}": "Pasar a Pro · {{price}}",
+    "Matchs par championnat": "Partidos por liga",
+    "Aucune rencontre ne correspond à cette recherche et aux filtres.": "Ningún encuentro coincide con esta búsqueda y estos filtros.",
+    "Aucun match pour ce filtre": "No hay partidos para este filtro",
+    "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.": "Prueba con un equipo, país o liga, o elimina los filtros.",
+    "Réinitialiser les filtres": "Restablecer filtros",
+    "Voir {{count}} championnats supplémentaires": "Ver {{count}} ligas más",
+    "Picks validés": "Resultados de pronósticos",
+    "Track record": "Historial",
+    "Aujourd’hui ({{date}})": "Hoy ({{date}})",
+    "Cette semaine · hors aujourd’hui": "Esta semana · sin incluir hoy",
+    "Aucun pick pour cette période.": "No hay selecciones en este periodo.",
+    "Gagnés": "Ganados",
+    "Perdus": "Perdidos",
+    "En attente": "Pendientes",
+    "{{rate}} de réussite": "{{rate}} de acierto",
+    "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.": "La tasa se calcula con selecciones ganadas y perdidas; se excluyen las pendientes.",
+    "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.": "Se muestran las primeras 15 selecciones. Consulta el historial para ver el resto.",
+    "Voir le track record": "Ver historial",
+    "Vainqueur (1X2)": "Ganador (1X2)",
+    "Vainqueur": "Ganador",
+    "Total buts/points": "Total de goles/puntos",
+    "Total de buts": "Total de goles",
+    "Double chance": "Doble oportunidad",
+    "Les deux équipes marquent": "Ambos equipos marcan",
+    "Handicap": "Hándicap",
+    "Cartons": "Tarjetas",
+    "Corners": "Córneres",
+    "Mi-temps": "Descanso",
+    "Match nul": "Empate",
+    "Plus de {{line}} buts": "Más de {{line}} goles",
+    "Moins de {{line}} buts": "Menos de {{line}} goles",
+    "Plus de {{line}} points": "Más de {{line}} puntos",
+    "Moins de {{line}} points": "Menos de {{line}} puntos",
+    "Plus de {{line}} corners": "Más de {{line}} córneres",
+    "Moins de {{line}} corners": "Menos de {{line}} córneres",
+    "Plus de {{line}} cartons": "Más de {{line}} tarjetas",
+    "Moins de {{line}} cartons": "Menos de {{line}} tarjetas",
+    "Accessibles avec ton compte": "Accesibles con tu cuenta",
+    "Trouve ton prochain match": "Encuentra tu próximo partido",
+    "Recherche une équipe ou explore les championnats. Les filtres se combinent.": "Busca un equipo o explora las ligas. Los filtros se combinan.",
+    "Sport": "Deporte",
+    "Marché": "Mercado",
+    "Niveau de risque": "Nivel de riesgo",
+    "Affiner les résultats": "Afinar resultados",
+    "Filtres actifs": "Filtros activos",
+    "Effacer les filtres": "Borrar filtros",
+    "Retirer le filtre {{filter}}": "Quitar filtro {{filter}}",
+    "{{count}} filtres avancés actifs": "{{count}} filtros avanzados activos",
+    "Sélections à la une": "Selecciones destacadas",
+    "Ouvrir la sélection": "Abrir selecciones",
+    "Explorer les rencontres": "Explorar encuentros",
+    "{{count}} rencontres · {{leagues}} championnats": "{{count}} encuentros · {{leagues}} ligas",
+    "Trier les matchs": "Ordenar partidos",
+    "Par horaire": "Por horario",
+    "Par confiance": "Por confianza",
+    "Par cote": "Por cuota",
+    "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.": "El orden se aplica dentro de cada liga con los datos accesibles desde tu cuenta.",
+    "{{shown}} championnats affichés sur {{total}}": "{{shown}} de {{total}} ligas mostradas",
+    "Voir {{count}} autres rencontres": "Ver {{count}} encuentros más",
+    "Réduire cette liste": "Mostrar menos partidos",
+    "Résultats récents": "Resultados recientes",
+    "Déplier pour consulter les résultats de la période.": "Despliega para consultar los resultados del periodo.",
+    "{{count}} pronostics sur la période": "{{count}} pronósticos en el periodo",
+    "Plus de sélections avec Pro": "Más selecciones con Pro",
+    "{{count}} pronostics réservés aux abonnés actuellement.": "{{count}} pronósticos reservados a suscriptores ahora.",
+    "{{price}} / 30 jours": "{{price}} / 30 días",
+    "Découvrir Pro": "Descubrir Pro"
+  },
+  "pt": {
+    "Tous": "Todos",
+    "Football": "Futebol",
+    "Basketball": "Basquetebol",
+    "Tennis": "Ténis",
+    "Hockey": "Hóquei",
+    "Baseball": "Basebol",
+    "MMA": "MMA",
+    "Tous les marchés": "Todos os mercados",
+    "🏆 Victoire": "🏆 Vencedor",
+    "🔄 Double chance": "🔄 Dupla hipótese",
+    "📈 Plus de 2,5 buts": "📈 Mais de 2,5 golos",
+    "🎯 Les deux équipes marquent": "🎯 Ambas marcam",
+    "⚖️ Handicap": "⚖️ Handicap",
+    "🟨 Cartons": "🟨 Cartões",
+    "📐 Corners": "📐 Cantos",
+    "⏱ Mi-temps": "⏱ Intervalo",
+    "Tous les niveaux": "Todos os níveis de risco",
+    "🟢 Sûr": "🟢 Menor risco",
+    "🟡 Modéré": "🟡 Moderado",
+    "🔴 Risqué": "🔴 Arriscado",
+    "🟢 SÛR": "🟢 MENOR RISCO",
+    "🟡 MODÉRÉ": "🟡 MODERADO",
+    "🔴 RISQUÉ": "🔴 ARRISCADO",
+    "Autre": "Outros",
+    "Chargement des pronostics…": "A carregar prognósticos…",
+    "Aucun pick disponible actuellement": "Sem seleções disponíveis neste momento",
+    "Accès gratuit · Passe Pro pour débloquer les picks réservés": "Acesso gratuito · Adere ao Pro para desbloquear as seleções reservadas",
+    "{{plan}} actif · Tous les picks disponibles": "{{plan}} ativo · Todas as seleções disponíveis",
+    "Tes pronostics, en un coup d’œil 🎯": "Os teus prognósticos num relance 🎯",
+    "Picks disponibles": "Seleções disponíveis",
+    "En direct": "Em direto",
+    "Actualiser les données": "Atualizar dados",
+    "Actualisation en cours…": "A atualizar…",
+    "Données mises à jour": "Dados atualizados",
+    "Impossible d’actualiser les données. Réessaie dans un instant.": "Não foi possível atualizar os dados. Tenta novamente dentro de instantes.",
+    "Rechercher une rencontre": "Procurar um jogo",
+    "Équipe, championnat, pays, sport ou marché…": "Equipa, campeonato, país, desporto ou mercado…",
+    "Effacer la recherche": "Limpar pesquisa",
+    "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.": "Exemplos: Espanha, Ligue 1, Atlético, PSG, mais de 2,5. Combina a pesquisa com os filtros de desporto, mercado e risco.",
+    "{{count}} rencontre trouvée dans les matchs chargés.": "{{count}} jogo encontrado entre os jogos carregados.",
+    "{{count}} rencontres trouvées dans les matchs chargés.": "{{count}} jogos encontrados entre os jogos carregados.",
+    "À la une": "Destaques",
+    "Confiance du moteur": "Confiança do motor",
+    "Tout voir": "Ver tudo",
+    "Aucune sélection à la une pour cette recherche.": "Sem seleções em destaque para esta pesquisa.",
+    "Aucune sélection à la une pour le moment.": "Sem seleções em destaque neste momento.",
+    "Consulte aussi les résultats par championnat ci-dessous.": "Consulta também os jogos por campeonato abaixo.",
+    "Les sélections apparaîtront dès qu’elles seront disponibles.": "As seleções aparecerão assim que estiverem disponíveis.",
+    "Impossible de charger les sélections à la une.": "Não foi possível carregar as seleções em destaque.",
+    "Réessayer": "Tentar novamente",
+    "LIVE": "EM DIRETO",
+    "Verrouillé": "Bloqueado",
+    "Passe Pro pour débloquer": "Adere ao Pro para desbloquear",
+    "Pronostic": "Prognóstico",
+    "Cote": "Odd",
+    "chez {{bookmaker}}": "na {{bookmaker}}",
+    "Partager sur WhatsApp": "Partilhar no WhatsApp",
+    "🎯 Confiance : {{confidence}}%": "🎯 Confiança: {{confidence}}%",
+    "💳 Pro dès {{price}} · Paiement mobile": "💳 Pro desde {{price}} · Pagamento móvel",
+    "WhatsApp ouvert !": "WhatsApp aberto!",
+    "Débloque tous les pronostics.": "Desbloqueia todos os prognósticos.",
+    "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos": "{{count}} seleção reservada agora · Análises · Combinadas · Super combinadas",
+    "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos": "{{count}} seleções reservadas agora · Análises · Combinadas · Super combinadas",
+    "Passer Pro · {{price}}": "Aderir ao Pro · {{price}}",
+    "Matchs par championnat": "Jogos por campeonato",
+    "Aucune rencontre ne correspond à cette recherche et aux filtres.": "Nenhum jogo corresponde a esta pesquisa e a estes filtros.",
+    "Aucun match pour ce filtre": "Sem jogos para este filtro",
+    "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.": "Experimenta uma equipa, país ou campeonato, ou remove os filtros.",
+    "Réinitialiser les filtres": "Repor filtros",
+    "Voir {{count}} championnats supplémentaires": "Ver mais {{count}} campeonatos",
+    "Picks validés": "Resultados dos prognósticos",
+    "Track record": "Histórico",
+    "Aujourd’hui ({{date}})": "Hoje ({{date}})",
+    "Cette semaine · hors aujourd’hui": "Esta semana · sem incluir hoje",
+    "Aucun pick pour cette période.": "Sem seleções neste período.",
+    "Gagnés": "Ganhos",
+    "Perdus": "Perdidos",
+    "En attente": "Pendentes",
+    "{{rate}} de réussite": "{{rate}} de acerto",
+    "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.": "A taxa é calculada com seleções ganhas e perdidas; as pendentes são excluídas.",
+    "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.": "São apresentadas as primeiras 15 seleções. Consulta o histórico para ver as restantes.",
+    "Voir le track record": "Ver histórico",
+    "Vainqueur (1X2)": "Vencedor (1X2)",
+    "Vainqueur": "Vencedor",
+    "Total buts/points": "Total de golos/pontos",
+    "Total de buts": "Total de golos",
+    "Double chance": "Dupla hipótese",
+    "Les deux équipes marquent": "Ambas marcam",
+    "Handicap": "Handicap",
+    "Cartons": "Cartões",
+    "Corners": "Cantos",
+    "Mi-temps": "Intervalo",
+    "Match nul": "Empate",
+    "Plus de {{line}} buts": "Mais de {{line}} golos",
+    "Moins de {{line}} buts": "Menos de {{line}} golos",
+    "Plus de {{line}} points": "Mais de {{line}} pontos",
+    "Moins de {{line}} points": "Menos de {{line}} pontos",
+    "Plus de {{line}} corners": "Mais de {{line}} cantos",
+    "Moins de {{line}} corners": "Menos de {{line}} cantos",
+    "Plus de {{line}} cartons": "Mais de {{line}} cartões",
+    "Moins de {{line}} cartons": "Menos de {{line}} cartões",
+    "Accessibles avec ton compte": "Acessíveis com a tua conta",
+    "Trouve ton prochain match": "Encontra o teu próximo jogo",
+    "Recherche une équipe ou explore les championnats. Les filtres se combinent.": "Procura uma equipa ou explora os campeonatos. Os filtros combinam-se.",
+    "Sport": "Desporto",
+    "Marché": "Mercado",
+    "Niveau de risque": "Nível de risco",
+    "Affiner les résultats": "Refinar resultados",
+    "Filtres actifs": "Filtros ativos",
+    "Effacer les filtres": "Limpar filtros",
+    "Retirer le filtre {{filter}}": "Remover filtro {{filter}}",
+    "{{count}} filtres avancés actifs": "{{count}} filtros avançados ativos",
+    "Sélections à la une": "Seleções em destaque",
+    "Ouvrir la sélection": "Abrir seleções",
+    "Explorer les rencontres": "Explorar jogos",
+    "{{count}} rencontres · {{leagues}} championnats": "{{count}} jogos · {{leagues}} campeonatos",
+    "Trier les matchs": "Ordenar jogos",
+    "Par horaire": "Por horário",
+    "Par confiance": "Por confiança",
+    "Par cote": "Por odd",
+    "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.": "A ordenação aplica-se em cada campeonato com os dados acessíveis na tua conta.",
+    "{{shown}} championnats affichés sur {{total}}": "{{shown}} de {{total}} campeonatos apresentados",
+    "Voir {{count}} autres rencontres": "Ver mais {{count}} jogos",
+    "Réduire cette liste": "Mostrar menos jogos",
+    "Résultats récents": "Resultados recentes",
+    "Déplier pour consulter les résultats de la période.": "Expande para consultar os resultados do período.",
+    "{{count}} pronostics sur la période": "{{count}} prognósticos no período",
+    "Plus de sélections avec Pro": "Mais seleções com Pro",
+    "{{count}} pronostics réservés aux abonnés actuellement.": "{{count}} prognósticos reservados a assinantes neste momento.",
+    "{{price}} / 30 jours": "{{price}} / 30 dias",
+    "Découvrir Pro": "Conhecer Pro"
+  },
+  "de": {
+    "Tous": "Alle",
+    "Football": "Fußball",
+    "Basketball": "Basketball",
+    "Tennis": "Tennis",
+    "Hockey": "Eishockey",
+    "Baseball": "Baseball",
+    "MMA": "MMA",
+    "Tous les marchés": "Alle Wettmärkte",
+    "🏆 Victoire": "🏆 Sieger",
+    "🔄 Double chance": "🔄 Doppelte Chance",
+    "📈 Plus de 2,5 buts": "📈 Über 2,5 Tore",
+    "🎯 Les deux équipes marquent": "🎯 Beide Teams treffen",
+    "⚖️ Handicap": "⚖️ Handicap",
+    "🟨 Cartons": "🟨 Karten",
+    "📐 Corners": "📐 Eckbälle",
+    "⏱ Mi-temps": "⏱ Halbzeit",
+    "Tous les niveaux": "Alle Risikostufen",
+    "🟢 Sûr": "🟢 Geringeres Risiko",
+    "🟡 Modéré": "🟡 Moderat",
+    "🔴 Risqué": "🔴 Höheres Risiko",
+    "🟢 SÛR": "🟢 GERINGERES RISIKO",
+    "🟡 MODÉRÉ": "🟡 MODERAT",
+    "🔴 RISQUÉ": "🔴 HÖHERES RISIKO",
+    "Autre": "Sonstige",
+    "Chargement des pronostics…": "Tipps werden geladen…",
+    "Aucun pick disponible actuellement": "Derzeit keine Tipps verfügbar",
+    "Accès gratuit · Passe Pro pour débloquer les picks réservés": "Kostenloser Zugang · Mit Pro reservierte Tipps freischalten",
+    "{{plan}} actif · Tous les picks disponibles": "{{plan}} aktiv · Alle verfügbaren Tipps",
+    "Tes pronostics, en un coup d’œil 🎯": "Deine Tipps auf einen Blick 🎯",
+    "Picks disponibles": "Verfügbare Tipps",
+    "En direct": "Live",
+    "Actualiser les données": "Daten aktualisieren",
+    "Actualisation en cours…": "Wird aktualisiert…",
+    "Données mises à jour": "Daten aktualisiert",
+    "Impossible d’actualiser les données. Réessaie dans un instant.": "Die Daten konnten nicht aktualisiert werden. Versuche es gleich noch einmal.",
+    "Rechercher une rencontre": "Begegnung suchen",
+    "Équipe, championnat, pays, sport ou marché…": "Team, Liga, Land, Sport oder Wettmarkt…",
+    "Effacer la recherche": "Suche löschen",
+    "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.": "Beispiele: Spanien, Ligue 1, Atlético, PSG, über 2,5. Kombiniere die Suche mit Sport-, Markt- und Risikofiltern.",
+    "{{count}} rencontre trouvée dans les matchs chargés.": "{{count}} Begegnung unter den geladenen Spielen gefunden.",
+    "{{count}} rencontres trouvées dans les matchs chargés.": "{{count}} Begegnungen unter den geladenen Spielen gefunden.",
+    "À la une": "Highlights",
+    "Confiance du moteur": "Modellkonfidenz",
+    "Tout voir": "Alle ansehen",
+    "Aucune sélection à la une pour cette recherche.": "Keine hervorgehobenen Tipps für diese Suche.",
+    "Aucune sélection à la une pour le moment.": "Derzeit keine hervorgehobenen Tipps.",
+    "Consulte aussi les résultats par championnat ci-dessous.": "Sieh dir unten auch die Begegnungen nach Liga an.",
+    "Les sélections apparaîtront dès qu’elles seront disponibles.": "Tipps erscheinen, sobald sie verfügbar sind.",
+    "Impossible de charger les sélections à la une.": "Hervorgehobene Tipps konnten nicht geladen werden.",
+    "Réessayer": "Erneut versuchen",
+    "LIVE": "LIVE",
+    "Verrouillé": "Gesperrt",
+    "Passe Pro pour débloquer": "Mit Pro freischalten",
+    "Pronostic": "Tipp",
+    "Cote": "Quote",
+    "chez {{bookmaker}}": "bei {{bookmaker}}",
+    "Partager sur WhatsApp": "Auf WhatsApp teilen",
+    "🎯 Confiance : {{confidence}}%": "🎯 Konfidenz: {{confidence}}%",
+    "💳 Pro dès {{price}} · Paiement mobile": "💳 Pro ab {{price}} · Mobile Zahlung",
+    "WhatsApp ouvert !": "WhatsApp geöffnet!",
+    "Débloque tous les pronostics.": "Alle Tipps freischalten.",
+    "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos": "{{count}} reservierter Tipp · Analysen · Kombis · Super-Kombis",
+    "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos": "{{count}} reservierte Tipps · Analysen · Kombis · Super-Kombis",
+    "Passer Pro · {{price}}": "Pro abonnieren · {{price}}",
+    "Matchs par championnat": "Spiele nach Liga",
+    "Aucune rencontre ne correspond à cette recherche et aux filtres.": "Keine Begegnung entspricht dieser Suche und diesen Filtern.",
+    "Aucun match pour ce filtre": "Keine Spiele für diesen Filter",
+    "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.": "Suche nach Team, Land oder Liga oder entferne die Filter.",
+    "Réinitialiser les filtres": "Filter zurücksetzen",
+    "Voir {{count}} championnats supplémentaires": "{{count}} weitere Ligen anzeigen",
+    "Picks validés": "Tippergebnisse",
+    "Track record": "Ergebnisbilanz",
+    "Aujourd’hui ({{date}})": "Heute ({{date}})",
+    "Cette semaine · hors aujourd’hui": "Diese Woche · ohne heute",
+    "Aucun pick pour cette période.": "Keine Tipps für diesen Zeitraum.",
+    "Gagnés": "Gewonnen",
+    "Perdus": "Verloren",
+    "En attente": "Ausstehend",
+    "{{rate}} de réussite": "{{rate}} Trefferquote",
+    "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.": "Die Quote berücksichtigt gewonnene und verlorene Tipps; ausstehende sind ausgeschlossen.",
+    "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.": "Die ersten 15 Tipps werden angezeigt. Weitere findest du in der Ergebnisbilanz.",
+    "Voir le track record": "Ergebnisbilanz ansehen",
+    "Vainqueur (1X2)": "Sieger (1X2)",
+    "Vainqueur": "Sieger",
+    "Total buts/points": "Tore/Punkte gesamt",
+    "Total de buts": "Tore gesamt",
+    "Double chance": "Doppelte Chance",
+    "Les deux équipes marquent": "Beide Teams treffen",
+    "Handicap": "Handicap",
+    "Cartons": "Karten",
+    "Corners": "Eckbälle",
+    "Mi-temps": "Halbzeit",
+    "Match nul": "Unentschieden",
+    "Plus de {{line}} buts": "Über {{line}} Tore",
+    "Moins de {{line}} buts": "Unter {{line}} Tore",
+    "Plus de {{line}} points": "Über {{line}} Punkte",
+    "Moins de {{line}} points": "Unter {{line}} Punkte",
+    "Plus de {{line}} corners": "Über {{line}} Eckbälle",
+    "Moins de {{line}} corners": "Unter {{line}} Eckbälle",
+    "Plus de {{line}} cartons": "Über {{line}} Karten",
+    "Moins de {{line}} cartons": "Unter {{line}} Karten",
+    "Accessibles avec ton compte": "Mit deinem Konto zugänglich",
+    "Trouve ton prochain match": "Finde dein nächstes Spiel",
+    "Recherche une équipe ou explore les championnats. Les filtres se combinent.": "Suche ein Team oder stöbere in den Ligen. Die Filter lassen sich kombinieren.",
+    "Sport": "Sport",
+    "Marché": "Wettmarkt",
+    "Niveau de risque": "Risikostufe",
+    "Affiner les résultats": "Ergebnisse eingrenzen",
+    "Filtres actifs": "Aktive Filter",
+    "Effacer les filtres": "Filter löschen",
+    "Retirer le filtre {{filter}}": "Filter {{filter}} entfernen",
+    "{{count}} filtres avancés actifs": "{{count}} erweiterte Filter aktiv",
+    "Sélections à la une": "Hervorgehobene Tipps",
+    "Ouvrir la sélection": "Tipps öffnen",
+    "Explorer les rencontres": "Begegnungen ansehen",
+    "{{count}} rencontres · {{leagues}} championnats": "{{count}} Begegnungen · {{leagues}} Ligen",
+    "Trier les matchs": "Spiele sortieren",
+    "Par horaire": "Nach Beginn",
+    "Par confiance": "Nach Konfidenz",
+    "Par cote": "Nach Quote",
+    "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.": "Die Sortierung gilt innerhalb jeder Liga und nutzt die mit deinem Konto zugänglichen Daten.",
+    "{{shown}} championnats affichés sur {{total}}": "{{shown}} von {{total}} Ligen angezeigt",
+    "Voir {{count}} autres rencontres": "{{count}} weitere Begegnungen anzeigen",
+    "Réduire cette liste": "Weniger Spiele anzeigen",
+    "Résultats récents": "Aktuelle Ergebnisse",
+    "Déplier pour consulter les résultats de la période.": "Aufklappen, um die Ergebnisse dieses Zeitraums zu sehen.",
+    "{{count}} pronostics sur la période": "{{count}} Tipps in diesem Zeitraum",
+    "Plus de sélections avec Pro": "Mehr Tipps mit Pro",
+    "{{count}} pronostics réservés aux abonnés actuellement.": "Derzeit {{count}} Tipps für Abonnenten.",
+    "{{price}} / 30 jours": "{{price}} / 30 Tage",
+    "Découvrir Pro": "Pro entdecken"
+  },
+  "ar": {
+    "Tous": "الكل",
+    "Football": "كرة القدم",
+    "Basketball": "كرة السلة",
+    "Tennis": "التنس",
+    "Hockey": "الهوكي",
+    "Baseball": "البيسبول",
+    "MMA": "الفنون القتالية المختلطة",
+    "Tous les marchés": "جميع الأسواق",
+    "🏆 Victoire": "🏆 الفائز",
+    "🔄 Double chance": "🔄 فرصة مزدوجة",
+    "📈 Plus de 2,5 buts": "📈 أكثر من ٢٫٥ هدف",
+    "🎯 Les deux équipes marquent": "🎯 كلا الفريقين يسجل",
+    "⚖️ Handicap": "⚖️ هانديكاب",
+    "🟨 Cartons": "🟨 البطاقات",
+    "📐 Corners": "📐 الركنيات",
+    "⏱ Mi-temps": "⏱ الشوط الأول",
+    "Tous les niveaux": "جميع مستويات المخاطر",
+    "🟢 Sûr": "🟢 مخاطر أقل",
+    "🟡 Modéré": "🟡 متوسط",
+    "🔴 Risqué": "🔴 مرتفع المخاطر",
+    "🟢 SÛR": "🟢 مخاطر أقل",
+    "🟡 MODÉRÉ": "🟡 متوسط",
+    "🔴 RISQUÉ": "🔴 مرتفع المخاطر",
+    "Autre": "أخرى",
+    "Chargement des pronostics…": "جارٍ تحميل التوقعات…",
+    "Aucun pick disponible actuellement": "لا توجد اختيارات متاحة حالياً",
+    "Accès gratuit · Passe Pro pour débloquer les picks réservés": "وصول مجاني · اشترك في Pro لفتح الاختيارات المحجوزة",
+    "{{plan}} actif · Tous les picks disponibles": "اشتراك {{plan}} مفعّل · جميع الاختيارات المتاحة",
+    "Tes pronostics, en un coup d’œil 🎯": "توقعاتك في لمحة 🎯",
+    "Picks disponibles": "الاختيارات المتاحة",
+    "En direct": "مباشر",
+    "Actualiser les données": "تحديث البيانات",
+    "Actualisation en cours…": "جارٍ التحديث…",
+    "Données mises à jour": "تم تحديث البيانات",
+    "Impossible d’actualiser les données. Réessaie dans un instant.": "تعذّر تحديث البيانات. حاول مجدداً بعد قليل.",
+    "Rechercher une rencontre": "البحث عن مباراة",
+    "Équipe, championnat, pays, sport ou marché…": "فريق أو بطولة أو بلد أو رياضة أو سوق…",
+    "Effacer la recherche": "مسح البحث",
+    "Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.": "أمثلة: إسبانيا، Ligue 1، Atlético، PSG، أكثر من ٢٫٥. يمكن الجمع بين البحث وفلاتر الرياضة والسوق والمخاطر.",
+    "{{count}} rencontre trouvée dans les matchs chargés.": "عدد المباريات المطابقة ضمن المباريات المحمّلة: {{count}}.",
+    "{{count}} rencontres trouvées dans les matchs chargés.": "عدد المباريات المطابقة ضمن المباريات المحمّلة: {{count}}.",
+    "À la une": "أبرز الاختيارات",
+    "Confiance du moteur": "ثقة المحرّك",
+    "Tout voir": "عرض الكل",
+    "Aucune sélection à la une pour cette recherche.": "لا توجد اختيارات بارزة مطابقة لهذا البحث.",
+    "Aucune sélection à la une pour le moment.": "لا توجد اختيارات بارزة حالياً.",
+    "Consulte aussi les résultats par championnat ci-dessous.": "تصفّح أيضاً المباريات حسب البطولة أدناه.",
+    "Les sélections apparaîtront dès qu’elles seront disponibles.": "ستظهر الاختيارات بمجرد توفّرها.",
+    "Impossible de charger les sélections à la une.": "تعذّر تحميل الاختيارات البارزة.",
+    "Réessayer": "إعادة المحاولة",
+    "LIVE": "مباشر",
+    "Verrouillé": "مقفل",
+    "Passe Pro pour débloquer": "اشترك في Pro لفتح المحتوى",
+    "Pronostic": "التوقع",
+    "Cote": "معامل الربح",
+    "chez {{bookmaker}}": "لدى {{bookmaker}}",
+    "Partager sur WhatsApp": "المشاركة عبر واتساب",
+    "🎯 Confiance : {{confidence}}%": "🎯 الثقة: {{confidence}}٪",
+    "💳 Pro dès {{price}} · Paiement mobile": "💳 اشتراك Pro ابتداءً من {{price}} · الدفع عبر الهاتف",
+    "WhatsApp ouvert !": "تم فتح واتساب!",
+    "Débloque tous les pronostics.": "افتح جميع التوقعات.",
+    "{{count}} pick réservé actuellement · Analyses · Combos · Super Combos": "الاختيارات المحجوزة حالياً: {{count}} · تحليلات · رهانات مركبة · رهانات مركبة موسّعة",
+    "{{count}} picks réservés actuellement · Analyses · Combos · Super Combos": "الاختيارات المحجوزة حالياً: {{count}} · تحليلات · رهانات مركبة · رهانات مركبة موسّعة",
+    "Passer Pro · {{price}}": "الاشتراك في Pro · {{price}}",
+    "Matchs par championnat": "المباريات حسب البطولة",
+    "Aucune rencontre ne correspond à cette recherche et aux filtres.": "لا توجد مباريات تطابق هذا البحث وهذه الفلاتر.",
+    "Aucun match pour ce filtre": "لا توجد مباريات لهذا الفلتر",
+    "Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.": "جرّب اسم فريق أو بلد أو بطولة، أو أزل الفلاتر.",
+    "Réinitialiser les filtres": "إعادة ضبط الفلاتر",
+    "Voir {{count}} championnats supplémentaires": "عرض بطولات إضافية: {{count}}",
+    "Picks validés": "نتائج التوقعات",
+    "Track record": "سجل النتائج",
+    "Aujourd’hui ({{date}})": "اليوم ({{date}})",
+    "Cette semaine · hors aujourd’hui": "هذا الأسبوع · باستثناء اليوم",
+    "Aucun pick pour cette période.": "لا توجد اختيارات لهذه الفترة.",
+    "Gagnés": "ناجحة",
+    "Perdus": "خاسرة",
+    "En attente": "قيد الانتظار",
+    "{{rate}} de réussite": "نسبة النجاح {{rate}}",
+    "Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.": "تُحسب النسبة على الاختيارات الناجحة والخاسرة فقط، وتُستثنى الاختيارات قيد الانتظار.",
+    "Les 15 premiers picks sont affichés. Consulte le track record pour la suite.": "تُعرض أول ١٥ اختياراً. راجع سجل النتائج للاطّلاع على البقية.",
+    "Voir le track record": "عرض سجل النتائج",
+    "Vainqueur (1X2)": "الفائز (1X2)",
+    "Vainqueur": "الفائز",
+    "Total buts/points": "إجمالي الأهداف/النقاط",
+    "Total de buts": "إجمالي الأهداف",
+    "Double chance": "فرصة مزدوجة",
+    "Les deux équipes marquent": "كلا الفريقين يسجل",
+    "Handicap": "هانديكاب",
+    "Cartons": "البطاقات",
+    "Corners": "الركنيات",
+    "Mi-temps": "الشوط الأول",
+    "Match nul": "تعادل",
+    "Plus de {{line}} buts": "أكثر من {{line}} هدف",
+    "Moins de {{line}} buts": "أقل من {{line}} هدف",
+    "Plus de {{line}} points": "أكثر من {{line}} نقطة",
+    "Moins de {{line}} points": "أقل من {{line}} نقطة",
+    "Plus de {{line}} corners": "أكثر من {{line}} ركنية",
+    "Moins de {{line}} corners": "أقل من {{line}} ركنية",
+    "Plus de {{line}} cartons": "أكثر من {{line}} بطاقة",
+    "Moins de {{line}} cartons": "أقل من {{line}} بطاقة",
+    "Accessibles avec ton compte": "المتاحة لحسابك",
+    "Trouve ton prochain match": "ابحث عن مباراتك القادمة",
+    "Recherche une équipe ou explore les championnats. Les filtres se combinent.": "ابحث عن فريق أو تصفّح البطولات. يمكن الجمع بين الفلاتر.",
+    "Sport": "الرياضة",
+    "Marché": "السوق",
+    "Niveau de risque": "مستوى المخاطر",
+    "Affiner les résultats": "تضييق نطاق النتائج",
+    "Filtres actifs": "الفلاتر المفعّلة",
+    "Effacer les filtres": "مسح الفلاتر",
+    "Retirer le filtre {{filter}}": "إزالة فلتر {{filter}}",
+    "{{count}} filtres avancés actifs": "الفلاتر المتقدمة المفعّلة: {{count}}",
+    "Sélections à la une": "الاختيارات البارزة",
+    "Ouvrir la sélection": "عرض الاختيارات",
+    "Explorer les rencontres": "تصفّح المباريات",
+    "{{count}} rencontres · {{leagues}} championnats": "المباريات: {{count}} · البطولات: {{leagues}}",
+    "Trier les matchs": "ترتيب المباريات",
+    "Par horaire": "حسب الموعد",
+    "Par confiance": "حسب الثقة",
+    "Par cote": "حسب معامل الربح",
+    "Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.": "يُطبّق الترتيب داخل كل بطولة باستخدام البيانات المتاحة لحسابك.",
+    "{{shown}} championnats affichés sur {{total}}": "البطولات المعروضة: {{shown}} من {{total}}",
+    "Voir {{count}} autres rencontres": "عرض مباريات إضافية: {{count}}",
+    "Réduire cette liste": "عرض مباريات أقل",
+    "Résultats récents": "النتائج الأخيرة",
+    "Déplier pour consulter les résultats de la période.": "افتح لعرض نتائج هذه الفترة.",
+    "{{count}} pronostics sur la période": "التوقعات خلال الفترة: {{count}}",
+    "Plus de sélections avec Pro": "اختيارات أكثر مع Pro",
+    "{{count}} pronostics réservés aux abonnés actuellement.": "التوقعات المخصّصة للمشتركين حالياً: {{count}}.",
+    "{{price}} / 30 jours": "{{price}} / ٣٠ يوماً",
+    "Découvrir Pro": "اكتشف Pro"
+  }
+};
+
+function useDashboardLanguage() {
+  const context = useLanguage();
+  const t = useCallback((source, values = {}) => {
+    const dictionary = DASHBOARD_MESSAGES[context.language] || DASHBOARD_MESSAGES.fr;
+    const message = Object.prototype.hasOwnProperty.call(dictionary, source)
+      ? dictionary[source] : context.t(source);
+    return message.replace(/\{\{(\w+)\}\}/g, (placeholder, key) =>
+      Object.prototype.hasOwnProperty.call(values, key) ? String(values[key] ?? "") : placeholder);
+  }, [context.language, context.t]);
+  return { ...context, t };
+}
+
+function translateBetText(value, t, formatNumber, teams = []) {
+  if (typeof value !== "string") return "—";
+  // Une équipe qui porte le nom d’un marché ne doit pas être traduite.
+  if (teams.some(team => team && team === value)) return value;
+  const total = value.trim().match(/^(Plus|Moins) de (\d+(?:[.,]\d+)?) (buts|points|corners|cartons)$/i);
+  if (total) {
+    const direction = total[1].toLowerCase() === "plus" ? "Plus" : "Moins";
+    return t(direction + " de {{line}} " + total[3].toLowerCase(), {
+      line: formatNumber(Number(total[2].replace(",", ".")), { maximumFractionDigits: 3 }),
+    });
+  }
+  return t(value);
+}
+
 const SPORT_TABS = [
   { key: "all",        label: "Tous",       icon: "🌍" },
   { key: "soccer",     label: "Football",   icon: "⚽" },
@@ -28,8 +858,8 @@ const BET_FILTERS = [
   { key: "all",           label: "Tous les marchés" },
   { key: "victoire",      label: "🏆 Victoire" },
   { key: "double_chance", label: "🔄 Double chance" },
-  { key: "over_25",       label: "📈 Over 2.5" },
-  { key: "btts",          label: "🎯 BTTS" },
+  { key: "over_25",       label: "📈 Plus de 2,5 buts" },
+  { key: "btts",          label: "🎯 Les deux équipes marquent" },
   { key: "handicap",      label: "⚖️ Handicap" },
   { key: "cartons",       label: "🟨 Cartons" },
   { key: "corners",       label: "📐 Corners" },
@@ -44,20 +874,38 @@ const RISK_FILTERS = [
   { key: "value", label: "🟡 Modéré",  cls: "bg-amber-500 text-white border-amber-500" },
   { key: "risky", label: "🔴 Risqué",  cls: "bg-rose-600 text-white border-rose-600" },
 ];
-function matchesBetFilter(pick = "", filterKey) {
+function matchesBetFilter(pick = "", filterKey, marketLabel = "", marketKey = "") {
   if (filterKey === "all") return true;
-  const p = pick.toLowerCase();
+  const text = normalizeSearch([pick, marketLabel, marketKey].filter(value => typeof value === "string").join(" "));
+  const selection = normalizeSearch(pick);
   switch (filterKey) {
-    case "victoire":      return p.includes("victoire") || p.includes("vainqueur");
-    case "double_chance": return p.includes("double chance") || p.includes("1x") || p.includes("x2");
-    case "over_25":       return p.includes("2.5");
-    case "btts":          return p.includes("équipes marquent") || p.includes("btts");
-    case "handicap":      return p.includes("handicap") || p.includes("spread") || p.includes("points");
-    case "cartons":       return p.includes("carton");
-    case "corners":       return p.includes("corner");
-    case "mi_temps":      return p.includes("mi-temps") || p.includes("période");
-    default:              return true;
+    case "victoire": return /\b(victoire|vainqueur|winner|h2h|1x2)\b/.test(text);
+    case "double_chance": return text.includes("double chance") || /^(1x|x2|12)$/.test(selection);
+    case "over_25": return /(?:plus de|over)\s*2 5(?:\s|$)/.test(selection);
+    case "btts": return text.includes("equipes marquent") || text.includes("both teams") || text.includes("btts");
+    case "handicap": return /\b(handicap|spread|spreads)\b/.test(text);
+    case "cartons": return /\b(carton|cartons|cards)\b/.test(text);
+    case "corners": return /\b(corner|corners)\b/.test(text);
+    case "mi_temps": return text.includes("mi temps") || text.includes("periode") || text.includes("half time");
+    default: return true;
   }
+}
+
+function sortDashboardMatches(matches, sort) {
+  const number = value => value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value)) ? Number(value) : null;
+  const value = match => {
+    if (sort === "time") {
+      const timestamp = match.commence_time ? new Date(match.commence_time).getTime() : NaN;
+      return Number.isFinite(timestamp) ? timestamp : Infinity;
+    }
+    if (match.prediction?.locked) return -Infinity;
+    return number(sort === "confidence" ? match.prediction?.confidence : match.prediction?.pick_odds) ?? -Infinity;
+  };
+  return [...matches].sort((left, right) => {
+    const a = value(left), b = value(right);
+    if (a === b) return 0;
+    return sort === "time" ? (a < b ? -1 : 1) : (a > b ? -1 : 1);
+  });
 }
 const LEAGUE_PRIORITY = [
   "FIFA World Cup","Coupe du Monde","Champions League","UEFA Champions League",
@@ -82,33 +930,33 @@ function groupByLeague(matches) {
 }
 
 function normalizeSearch(value) {
-  return String(value ?? "").toLowerCase().normalize("NFD")
-    .replace(/[\u0300-\u036f]/g, "").replace(/ł/g, "l").replace(/œ/g, "oe")
+  return String(value ?? "").replace(/[٠-٩۰-۹]/g, digit => String(digit.charCodeAt(0) - (digit <= "٩" ? 1632 : 1776))).toLowerCase().normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "").replace(/ł/g, "l").replace(/œ/g, "oe").replace(/ß/g, "ss")
     .replace(/[^\p{L}\p{N}]+/gu, " ").trim();
 }
 
 // Les alias permettent par exemple "Espagne" quand l'API transmet "Spain".
 const SEARCH_COUNTRIES = [
-  ["spain espagne espana", ["spain", "espagne", "espana"]],
-  ["france francais", ["france"]],
-  ["germany allemagne deutschland", ["germany", "allemagne", "deutschland"]],
-  ["england angleterre royaume uni", ["england", "angleterre", "epl", "efl"]],
-  ["italy italie italia", ["italy", "italie", "italia"]],
-  ["poland pologne polska", ["poland", "pologne", "ekstraklasa"]],
-  ["finland finlande", ["finland", "finlande", "veikkausliiga"]],
-  ["japan japon", ["japan", "japon", "j league", "jleague"]],
-  ["south korea coree du sud", ["korea", "coree", "k league", "kleague"]],
-  ["china chine", ["china", "chine"]],
-  ["usa etats unis amerique", ["usa", "united states", "nba", "wnba", "nfl", "mlb"]],
-  ["portugal portugais", ["portugal", "primeira liga"]],
-  ["netherlands pays bas hollande", ["netherlands", "pays bas", "eredivisie"]],
-  ["belgium belgique", ["belgium", "belgique"]],
-  ["brazil bresil brasil", ["brazil", "bresil", "brasil"]],
-  ["argentina argentine", ["argentina", "argentine"]],
-  ["turkey turquie turkiye", ["turkey", "turquie", "super lig"]],
-  ["switzerland suisse", ["switzerland", "suisse"]],
-  ["austria autriche", ["austria", "autriche"]],
-  ["scotland ecosse", ["scotland", "ecosse"]],
+  ["spain espagne espana espanha spanien إسبانيا اسبانيا", ["spain", "espagne", "espana"]],
+  ["france francais francia franca frankreich فرنسا", ["france"]],
+  ["germany allemagne deutschland alemania alemanha ألمانيا المانيا", ["germany", "allemagne", "deutschland"]],
+  ["england angleterre royaume uni inglaterra vereinigtes konigreich إنجلترا انجلترا إنكلترا", ["england", "angleterre", "epl", "efl"]],
+  ["italy italie italia italien إيطاليا ايطاليا", ["italy", "italie", "italia"]],
+  ["poland pologne polska polonia polen بولندا", ["poland", "pologne", "ekstraklasa"]],
+  ["finland finlande finlandia finnland فنلندا", ["finland", "finlande", "veikkausliiga"]],
+  ["japan japon japao اليابان", ["japan", "japon", "j league", "jleague"]],
+  ["south korea coree du sud corea del sur coreia do sul sudkorea كوريا الجنوبية", ["korea", "coree", "k league", "kleague"]],
+  ["china chine الصين", ["china", "chine"]],
+  ["usa etats unis amerique estados unidos vereinigte staaten الولايات المتحدة أمريكا امريكا", ["usa", "united states", "nba", "wnba", "nfl", "mlb"]],
+  ["portugal portugais البرتغال", ["portugal", "primeira liga"]],
+  ["netherlands pays bas hollande paises bajos paises baixos niederlande هولندا", ["netherlands", "pays bas", "eredivisie"]],
+  ["belgium belgique belgica belgien بلجيكا", ["belgium", "belgique"]],
+  ["brazil bresil brasil brasilien البرازيل", ["brazil", "bresil", "brasil"]],
+  ["argentina argentine argentinien الأرجنتين الارجنتين", ["argentina", "argentine"]],
+  ["turkey turquie turkiye turquia turkei تركيا", ["turkey", "turquie", "super lig"]],
+  ["switzerland suisse suiza suica schweiz سويسرا", ["switzerland", "suisse"]],
+  ["austria autriche osterreich النمسا", ["austria", "autriche"]],
+  ["scotland ecosse escocia schottland اسكتلندا", ["scotland", "ecosse"]],
 ];
 
 function matchSearchText(match) {
@@ -121,13 +969,18 @@ function matchSearchText(match) {
   const aliases = SEARCH_COUNTRIES.filter(([, terms]) => terms.some(term =>
     ` ${competition} `.includes(` ${term} `))).map(([names]) => names);
   const family = String(match?.sport_key || prediction.sport_key || "").split("_")[0];
-  const sports = { soccer: "football foot soccer", basketball: "basket basketball", tennis: "tennis", icehockey: "hockey", baseball: "baseball", mma: "mma ufc boxe" };
-  const risk = { safe: "sur safe", value: "modere value", risky: "risque risky" };
+  const sports = { soccer: "football foot soccer futbol futebol fussball كرة القدم", basketball: "basket basketball baloncesto basquetebol كرة السلة", tennis: "tennis tenis التنس", icehockey: "hockey hoquei eishockey الهوكي", baseball: "baseball beisbol basebol البيسبول", mma: "mma ufc boxe الفنون القتالية" };
+  const risk = { safe: "sur safe lower risk menor riesgo menor risco geringeres risiko مخاطر أقل", value: "modere value moderate moderado moderat متوسط", risky: "risque risky higher risk arriesgado arriscado hoheres risiko مرتفع المخاطر" };
   const teams = normalizeSearch(`${match?.home_team || ""} ${match?.away_team || ""} ${prediction.home_team || ""} ${prediction.away_team || ""}`);
   const teamAliases = teams.includes("paris saint germain") ? "psg" : "";
   // Ne pas indexer un pronostic verrouillé, même si un ancien serveur le transmet.
   const pickText = prediction.locked ? "" : `${prediction.pick || ""} ${prediction.market_label || ""}`;
-  return normalizeSearch(`${competition} ${teams} ${aliases.join(" ")} ${sports[family] || ""} ${risk[prediction.label] || ""} ${teamAliases} ${pickText}`);
+  const marketAliases = prediction.locked ? "" : Object.values(DASHBOARD_MESSAGES).map(dictionary => {
+    const translate = (key, values = {}) => (dictionary[key] || key).replace(/\{\{(\w+)\}\}/g, (placeholder, name) => String(values[name] ?? placeholder));
+    return [prediction.pick, prediction.market_label].filter(Boolean)
+      .map(value => translateBetText(value, translate, number => String(number), [match?.home_team, match?.away_team, prediction.home_team, prediction.away_team])).join(" ");
+  }).join(" ");
+  return normalizeSearch(`${marketAliases} ${competition} ${teams} ${aliases.join(" ")} ${sports[family] || ""} ${risk[prediction.label] || ""} ${teamAliases} ${pickText}`);
 }
 
 function matchesSearch(match, query) {
@@ -159,22 +1012,29 @@ function getAvailablePickCounts(matches) {
 
 export default function DashboardPage() {
   const { user } = useAuth();
+  const { t, formatDate, formatNumber } = useDashboardLanguage();
+  const translationRef = useRef(t);
+  translationRef.current = t;
   const navigate = useNavigate();
   const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
   const pickCounts = useMemo(() => getAvailablePickCounts(matches), [matches]);
   const picksLoading = loading && pickCounts.total === 0;
   const [topPicks,    setTopPicks]   = useState([]);
   const [topLoading,  setTopLoading] = useState(true);
+  const [topError, setTopError] = useState(false);
+  const [topRetry, setTopRetry] = useState(0);
   const [validated,   setValidated]  = useState([]);
   // Tarif public canonique WinPulse Pro.
   // Le Dashboard ne doit jamais afficher un ancien montant ni ouvrir
   // un ancien flux de paiement : l'abonnement se fait sur /app/abonnement.
   const WINPULSE_MONTHLY_PRICE_XOF = 10500;
-  const priceLabel = `${WINPULSE_MONTHLY_PRICE_XOF.toLocaleString("fr-FR")} FCFA`;
+  const priceLabel = `${formatNumber(WINPULSE_MONTHLY_PRICE_XOF)} FCFA`;
   const [searchParams, setSearchParams] = useSearchParams();
   const sport = searchParams.get("sport") || "all";
   const betFilter = searchParams.get("bet") || "all";
   const riskFilter = searchParams.get("risk") || "all";
+  const requestedSort = searchParams.get("sort");
+  const sort = ["time", "confidence", "odds"].includes(requestedSort) ? requestedSort : "time";
   const searchQuery = (searchParams.get("q") || "").slice(0, 200);
   const hasSearch = Boolean(normalizeSearch(searchQuery));
   const setSearchQuery = (value) => setSearchParams(prev => {
@@ -197,6 +1057,16 @@ export default function DashboardPage() {
     val === "all" ? p.delete("risk") : p.set("risk", val);
     return p;
   });
+  const setSort = value => setSearchParams(previous => {
+    const params = new URLSearchParams(previous);
+    value === "time" ? params.delete("sort") : params.set("sort", value);
+    return params;
+  }, { replace: true });
+  const resetFilters = () => setSearchParams(previous => {
+    const params = new URLSearchParams(previous);
+    ["q", "sport", "bet", "risk"].forEach(key => params.delete(key));
+    return params;
+  }, { replace: true });
   const [showAll,     setShowAll]    = useState(false);
   const [refreshing,  setRefreshing] = useState(false);
   const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
@@ -204,37 +1074,45 @@ export default function DashboardPage() {
   const isAdmin = Boolean(user?.is_admin);
   useEffect(() => {
     let ok = true;
+    setTopError(false);
     api.get("/predictions/top")
-      .then(r => { if (ok) setTopPicks(r.data || []); })
-      .finally(() => ok && setTopLoading(false));
+      .then(r => { if (ok) setTopPicks(Array.isArray(r.data) ? r.data : []); })
+      .catch(() => { if (ok) { setTopPicks([]); setTopError(true); } })
+      .finally(() => { if (ok) setTopLoading(false); });
     api.get("/predictions/history")
-      .then(r => { if (ok) setValidated(r.data?.predictions || []); })
+      .then(r => { if (ok) setValidated(Array.isArray(r.data?.predictions) ? r.data.predictions : []); })
       .catch(() => {});
     return () => { ok = false; };
-  }, [lastUpdate]);
+  }, [lastUpdate, topRetry]);
   const shareWA = useCallback((p, e) => {
     e.preventDefault(); e.stopPropagation();
     const text = [
       `🎯 *Pick WinPulse*`,
-      `${p.sport_title} · ${dayjs(p.commence_time).format("DD/MM HH:mm")}`,
+      `${p.sport_title || ""} · ${formatDate(p.commence_time, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
       ``,
       `*${p.home_team}* vs *${p.away_team}*`,
-      `✅ ${p.pick} @ *${p.pick_odds}*`,
-      `💰 Chez *${p.best_bookmaker || "1xBet"}*`,
-      `🎯 Confiance : ${Math.round(p.confidence || 0)}%`,
+      `✅ ${translateBetText(p.pick, t, formatNumber, [p.home_team, p.away_team])} @ *${formatNumber(p.pick_odds, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`,
+      p.best_bookmaker ? `💰 ${t("chez {{bookmaker}}", { bookmaker: `*${p.best_bookmaker}*` })}` : "",
+      t("🎯 Confiance : {{confidence}}%", { confidence: formatNumber(Math.round(p.confidence || 0)) }),
       ``,
       `📱 wnpulse.com`,
-      `💳 Pro dès ${priceLabel} · MTN MoMo 🇧🇯`,
+      t("💳 Pro dès {{price}} · Paiement mobile", { price: priceLabel }),
     ].join("\n");
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
-    toast.success("WhatsApp ouvert !");
-  }, [priceLabel]);
+    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
+    toast.success(t("WhatsApp ouvert !"));
+  }, [priceLabel, t, formatDate, formatNumber]);
   const handleRefresh = useCallback(async () => {
+    if (refreshing) return;
     setRefreshing(true);
-    await refresh();
-    setRefreshing(false);
-    toast.success("Données mises à jour");
-  }, [refresh]);
+    try {
+      await refresh();
+      toast.success(translationRef.current("Données mises à jour"));
+    } catch {
+      toast.error(translationRef.current("Impossible d’actualiser les données. Réessaie dans un instant."));
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh, refreshing]);
   const searchIndex = useMemo(() => new Map(matches.map(match => [match, matchSearchText(match)])), [matches]);
   const filtered = useMemo(() => {
     let list = matches;
@@ -245,17 +1123,16 @@ export default function DashboardPage() {
     if (sport !== "all")
       list = list.filter(m => (m.sport_key || "").toLowerCase().includes(sport));
     if (betFilter !== "all")
-      list = list.filter(m => matchesBetFilter((m.prediction?.pick || ""), betFilter));
+      list = list.filter(m => matchesBetFilter(m.prediction?.pick, betFilter, m.prediction?.market_label, m.prediction?.market_key));
     if (riskFilter !== "all")
       list = list.filter(m => (m.prediction?.label || "") === riskFilter);
     return list;
   }, [matches, sport, betFilter, riskFilter, hasSearch, searchQuery, searchIndex]);
-  const visibleTopPicks = useMemo(() => hasSearch
-    ? topPicks.filter(p => matchesSearch({ ...p, prediction: p }, searchQuery)
+  const visibleTopPicks = useMemo(() => topPicks.filter(p => matchesSearch({ ...p, prediction: p }, searchQuery)
       && (sport === "all" || (p.sport_key || "").toLowerCase().includes(sport))
-      && matchesBetFilter(p.pick || "", betFilter)
+      && matchesBetFilter(p.pick, betFilter, p.market_label, p.market_key)
       && (riskFilter === "all" || p.label === riskFilter))
-    : topPicks, [topPicks, hasSearch, searchQuery, sport, betFilter, riskFilter]);
+    , [topPicks, searchQuery, sport, betFilter, riskFilter]);
   const sportCounts = useMemo(() => {
     const c = {};
     matches.forEach(m => {
@@ -276,298 +1153,151 @@ export default function DashboardPage() {
     });
     return c;
   }, [matches]);
-  const leagueGroups  = useMemo(() => groupByLeague(filtered), [filtered]);
+  const orderedMatches = useMemo(() => sortDashboardMatches(filtered, sort), [filtered, sort]);
+  const leagueGroups = useMemo(() => groupByLeague(orderedMatches), [orderedMatches]);
   const visibleGroups = showAll || hasSearch ? leagueGroups : leagueGroups.slice(0, 6);
-  const liveCount     = matches.filter(m => m.prediction?.is_live || m.is_live).length;return (
+  const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
+  const advancedFilterCount = Number(betFilter !== "all") + Number(riskFilter !== "all");
+  const activeFilters = [
+    ...(hasSearch ? [{ key: "q", label: searchQuery, clear: () => setSearchQuery("") }] : []),
+    ...(sport !== "all" ? [{ key: "sport", label: t(SPORT_TABS.find(tab => tab.key === sport)?.label || sport), clear: () => setSport("all") }] : []),
+    ...(betFilter !== "all" ? [{ key: "bet", label: t(BET_FILTERS.find(filter => filter.key === betFilter)?.label || betFilter), clear: () => setBetFilter("all") }] : []),
+    ...(riskFilter !== "all" ? [{ key: "risk", label: t(RISK_FILTERS.find(filter => filter.key === riskFilter)?.label || riskFilter), clear: () => setRiskFilter("all") }] : []),
+  ];
+  return (
     <AppLayout>
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
-        {/* Hero */}
-        <Card className="relative overflow-hidden border-0 bg-gradient-to-br from-slate-900 via-slate-900 to-orange-950 text-white p-6 sm:p-8">
-          <div className="absolute -top-20 -right-20 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl pointer-events-none" />
-          <div className="relative flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-            <div>
-              <p className="text-[11px] uppercase tracking-[0.18em] text-orange-300 font-bold mb-1.5">
-                {dayjs().format("dddd D MMMM YYYY")} · WinPulse IA
-              </p>
-              <h1 className="font-heading text-3xl sm:text-4xl font-black tracking-tighter">
-                La machine à gagner 🎯
-              </h1>
-              <p className="mt-2 text-slate-300 text-sm">
-                {isFree
-                  ? picksLoading
-                    ? "Chargement des pronostics…"
-                    : pickCounts.total === 0
-                      ? "Aucun pick disponible actuellement"
-                      : "Accès gratuit · Passe Pro pour débloquer les picks réservés"
-                  : `${(isAdmin ? "admin" : subscriptionTier).toUpperCase()} actif · Tous les picks disponibles`}
-              </p>
-            </div> <div className="bg-white/10 rounded-xl ring-1 ring-white/20 px-4 py-2.5 text-center">
-                <div className="text-[10px] uppercase tracking-wider text-white/70 font-bold">Picks disponibles</div>
-                <div className="font-heading text-2xl font-black text-white" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : pickCounts.total}</div>
-              </div>
-              {liveCount > 0 && (
-                <div className="bg-rose-500/20 rounded-xl ring-1 ring-rose-400/40 px-4 py-2.5 text-center">
-                  <div className="text-[10px] uppercase tracking-wider text-rose-300 font-bold">En direct</div>
-                  <div className="font-heading text-2xl font-black text-rose-300 flex items-center gap-1">
-                    <span className="h-2 w-2 rounded-full bg-rose-400 animate-pulse inline-block" />
-                    {liveCount}
-                  </div>
-                </div>
-              )}
-              <button
-                onClick={handleRefresh}
-                disabled={refreshing}
-                className="bg-white/10 rounded-xl ring-1 ring-white/20 px-3 py-2.5 text-white hover:bg-white/20 transition-all"
-              >
-                <RefreshCw className={`h-5 w-5 ${refreshing ? "animate-spin" : ""}`} />
-              </button>
-            </div>
-        </Card>
-        <Card className="border-orange-200 bg-white p-4 sm:p-5" data-testid="dashboard-search">
-          <label htmlFor="dashboard-search-input" className="mb-2 block text-sm font-bold text-slate-900">Rechercher une rencontre</label>
+      <div className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:space-y-6 sm:px-6 sm:py-7 lg:px-8" data-testid="dashboard-redesigned">
+        <Card className="relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-5 text-white sm:p-7">
+          <div className="pointer-events-none absolute -end-20 -top-24 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
           <div className="relative">
-            <Search className="pointer-events-none absolute left-3 top-1/2 h-5 w-5 -translate-y-1/2 text-orange-500" aria-hidden="true" />
-            <input id="dashboard-search-input" type="search" value={searchQuery} maxLength={200}
-              onChange={event => setSearchQuery(event.target.value)}
-              placeholder="Équipe, championnat, pays, sport ou marché…"
-              className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 pl-11 pr-12 text-base text-slate-900 placeholder:text-slate-400 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-200 [&::-webkit-search-cancel-button]:appearance-none"
-              aria-describedby="dashboard-search-help" data-testid="dashboard-search-input" />
-            {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label="Effacer la recherche" className="absolute right-1 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-lg text-slate-500 hover:bg-slate-100"><X className="h-4 w-4" aria-hidden="true" /></button>}
-          </div>
-          <p id="dashboard-search-help" className="mt-2 text-xs text-slate-500">Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.</p>
-          {hasSearch && <p className="mt-2 text-sm font-semibold text-orange-700" aria-live="polite">{filtered.length} rencontre{filtered.length === 1 ? "" : "s"} trouvée{filtered.length === 1 ? "" : "s"} dans les matchs chargés.</p>}
-        </Card>
-        {/* Top picks */}
-        <section>
-          <div className="flex items-center justify-between mb-3">
-            <div className="flex items-center gap-2">
-              <Trophy className="h-5 w-5 text-amber-500" />
-              <h2 className="font-heading text-lg font-bold text-slate-900">À la une</h2>
-              <span className="text-xs text-slate-500">Top confiance IA</span>
-            </div><Link to="/app/top" className="text-sm text-orange-600 font-semibold flex items-center gap-1 hover:underline">
-              Tout voir <ChevronRight className="h-3.5 w-3.5" />
-            </Link>
-          </div>
-          {topLoading ? (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {[1,2,3].map(i => <Skeleton key={i} className="h-36" />)}
-            </div>
-          ) : visibleTopPicks.length === 0 ? (
-            <Card className="p-8 text-center bg-slate-50 border-dashed">
-              <div className="text-2xl mb-2">🔍</div>
-              <p className="text-slate-600 font-medium">{hasSearch ? "Aucune sélection à la une pour cette recherche." : "Analyse en cours..."}</p>
-              <p className="text-slate-500 text-sm mt-1">{hasSearch ? "Consulte aussi les résultats par championnat ci-dessous." : "Les picks arrivent à 06h00 WAT"}</p>
-            </Card>
-          ) : (
-            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {visibleTopPicks.slice(0,3).map(p => {
-                const locked = p.locked || !p.pick;
-                return (
-                  <Link key={p.match_id} to={`/app/match/${p.match_id}`}>
-                    <Card className={`relative overflow-hidden border p-5 hover:shadow-md transition-all h-full cursor-pointer
-                      ${locked ? "bg-neutral-50 border-dashed border-orange-200" : "bg-gradient-to-br from-white to-orange-50/30 border-orange-200/60"}
-                      ${p.is_live ? "ring-2 ring-rose-500/40" : ""}`}>
-                      <div className="absolute top-3 right-3 flex items-center gap-1.5">
-                        {p.is_live && (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2 py-0.5 text-[10px] font-black uppercase animate-pulse">
-                            <Radio className="h-2.5 w-2.5" /> LIVE
-                          </span>)}
-                        {locked ? (
-                          <span className="inline-flex items-center gap-1 rounded-full bg-orange-100 text-orange-700 border border-orange-200 px-2 py-0.5 text-xs font-bold">
-                            <Lock className="h-3 w-3" /> PRO
-                          </span>
-                        ) : (
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold border
-                            ${p.label==="safe" ? "bg-green-100 text-green-700 border-green-200"
-                            : p.label==="value" ? "bg-orange-100 text-orange-700 border-orange-200"
-                            : "bg-red-100 text-red-700 border-red-200"}`}>
-                            {p.label==="safe" ? "🟢 SÛR" : p.label==="value" ? "🟡 MODÉRÉ" : "🔴 RISQUÉ"}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-[10px] uppercase tracking-widest text-slate-500 font-semibold mb-3 flex items-center gap-1 flex-wrap pr-16">
-                        <Flame className="h-3 w-3 text-orange-500" />
-                        {p.sport_title}
-                        {p.market_label && !locked && (
-                          <span className="ml-1 bg-orange-100 text-orange-700 border border-orange-200 rounded-full px-1.5 text-[9px] font-bold uppercase">
-                            {p.market_label}
-                          </span>
-                        )} </div>
-                      <div className="space-y-0.5 mb-3">
-                        <div className="font-heading font-bold text-sm text-slate-900 truncate">{p.home_team}</div>
-                        <div className="text-xs text-slate-400">vs</div>
-                        <div className="font-heading font-bold text-sm text-slate-900 truncate">{p.away_team}</div>
-                      </div>
-                      <div className="pt-3 border-t border-slate-100 flex items-end justify-between">
-                        {locked ? (
-                          <div className="w-full">
-                            <div className="text-[10px] uppercase tracking-wider text-orange-600 font-bold mb-1">Verrouillé</div>
-                            <div className="text-xs text-slate-500">Passe Pro pour débloquer</div>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="flex-1 min-w-0">
-                              <div className="text-[10px] uppercase text-slate-500 font-semibold">Pronostic</div>
-                              <div className="text-sm font-bold text-orange-600 truncate">{p.pick}</div>
-                              {p.best_bookmaker && (
-                                <div className="text-[10px] text-slate-400">chez {p.best_bookmaker}</div>
-                              )}
-                            </div>
-                            <div className="text-right ml-2">
-                              <div className="text-[10px] uppercase text-slate-500 font-semibold">Cote</div>
-                              <div className="font-mono text-lg font-bold text-slate-900">{p.pick_odds}</div>
-                            </div>
-                          </>
-                        )}
-                      </div>
-                      {isAdmin && !locked && (
-                        <button
-                          onClick={e => shareWA(p, e)}
-                          className="absolute bottom-3 right-3 h-7 w-7 rounded-full bg-[#25D366] hover:bg-[#1ebe5c] text-white grid place-items-center shadow-sm"
-                        >
-                          <Send className="h-3 w-3" />
-                        </button>
-                      )}
-                    </Card>
-                  </Link>
-                );
-              })}
-            </div>
-          )}
-        </section>
-        {/* Picks validés */}
-        <ValidatedSection picks={validated} />
-        {/* CTA Free */}
-        {isFree && (
-          <Card className="border-orange-200 bg-gradient-to-r from-orange-50 to-rose-50 p-5 flex flex-col sm:flex-row items-start sm:items-center gap-4">
-            <div className="h-11 w-11 rounded-xl bg-gradient-to-br from-orange-500 to-rose-500 grid place-items-center text-white flex-shrink-0">
-              <Sparkles className="h-5 w-5" />
-            </div>     <div className="flex-1">
-              <div className="font-heading font-bold text-slate-900">Débloque tous les pronostics.</div>
-              <div className="text-sm text-slate-700">
-                <strong>{picksLoading ? "…" : pickCounts.locked}</strong> pick{pickCounts.locked > 1 ? "s" : ""} réservé{pickCounts.locked > 1 ? "s" : ""} actuellement · Analyse complète · Combos · Super Combos
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0 flex-1 basis-60">
+                <p className="mb-2 text-xs font-semibold leading-5 text-orange-200">{formatDate(new Date(), { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · WinPulse</p>
+                <h1 className="font-heading text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl">{t("Tes pronostics, en un coup d’œil 🎯")}</h1>
+                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                  {isFree ? picksLoading ? t("Chargement des pronostics…") : pickCounts.total === 0 ? t("Aucun pick disponible actuellement") : t("Accès gratuit · Passe Pro pour débloquer les picks réservés")
+                    : t("{{plan}} actif · Tous les picks disponibles", { plan: (isAdmin ? "admin" : subscriptionTier).toUpperCase() })}
+                </p>
               </div>
-            </div>
-            <Button
-              className="bg-gradient-to-r from-orange-500 to-rose-500 text-white border-0 hover:opacity-90 flex-shrink-0"
-              onClick={() => navigate("/app/abonnement")}
-            >
-              Passer Pro · {priceLabel} <ChevronRight className="h-4 w-4 ml-1" />
-            </Button>
-          </Card>
-        )}
-        {/* Matchs par championnat */}
-        <section>
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="font-heading text-lg font-bold text-slate-900 flex items-center gap-2">
-              <Activity className="h-5 w-5 text-orange-600" />
-              Matchs par championnat
-              <span className="text-xs font-normal text-slate-500">({filtered.length})</span>
-            </h2>
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-thin">
-            {SPORT_TABS.map(tab => (
-              <button
-                key={tab.key}
-                onClick={() => setSport(tab.key)}
-                className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all
-                  ${sport === tab.key
-                    ? "bg-orange-600 text-white border-orange-600"
-                    : "bg-white text-slate-600 border-slate-200 hover:border-orange-300 hover:text-orange-600"}`}        >
-                <span>{tab.icon}</span>
-                <span>{tab.label}</span>
-                {tab.key !== "all" && sportCounts[tab.key] > 0 && (
-                  <span className={`text-[9px] rounded-full px-1.5 font-bold
-                    ${sport === tab.key ? "bg-white/20 text-white" : "bg-orange-100 text-orange-600"}`}>
-                    {sportCounts[tab.key]}
-                  </span>
-                )}
+              <button type="button" onClick={handleRefresh} disabled={refreshing} aria-busy={refreshing}
+                aria-label={refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}
+                className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold transition-colors hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 disabled:opacity-60">
+                <RefreshCw className={`h-4 w-4 shrink-0 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
+                <span>{refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}</span>
               </button>
-            ))}
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-2 mb-3 scrollbar-thin">
-            {BET_FILTERS.map(f => (
-              <button
-                key={f.key}
-                onClick={() => setBetFilter(f.key)}
-                className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all
-                  ${betFilter === f.key     ? "bg-slate-800 text-white border-slate-800"
-                    : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"}`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
-          {/* Ligne de filtre par niveau de confiance — additive, en plus des
-              filtres sport et marche existants ci-dessus. Permet de reperer
-              d'un clic tous les picks Surs, Moderes ou Risques. */}
-          <div className="flex items-center gap-2 mb-5">
-            <ShieldCheck className="h-3.5 w-3.5 text-slate-400 flex-shrink-0" />
-            <div className="flex gap-2 overflow-x-auto scrollbar-thin">
-              {RISK_FILTERS.map(f => (
-                <button
-                  key={f.key}
-                  onClick={() => setRiskFilter(f.key)}
-                  data-testid={`risk-filter-${f.key}`}
-                  className={`flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border transition-all
-                    ${riskFilter === f.key ? f.cls : "bg-white text-slate-600 border-slate-200 hover:border-slate-400"}`}
-                >
-                  <span>{f.label}</span>
-                  {f.key !== "all" && riskCounts[f.key] > 0 && (
-                    <span className={`text-[9px] rounded-full px-1.5 font-bold
-                      ${riskFilter === f.key ? "bg-white/20 text-white" : "bg-slate-100 text-slate-600"}`}>
-                      {riskCounts[f.key]}
-                    </span>
-                  )}
-                </button>
-              ))}
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3 sm:p-4">
+                <p className="min-h-10 text-xs font-medium leading-5 text-slate-300">{t("Picks disponibles")}</p>
+                <p className="mt-1 font-heading text-3xl font-extrabold tabular-nums" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : formatNumber(pickCounts.total)}</p>
+              </div>
+              <div className="rounded-xl border border-orange-300/15 bg-orange-500/10 p-3 sm:p-4">
+                <p className="min-h-10 text-xs font-medium leading-5 text-orange-100">{t("Accessibles avec ton compte")}</p>
+                <p className="mt-1 font-heading text-3xl font-extrabold tabular-nums text-orange-200" data-testid="accessible-picks-count">{picksLoading ? "…" : formatNumber(pickCounts.accessible)}</p>
+              </div>
+              <Link to="/app/live" className="col-span-2 flex min-h-11 items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 sm:col-span-1 sm:block sm:p-4">
+                <p className="flex items-center gap-1.5 text-xs font-medium leading-5 text-slate-300 sm:min-h-10"><Radio className="h-4 w-4 text-rose-300" aria-hidden="true" />{t("En direct")}</p>
+                <p className="font-heading text-xl font-extrabold tabular-nums text-rose-200 sm:mt-1 sm:text-3xl">{formatNumber(liveCount)}</p>
+              </Link>
             </div>
           </div>
-          {loading ? (
-            <div className="space-y-6">
-              {[1,2,3].map(i => (
-                <div key={i}>
-                  <Skeleton className="h-6 w-48 mb-3" />
-                  <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-                    {[1,2,3].map(j => <Skeleton key={j} className="h-44" />)}
-                  </div>
-                </div>
-              ))}
+        </Card>
+
+        <Card className="min-w-0 rounded-2xl border-orange-100 bg-white p-4 shadow-sm sm:p-5" data-testid="dashboard-search">
+          <div className="mb-4">
+            <h2 className="font-heading text-lg font-bold text-slate-900 sm:text-xl">{t("Trouve ton prochain match")}</h2>
+            <p className="mt-1 text-sm leading-6 text-slate-500">{t("Recherche une équipe ou explore les championnats. Les filtres se combinent.")}</p>
+          </div>
+          <label htmlFor="dashboard-search-input" className="sr-only">{t("Rechercher une rencontre")}</label>
+          <div className="relative">
+            <Search className="pointer-events-none absolute start-3.5 top-1/2 h-5 w-5 -translate-y-1/2 text-orange-500" aria-hidden="true" />
+            <input id="dashboard-search-input" type="search" value={searchQuery} maxLength={200} onChange={event => setSearchQuery(event.target.value)}
+              placeholder={t("Équipe, championnat, pays, sport ou marché…")}
+              className="h-12 w-full min-w-0 rounded-xl border border-slate-200 bg-slate-50 pe-12 ps-11 text-base text-slate-900 placeholder:text-slate-400 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-200 [&::-webkit-search-cancel-button]:appearance-none"
+              aria-describedby="dashboard-search-help" data-testid="dashboard-search-input" />
+            {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label={t("Effacer la recherche")} className="absolute end-1 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"><X className="h-4 w-4" aria-hidden="true" /></button>}
+          </div>
+          <p id="dashboard-search-help" className="mt-2 text-xs leading-5 text-slate-500">{t("Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.")}</p>
+          <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={t("Sport")}>
+            {SPORT_TABS.map(tab => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key}
+              className={`inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${sport === tab.key ? "border-orange-600 bg-orange-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50"}`}>
+              <span aria-hidden="true">{tab.icon}</span><span>{t(tab.label)}</span>
+              {tab.key !== "all" && sportCounts[tab.key] > 0 && <span className={`rounded-full px-1.5 text-xs tabular-nums ${sport === tab.key ? "bg-white/20" : "bg-slate-100 text-slate-500"}`}>{formatNumber(sportCounts[tab.key])}</span>}
+            </button>)}
+          </div>
+          <details className="mt-3 border-t border-slate-100 pt-2" data-testid="dashboard-advanced-filters">
+            <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 rounded-lg py-2 text-sm font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
+              <Filter className="h-4 w-4 shrink-0 text-orange-500" aria-hidden="true" />{t("Affiner les résultats")}
+              {advancedFilterCount > 0 && <span className="rounded-full bg-orange-100 px-2 py-1 text-xs text-orange-700">{t("{{count}} filtres avancés actifs", { count: formatNumber(advancedFilterCount) })}</span>}
+              <ChevronRight className="ms-auto h-4 w-4 shrink-0 rtl:rotate-180" aria-hidden="true" />
+            </summary>
+            <div className="space-y-4 pb-3 pt-2">
+              <fieldset><legend className="mb-2 text-sm font-bold text-slate-700">{t("Marché")}</legend>
+                <div className="flex flex-wrap gap-2">{BET_FILTERS.map(filter => <button key={filter.key} type="button" onClick={() => setBetFilter(filter.key)} aria-pressed={betFilter === filter.key}
+                  className={`min-h-11 rounded-xl border px-3 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${betFilter === filter.key ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>{t(filter.label)}</button>)}</div>
+              </fieldset>
+              <fieldset><legend className="mb-2 flex items-center gap-1.5 text-sm font-bold text-slate-700"><ShieldCheck className="h-4 w-4 text-slate-400" aria-hidden="true" />{t("Niveau de risque")}</legend>
+                <div className="flex flex-wrap gap-2">{RISK_FILTERS.map(filter => <button key={filter.key} type="button" onClick={() => setRiskFilter(filter.key)} data-testid={`risk-filter-${filter.key}`} aria-pressed={riskFilter === filter.key}
+                  className={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${riskFilter === filter.key ? filter.cls : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}>
+                  {t(filter.label)}{filter.key !== "all" && riskCounts[filter.key] > 0 && <span className={`rounded-full px-1.5 text-xs tabular-nums ${riskFilter === filter.key ? "bg-white/20" : "bg-slate-100"}`}>{formatNumber(riskCounts[filter.key])}</span>}
+                </button>)}</div>
+              </fieldset>
             </div>
-          ) : filtered.length === 0 ? (
-            <Card className="p-12 text-center bg-white border-slate-200">
-              <div className="text-3xl mb-3">🔍</div>
-              <div className="text-slate-700 font-semibold text-lg">{hasSearch ? "Aucune rencontre ne correspond à cette recherche et aux filtres." : "Aucun match pour ce filtre"}</div>
-              <div className="text-slate-500 text-sm mt-2">Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.</div>
-              <Button variant="outline" className="mt-4" onClick={() => setSearchParams(prev => { const p = new URLSearchParams(prev); ["q", "sport", "bet", "risk"].forEach(key => p.delete(key)); return p; })}>
-                Réinitialiser les filtres
-              </Button>
-            </Card>
-          ) : (  <div className="space-y-8">
-              {visibleGroups.map(([league, lMatches]) => (
-                <LeagueSection
-                  key={league}
-                  league={league}
-                  matches={lMatches}
-                  isAdmin={isAdmin}
-                  shareWA={shareWA}
-                  isFree={isFree}
-                  onUpgrade={() => navigate("/app/abonnement")}
-                />
-              ))}
-              {!showAll && !hasSearch && leagueGroups.length > 6 && (
-                <div className="text-center">
-                  <Button variant="outline" onClick={() => setShowAll(true)} className="gap-2">
-                    <Filter className="h-4 w-4" />
-                    Voir {leagueGroups.length - 6} championnats supplémentaires
-                  </Button>
-                </div>
-              )}
+          </details>
+          {activeFilters.length > 0 && <div className="mt-2 flex flex-wrap items-center gap-2 border-t border-slate-100 pt-3" role="group" aria-label={t("Filtres actifs")}>
+            {activeFilters.map(filter => <button key={filter.key} type="button" onClick={filter.clear} aria-label={t("Retirer le filtre {{filter}}", { filter: filter.label })}
+              className="inline-flex min-h-11 max-w-full items-center gap-2 rounded-lg border border-orange-100 bg-orange-50 px-2.5 py-2 text-sm font-medium text-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"><span className="min-w-0 break-words">{filter.label}</span><X className="h-3.5 w-3.5 shrink-0" aria-hidden="true" /></button>)}
+            <button type="button" onClick={resetFilters} className="min-h-11 rounded-lg px-2 text-sm font-semibold text-slate-600 underline underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">{t("Effacer les filtres")}</button>
+          </div>}
+          {hasSearch && <p className="mt-3 text-sm font-semibold leading-6 text-orange-700" aria-live="polite">{t(filtered.length === 1 ? "{{count}} rencontre trouvée dans les matchs chargés." : "{{count}} rencontres trouvées dans les matchs chargés.", { count: formatNumber(filtered.length) })}</p>}
+        </Card>
+
+        <details className="rounded-2xl border border-orange-100 bg-gradient-to-r from-orange-50/70 to-white" data-testid="dashboard-featured">
+          <summary className="flex min-h-14 cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 sm:px-5 [&::-webkit-details-marker]:hidden">
+            <Trophy className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" /><h2 className="font-heading text-base font-bold text-slate-900">{t("Sélections à la une")}</h2>
+            {!topLoading && !topError && <span className="rounded-full border border-orange-200 bg-white px-2 py-0.5 text-xs font-bold text-orange-700">{formatNumber(Math.min(visibleTopPicks.length, 3))}</span>}
+            <span className="ms-auto text-xs font-semibold text-orange-700">{t("Ouvrir la sélection")}</span><ChevronRight className="h-4 w-4 shrink-0 text-orange-500 rtl:rotate-180" aria-hidden="true" />
+          </summary>
+          <div className="border-t border-orange-100 p-4 sm:p-5">
+            {topLoading ? <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(number => <Skeleton key={number} className="h-64 rounded-xl" />)}</div>
+              : topError ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center" role="alert"><p className="text-sm leading-6 text-slate-700">{t("Impossible de charger les sélections à la une.")}</p><Button type="button" variant="outline" className="mt-3 min-h-11" onClick={() => { setTopLoading(true); setTopRetry(value => value + 1); }}>{t("Réessayer")}</Button></div>
+                : visibleTopPicks.length === 0 ? <p className="py-3 text-sm leading-6 text-slate-500">{hasSearch ? t("Aucune sélection à la une pour cette recherche.") : t("Aucune sélection à la une pour le moment.")}</p>
+                  : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{visibleTopPicks.slice(0,3).map(prediction => <MatchCard key={prediction.match_id || prediction.id}
+                    match={{ id: prediction.match_id || prediction.id, home_team: prediction.home_team, away_team: prediction.away_team, sport_title: prediction.sport_title, sport_key: prediction.sport_key, commence_time: prediction.commence_time, prediction }}
+                    isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} />)}</div>}
+            <Link to="/app/top" className="mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-orange-600 hover:underline">{t("Tout voir")}<ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" /></Link>
+          </div>
+        </details>
+
+        <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500" aria-live="polite">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(filtered.length), leagues: formatNumber(leagueGroups.length) })}</p>
             </div>
-          )}   </section>
+            <div className="flex min-w-0 flex-wrap items-center gap-2"><label htmlFor="dashboard-sort" className="text-xs font-semibold text-slate-500">{t("Trier les matchs")}</label>
+              <select id="dashboard-sort" value={sort} onChange={event => setSort(event.target.value)} title={t("Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.")}
+                className="min-h-11 max-w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-base text-slate-700 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-200" data-testid="dashboard-sort">
+                <option value="time">{t("Par horaire")}</option><option value="confidence">{t("Par confiance")}</option><option value="odds">{t("Par cote")}</option>
+              </select>
+            </div>
+          </div>
+          {loading ? <div className="space-y-6">{[1,2].map(number => <div key={number}><Skeleton className="mb-3 h-7 w-48" /><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(index => <Skeleton key={index} className="h-72 rounded-xl" />)}</div></div>)}</div>
+            : filtered.length === 0 ? <Card className="rounded-2xl border-dashed border-slate-200 bg-white px-5 py-10 text-center"><Search className="mx-auto mb-3 h-7 w-7 text-orange-400" aria-hidden="true" /><p className="text-lg font-semibold text-slate-700">{hasSearch ? t("Aucune rencontre ne correspond à cette recherche et aux filtres.") : t("Aucun match pour ce filtre")}</p><p className="mt-2 text-sm leading-6 text-slate-500">{t("Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.")}</p><Button type="button" variant="outline" className="mt-4 min-h-11" onClick={resetFilters}>{t("Réinitialiser les filtres")}</Button></Card>
+              : <div className="space-y-6">{visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
+                {!showAll && !hasSearch && leagueGroups.length > 6 && <div className="rounded-xl border border-slate-200 bg-white p-4 text-center"><p className="mb-3 text-sm text-slate-500">{t("{{shown}} championnats affichés sur {{total}}", { shown: formatNumber(visibleGroups.length), total: formatNumber(leagueGroups.length) })}</p><Button type="button" variant="outline" onClick={() => setShowAll(true)} className="min-h-11 max-w-full whitespace-normal">{t("Voir {{count}} championnats supplémentaires", { count: formatNumber(leagueGroups.length - 6) })}</Button></div>}
+              </div>}
+        </section>
+
+        <ValidatedSection picks={validated} />
+
+        {isFree && !picksLoading && pickCounts.locked > 0 && <Card className="flex flex-col gap-4 rounded-2xl border-orange-200 bg-orange-50/60 p-4 sm:flex-row sm:items-center sm:p-5" data-testid="dashboard-upgrade">
+          <div className="min-w-0 flex-1"><h2 className="flex items-center gap-2 font-heading text-base font-bold text-slate-900"><Sparkles className="h-4 w-4 shrink-0 text-orange-500" aria-hidden="true" />{t("Plus de sélections avec Pro")}</h2><p className="mt-1 text-sm leading-6 text-slate-600">{t("{{count}} pronostics réservés aux abonnés actuellement.", { count: formatNumber(pickCounts.locked) })}</p><p className="mt-1 text-sm font-semibold text-orange-700">{t("{{price}} / 30 jours", { price: priceLabel })}</p></div>
+          <Button type="button" className="min-h-11 w-full whitespace-normal border-0 bg-gradient-to-r from-orange-500 to-rose-500 px-5 text-white hover:opacity-90 sm:w-auto" onClick={() => navigate("/app/abonnement")}>{t("Découvrir Pro")}<ChevronRight className="ms-1 h-4 w-4 shrink-0 rtl:rotate-180" aria-hidden="true" /></Button>
+        </Card>}
       </div>
     </AppLayout>
   );
+
 }
 function getLeagueEmoji(name = "") {
   const n = name.toLowerCase();
@@ -578,66 +1308,62 @@ function getLeagueEmoji(name = "") {
   if (n.includes("mma") || n.includes("ufc")) return "🥊";
   return "⚽";
 }
-function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade }) {
+function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade, showAllMatches = false }) {
+  const { t, formatNumber } = useDashboardLanguage();
   const [expanded, setExpanded] = useState(true);
-  const liveCount = matches.filter(m => m.prediction?.is_live || m.is_live).length;
-  return (
-    <div><button onClick={() => setExpanded(e => !e)} className="w-full flex items-center gap-2 mb-3 group">
-        <span className="text-lg">{getLeagueEmoji(league)}</span>
-        <h3 className="font-heading font-bold text-slate-900 text-sm group-hover:text-orange-600 transition-colors">{league}</h3>
-        {liveCount > 0 && (
-          <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-600 rounded-full px-2 py-0.5 text-[10px] font-bold border border-rose-200 animate-pulse">
-            <span className="h-1.5 w-1.5 rounded-full bg-rose-500 inline-block" />
-            {liveCount} LIVE
-          </span>
-        )}
-        <span className="text-xs text-slate-400 ml-1">({matches.length})</span>
-        <div className="flex-1 h-px bg-slate-100 ml-2" />
-        <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`} />
-      </button>
-      {expanded && (
-        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {matches.map(m => (
-            <MatchCard key={m.id} match={m} isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} />
-          ))}
-        </div>
-      )}
-    </div>
-  );
+  const [expandedAll, setExpandedAll] = useState(false);
+  const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
+  const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
+  return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-3 sm:p-4" data-testid="dashboard-league">
+    <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-lg" aria-hidden="true">{getLeagueEmoji(league)}</span>
+      <h3 className="min-w-0 flex-1 basis-28 break-words font-heading text-base font-bold leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h3>
+      {liveCount > 0 && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">{formatNumber(liveCount)} {t("LIVE")}</span>}
+      <span className="rounded-full bg-white px-2 py-1 text-xs font-bold tabular-nums text-slate-500">{formatNumber(matches.length)}</span>
+      <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
+    </button>
+    {expanded && <>
+      <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} />)}</div>
+      {!showAllMatches && matches.length > 6 && <button type="button" onClick={() => setExpandedAll(value => !value)} className="mt-3 flex min-h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-600 hover:border-orange-300 hover:text-orange-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="league-show-more">
+        {expandedAll ? t("Réduire cette liste") : t("Voir {{count}} autres rencontres", { count: formatNumber(matches.length - visible.length) })}
+      </button>}
+    </>}
+  </div>;
 }
 function ValidatedSection({ picks }) {
+  const { t, formatDate, formatNumber } = useDashboardLanguage();
   const today = dayjs().format("YYYY-MM-DD");
   const weekStart = dayjs().startOf("week").format("YYYY-MM-DD");
-  const todayPicks = (picks||[]).filter(p => (p.date||"").slice(0,10) === today);
-  const weekPicks  = (picks||[]).filter(p => { const d=(p.date||"").slice(0,10); return d>=weekStart && d!==today; });
-  const stats = arr => ({ wins:arr.filter(p=>p.won===true).length, losses:arr.filter(p=>p.won===false).length, pending:arr.filter(p=>p.won==null).length, total:arr.length });
-  if (todayPicks.length + weekPicks.length === 0) return null;
-  return (  <section>
-      <div className="flex items-center gap-2 mb-3">
-        <TrendingUp className="h-5 w-5 text-emerald-500" />
-        <h2 className="font-heading font-bold text-lg text-slate-900">Picks validés</h2>
-        <span className="text-[10px] uppercase tracking-wider bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-full px-2 py-0.5 font-bold">Track record</span>
-      </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <ValidatedBlock title={`Aujourd'hui (${dayjs().format("DD/MM")})`} picks={todayPicks} stats={stats(todayPicks)} />
-        <ValidatedBlock title="Cette semaine" picks={weekPicks} stats={stats(weekPicks)} />
-      </div>
-    </section>
-  );
+  const todayPicks = (picks || []).filter(pick => (pick.date || "").slice(0,10) === today);
+  const weekPicks = (picks || []).filter(pick => { const date = (pick.date || "").slice(0,10); return date >= weekStart && date < today; });
+  const stats = list => ({ wins: list.filter(pick => pick.won === true).length, losses: list.filter(pick => pick.won === false).length, pending: list.filter(pick => pick.won == null).length, total: list.length });
+  const count = todayPicks.length + weekPicks.length;
+  if (!count) return null;
+  return <details className="rounded-2xl border border-slate-200 bg-white" data-testid="dashboard-results">
+    <summary className="flex min-h-14 cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 sm:px-5 [&::-webkit-details-marker]:hidden">
+      <TrendingUp className="h-5 w-5 shrink-0 text-emerald-500" aria-hidden="true" /><div className="min-w-0 flex-1"><h2 className="font-heading text-base font-bold text-slate-900">{t("Résultats récents")}</h2><p className="mt-1 text-xs leading-5 text-slate-500">{t("{{count}} pronostics sur la période", { count: formatNumber(count) })}</p></div>
+      <span className="rounded-full bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">{t("Track record")}</span><ChevronRight className="h-4 w-4 shrink-0 text-slate-400 rtl:rotate-180" aria-hidden="true" />
+    </summary>
+    <div className="border-t border-slate-100 p-4 sm:p-5"><p className="mb-3 text-xs leading-5 text-slate-500">{t("Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.")}</p>
+      <div className="grid gap-4 lg:grid-cols-2"><ValidatedBlock title={t("Aujourd’hui ({{date}})", { date: formatDate(new Date(), { day: "2-digit", month: "2-digit" }) })} picks={todayPicks} stats={stats(todayPicks)} /><ValidatedBlock title={t("Cette semaine · hors aujourd’hui")} picks={weekPicks} stats={stats(weekPicks)} /></div>
+    </div>
+  </details>;
 }
 function ValidatedBlock({ title, picks, stats }) {
+  const { t, formatNumber } = useDashboardLanguage();
+  const settled = stats.wins + stats.losses;
   return (
     <Card className="p-4 bg-white border-neutral-200">
-      <div className="flex items-center justify-between mb-3">
+      <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
         <h3 className="font-heading font-bold text-slate-900 text-sm">{title}</h3>
-        <div className="flex items-center gap-2 text-[11px]">
-          <span className="flex items-center gap-0.5 text-emerald-600 font-bold"><CheckCircle2 className="h-3 w-3"/>{stats.wins}</span>
-          <span className="flex items-center gap-0.5 text-rose-600 font-bold"><XCircle className="h-3 w-3"/>{stats.losses}</span>
-          <span className="flex items-center gap-0.5 text-amber-600 font-bold"><Clock className="h-3 w-3"/>{stats.pending}</span>
-          {stats.total>0 && <span className="font-bold text-slate-700 ml-1">{Math.round((stats.wins/stats.total)*100)}% win</span>}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="flex items-center gap-0.5 text-emerald-600 font-bold" aria-label={`${t("Gagnés")} : ${formatNumber(stats.wins)}`} title={t("Gagnés")}><CheckCircle2 className="h-3 w-3"/>{formatNumber(stats.wins)}</span>
+          <span className="flex items-center gap-0.5 text-rose-600 font-bold" aria-label={`${t("Perdus")} : ${formatNumber(stats.losses)}`} title={t("Perdus")}><XCircle className="h-3 w-3"/>{formatNumber(stats.losses)}</span>
+          <span className="flex items-center gap-0.5 text-amber-600 font-bold" aria-label={`${t("En attente")} : ${formatNumber(stats.pending)}`} title={t("En attente")}><Clock className="h-3 w-3"/>{formatNumber(stats.pending)}</span>
+          {settled > 0 && <span className="font-bold text-slate-700 ms-1" title={t("Taux calculé sur les picks gagnés et perdus ; les picks en attente sont exclus.")}>{t("{{rate}} de réussite", { rate: formatNumber(stats.wins / settled, { style: "percent", maximumFractionDigits: 0 }) })}</span>}
         </div>
       </div> {picks.length===0 ? (
-        <div className="text-xs text-slate-400 py-4 text-center">Aucun pick pour cette période.</div>
+        <div className="text-sm text-slate-400 py-4 text-center">{t("Aucun pick pour cette période.")}</div>
       ) : (
         <div className="space-y-1.5 max-h-64 overflow-y-auto">
           {picks.slice(0,15).map((p,i) => {
@@ -647,18 +1373,20 @@ function ValidatedBlock({ title, picks, stats }) {
             const bg = p.won===true ? "bg-emerald-50 border-emerald-100"
               : p.won===false ? "bg-rose-50 border-rose-100" : "bg-amber-50 border-amber-100";
             return (
-              <div key={p.id||i} className={`flex items-center gap-2 p-2 rounded-lg border ${bg} text-xs`}>
+              <div key={p.id||i} className={`flex items-center gap-2 p-2 rounded-lg border ${bg} text-sm`}>
                 {icon}
                 <div className="flex-1 min-w-0">
-                  <div className="font-semibold text-slate-900 truncate">{p.match||`${p.home_team} vs ${p.away_team}`}</div>
-                  <div className="text-slate-500 truncate"><span className="font-bold text-slate-700">{p.pick}</span> @ {p.odds}</div>
+                  <div dir="auto" className="font-semibold text-slate-900 break-words">{p.match||`${p.home_team} vs ${p.away_team}`}</div>
+                  <div className="text-slate-500 break-words"><span className="font-bold text-slate-700">{translateBetText(p.pick, t, formatNumber, [p.home_team, p.away_team])}</span> @ {formatNumber(p.odds, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                 </div>
-                {p.won===true && p.profit!=null && <span className="text-[11px] font-bold text-emerald-700 shrink-0">+{Math.round(p.profit)}u</span>}
+                {p.won===true && p.profit!=null && <span className="text-xs font-bold text-emerald-700 shrink-0">{formatNumber(Math.round(p.profit), { signDisplay: "always" })}u</span>}
               </div>
             );
           })}
+          {picks.length > 15 && <p className="pt-3 text-sm text-slate-500">{t("Les 15 premiers picks sont affichés. Consulte le track record pour la suite.")}</p>}
         </div>
       )}
+      <Link to="/resultats" className="mt-3 inline-flex min-h-11 items-center text-sm font-semibold text-orange-600 hover:underline">{t("Voir le track record")}</Link>
     </Card>
   );
 }
