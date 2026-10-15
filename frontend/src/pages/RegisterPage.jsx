@@ -6,9 +6,11 @@ import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useAuth } from "@/contexts/AuthContext";
+import { useLanguage } from "@/components/AppLayout";
 
-// Déployer avec AuthContext.jsx et server.py de ce lot.
+// Utilise registerWithWhatsapp de l’AuthContext existant ; paramètres inchangés.
 export default function RegisterPage() {
+  const { t } = useLanguage();
   const { registerWithWhatsapp } = useAuth();
   const navigate = useNavigate();
   const [params] = useSearchParams();
@@ -73,16 +75,16 @@ export default function RegisterPage() {
           WinPulse
         </Link>
         <div className="relative my-12 max-w-lg">
-          <h2 className="font-heading text-4xl font-extrabold leading-tight">Analyse les matchs. Vérifie les résultats. Décide toi-même.</h2>
-          <p className="mt-5 leading-relaxed text-slate-300">Commence gratuitement, sans carte bancaire.</p>
+          <h2 className="font-heading text-4xl font-extrabold leading-tight">{t("Analyse les matchs. Vérifie les résultats. Décide toi-même.")}</h2>
+          <p className="mt-5 leading-relaxed text-slate-300">{t("Commence gratuitement, sans carte bancaire.")}</p>
           <div className="mt-8 space-y-4 text-slate-200">
-            {["Pronostic gratuit du jour", "Historique public des résultats", "Aucun paiement pour créer le compte"].map((text) => (
+            {[t("Sélections gratuites disponibles"), t("Historique public des résultats"), t("Aucun paiement pour créer le compte")].map((text) => (
               <div key={text} className="flex items-start gap-3"><CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-emerald-400" /><span>{text}</span></div>
             ))}
           </div>
-          {referralCode && <div className="mt-7 rounded-xl border border-orange-400/40 bg-orange-500/10 p-4"><div className="flex items-center gap-2 text-sm font-bold text-orange-300"><Gift className="h-4 w-4 shrink-0" />Invitation détectée</div><p className="mt-2 break-all font-mono text-sm">{referralCode}</p></div>}
+          {referralCode && <div dir="ltr" className="mt-7 rounded-xl border border-orange-400/40 bg-orange-500/10 p-4"><div className="flex items-center gap-2 text-sm font-bold text-orange-300"><Gift className="h-4 w-4 shrink-0" />{t("Invitation détectée")}</div><p className="mt-2 break-all font-mono text-sm">{referralCode}</p></div>}
         </div>
-        <p className="relative text-xs text-slate-400">© {new Date().getFullYear()} WinPulse · 18+ · Joue responsable</p>
+        <p className="relative text-xs text-slate-400">© {new Date().getFullYear()} {t("WinPulse · 18+ · Joue responsable")}</p>
       </aside>
 
       <main className="flex min-w-0 items-center justify-center px-4 py-8 sm:px-6 lg:p-12">
@@ -93,39 +95,39 @@ export default function RegisterPage() {
           </Link>
           <Card className="min-w-0 border-neutral-200 p-5 shadow-lg sm:p-8">
             <div className="mb-6">
-              <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5" />100 % gratuit</div>
-              <h1 className="font-heading text-2xl font-extrabold text-slate-900">Ton accès gratuit est presque prêt</h1>
-              <p className="mt-2 text-sm leading-relaxed text-slate-500">Crée ton compte pour découvrir WinPulse.</p>
+              <div className="mb-3 inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-3 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5" />{t("100 % gratuit")}</div>
+              <h1 className="font-heading text-2xl font-extrabold text-slate-900">{t("Ton accès gratuit est presque prêt")}</h1>
+              <p className="mt-2 text-sm leading-relaxed text-slate-500">{t("Crée ton compte pour découvrir WinPulse.")}</p>
             </div>
             <div className="mb-6 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-3 text-center lg:hidden">
-              <div><div className="text-xs font-bold">Gratuit</div><div className="mt-0.5 text-[10px] text-slate-500">0 FCFA</div></div>
-              <div className="border-x border-slate-200"><div className="text-xs font-bold">Sans CB</div><div className="mt-0.5 text-[10px] text-slate-500">Aucun paiement</div></div>
-              <div><div className="text-xs font-bold">Libre</div><div className="mt-0.5 text-[10px] text-slate-500">Sans engagement</div></div>
+              <div><div className="text-xs font-bold">{t("Gratuit")}</div><div className="mt-0.5 text-xs text-slate-500">{t("0 FCFA")}</div></div>
+              <div className="border-x border-slate-200"><div className="text-xs font-bold">{t("Sans CB")}</div><div className="mt-0.5 text-xs text-slate-500">{t("Aucun paiement")}</div></div>
+              <div><div className="text-xs font-bold">{t("Libre")}</div><div className="mt-0.5 text-xs text-slate-500">{t("Sans engagement")}</div></div>
             </div>
             <form onSubmit={submit} className="space-y-4" aria-busy={loading}>
-              <div><Label htmlFor="name">Nom</Label><Input id="name" name="name" value={fullName} onChange={(e) => setFullName(e.target.value)} required maxLength={120} autoComplete="name" placeholder="Jean Dupont" className="mt-1 h-11" data-testid="register-name-input" /></div>
-              <div><Label htmlFor="email">Email</Label><Input id="email" name="email" type="email" inputMode="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" placeholder="vous@email.com" className="mt-1 h-11" data-testid="register-email-input" /></div>
+              <div><Label htmlFor="name">{t("Nom")}</Label><Input id="name" name="name" dir="auto" value={fullName} onChange={(e) => setFullName(e.target.value)} required maxLength={120} autoComplete="name" placeholder={t("Ton nom complet")} className="mt-1 h-11" data-testid="register-name-input" /></div>
+              <div><Label htmlFor="email">{t("Email")}</Label><Input id="email" name="email" type="email" inputMode="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoComplete="email" placeholder={t("vous@email.com")} dir="ltr" className="mt-1 h-11 text-start" data-testid="register-email-input" /></div>
               <div>
-                <Label htmlFor="whatsapp">Numéro WhatsApp <span className="ml-1 text-xs font-normal text-orange-700">(obligatoire)</span></Label>
-                <Input id="whatsapp" name="whatsapp" type="tel" inputMode="tel" autoComplete="tel" required maxLength={40} value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="+225 07 00 00 00 00" aria-describedby="whatsapp-help" className="mt-1 h-11" data-testid="register-whatsapp-input" />
-                <p id="whatsapp-help" className="mt-1.5 text-xs text-slate-500">Ajoute l’indicatif de ton pays : +225 Côte d’Ivoire, +229 Bénin, +223 Mali.</p>
+                <Label htmlFor="whatsapp">{t("Numéro WhatsApp")} <span className="ms-1 text-xs font-normal text-orange-700">{t("(obligatoire)")}</span></Label>
+                <Input id="whatsapp" name="whatsapp" type="tel" inputMode="tel" autoComplete="tel" required maxLength={40} value={whatsapp} onChange={(e) => setWhatsapp(e.target.value)} placeholder="+225 07 00 00 00 00" aria-describedby="whatsapp-help" dir="ltr" className="mt-1 h-11 text-start" data-testid="register-whatsapp-input" />
+                <p id="whatsapp-help" className="mt-1.5 text-xs text-slate-500">{t("Ajoute + et l’indicatif de ton pays : +33 France, +353 Irlande, +225 Côte d’Ivoire, +229 Bénin, +223 Mali.")}</p>
               </div>
-              <div><Label htmlFor="password">Mot de passe</Label><Input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} maxLength={128} autoComplete="new-password" placeholder="10 caractères minimum" className="mt-1 h-11" data-testid="register-password-input" /></div>
-              {!showReferral ? <button type="button" onClick={() => setShowReferral(true)} className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-orange-600"><Gift className="h-3.5 w-3.5" />J’ai un code parrainage</button> : <div><Label htmlFor="ref">Code parrainage <span className="text-xs font-normal text-slate-500">(optionnel)</span></Label><Input id="ref" name="referralCode" value={referralCode} onChange={(e) => setReferralCode(e.target.value.toUpperCase())} placeholder="WP-XXXX" autoComplete="off" className="mt-1 h-11 font-mono" data-testid="register-referral-input" /></div>}
+              <div><Label htmlFor="password">{t("Mot de passe")}</Label><Input id="password" name="password" type="password" value={password} onChange={(e) => setPassword(e.target.value)} required minLength={10} maxLength={128} autoComplete="new-password" placeholder={t("10 caractères minimum")} className="mt-1 h-11" data-testid="register-password-input" /></div>
+              {!showReferral ? <button type="button" onClick={() => setShowReferral(true)} className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-orange-600"><Gift className="h-3.5 w-3.5" />{t("J’ai un code parrainage")}</button> : <div><Label htmlFor="ref">{t("Code parrainage")} <span className="text-xs font-normal text-slate-500">{t("(optionnel)")}</span></Label><Input id="ref" name="referralCode" value={referralCode} onChange={(e) => setReferralCode(e.target.value.toUpperCase())} placeholder="WP-XXXX" autoComplete="off" dir="ltr" className="mt-1 h-11 font-mono text-start" data-testid="register-referral-input" /></div>}
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                 <label htmlFor="whatsapp-opt-in" className="flex cursor-pointer items-start gap-3">
                   <input id="whatsapp-opt-in" name="whatsapp_marketing_opt_in" type="checkbox" checked={whatsappOptIn} onChange={(e) => setWhatsappOptIn(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 rounded border-slate-300 accent-orange-600" data-testid="register-whatsapp-opt-in" />
-                  <span className="min-w-0 text-xs leading-relaxed text-slate-600">J’accepte de recevoir sur WhatsApp les offres WinPulse et les invitations à ses groupes ou communautés privées, par contact manuel ou automatique. Cette autorisation est facultative et n’est pas nécessaire pour créer mon compte. Je peux la retirer depuis mon profil.</span>
+                  <span className="min-w-0 text-xs leading-relaxed text-slate-600">{t("J’accepte de recevoir sur WhatsApp les offres WinPulse et les invitations à ses groupes ou communautés privées, par contact manuel ou automatique. Cette autorisation est facultative et n’est pas nécessaire pour créer mon compte. Je peux la retirer depuis mon profil.")}</span>
                 </label>
               </div>
-              {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{error}</p>}
-              <Button type="submit" disabled={loading} className="h-auto min-h-12 w-full whitespace-normal border-0 px-3 py-3 text-base font-bold text-white wp-gradient-warm hover:opacity-90" data-testid="register-submit-button">{loading ? <><Loader2 className="mr-2 h-4 w-4 shrink-0 animate-spin" />Création du compte…</> : "Créer mon compte gratuit"}</Button>
+              {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{t(error)}</p>}
+              <Button type="submit" disabled={loading} className="h-auto min-h-12 w-full whitespace-normal border-0 px-3 py-3 text-base font-bold text-white wp-gradient-warm hover:opacity-90" data-testid="register-submit-button">{loading ? <><Loader2 className="me-2 h-4 w-4 shrink-0 animate-spin" />{t("Création du compte…")}</> : t("Créer mon compte gratuit")}</Button>
             </form>
-            <p className="mt-4 text-center text-xs leading-relaxed text-slate-500">Aucun paiement demandé à l’inscription. WinPulse fournit des analyses statistiques et ne garantit aucun gain.</p>
-            <Link to="/legal/confidentialite" className="mt-3 block text-center text-xs text-orange-700 underline">Politique de confidentialité</Link>
-            <div className="mt-6 border-t border-slate-100 pt-5 text-center text-sm text-slate-500">Déjà inscrit ? <Link to="/login" className="font-semibold text-orange-600" data-testid="goto-login-link">Se connecter</Link></div>
+            <p className="mt-4 text-center text-xs leading-relaxed text-slate-500">{t("Aucun paiement demandé à l’inscription. WinPulse fournit des analyses statistiques et ne garantit aucun gain.")}</p>
+            <Link to="/legal/confidentialite" className="mt-3 block text-center text-xs text-orange-700 underline">{t("Politique de confidentialité")}</Link>
+            <div className="mt-6 border-t border-slate-100 pt-5 text-center text-sm text-slate-500">{t("Déjà inscrit ?")} <Link to="/login" className="font-semibold text-orange-600" data-testid="goto-login-link">{t("Se connecter")}</Link></div>
           </Card>
-          <p className="mt-5 text-center text-xs text-slate-500 lg:hidden">18+ · Joue responsable</p>
+          <p className="mt-5 text-center text-xs text-slate-500 lg:hidden">{t("18+ · Joue responsable")}</p>
         </div>
       </main>
     </div>
