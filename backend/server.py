@@ -54,11 +54,11 @@ from prediction_engine import (
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
-from blog_service import (
+from blog_seed import (
     bootstrap_blog, list_posts as blog_list_posts, get_post as blog_get_post,
     save_post as blog_save_post, delete_post as blog_delete_post, BlogConflictError,
 )
-from blog_news_service import (
+from blog_seed import (
     bootstrap_news, synchronize_news, news_status, set_paused as pause_blog_news,
     config as blog_news_config,
 )
