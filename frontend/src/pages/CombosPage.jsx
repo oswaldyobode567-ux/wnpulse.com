@@ -2,26 +2,269 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import {
   AlertCircle, ArrowRight, Check, ChevronDown, Clock, Copy, Gift,
-  Info, Layers, Loader2, Lock, RefreshCw, Rocket, Scale, Shield, Sparkles, X,
+  CalendarDays, Info, Layers, Loader2, Lock, RefreshCw, Rocket, Scale, Shield, Sparkles, X,
 } from "lucide-react";
 import api from "@/lib/api";
 import AppLayout from "@/components/AppLayout";
-import { Card } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/contexts/AuthContext";
 import { cn } from "@/lib/utils";
+
+const COMBOS_STYLES = `/* Scoped styles independent of generated Tailwind utility classes. */
+.wp3-combos {
+  --wp3-ink: #142033;
+  --wp3-muted: #55657a;
+  --wp3-orange: #ea580c;
+  --wp3-line: #e3e8ef;
+  width: 100%; max-width: 1280px; margin: 0 auto; padding: 32px 24px 56px;
+  color: var(--wp3-ink); font-size: 16px; line-height: 1.6;
+}
+.wp3-combos *, .wp3-combos *::before, .wp3-combos *::after { box-sizing: border-box; }
+.wp3-combos h1, .wp3-combos h2, .wp3-combos h3, .wp3-combos p, .wp3-combos dl, .wp3-combos dd { margin: 0; }
+.wp3-combos button, .wp3-combos textarea { font: inherit; }
+.wp3-combos button { cursor: pointer; }
+.wp3-combos svg { width: 20px; height: 20px; flex-shrink: 0; }
+.wp3-combos a { text-decoration: none; }
+.wp3-combos :is(button, a, summary, textarea):focus-visible { outline: 3px solid #ea580c; outline-offset: 4px; }
+.wp3-combos :is(h1, h2, h3, p, dt, dd, span, strong, b) { overflow-wrap: anywhere; }
+.wp3-combos .wp3-hero {
+  position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 32px; padding: 42px; border-radius: 30px; color: #fff;
+  background: radial-gradient(ellipse at 100% 0%, #734125 0%, transparent 55%), linear-gradient(135deg, #121c2c, #17283b);
+  box-shadow: 0 18px 40px rgb(20 32 51 / 12%);
+}
+.wp3-combos .wp3-hero-eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #fdba74; font-size: 14px; font-weight: 800; letter-spacing: .1em; }
+.wp3-combos .wp3-hero h1 { margin-top: 20px; font-size: clamp(36px, 4.5vw, 58px); font-weight: 850; line-height: 1.08; letter-spacing: -.045em; }
+.wp3-combos .wp3-hero h1 span { color: #ffad67; }
+.wp3-combos .wp3-hero-description { max-width: 590px; margin-top: 22px; color: #e0e7f0; font-size: 18px; line-height: 1.65; }
+.wp3-combos .wp3-hero-meta { display: flex; flex-wrap: wrap; gap: 12px 22px; margin-top: 26px; font-size: 14px; color: #d4dfec; }
+.wp3-combos .wp3-hero-meta span { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.wp3-combos .wp3-hero-side { display: flex; flex-direction: column; justify-content: center; gap: 18px; min-width: 0; }
+.wp3-combos .wp3-hero-profile { padding: 22px; border: 1px solid rgb(255 255 255 / 18%); border-radius: 20px; background: rgb(255 255 255 / 7%); }
+.wp3-combos .wp3-hero-profile > span { font-size: 14px; color: #d4dfec; }
+.wp3-combos .wp3-hero-profile > strong { display: block; font-size: 32px; line-height: 1.2; margin: 7px 0 10px; }
+.wp3-combos .wp3-hero-profile p { color: #d4dfec; font-size: 16px; }
+.wp3-combos .wp3-button {
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 48px; height: auto; padding: 12px 18px; border: 1px solid transparent; border-radius: 12px;
+  white-space: normal; font-size: 16px; line-height: 1.45; font-weight: 750; text-align: center;
+  transition: background-color .15s, border-color .15s; max-width: 100%;
+}
+.wp3-combos .wp3-button:disabled { cursor: not-allowed; opacity: .65; }
+.wp3-combos .wp3-button--primary { background: #c2410c; color: #fff; }
+.wp3-combos .wp3-button--primary:hover:not(:disabled) { background: #9a3412; }
+.wp3-combos .wp3-button--light { background: #fff; border-color: #d9e1e9; color: #142033; }
+.wp3-combos .wp3-button--light:hover:not(:disabled) { background: #fff7ed; border-color: #fb923c; }
+.wp3-combos .wp3-button--hero { background: #ffad67; color: #172033; width: 100%; }
+.wp3-combos .wp3-profile-section { margin: 36px 0 30px; }
+.wp3-combos .wp3-section-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
+.wp3-combos .wp3-section-heading > div { min-width: 0; }
+.wp3-combos .wp3-eyebrow { color: #9a3412; font-size: 14px; font-weight: 800; letter-spacing: .065em; line-height: 1.5; }
+.wp3-combos .wp3-section-heading h2 { margin-top: 7px; font-size: 26px; font-weight: 800; line-height: 1.25; letter-spacing: -.025em; }
+.wp3-combos .wp3-section-heading p:not(.wp3-eyebrow) { margin-top: 8px; font-size: 16px; color: var(--wp3-muted); }
+.wp3-combos .wp3-section-heading p.wp3-first-start { font-size: 14px; }
+.wp3-combos .wp3-profile-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+.wp3-combos .wp3-profile { position: relative; min-width: 0; background: #fff; border: 2px solid var(--wp3-line); border-radius: 22px; padding: 22px; text-align: left; color: var(--wp3-ink); }
+.wp3-combos .wp3-profile-top { display: flex; align-items: center; gap: 12px; }
+.wp3-combos .wp3-profile-icon { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: #fff2e8; color: #c2410c; }
+.wp3-combos .wp3-profile-icon svg { width: 25px; height: 25px; }
+.wp3-combos .wp3-profile-index { margin-left: auto; color: #64748b; font-weight: 800; font-size: 18px; }
+.wp3-combos .wp3-profile-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
+.wp3-combos .wp3-profile-title strong { font-size: 24px; font-weight: 850; }
+.wp3-combos .wp3-profile > p { margin-top: 8px; color: var(--wp3-muted); font-size: 16px; line-height: 1.6; }
+.wp3-combos .wp3-profile-stats { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--wp3-line); font-size: 14px; }
+.wp3-combos .wp3-profile-stats b { display: flex; align-items: center; gap: 6px; }
+.wp3-combos .wp3-profile-stats svg { width: 16px; height: 16px; }
+.wp3-combos .wp3-profile--emerald .wp3-profile-icon { background: #ecfdf5; color: #047857; }
+.wp3-combos .wp3-profile--rose .wp3-profile-icon { background: #fff1f2; color: #be123c; }
+.wp3-combos .wp3-profile--selected { background: #142033; color: #fff; border-color: #f97316; box-shadow: 0 8px 22px rgb(20 32 51 / 14%); }
+.wp3-combos .wp3-profile--selected > p, .wp3-combos .wp3-profile--selected .wp3-profile-index { color: #d4dfec; }
+.wp3-combos .wp3-profile--selected .wp3-profile-stats { border-color: #435268; }
+.wp3-combos .wp3-selected-check { color: #fdba74; }
+.wp3-combos .wp3-free-label { color: #065f46; background: #d1fae5; border-radius: 20px; padding: 3px 10px; font-size: 14px; font-weight: 700; }
+.wp3-combos :is(.wp3-comparison, .wp3-reading, .wp3-explanation) summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 15px 18px; font-weight: 750; font-size: 16px; line-height: 1.5; }
+.wp3-combos summary::-webkit-details-marker { display: none; }
+.wp3-combos summary svg:last-child { margin-left: auto; transition: transform .15s; }
+.wp3-combos details[open] > summary svg:last-child { transform: rotate(180deg); }
+.wp3-combos .wp3-comparison { margin-top: 18px; border: 1px solid var(--wp3-line); border-radius: 16px; background: #fff; }
+.wp3-combos .wp3-compare-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 0 18px 18px; }
+.wp3-combos .wp3-compare-card { padding: 18px; border-radius: 14px; background: #f6f8fb; min-width: 0; }
+.wp3-combos .wp3-compare-card h3 { font-size: 20px; margin-bottom: 15px; }
+.wp3-combos .wp3-compare-card .wp3-button { width: 100%; margin-top: 16px; }
+.wp3-combos .wp3-comparison-note { padding: 0 18px 18px; font-size: 14px; color: var(--wp3-muted); }
+.wp3-combos .wp3-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
+.wp3-combos .wp3-selections, .wp3-combos .wp3-sidebar { min-width: 0; }
+.wp3-combos .wp3-sidebar { position: sticky; top: 24px; scroll-margin-top: 90px; }
+.wp3-combos .wp3-match-list { display: grid; gap: 20px; }
+.wp3-combos .wp3-match-card { min-width: 0; background: #fff; border: 1px solid var(--wp3-line); border-radius: 22px; padding: 24px; box-shadow: 0 5px 16px rgb(20 32 51 / 4%); }
+.wp3-combos .wp3-match-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
+.wp3-combos .wp3-selection-number { display: grid; place-items: center; min-width: 38px; height: 38px; border-radius: 11px; background: #142033; color: #fff; font-size: 16px; font-weight: 800; }
+.wp3-combos .wp3-match-meta { flex: 1 1 180px; min-width: 0; }
+.wp3-combos .wp3-match-meta > p { font-size: 16px; line-height: 1.55; font-weight: 700; }
+.wp3-combos .wp3-match-meta > div { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 5px; font-size: 14px; color: var(--wp3-muted); }
+.wp3-combos .wp3-match-meta > div > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+.wp3-combos .wp3-match-meta svg { width: 16px; height: 16px; }
+.wp3-combos .wp3-country { border: 1px solid #e3e8ef; border-radius: 20px; padding: 0 8px; color: #42536b; }
+.wp3-combos .wp3-risk { display: inline-flex; align-items: center; max-width: 100%; border-radius: 20px; padding: 4px 10px; font-size: 14px; font-weight: 750; border: 1px solid #d9e1e9; background: #f6f8fb; color: #42536b; }
+.wp3-combos .wp3-risk--safe { color: #065f46; background: #ecfdf5; border-color: #a7f3d0; }
+.wp3-combos .wp3-risk--moderate { color: #854d0e; background: #fefce8; border-color: #fde68a; }
+.wp3-combos .wp3-risk--risky { color: #9f1239; background: #fff1f2; border-color: #fecdd3; }
+.wp3-combos .wp3-fixture { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 20px; align-items: start; margin-top: 24px; }
+.wp3-combos .wp3-date-stamp { display: flex; flex-direction: column; align-items: center; text-align: center; border: 1px solid var(--wp3-line); border-radius: 14px; background: #f6f8fb; padding: 12px 7px; color: #42536b; font-size: 14px; line-height: 1.5; min-width: 0; }
+.wp3-combos .wp3-date-stamp strong { font-size: 28px; font-weight: 850; line-height: 1.1; color: #142033; }
+.wp3-combos .wp3-date-stamp b { margin-top: 7px; border-top: 1px solid #dce3ec; padding-top: 7px; width: 100%; font-size: 14px; color: #142033; }
+.wp3-combos .wp3-team-pair { min-width: 0; }
+.wp3-combos .wp3-team-pair p { font-size: 23px; font-weight: 800; line-height: 1.35; letter-spacing: -.015em; }
+.wp3-combos .wp3-team-pair > span { display: block; font-size: 14px; color: #55657a; padding: 5px 0; }
+.wp3-combos .wp3-pick-grid { display: grid; grid-template-columns: minmax(0, 1fr) 100px; margin-top: 24px; border: 1px solid #fed7aa; border-radius: 15px; background: #fff7ed; overflow: hidden; }
+.wp3-combos .wp3-pick { min-width: 0; border-left: 4px solid #ea580c; padding: 16px 18px; }
+.wp3-combos .wp3-pick p { margin-top: 7px; font-size: 22px; line-height: 1.4; font-weight: 800; }
+.wp3-combos .wp3-leg-odds { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: #ffedd5; padding: 14px 10px; }
+.wp3-combos .wp3-leg-odds > span { font-size: 14px; color: #9a3412; font-weight: 700; }
+.wp3-combos .wp3-leg-odds strong { color: #9a3412; font-size: 28px; line-height: 1.3; font-weight: 850; }
+.wp3-combos .wp3-confidence { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 14px; padding: 14px 0 0; color: #55657a; font-size: 16px; }
+.wp3-combos .wp3-confidence strong { color: #142033; font-size: 18px; }
+.wp3-combos .wp3-explanation { border: 1px solid var(--wp3-line); border-radius: 12px; margin-top: 20px; }
+.wp3-combos .wp3-explanation > div { border-top: 1px solid var(--wp3-line); padding: 16px 18px; }
+.wp3-combos :is(.wp3-explanation, .wp3-reading) p { color: #55657a; font-size: 16px; line-height: 1.7; }
+.wp3-combos :is(.wp3-explanation, .wp3-reading) p + p { margin-top: 12px; }
+.wp3-combos .wp3-match-link { min-height: 48px; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; color: #c2410c; font-size: 16px; font-weight: 750; }
+.wp3-combos .wp3-view-switch { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--wp3-line); border-radius: 12px; background: #fff; }
+.wp3-combos .wp3-view-switch button { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 14px; min-height: 44px; border: 0; border-radius: 9px; color: #55657a; background: transparent; font-size: 16px; font-weight: 700; }
+.wp3-combos .wp3-view-switch button[aria-pressed="true"] { background: #142033; color: #fff; }
+.wp3-combos .wp3-view-switch svg { width: 18px; height: 18px; }
+.wp3-combos .wp3-agenda .wp3-match-card { border-left: 4px solid #ea580c; }
+.wp3-combos .wp3-agenda .wp3-date-stamp { background: #fff7ed; border-color: #fed7aa; }
+.wp3-combos .wp3-ticket { position: relative; border: 1px solid #d9e1e9; border-radius: 22px; background: #fff; overflow: hidden; box-shadow: 0 12px 28px rgb(20 32 51 / 8%); }
+.wp3-combos .wp3-ticket > header { padding: 24px; background: #142033; color: #fff; }
+.wp3-combos .wp3-ticket > header .wp3-eyebrow { color: #fdba74; }
+.wp3-combos .wp3-ticket h2 { font-size: 25px; font-weight: 800; line-height: 1.3; margin-top: 8px; }
+.wp3-combos .wp3-ticket header > span { display: block; margin-top: 8px; font-size: 14px; color: #d4dfec; }
+.wp3-combos .wp3-ticket-rows { padding: 22px 22px 4px; }
+.wp3-combos .wp3-ticket-row { display: flex; gap: 10px; padding-bottom: 16px; }
+.wp3-combos .wp3-ticket-row > b { display: grid; place-items: center; height: 25px; min-width: 25px; margin-top: 3px; border-radius: 50%; background: #fff2e8; color: #c2410c; font-size: 14px; }
+.wp3-combos .wp3-ticket-row > div { min-width: 0; }
+.wp3-combos .wp3-ticket-row p { font-size: 16px; font-weight: 750; line-height: 1.55; }
+.wp3-combos .wp3-ticket-row p > span { color: #55657a; font-weight: 500; }
+.wp3-combos .wp3-ticket-row div > span { display: block; margin-top: 5px; font-size: 14px; color: #9a3412; }
+.wp3-combos .wp3-ticket-total { padding: 24px 22px; border-top: 2px dashed #d9e1e9; border-bottom: 2px dashed #d9e1e9; background: #fff7ed; }
+.wp3-combos .wp3-ticket-total > span { font-size: 16px; font-weight: 700; color: #9a3412; }
+.wp3-combos .wp3-ticket-total > strong { display: block; margin: 5px 0; font-size: 48px; line-height: 1.15; letter-spacing: -.025em; color: #9a3412; font-weight: 850; }
+.wp3-combos .wp3-ticket-total > strong.wp3-reserved { font-size: 26px; }
+.wp3-combos .wp3-ticket-total p { margin-top: 10px; font-size: 14px; color: #78513a; line-height: 1.65; }
+.wp3-combos .wp3-ticket-bottom { padding: 24px 22px; }
+.wp3-combos .wp3-metric { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 5px 12px; margin-top: 13px; }
+.wp3-combos .wp3-metric:first-child { margin-top: 0; }
+.wp3-combos .wp3-metric dt { color: #55657a; font-size: 16px; line-height: 1.55; flex: 1 1 130px; }
+.wp3-combos .wp3-metric dd { font-size: 18px; font-weight: 800; color: #142033; }
+.wp3-combos .wp3-ticket-bottom > .wp3-button { width: 100%; min-height: 52px; margin-top: 22px; }
+.wp3-combos .wp3-copy-help { margin-top: 12px; font-size: 14px; color: #55657a; line-height: 1.65; }
+.wp3-combos .wp3-reading { margin-top: 20px; border: 1px solid var(--wp3-line); border-radius: 16px; background: #fff; }
+.wp3-combos .wp3-reading > div { padding: 0 18px 18px; }
+.wp3-combos .wp3-alert { display: flex; align-items: flex-start; gap: 12px; margin: 20px 0; padding: 18px; border: 1px solid #fcd34d; border-radius: 15px; background: #fffbeb; color: #854d0e; font-size: 16px; line-height: 1.65; }
+.wp3-combos .wp3-alert > svg { margin-top: 3px; }
+.wp3-combos .wp3-alert > div { min-width: 0; }
+.wp3-combos .wp3-alert p + p { margin-top: 8px; }
+.wp3-combos .wp3-alert .wp3-button { margin-top: 12px; }
+.wp3-combos .wp3-alert--compact { font-size: 14px; margin: 14px 0 0; padding: 10px 12px; }
+.wp3-combos .wp3-loading, .wp3-combos .wp3-state { border: 1px solid var(--wp3-line); border-radius: 22px; background: #fff; text-align: center; padding: 42px 24px; }
+.wp3-combos :is(.wp3-loading, .wp3-state) > svg { width: 34px; height: 34px; color: #c2410c; margin: 0 auto 18px; }
+.wp3-combos :is(.wp3-loading, .wp3-state) h2 { font-size: 25px; line-height: 1.3; font-weight: 800; }
+.wp3-combos :is(.wp3-loading, .wp3-state) p { max-width: 550px; margin: 12px auto 0; font-size: 16px; color: #55657a; }
+.wp3-combos .wp3-state .wp3-button { margin-top: 22px; }
+.wp3-combos .wp3-skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 30px; }
+.wp3-combos .wp3-skeleton-grid > div { height: 110px; border-radius: 16px; background: #eef2f7; }
+.wp3-combos .wp3-upgrade { display: flex; align-items: flex-start; gap: 26px; padding: 36px; border-radius: 24px; border: 1px solid #fed7aa; background: linear-gradient(130deg, #fff7ed, #fff); }
+.wp3-combos .wp3-upgrade-icon { display: grid; place-items: center; width: 76px; height: 76px; flex-shrink: 0; border-radius: 22px; background: #142033; color: #fdba74; }
+.wp3-combos .wp3-upgrade-icon svg { width: 30px; height: 30px; }
+.wp3-combos .wp3-upgrade h2 { margin: 8px 0 14px; font-size: 30px; font-weight: 800; line-height: 1.25; }
+.wp3-combos .wp3-upgrade p:not(.wp3-eyebrow) { max-width: 640px; font-size: 17px; color: #55657a; }
+.wp3-combos .wp3-upgrade .wp3-button { margin-top: 24px; }
+.wp3-combos .wp3-free-banner { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 16px; padding: 20px; margin-bottom: 24px; color: #065f46; }
+.wp3-combos .wp3-free-banner > div { flex: 1 1 220px; }
+.wp3-combos .wp3-free-banner strong { font-size: 18px; }
+.wp3-combos .wp3-free-banner p { font-size: 16px; margin-top: 5px; }
+.wp3-combos .wp3-locked-pick { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 14px; padding: 18px; background: #fff7ed; border-radius: 15px; margin-top: 24px; }
+.wp3-combos .wp3-locked-pick > svg { color: #c2410c; margin-top: 3px; }
+.wp3-combos .wp3-locked-pick > div { flex: 1 1 180px; min-width: 0; }
+.wp3-combos .wp3-locked-pick p { font-size: 15px; color: #55657a; margin-top: 7px; }
+.wp3-combos .wp3-manual-copy { margin-top: 20px; border: 1px solid var(--wp3-line); border-radius: 16px; background: #fff; padding: 18px; }
+.wp3-combos .wp3-manual-copy > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 750; }
+.wp3-combos .wp3-manual-copy button { display: grid; place-items: center; min-height: 44px; min-width: 44px; border: 0; border-radius: 10px; background: #f6f8fb; color: #42536b; }
+.wp3-combos .wp3-manual-copy textarea { width: 100%; min-height: 280px; margin-top: 12px; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px; font-size: 16px; line-height: 1.65; color: #142033; resize: vertical; }
+.wp3-combos .wp3-manual-copy p { font-size: 14px; color: #55657a; margin-top: 10px; }
+.wp3-combos .wp3-refresh-note { display: flex; align-items: center; gap: 8px; margin-top: 22px; font-size: 14px; color: #55657a; }
+.wp3-combos .wp3-mobile-summary { display: none; }
+.wp3-combos .wp3-spinning { animation: wp3-spin 1s linear infinite; }
+@keyframes wp3-spin { to { transform: rotate(360deg); } }
+@media (max-width: 1100px) {
+  .wp3-combos .wp3-main { grid-template-columns: minmax(0, 1fr) 310px; gap: 20px; }
+  .wp3-combos .wp3-hero { padding: 32px; gap: 24px; grid-template-columns: minmax(0, 1fr) 250px; }
+}
+@media (max-width: 900px) {
+  .wp3-combos .wp3-main { grid-template-columns: minmax(0, 1fr); }
+  .wp3-combos .wp3-sidebar { position: static; }
+  .wp3-combos .wp3-mobile-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #fed7aa; border-radius: 15px; background: #fff7ed; padding: 16px 18px; margin: 0 0 20px; color: #9a3412; font-size: 16px; }
+  .wp3-combos .wp3-mobile-summary > span:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+  .wp3-combos .wp3-mobile-summary strong { font-size: 26px; }
+  .wp3-combos .wp3-mobile-summary > span:last-child { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+}
+@media (max-width: 760px) {
+  .wp3-combos { padding: 20px 16px 40px; }
+  .wp3-combos .wp3-hero { grid-template-columns: minmax(0, 1fr); padding: 28px 24px; border-radius: 24px; }
+  .wp3-combos .wp3-hero h1 { font-size: 40px; }
+  .wp3-combos .wp3-hero-description { font-size: 17px; }
+  .wp3-combos .wp3-hero-side { gap: 12px; }
+  .wp3-combos .wp3-hero-profile { padding: 16px 18px; }
+  .wp3-combos .wp3-hero-profile strong { font-size: 26px; }
+  .wp3-combos .wp3-profile-grid, .wp3-combos .wp3-compare-grid { grid-template-columns: minmax(0, 1fr); }
+  .wp3-combos .wp3-profile { padding: 20px; }
+  .wp3-combos .wp3-profile { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 5px 12px; }
+  .wp3-combos .wp3-profile-top { grid-column: 1; grid-row: 1 / 3; align-items: flex-start; }
+  .wp3-combos .wp3-profile-index { display: none; }
+  .wp3-combos .wp3-selected-check { position: absolute; top: 22px; right: 18px; }
+  .wp3-combos .wp3-profile-title { grid-column: 2; margin-top: 0; padding-right: 20px; }
+  .wp3-combos .wp3-profile-title strong { font-size: 22px; }
+  .wp3-combos .wp3-profile > p { grid-column: 2; margin-top: 0; }
+  .wp3-combos .wp3-profile-stats { grid-column: 1 / -1; }
+  .wp3-combos .wp3-profile-stats { margin-top: 14px; padding-top: 12px; }
+  .wp3-combos .wp3-section-heading h2 { font-size: 24px; }
+  .wp3-combos .wp3-upgrade { flex-direction: column; padding: 24px; }
+  .wp3-combos .wp3-upgrade h2 { font-size: 28px; }
+  .wp3-combos .wp3-free-banner .wp3-button, .wp3-combos .wp3-upgrade .wp3-button { width: 100%; }
+}
+@media (max-width: 480px) {
+  .wp3-combos { padding: 16px 12px 32px; }
+  .wp3-combos .wp3-hero { padding: 26px 20px; }
+  .wp3-combos .wp3-hero h1 { font-size: 36px; }
+  .wp3-combos .wp3-hero-description { font-size: 16px; }
+  .wp3-combos .wp3-match-card { padding: 18px; border-radius: 18px; }
+  .wp3-combos .wp3-match-meta { flex-basis: 160px; }
+  .wp3-combos .wp3-match-top > .wp3-risk { margin-left: 50px; }
+  .wp3-combos .wp3-fixture { grid-template-columns: 62px minmax(0, 1fr); gap: 14px; }
+  .wp3-combos .wp3-date-stamp { padding: 10px 4px; }
+  .wp3-combos .wp3-date-stamp strong { font-size: 25px; }
+  .wp3-combos .wp3-team-pair p { font-size: 21px; }
+  .wp3-combos .wp3-pick-grid { grid-template-columns: minmax(0, 1fr); }
+  .wp3-combos .wp3-pick { padding: 16px; }
+  .wp3-combos .wp3-pick p { font-size: 21px; }
+  .wp3-combos .wp3-leg-odds { flex-direction: row; justify-content: space-between; gap: 12px; padding: 10px 16px; }
+  .wp3-combos .wp3-leg-odds strong { font-size: 30px; }
+  .wp3-combos .wp3-view-switch { width: 100%; }
+  .wp3-combos .wp3-view-switch button { flex: 1 1 0; min-width: 0; padding: 10px 8px; }
+  .wp3-combos .wp3-skeleton-grid { grid-template-columns: minmax(0, 1fr); }
+  .wp3-combos .wp3-ticket > header, .wp3-combos .wp3-ticket-bottom, .wp3-combos .wp3-ticket-total { padding: 22px; }
+  .wp3-combos .wp3-reading summary, .wp3-combos .wp3-explanation summary { padding-left: 14px; padding-right: 14px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wp3-combos *, .wp3-combos *::before, .wp3-combos *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+}
+`;
 
 const TIERS = [
   { key: "safe", label: "Sécurité", icon: Shield, accent: "emerald", description: "Le profil prudent, à examiner sélection par sélection." },
   { key: "balanced", label: "Équilibre", icon: Scale, accent: "orange", description: "Un profil intermédiaire pour comparer les cotes et la confiance." },
   { key: "jackpot", label: "Jackpot", icon: Rocket, accent: "rose", description: "Le profil offensif : une cote élevée implique davantage d’incertitude." },
 ];
-const ACCENTS = {
-  emerald: { icon: "bg-emerald-50 text-emerald-700", selected: "border-emerald-600 bg-emerald-50/50", heading: "text-emerald-800", summary: "from-emerald-800 to-emerald-950" },
-  orange: { icon: "bg-orange-50 text-orange-700", selected: "border-orange-600 bg-orange-50/50", heading: "text-orange-800", summary: "from-orange-800 to-slate-950" },
-  rose: { icon: "bg-rose-50 text-rose-700", selected: "border-rose-600 bg-rose-50/50", heading: "text-rose-800", summary: "from-rose-800 to-slate-950" },
-};
 const FRESH_FOR_MS = 5 * 60 * 1000;
 
 function object(value) {
@@ -109,6 +352,7 @@ function normalizeCombos(payload) {
           completed: leg.completed === true || leg.is_finished === true,
           pick: text(leg.pick), pick_odds: odds(leg.pick_odds),
           market_label: text(leg.market_label),
+          market: text(leg.market), pick_point: number(leg.pick_point),
           label: text(leg.label), confidence: percentage(leg.confidence),
           locked: leg.locked === true,
         };
@@ -158,66 +402,82 @@ function loadError(failure) {
   return "Impossible d’actualiser les combinés pour le moment. Réessaie dans quelques instants.";
 }
 
+function chronologicalLegs(combo, viewMode) {
+  const rows = (combo?.legs || []).map((leg, index) => ({ leg, index }));
+  return viewMode === "agenda" ? rows.sort((a, b) =>
+    (dateValue(a.leg.commence_time) ?? Infinity) - (dateValue(b.leg.commence_time) ?? Infinity) || a.index - b.index) : rows;
+}
+
+function explainMarket(leg) {
+  const normalized = (value) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const market = normalized(`${leg.market} ${leg.market_label}`), pick = normalized(leg.pick);
+  if (/double.?chance/.test(market)) return "Deux issues sont couvertes : celles indiquées par la sélection. Vérifie la période à laquelle le marché s’applique.";
+  if (/draw_no_bet|nul rembourse/.test(market)) return "Le choix porte sur une victoire. En cas de nul sur la période couverte, le règlement de ce marché prévoit le remboursement.";
+  if (/btts|equipes marquent/.test(market)) return "Le pari concerne le fait que les deux équipes marquent, ou non, pendant la période couverte par le marché.";
+  if (/handicap|spreads/.test(market)) return "Le résultat est évalué après application du handicap indiqué. La ligne et la période du marché déterminent le règlement.";
+  if (/total/.test(market) || /moins de|plus de|over|under/.test(pick)) {
+    const values = leg.pick.match(/\d+(?:[.,]\d+)?/g);
+    const threshold = leg.pick_point ?? (values?.length ? number(values[values.length - 1]) : null);
+    if (threshold !== null && threshold % 1 === 0.5) {
+      if (/moins de|under/.test(pick)) return `Le total doit rester inférieur à ${formatNumber(threshold)} sur la période couverte par ce marché.`;
+      if (/plus de|over/.test(pick)) return `Le total doit dépasser ${formatNumber(threshold)} sur la période couverte par ce marché.`;
+    }
+    return "Le pari porte sur le total indiqué. Les règles de règlement dépendent de la ligne et de la période choisies.";
+  }
+  if (/vainqueur|victoire|h2h|1x2/.test(market)) return /^(nul|draw|match nul)$/.test(pick)
+    ? "La sélection prévoit un match nul sur la période couverte par le marché."
+    : `Le moteur retient ${leg.pick} comme vainqueur sur la période couverte par le marché.`;
+  return "Le pronostic se lit avec son marché : consulte la fiche du match pour vérifier la période et les informations disponibles.";
+}
+
 function RiskBadge({ label }) {
   if (!label) return null;
   const normalized = label.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  const style = normalized.includes("risqu") ? "border-rose-200 bg-rose-50 text-rose-800"
-    : normalized.includes("modere") ? "border-amber-200 bg-amber-50 text-amber-900"
-      : normalized.includes("sur") || normalized.includes("safe") ? "border-emerald-200 bg-emerald-50 text-emerald-800"
-        : "border-slate-200 bg-slate-50 text-slate-700";
-  return <span className={cn("inline-flex max-w-full break-words rounded-full border px-3 py-1.5 text-sm font-semibold", style)}>{label}</span>;
+  const risk = /risqu|risky/.test(normalized) ? "risky" : /modere|value/.test(normalized) ? "moderate" : /sur|safe/.test(normalized) ? "safe" : "neutral";
+  return <span className={`wp3-risk wp3-risk--${risk}`}>{label}</span>;
+}
+
+function DateStamp({ value }) {
+  const timestamp = dateValue(value);
+  if (timestamp === null) return <div className="wp3-date-stamp"><CalendarDays aria-hidden="true" /><span>À confirmer</span></div>;
+  const date = new Date(timestamp);
+  return <div className="wp3-date-stamp" aria-hidden="true">
+    <strong>{new Intl.DateTimeFormat("fr-FR", { day: "2-digit" }).format(date)}</strong>
+    <span>{new Intl.DateTimeFormat("fr-FR", { month: "short" }).format(date)}</span>
+    <b>{new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(date)}</b>
+  </div>;
 }
 
 function SelectionCard({ leg, index, unlocked, now, onUpgrade }) {
-  const visible = unlocked && !leg.locked;
-  const status = legStatus(leg, now);
+  const visible = unlocked && !leg.locked, status = legStatus(leg, now);
   const competition = leg.league || leg.sport_title || "Compétition non communiquée";
   const href = leg.match_id ? `/app/match/${encodeURIComponent(leg.match_id)}` : null;
-  return (
-    <Card className="min-w-0 overflow-hidden rounded-2xl border-neutral-200 bg-white p-4 shadow-sm sm:p-6" data-testid={`combo-leg-${leg.match_id || index}`}>
-      <div className="flex min-w-0 items-start gap-3 sm:gap-4">
-        <span aria-hidden="true" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-orange-50 text-lg font-extrabold text-orange-700">{index + 1}</span>
-        <div className="min-w-0 flex-1">
-          <p className="break-words text-sm font-semibold leading-relaxed text-slate-600 [overflow-wrap:anywhere]">{competition}{leg.country ? ` · ${leg.country}` : ""}</p>
-          <p className="mt-1 flex items-start gap-2 text-sm leading-relaxed text-slate-500"><Clock aria-hidden="true" className="mt-0.5 h-4 w-4 shrink-0" /><span>{dateLabel(leg.commence_time)}</span></p>
-        </div>
+  return <article className="wp3-match-card" data-testid={`combo-leg-${leg.match_id || index}`}>
+    <div className="wp3-match-top">
+      <div className="wp3-selection-number">{String(index + 1).padStart(2, "0")}</div>
+      <div className="wp3-match-meta"><p>{competition}</p><div>{leg.country && <span className="wp3-country">{leg.country}</span>}<span><Clock aria-hidden="true" />{dateLabel(leg.commence_time)}</span></div></div>
+      {visible && <RiskBadge label={leg.label} />}
+    </div>
+    {(status === "started" || status === "finished") && <p className="wp3-alert wp3-alert--compact">{status === "finished" ? "Rencontre terminée · actualise le combiné" : "Rencontre commencée · actualise le combiné"}</p>}
+    <div className="wp3-fixture">
+      <DateStamp value={leg.commence_time} />
+      <div className="wp3-team-pair"><p>{leg.home_team || "Équipe non communiquée"}</p><span>contre</span><p>{leg.away_team || "Équipe non communiquée"}</p></div>
+    </div>
+    {visible ? <>
+      <div className="wp3-pick-grid">
+        <div className="wp3-pick"><span className="wp3-eyebrow">{leg.market_label || "Pronostic sélectionné"}</span><p>{leg.pick || "Sélection non communiquée"}</p></div>
+        <div className="wp3-leg-odds"><span>Cote</span><strong>{formatNumber(leg.pick_odds)}</strong></div>
       </div>
-      {(status === "started" || status === "finished") && <p className="mt-4 rounded-xl bg-amber-50 px-3 py-2 text-sm font-semibold leading-relaxed text-amber-900">{status === "finished" ? "Rencontre terminée · actualise le combiné" : "Rencontre commencée · actualise le combiné"}</p>}
-      <div className="mt-5 space-y-1 text-lg font-extrabold leading-snug text-slate-900 [overflow-wrap:anywhere] sm:text-xl">
-        <p>{leg.home_team || "Équipe non communiquée"}</p>
-        <p className="text-sm font-medium text-slate-500">contre</p>
-        <p>{leg.away_team || "Équipe non communiquée"}</p>
-      </div>
-      {visible ? (
-        <>
-          <div className="mt-5 rounded-xl border border-orange-100 bg-orange-50/60 p-4">
-            <p className="break-words text-sm font-semibold text-orange-800">{leg.market_label || "Pronostic sélectionné"}</p>
-            <p className="mt-2 break-words text-lg font-extrabold leading-snug text-slate-900 [overflow-wrap:anywhere]">{leg.pick || "Sélection non communiquée"}</p>
-          </div>
-          <div className="mt-4 grid grid-cols-2 gap-3">
-            <div className="min-w-0 rounded-xl bg-slate-50 p-3 sm:p-4"><p className="text-sm leading-relaxed text-slate-500">Cote du pronostic</p><p className="mt-1 break-words font-mono text-2xl font-extrabold text-slate-900 [overflow-wrap:anywhere]">{formatNumber(leg.pick_odds)}</p></div>
-            <div className="min-w-0 rounded-xl bg-slate-50 p-3 sm:p-4"><p className="text-sm leading-relaxed text-slate-500">Confiance du moteur</p><p className="mt-1 font-mono text-2xl font-extrabold text-slate-900">{leg.confidence === null ? "—" : `${formatNumber(leg.confidence, 1)} %`}</p></div>
-          </div>
-          {leg.label && <div className="mt-4"><RiskBadge label={leg.label} /></div>}
-          <details className="group mt-5 rounded-xl border border-neutral-200">
-            <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 text-base font-semibold text-slate-700 [&::-webkit-details-marker]:hidden"><span>Comprendre cette sélection</span><ChevronDown aria-hidden="true" className="h-5 w-5 shrink-0 transition-transform group-open:rotate-180 motion-reduce:transition-none" /></summary>
-            <div className="space-y-3 border-t border-neutral-100 px-4 py-4 text-base leading-relaxed text-slate-600">
-              <p><strong className="text-slate-900">Choix du moteur :</strong> {leg.pick || "non communiqué"}{leg.market_label ? ` sur le marché « ${leg.market_label} »` : ""}.</p>
-              <p>{leg.confidence === null ? "Le moteur n’a pas communiqué de score de confiance pour cette sélection." : `La confiance affichée (${formatNumber(leg.confidence, 1)} %) est l’indicateur fourni par le moteur. Elle ne représente pas un taux de réussite observé.`}</p>
-              <p>La cote de cette sélection est distincte de la cote totale du combiné. Ouvre la fiche du match pour consulter les informations disponibles sur la rencontre.</p>
-            </div>
-          </details>
-          {href && <Link to={href} className="mt-4 inline-flex min-h-12 w-full items-center justify-between gap-3 rounded-xl px-3 py-3 text-base font-semibold text-orange-700 transition-colors hover:bg-orange-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-600 motion-reduce:transition-none">Ouvrir la fiche du match<ArrowRight aria-hidden="true" className="h-5 w-5 shrink-0" /></Link>}
-        </>
-      ) : (
-        <div className="mt-5 rounded-xl border border-orange-100 bg-orange-50/60 p-4">
-          <p className="flex items-start gap-2 text-base font-semibold text-orange-900"><Lock aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0" />Sélection réservée aux abonnés</p>
-          <Button variant="outline" className="mt-4 h-auto min-h-12 w-full whitespace-normal bg-white px-4 py-3 text-base" onClick={onUpgrade}>Découvrir les abonnements</Button>
-        </div>
-      )}
-    </Card>
-  );
+      <div className="wp3-confidence"><span>Confiance du moteur</span><strong>{leg.confidence === null ? "Non communiquée" : `${formatNumber(leg.confidence, 1)} %`}</strong></div>
+      <details className="wp3-explanation"><summary><span>Ce que signifie ce pronostic</span><ChevronDown aria-hidden="true" /></summary><div>
+        <p>{explainMarket(leg)}</p>
+        <p>{leg.confidence === null ? "Aucun score de confiance n’a été communiqué pour cette sélection." : `La confiance de ${formatNumber(leg.confidence, 1)} % est l’indicateur fourni par le moteur ; elle ne constitue pas un taux de réussite observé.`}</p>
+      </div></details>
+      {href && <Link to={href} className="wp3-match-link">Consulter la rencontre<ArrowRight aria-hidden="true" /></Link>}
+    </> : <div className="wp3-locked-pick"><Lock aria-hidden="true" /><div><strong>Le pronostic est réservé aux abonnés</strong><p>Débloque la sélection, son marché et sa cote.</p></div><button type="button" className="wp3-button wp3-button--light" onClick={onUpgrade}>Voir les abonnements<ArrowRight aria-hidden="true" /></button></div>}
+  </article>;
 }
+
 
 export default function CombosPage() {
   const { user, loading: authLoading = false } = useAuth();
@@ -229,6 +489,7 @@ export default function CombosPage() {
   const [accessState, setAccessState] = useState("waiting");
   const [error, setError] = useState("");
   const [activeTier, setActiveTier] = useState("balanced");
+  const [viewMode, setViewMode] = useState("cards");
   const [loadedAt, setLoadedAt] = useState(null);
   const [now, setNow] = useState(Date.now);
   const [copyNotice, setCopyNotice] = useState("");
@@ -271,7 +532,7 @@ export default function CombosPage() {
       snapshotRef.current = data; setCombos(data); setLoadedAt(Date.now()); setNow(Date.now());
       setAccessState("ready"); setError("");
       if (!tierChosenRef.current && !paidAccount(profile.value.data)) {
-        const free = TIERS.find((tier) => data[tier.key]?.unlocked_for_free && data[tier.key].legs.length > 0 && !data[tier.key].locked);
+        const free = TIERS.find((tier) => data[tier.key]?.unlocked_for_free && data[tier.key].legs.length > 0 && !data[tier.key].locked && data[tier.key].legs.every((leg) => !leg.locked));
         if (free) setActiveTier(free.key);
       }
     } catch (failure) {
@@ -322,10 +583,11 @@ export default function CombosPage() {
   const unlocked = unlockedTier(activeCombo, account, now);
   const fullAccess = unlocked && activeCombo?.legs.every((leg) => !leg.locked);
   const isPaid = paidAccount(account, now);
-  const freeTier = TIERS.find((item) => combos?.[item.key]?.unlocked_for_free && combos[item.key].legs.length > 0 && !combos[item.key].locked);
+  const freeTier = TIERS.find((item) => combos?.[item.key]?.unlocked_for_free && combos[item.key].legs.length > 0 && !combos[item.key].locked && combos[item.key].legs.every((leg) => !leg.locked));
   const stale = loadedAt !== null && now - loadedAt >= FRESH_FOR_MS;
   const unavailable = activeCombo?.legs.some((leg) => ["started", "finished"].includes(legStatus(leg, now))) || false;
   const canCopy = completeTicket(activeCombo, account, now, loadedAt);
+  const orderedLegs = useMemo(() => chronologicalLegs(activeCombo, viewMode), [activeCombo, viewMode]);
   const firstStart = useMemo(() => {
     const starts = (activeCombo?.legs || []).map((leg) => dateValue(leg.commence_time)).filter((value) => value !== null);
     return starts.length ? new Date(Math.min(...starts)).toISOString() : null;
@@ -347,82 +609,87 @@ export default function CombosPage() {
 
   return (
     <AppLayout>
-      <div className="mx-auto max-w-6xl px-4 py-6 sm:px-6 sm:py-10 lg:px-8" data-testid="combos-page">
-        <header className="mb-7 flex flex-col gap-5 sm:mb-9 sm:flex-row sm:items-start sm:justify-between">
-          <div className="min-w-0 max-w-3xl">
-            <p className="flex items-center gap-2 text-sm font-bold uppercase tracking-wider text-orange-700"><Layers aria-hidden="true" className="h-4 w-4 shrink-0" />Les combinés WNPulse</p>
-            <h1 className="mt-3 font-heading text-3xl font-extrabold leading-tight tracking-tight text-slate-900 sm:text-4xl">Tes sélections.<br /><span className="text-orange-600">Un combiné, en clair.</span></h1>
-            <p className="mt-4 text-base leading-relaxed text-slate-600 sm:text-lg">Compare les profils, retrouve chaque rencontre et comprends les chiffres du moteur avant de choisir.</p>
-            <p className="mt-3 text-sm leading-relaxed text-slate-500">Horaires : {timeZone}{loadedAt !== null ? ` · ${stale ? "Dernier chargement" : "Actualisé"} à ${new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(new Date(loadedAt))}` : ""}</p>
+      <style>{COMBOS_STYLES}</style>
+      <div className="wp3-combos" data-testid="combos-page" data-layout="combos-studio">
+        <header className="wp3-hero">
+          <div className="wp3-hero-main">
+            <p className="wp3-hero-eyebrow"><Layers aria-hidden="true" />WNPULSE · LES COMBINÉS</p>
+            <h1>Lis le match.<br /><span>Choisis ton combiné.</span></h1>
+            <p className="wp3-hero-description">Trois profils. Chaque rencontre expliquée. Toutes les sélections réunies dans un ticket clair.</p>
+            <div className="wp3-hero-meta"><span><Clock aria-hidden="true" />Horaires : {timeZone}</span>{loadedAt !== null && <span>{stale ? "Dernier chargement" : "Actualisé"} à {new Intl.DateTimeFormat("fr-FR", { hour: "2-digit", minute: "2-digit" }).format(new Date(loadedAt))}</span>}</div>
           </div>
-          <Button variant="outline" onClick={() => fetchCombos()} disabled={loading || refreshing || authLoading} className="h-auto min-h-12 w-full shrink-0 whitespace-normal bg-white px-5 py-3 text-base sm:w-auto" data-testid="refresh-combos-btn"><RefreshCw aria-hidden="true" className={cn("mr-2 h-5 w-5", refreshing && "animate-spin motion-reduce:animate-none")} />{refreshing ? "Actualisation…" : "Actualiser"}</Button>
+          <div className="wp3-hero-side">
+            <div className="wp3-hero-profile"><span>Profil sélectionné</span><strong>{tier.label}</strong><p>{activeCombo ? `${activeCombo.legs.length} sélection${activeCombo.legs.length > 1 ? "s" : ""} dans ce ticket` : "Choisis un profil pour explorer ses sélections"}</p></div>
+            <button type="button" onClick={() => fetchCombos()} disabled={loading || refreshing || authLoading} className="wp3-button wp3-button--hero" data-testid="refresh-combos-btn"><RefreshCw aria-hidden="true" className={refreshing ? "wp3-spinning" : ""} />{refreshing ? "Actualisation…" : "Actualiser les combinés"}</button>
+          </div>
         </header>
 
-        <div className="mb-6 grid grid-cols-1 gap-3 md:grid-cols-3" aria-label="Choisir un profil de combiné">
-          {TIERS.map((item) => {
-            const Icon = item.icon, combo = combos?.[item.key], selected = tier.key === item.key;
-            const available = unlockedTier(combo, account, now) && combo?.legs.every((leg) => !leg.locked);
-            return <button type="button" key={item.key} aria-pressed={selected} onClick={() => chooseTier(item.key)} data-testid={`tier-tab-${item.key}`} className={cn("min-w-0 rounded-2xl border-2 p-4 text-left transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-orange-600 motion-reduce:transition-none sm:p-5", selected ? ACCENTS[item.accent].selected : "border-neutral-200 bg-white hover:border-neutral-300")}>
-              <div className="flex min-w-0 items-start gap-3"><span className={cn("grid h-11 w-11 shrink-0 place-items-center rounded-xl", ACCENTS[item.accent].icon)}><Icon aria-hidden="true" className="h-6 w-6" /></span><div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-2"><span className="text-lg font-extrabold text-slate-900">{item.label}</span>{combo?.unlocked_for_free && !combo.locked && <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-sm font-semibold text-emerald-800">Gratuit</span>}{selected && <Check aria-hidden="true" className={cn("h-5 w-5 shrink-0", ACCENTS[item.accent].heading)} />}</div><p className="mt-1 break-words text-sm leading-relaxed text-slate-600">{combo ? `${combo.legs.length} sélection${combo.legs.length > 1 ? "s" : ""}${available && combo.total_odds !== null ? ` · Cote ${formatNumber(combo.total_odds)}` : ""}` : "Profil à découvrir"}</p></div></div>
-              <p className="mt-3 text-base leading-relaxed text-slate-600">{item.description}</p>
-            </button>;
-          })}
-        </div>
+        <section className="wp3-profile-section" aria-labelledby="wp3-profiles-title">
+          <div className="wp3-section-heading"><div><p className="wp3-eyebrow">01 · Choisis ton profil</p><h2 id="wp3-profiles-title">Quel combiné veux-tu explorer ?</h2></div></div>
+          <div className="wp3-profile-grid">
+            {TIERS.map((item, index) => {
+              const Icon = item.icon, combo = combos?.[item.key], selected = tier.key === item.key;
+              const visible = unlockedTier(combo, account, now) && combo.legs.length > 0 && combo.legs.every((leg) => !leg.locked);
+              return <button type="button" key={item.key} aria-pressed={selected} onClick={() => chooseTier(item.key)} data-testid={`tier-tab-${item.key}`} className={cn("wp3-profile", `wp3-profile--${item.accent}`, selected && "wp3-profile--selected")}>
+                <div className="wp3-profile-top"><span className="wp3-profile-icon"><Icon aria-hidden="true" /></span><span className="wp3-profile-index">0{index + 1}</span>{selected && <Check aria-hidden="true" className="wp3-selected-check" />}</div>
+                <div className="wp3-profile-title"><strong>{item.label}</strong>{combo?.unlocked_for_free && !combo.locked && combo.legs.length > 0 && combo.legs.every((leg) => !leg.locked) && <span className="wp3-free-label">Gratuit</span>}</div>
+                <p>{item.description}</p>
+                <div className="wp3-profile-stats"><span>{combo ? `${combo.legs.length} sélection${combo.legs.length > 1 ? "s" : ""}` : "Profil à découvrir"}</span><b>{visible ? combo.total_odds !== null ? `Cote ${formatNumber(combo.total_odds)}` : "Cote non fournie" : <>{combo?.legs.length > 0 && <Lock aria-hidden="true" />}{loading ? "En attente" : !combo || !combo.legs.length ? "Indisponible" : "Accès Pro"}</>}</b></div>
+              </button>;
+            })}
+          </div>
+          {combos && <details className="wp3-comparison">
+            <summary><Scale aria-hidden="true" /><span>Comparer les trois profils</span><ChevronDown aria-hidden="true" /></summary>
+            <div className="wp3-compare-grid">{TIERS.map((item) => {
+              const combo = combos[item.key], accessible = unlockedTier(combo, account, now) && combo.legs.length > 0 && combo.legs.every((leg) => !leg.locked);
+              return <div key={item.key} className="wp3-compare-card"><h3>{item.label}</h3><dl><Metric label="Sélections" value={combo ? combo.legs.length : "Non disponible"} /><Metric label="Cote totale" value={!combo?.legs.length ? "Non disponible" : accessible ? formatNumber(combo.total_odds) : "Réservée"} /><Metric label="Confiance moyenne" value={accessible && combo.avg_confidence !== null ? `${formatNumber(combo.avg_confidence, 1)} %` : "—"} /><Metric label="Probabilité combinée estimée" value={accessible && combo.combined_probability !== null ? `${formatNumber(combo.combined_probability, 1)} %` : "—"} /></dl><button type="button" className="wp3-button wp3-button--light" onClick={() => chooseTier(item.key)}>Explorer ce profil<ArrowRight aria-hidden="true" /></button></div>;
+            })}</div><p className="wp3-comparison-note">Les indicateurs proviennent du moteur. La confiance moyenne et la probabilité combinée décrivent deux choses différentes.</p>
+          </details>}
+        </section>
 
-        {error && <div role="alert" className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 p-4 sm:p-5"><div className="flex items-start gap-3"><AlertCircle aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" /><div className="min-w-0"><p className="text-base leading-relaxed text-amber-900">{error}</p>{combos && <p className="mt-2 text-sm leading-relaxed text-amber-800">La dernière sélection chargée reste affichée. Elle n’a pas été remplacée par des données vides.</p>}<Button variant="outline" onClick={() => fetchCombos()} disabled={refreshing} className="mt-3 h-auto min-h-11 whitespace-normal bg-white px-4 py-3 text-base">Réessayer</Button></div></div></div>}
+        {error && <div role="alert" className="wp3-alert"><AlertCircle aria-hidden="true" /><div><p>{error}</p>{combos && <p>La dernière sélection chargée reste affichée.</p>}<button type="button" onClick={() => fetchCombos()} disabled={refreshing} className="wp3-button wp3-button--light">Réessayer</button></div></div>}
 
-        {loading || authLoading ? (
-          <div role="status" aria-label="Chargement des combinés" className="grid gap-5 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]"><div className="space-y-4"><Skeleton className="h-64 rounded-2xl" /><Skeleton className="h-64 rounded-2xl" /></div><Skeleton className="h-80 rounded-2xl" /><span className="sr-only">Chargement des combinés et vérification de l’accès…</span></div>
-        ) : accessState === "unauthorized" ? (
-          <Card className="rounded-2xl bg-white p-6 sm:p-8"><Lock aria-hidden="true" className="h-8 w-8 text-orange-600" /><h2 className="mt-4 text-2xl font-extrabold text-slate-900">Ta session doit être renouvelée</h2><p className="mt-3 text-base leading-relaxed text-slate-600">Reconnecte-toi pour retrouver l’accès correspondant à ton compte.</p><Link to="/login" className="mt-5 inline-flex min-h-12 items-center rounded-xl bg-orange-600 px-5 py-3 text-base font-semibold text-white">Se connecter</Link></Card>
-        ) : accessState === "locked" ? (
-          <Card className="rounded-2xl border-orange-200 bg-orange-50/40 p-6 sm:p-8" data-testid="combos-locked"><div className="grid h-12 w-12 place-items-center rounded-xl bg-orange-100 text-orange-700"><Lock aria-hidden="true" className="h-6 w-6" /></div><h2 className="mt-4 text-2xl font-extrabold text-slate-900">Les combinés sont réservés aux abonnés</h2><p className="mt-3 max-w-2xl text-base leading-relaxed text-slate-600">Ton accès actuel ne permet pas de consulter ces sélections. Découvre les formules disponibles pour retrouver les matchs, les pronostics et les cotes de chaque combiné.</p><Button onClick={upgrade} className="mt-6 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base text-white sm:w-auto" data-testid="upgrade-from-combos-btn"><Sparkles aria-hidden="true" className="mr-2 h-5 w-5" />Découvrir les abonnements</Button></Card>
-        ) : accessState === "error" ? (
-          <Card className="rounded-2xl bg-white p-6 text-center sm:p-8"><h2 className="text-xl font-extrabold text-slate-900">Les combinés n’ont pas pu être chargés</h2><p className="mt-3 text-base leading-relaxed text-slate-600">Utilise le bouton Réessayer ci-dessus pour relancer la vérification.</p></Card>
-        ) : (
-          <>
-            {!isPaid && freeTier && <Card className="mb-6 rounded-2xl border-emerald-200 bg-emerald-50 p-5" data-testid="free-combo-banner"><div className="flex items-start gap-3"><Gift aria-hidden="true" className="mt-0.5 h-6 w-6 shrink-0 text-emerald-700" /><div className="min-w-0"><h2 className="text-lg font-extrabold text-emerald-900">Un combiné gratuit à découvrir</h2><p className="mt-2 text-base leading-relaxed text-emerald-900">Le profil {combos[freeTier.key].label} est accessible avec ton compte.</p></div></div><Button onClick={() => chooseTier(freeTier.key)} className="mt-4 h-auto min-h-12 w-full whitespace-normal bg-emerald-700 px-4 py-3 text-base text-white sm:w-auto" data-testid="see-free-combo-btn">Voir le combiné gratuit<ArrowRight aria-hidden="true" className="ml-2 h-5 w-5" /></Button></Card>}
-            {!activeCombo?.legs.length ? (
-              <Card className="rounded-2xl bg-white p-7 text-center sm:p-10"><Layers aria-hidden="true" className="mx-auto h-10 w-10 text-orange-500" /><h2 className="mt-4 text-2xl font-extrabold text-slate-900">Aucune sélection pour ce profil</h2><p className="mx-auto mt-3 max-w-xl text-base leading-relaxed text-slate-600">Le moteur n’a pas fourni de combiné {tier.label.toLowerCase()} pour le moment. Consulte un autre profil ou actualise plus tard.</p></Card>
-            ) : (
-              <>
-                {(stale || unavailable) && <div role="status" className="mb-5 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-base leading-relaxed text-amber-900">{unavailable ? "Une rencontre a déjà commencé ou s’est terminée. Actualise pour vérifier les sélections disponibles." : "Cette sélection n’a pas été actualisée depuis plus de cinq minutes. Actualise avant de la copier."}</div>}
-                <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-                  <section className="min-w-0 space-y-4" aria-labelledby="combo-selections-title" data-testid={`combo-legs-${tier.key}`}>
-                    <div className="mb-5">
-                      <h2 id="combo-selections-title" className="text-2xl font-extrabold text-slate-900">Les rencontres du combiné</h2>
-                      <p className="mt-2 text-base leading-relaxed text-slate-600">{activeCombo.legs.length} sélection{activeCombo.legs.length > 1 ? "s" : ""} · {tier.label}</p>
-                      {firstStart && <p className="mt-2 text-sm leading-relaxed text-slate-500">Première rencontre : {dateLabel(firstStart)}</p>}
-                      <div className="mt-4 rounded-2xl border border-orange-100 bg-orange-50/60 p-4 lg:hidden">
-                        <div className="flex flex-wrap items-center justify-between gap-3"><p className="text-base font-semibold text-slate-700">Cote totale du moteur</p><p className="break-words font-mono text-2xl font-extrabold text-orange-800 [overflow-wrap:anywhere]">{fullAccess ? formatNumber(activeCombo.total_odds) : "Réservée"}</p></div>
-                        <a href="#combo-summary" className="mt-2 inline-flex min-h-11 items-center gap-2 text-base font-semibold text-orange-700">Voir le récapitulatif<ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0" /></a>
-                      </div>
-                    </div>
-                    {activeCombo.legs.map((leg, index) => <SelectionCard key={leg.key} leg={leg} index={index} unlocked={unlocked} now={now} onUpgrade={upgrade} />)}
-                  </section>
-                  <aside id="combo-summary" className="min-w-0 scroll-mt-20 space-y-5 lg:sticky lg:top-6" aria-label="Récapitulatif du combiné">
-                    <Card className={cn("overflow-hidden rounded-2xl border-0 bg-gradient-to-br p-5 text-white shadow-lg sm:p-6", ACCENTS[tier.accent].summary)} data-testid={`bet-slip-${tier.key}`}>
-                      <p className="text-sm font-bold uppercase tracking-wider text-white/80">Ton récapitulatif</p><h2 className="mt-2 break-words text-2xl font-extrabold [overflow-wrap:anywhere]">Combiné {activeCombo.label}</h2>
-                      <div className="mt-5 rounded-xl bg-white/10 p-4"><p className="text-base text-white/80">Cote totale du moteur</p><p className="mt-2 break-words font-mono text-4xl font-black leading-tight [overflow-wrap:anywhere] sm:text-5xl">{fullAccess ? formatNumber(activeCombo.total_odds) : "Réservée"}</p><p className="mt-2 text-sm leading-relaxed text-white/80">{fullAccess ? "Cote fournie avec la sélection, susceptible d’évoluer chez le bookmaker." : "Disponible avec les sélections complètes."}</p></div>
-                      <dl className="mt-5 space-y-4"><Metric label="Sélections" value={activeCombo.legs.length} /><Metric label="Confiance moyenne du moteur" value={fullAccess && activeCombo.avg_confidence !== null ? `${formatNumber(activeCombo.avg_confidence, 1)} %` : "—"} /><Metric label="Probabilité combinée estimée" value={fullAccess && activeCombo.combined_probability !== null ? `${formatNumber(activeCombo.combined_probability, 1)} %` : "—"} /></dl>
-                      {fullAccess ? <Button onClick={copyCombo} disabled={!canCopy} className="mt-6 h-auto min-h-12 w-full whitespace-normal bg-white px-4 py-3 text-base font-bold text-slate-900 hover:bg-orange-50 disabled:opacity-70" data-testid="copy-combo-btn"><Copy aria-hidden="true" className="mr-2 h-5 w-5 shrink-0" />Copier les sélections</Button> : <Button onClick={upgrade} className="mt-6 h-auto min-h-12 w-full whitespace-normal bg-white px-4 py-3 text-base font-bold text-slate-900 hover:bg-orange-50" data-testid="upgrade-combo-btn"><Lock aria-hidden="true" className="mr-2 h-5 w-5 shrink-0" />Débloquer le combiné</Button>}
-                      {fullAccess && !canCopy && <p className="mt-3 text-sm leading-relaxed text-white/80">{stale || unavailable ? "Actualise le combiné avant de copier ses sélections." : "La copie est disponible avec au moins deux sélections complètes, dont les horaires sont à venir."}</p>}
-                      {copyNotice && <p role="status" className="mt-4 text-base leading-relaxed text-white">{copyNotice}</p>}
-                    </Card>
-                    {manualCopy && canCopy && <Card className="rounded-2xl bg-white p-4"><div className="flex items-center justify-between gap-3"><label htmlFor="combo-manual-copy" className="text-base font-bold text-slate-900">Texte du combiné</label><button type="button" onClick={() => setManualCopy("")} aria-label="Fermer le texte à copier" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-600 hover:bg-slate-50"><X aria-hidden="true" className="h-5 w-5" /></button></div><textarea id="combo-manual-copy" readOnly value={manualCopy} onFocus={(event) => event.target.select()} className="mt-3 min-h-64 w-full rounded-xl border border-neutral-200 p-3 text-base leading-relaxed text-slate-700" /><p className="mt-2 text-sm text-slate-500">Appuie dans le texte pour le sélectionner.</p></Card>}
-                    <Card className="rounded-2xl border-neutral-200 bg-white p-5"><div className="flex items-start gap-3"><Info aria-hidden="true" className="mt-0.5 h-5 w-5 shrink-0 text-orange-600" /><div className="min-w-0"><h3 className="text-lg font-bold text-slate-900">Bien lire les chiffres</h3><p className="mt-3 text-base leading-relaxed text-slate-600">La confiance moyenne décrit les sélections individuellement. Elle ne correspond pas à la probabilité que tout le combiné passe.</p><p className="mt-3 text-base leading-relaxed text-slate-600">La probabilité combinée est une estimation du moteur, liée à ses hypothèses sur les matchs. Elle ne constitue pas un taux de réussite mesuré.</p><p className="mt-3 text-base leading-relaxed text-slate-600">Un combiné dépend de chacune de ses sélections. Le profil « Sécurité » reste soumis à cette incertitude.</p></div></div></Card>
-                  </aside>
+        {loading || authLoading ? <section role="status" aria-label="Chargement des combinés" className="wp3-loading"><Loader2 aria-hidden="true" className="wp3-spinning" /><h2>Préparation des sélections</h2><p>Vérification de ton accès et chargement des rencontres…</p><div className="wp3-skeleton-grid"><div /><div /><div /></div></section>
+        : accessState === "unauthorized" ? <section className="wp3-state"><Lock aria-hidden="true" /><h2>Ta session doit être renouvelée</h2><p>Reconnecte-toi pour retrouver l’accès correspondant à ton compte.</p><Link to="/login" className="wp3-button wp3-button--primary">Se connecter<ArrowRight aria-hidden="true" /></Link></section>
+        : accessState === "locked" ? <section className="wp3-upgrade" data-testid="combos-locked"><div className="wp3-upgrade-icon"><Lock aria-hidden="true" /></div><div><p className="wp3-eyebrow">Les sélections complètes</p><h2>Explore les trois profils avec Pro.</h2><p>Ton accès actuel ne permet pas de consulter ces combinés. Retrouve les rencontres, les marchés et les cotes en découvrant les abonnements disponibles.</p><button type="button" onClick={upgrade} className="wp3-button wp3-button--primary" data-testid="upgrade-from-combos-btn"><Sparkles aria-hidden="true" />Découvrir les abonnements<ArrowRight aria-hidden="true" /></button></div></section>
+        : accessState === "error" ? <section className="wp3-state"><AlertCircle aria-hidden="true" /><h2>Les combinés n’ont pas pu être chargés</h2><p>Utilise le bouton Réessayer ci-dessus pour relancer la vérification.</p></section>
+        : <>
+          {!isPaid && freeTier && <div className="wp3-free-banner" data-testid="free-combo-banner"><Gift aria-hidden="true" /><div><strong>Un combiné gratuit à découvrir</strong><p>Le profil {combos[freeTier.key].label} est accessible avec ton compte.</p></div><button type="button" onClick={() => chooseTier(freeTier.key)} className="wp3-button wp3-button--light" data-testid="see-free-combo-btn">Voir le combiné<ArrowRight aria-hidden="true" /></button></div>}
+          {!activeCombo?.legs.length ? <section className="wp3-state"><Layers aria-hidden="true" /><h2>Aucune sélection pour ce profil</h2><p>Le moteur n’a pas fourni de combiné {tier.label.toLowerCase()} pour le moment. Consulte un autre profil ou actualise plus tard.</p></section>
+          : <>
+            {(stale || unavailable) && <div role="status" className="wp3-alert"><AlertCircle aria-hidden="true" /><p>{unavailable ? "Une rencontre a déjà commencé ou s’est terminée. Actualise pour vérifier les sélections disponibles." : "Cette sélection n’a pas été actualisée depuis plus de cinq minutes. Actualise avant de la copier."}</p></div>}
+            <div className="wp3-main">
+              <section className={cn("wp3-selections", viewMode === "agenda" && "wp3-agenda")} aria-labelledby="combo-selections-title" data-testid={`combo-legs-${tier.key}`}>
+                <div className="wp3-section-heading"><div><p className="wp3-eyebrow">02 · Parcours les rencontres</p><h2 id="combo-selections-title">{viewMode === "agenda" ? "Le programme du combiné" : "Les sélections, une par une"}</h2><p>{activeCombo.legs.length} sélection{activeCombo.legs.length > 1 ? "s" : ""} · Profil {tier.label}</p>{firstStart && <p className="wp3-first-start">Première rencontre : {dateLabel(firstStart)}</p>}</div>
+                  <div className="wp3-view-switch" aria-label="Présentation des rencontres"><button type="button" aria-pressed={viewMode === "cards"} onClick={() => setViewMode("cards")}><Layers aria-hidden="true" />Fiches</button><button type="button" aria-pressed={viewMode === "agenda"} onClick={() => setViewMode("agenda")}><CalendarDays aria-hidden="true" />Horaires</button></div>
                 </div>
-              </>
-            )}
-          </>
-        )}
-        {refreshing && !loading && <p role="status" className="mt-6 flex items-center gap-2 text-sm text-slate-500"><Loader2 aria-hidden="true" className="h-4 w-4 animate-spin motion-reduce:animate-none" />Vérification des sélections et de ton accès…</p>}
+                <a href="#combo-summary" className="wp3-mobile-summary"><span>Cote totale du moteur<strong>{fullAccess ? formatNumber(activeCombo.total_odds) : "Réservée"}</strong></span><span>Voir le ticket<ChevronDown aria-hidden="true" /></span></a>
+                <div className="wp3-match-list">{orderedLegs.map(({ leg, index }) => <SelectionCard key={leg.key} leg={leg} index={index} unlocked={unlocked} now={now} onUpgrade={upgrade} />)}</div>
+              </section>
+
+              <aside id="combo-summary" className="wp3-sidebar" aria-label="Récapitulatif du combiné">
+                <section className="wp3-ticket" data-testid={`bet-slip-${tier.key}`}>
+                  <header><p className="wp3-eyebrow">03 · Ton ticket</p><h2>Combiné {activeCombo.label}</h2><span>{activeCombo.legs.length} sélection{activeCombo.legs.length > 1 ? "s" : ""} réunies</span></header>
+                  <div className="wp3-ticket-rows">{activeCombo.legs.map((leg, index) => <div key={leg.key} className="wp3-ticket-row"><b>{index + 1}</b><div><p>{leg.home_team || "Équipe à confirmer"} <span>contre</span> {leg.away_team || "Équipe à confirmer"}</p><span>{fullAccess && !leg.locked ? leg.pick || "Sélection non communiquée" : "Pronostic réservé"}</span></div></div>)}</div>
+                  <div className="wp3-ticket-total"><span>Cote totale du moteur</span><strong className={!fullAccess ? "wp3-reserved" : ""}>{fullAccess ? formatNumber(activeCombo.total_odds) : "Réservée"}</strong><p>{fullAccess ? "Cote fournie avec la sélection ; elle peut évoluer chez le bookmaker." : "Disponible avec les sélections complètes."}</p></div>
+                  <div className="wp3-ticket-bottom"><dl><Metric label="Confiance moyenne du moteur" value={fullAccess && activeCombo.avg_confidence !== null ? `${formatNumber(activeCombo.avg_confidence, 1)} %` : "—"} /><Metric label="Probabilité combinée estimée" value={fullAccess && activeCombo.combined_probability !== null ? `${formatNumber(activeCombo.combined_probability, 1)} %` : "—"} /></dl>
+                    {fullAccess ? <button type="button" onClick={copyCombo} disabled={!canCopy} className="wp3-button wp3-button--primary" data-testid="copy-combo-btn"><Copy aria-hidden="true" />Copier le ticket</button> : <button type="button" onClick={upgrade} className="wp3-button wp3-button--primary" data-testid="upgrade-combo-btn"><Lock aria-hidden="true" />Débloquer le combiné</button>}
+                    {fullAccess && !canCopy && <p className="wp3-copy-help">{stale || unavailable ? "Actualise le combiné avant de copier ses sélections." : "La copie est disponible avec au moins deux sélections complètes, dont les horaires sont à venir."}</p>}
+                    {copyNotice && <p role="status" className="wp3-copy-help">{copyNotice}</p>}
+                  </div>
+                </section>
+                {manualCopy && canCopy && <section className="wp3-manual-copy"><div><label htmlFor="combo-manual-copy">Texte du ticket</label><button type="button" onClick={() => setManualCopy("")} aria-label="Fermer le texte à copier"><X aria-hidden="true" /></button></div><textarea id="combo-manual-copy" readOnly value={manualCopy} onFocus={(event) => event.target.select()} /><p>Appuie dans le texte pour le sélectionner.</p></section>}
+                <details className="wp3-reading" open><summary><Info aria-hidden="true" /><span>Bien lire le combiné</span><ChevronDown aria-hidden="true" /></summary><div><p>La confiance moyenne décrit les sélections individuellement. Elle ne correspond pas à la probabilité que tout le combiné passe.</p><p>La probabilité combinée est une estimation du moteur, liée à ses hypothèses sur les matchs. Elle ne constitue pas un taux de réussite mesuré.</p><p>Un combiné dépend de chacune de ses sélections. Le profil « Sécurité » reste soumis à cette incertitude.</p></div></details>
+              </aside>
+            </div>
+          </>}
+        </>}
+        {refreshing && !loading && <p role="status" className="wp3-refresh-note"><Loader2 aria-hidden="true" className="wp3-spinning" />Vérification des sélections et de ton accès…</p>}
       </div>
     </AppLayout>
   );
 }
 
 function Metric({ label, value }) {
-  return <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1"><dt className="min-w-0 text-base leading-relaxed text-white/80">{label}</dt><dd className="shrink-0 font-mono text-lg font-bold leading-relaxed">{value}</dd></div>;
+  return <div className="wp3-metric"><dt>{label}</dt><dd>{value}</dd></div>;
 }
