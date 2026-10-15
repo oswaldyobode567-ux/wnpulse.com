@@ -30,7 +30,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, StreamingResponse
-from pydantic import BaseModel, EmailStr, Field, StrictBool
+from pydantic import BaseModel, EmailStr, Field, StrictBool, StrictInt
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pymongo import ReturnDocument
@@ -54,7 +54,19 @@ from prediction_engine import (
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
+from blog_service import (
+    bootstrap_blog, list_posts as blog_list_posts, get_post as blog_get_post,
+    save_post as blog_save_post, delete_post as blog_delete_post, BlogConflictError,
+)
+from blog_news_service import (
+    bootstrap_news, synchronize_news, news_status, set_paused as pause_blog_news,
+    config as blog_news_config,
+)
 from montante_service import MontanteService
+from live_streams_service import (
+    bootstrap_streams, synchronize_streams, public_streams, stream_diagnostics,
+    configuration as live_video_configuration,
+)
 
 # ─── Systeme d'expiration d'abonnement ───────────────────────────────────────
 
@@ -2295,6 +2307,100 @@ async def _require_admin(payload: dict) -> dict:
     if not user or not user.get("is_admin"):
         raise HTTPException(status_code=403, detail="Accès réservé aux administrateurs")
     return user
+
+
+class BlogPostInput(BaseModel):
+    title: str = Field(..., min_length=8, max_length=160)
+    excerpt: str = Field(..., min_length=20, max_length=360)
+    content: str = Field(..., min_length=80, max_length=40000)
+    slug: str = Field(default="", max_length=120)
+    cover: str = Field(default="", max_length=1000)
+    category: str = "Guides"
+    sport: str = ""
+    source_url: str = Field(default="", max_length=1000)
+    source_name: str = Field(default="", max_length=120)
+    information_date: str = Field(default="", max_length=10)
+    tags: List[str] = Field(default_factory=list)
+    status: str = "draft"
+    revision: Optional[StrictInt] = None
+
+
+async def _blog_response(operation):
+    try:
+        return await asyncio.wait_for(operation, timeout=10)
+    except BlogConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    except DuplicateKeyError:
+        raise HTTPException(status_code=409, detail="Ce lien d’article existe déjà. Choisis un autre lien.")
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Blog operation failed: %s", type(exc).__name__)
+        raise HTTPException(status_code=503, detail="Le blog est temporairement indisponible. Réessaie dans un instant.")
+
+
+@app.get("/api/blog/posts")
+async def get_blog_posts(limit: int = Query(default=50, ge=1, le=200), category: str = "", sport: str = ""):
+    filters = {"limit": limit}
+    if category:
+        filters["category"] = category
+    if sport:
+        filters["sport"] = sport
+    return await _blog_response(blog_list_posts(db, **filters))
+
+
+@app.get("/api/blog/posts/{slug}")
+async def get_blog_post(slug: str):
+    return await _blog_response(blog_get_post(db, slug))
+
+
+@app.get("/api/blog/admin/posts")
+async def admin_blog_posts(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    return await _blog_response(blog_list_posts(db, limit=200, admin=True))
+
+
+@app.post("/api/blog/admin/posts", status_code=201)
+async def admin_blog_create(data: BlogPostInput, payload: dict = Depends(get_current_user_payload)):
+    admin = await _require_admin(payload)
+    return await _blog_response(blog_save_post(db, data.dict(), admin["id"]))
+
+
+@app.put("/api/blog/admin/posts/{post_id}")
+async def admin_blog_update(post_id: str, data: BlogPostInput, payload: dict = Depends(get_current_user_payload)):
+    admin = await _require_admin(payload)
+    return await _blog_response(blog_save_post(db, data.dict(), admin["id"], post_id=post_id))
+
+
+@app.delete("/api/blog/admin/posts/{post_id}")
+async def admin_blog_delete(post_id: str, revision: int = Query(..., ge=1), payload: dict = Depends(get_current_user_payload)):
+    admin = await _require_admin(payload)
+    return await _blog_response(blog_delete_post(db, post_id, revision, admin["id"]))
+
+
+class BlogNewsSettingsInput(BaseModel):
+    paused: StrictBool
+
+
+@app.get("/api/blog/admin/news/status")
+async def admin_blog_news_status(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    return await _blog_response(news_status(db, scheduler_active=_blog_news_scheduler.running))
+
+
+@app.post("/api/blog/admin/news/settings")
+async def admin_blog_news_settings(data: BlogNewsSettingsInput, payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    return await _blog_response(pause_blog_news(db, data.paused))
+
+
+@app.post("/api/blog/admin/news/sync", status_code=202)
+async def admin_blog_news_sync(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    accepted = await _start_blog_news_sync()
+    return {"accepted": accepted, "message": "La collecte suit son calendrier et respecte les délais de la source."}
 
 
 @app.get("/api/admin/stats")
@@ -4609,6 +4715,36 @@ def _start_live_scores_refresh():
     _live_scores_refresh_task = asyncio.create_task(_refresh_live_scores_in_background())
 
 
+@app.get("/api/live/streams")
+async def get_live_streams(region: str = Query(default="", max_length=2)):
+    region = region.strip().upper()
+    if region and not re.fullmatch(r"[A-Z]{2}", region):
+        raise HTTPException(status_code=422, detail="Le pays doit être un code de deux lettres.")
+    try:
+        data = await asyncio.wait_for(public_streams(db, region=region), timeout=4)
+        return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Live video cache failed: %s", type(exc).__name__)
+        return JSONResponse(content={"items": [], "status": "error", "error_code": "video_cache_unavailable"},
+                            status_code=503, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/api/admin/live-streams/status")
+async def admin_live_stream_status(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    try:
+        return await asyncio.wait_for(stream_diagnostics(db, scheduler_active=_live_video_scheduler.running), timeout=5)
+    except Exception:
+        raise HTTPException(status_code=503, detail="L’état des diffusions est temporairement indisponible.")
+
+
+@app.post("/api/admin/live-streams/refresh", status_code=202)
+async def admin_live_stream_refresh(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    started = await _start_live_video_sync()
+    return {"started": started, "configured": live_video_configuration()["configured"]}
+
+
 @app.get("/api/scores")
 async def get_scores(snapshot: bool = False):
     # Lire directement Mongo : fetch_all_scores archive même un cache frais,
@@ -6100,6 +6236,50 @@ async def admin_health_monitor_run(payload: dict = Depends(get_current_user_payl
 # ─── Workers automatiques : refresh des matchs + reconciliation ───────────────
 
 scheduler = AsyncIOScheduler(timezone="UTC")
+_blog_news_scheduler = AsyncIOScheduler(timezone="UTC")
+_blog_news_task = None
+_live_video_scheduler = AsyncIOScheduler(timezone="UTC")
+_live_video_task = None
+
+
+async def _safe_live_video_sync():
+    try:
+        return await asyncio.wait_for(synchronize_streams(db), timeout=60)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Live video refresh failed: %s", type(exc).__name__)
+        return {"status": "error"}
+
+
+async def _start_live_video_sync():
+    global _live_video_task
+    if not live_video_configuration()["configured"]:
+        return False
+    if _live_video_task and not _live_video_task.done():
+        return False
+    _live_video_task = asyncio.create_task(_safe_live_video_sync())
+    return True
+
+
+async def _safe_blog_news_sync():
+    try:
+        return await asyncio.wait_for(synchronize_news(db), timeout=60)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logging.getLogger(__name__).warning("News collection failed: %s", type(exc).__name__)
+        return {"status": "error", "added": 0}
+
+
+async def _start_blog_news_sync():
+    global _blog_news_task
+    if not blog_news_config()["enabled"]:
+        return False
+    if _blog_news_task and not _blog_news_task.done():
+        return False
+    _blog_news_task = asyncio.create_task(_safe_blog_news_sync())
+    return True
 SCHEDULER_INSTANCE_ID = os.environ.get("INSTANCE_ID", uuid.uuid4().hex)
 ENABLE_INTERNAL_SCHEDULER = os.environ.get("ENABLE_INTERNAL_SCHEDULER", "true").strip().lower() in ("1", "true", "yes")
 
@@ -6198,6 +6378,38 @@ async def _scheduled_health_audit():
 
 @app.on_event("startup")
 async def startup_event():
+    try:
+        await asyncio.wait_for(bootstrap_streams(db), timeout=10)
+        if live_video_configuration()["configured"]:
+            _live_video_scheduler.add_job(
+                _start_live_video_sync, "interval", minutes=1, id="live_video_refresh",
+                replace_existing=True, coalesce=True, max_instances=1,
+            )
+            _live_video_scheduler.start()
+            await _start_live_video_sync()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Live video initialization failed: %s", type(exc).__name__)
+    # Guides publics : ajout initial uniquement ; les modifications et retraits
+    # de l’administrateur sont conservés lors des redémarrages/déploiements.
+    try:
+        await asyncio.wait_for(bootstrap_blog(db), timeout=20)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Blog initialization failed: %s", type(exc).__name__)
+
+    try:
+        await asyncio.wait_for(bootstrap_news(db), timeout=15)
+        if blog_news_config()["enabled"]:
+            # Dedicated scheduler: news remain automatic even when paid odds
+            # refresh jobs are intentionally disabled with ENABLE_INTERNAL_SCHEDULER.
+            _blog_news_scheduler.add_job(
+                _start_blog_news_sync, "interval", minutes=5, id="blog_auto_news",
+                replace_existing=True, coalesce=True, max_instances=1,
+            )
+            _blog_news_scheduler.start()
+            await _start_blog_news_sync()  # Network work happens in the background.
+    except Exception as exc:
+        logging.getLogger(__name__).warning("News initialization failed: %s", type(exc).__name__)
+
     # Archive Track Record : un score final doit être enregistré une seule fois
     # et rester retrouvable après expiration de la fenêtre fournisseur.
     try:
@@ -6323,6 +6535,22 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    if _live_video_scheduler.running:
+        _live_video_scheduler.shutdown(wait=False)
+    if _live_video_task and not _live_video_task.done():
+        _live_video_task.cancel()
+        try:
+            await asyncio.wait_for(_live_video_task, timeout=5)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
+    if _blog_news_scheduler.running:
+        _blog_news_scheduler.shutdown(wait=False)
+    if _blog_news_task and not _blog_news_task.done():
+        _blog_news_task.cancel()
+        try:
+            await asyncio.wait_for(_blog_news_task, timeout=5)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
     if _live_scores_refresh_task and not _live_scores_refresh_task.done():
         _live_scores_refresh_task.cancel()
         try:
