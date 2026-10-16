@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, Fragment, useRef } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { Globe2, LayoutDashboard, Trophy, Layers, History, CreditCard, LogOut, Zap, Crown, ShieldCheck, Target, TrendingUp, User, Gift, Sparkles, Radio, Menu, X } from "lucide-react";
+import { Globe2, LayoutDashboard, Trophy, Layers, History, CreditCard, LogOut, Zap, Crown, ShieldCheck, Target, TrendingUp, User, Gift, Sparkles, Radio, Menu, X, Bell, BellPlus, Check, CheckCheck, Loader2, CheckCircle2, XCircle, MinusCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -7020,7 +7020,7 @@ function normalizeLegacyPriceText(text) {
 // Cela évite que les 11+ entrées de navigation agrandissent la barre fixe
 // sur plusieurs lignes et recouvrent le contenu.
 const MOBILE_PRIMARY_KEYS = ["/app", "/app/live", "/app/aujourdhui", "/app/builder"];
-export default function AppLayout({
+function AppLayoutContent({
   children
 }) {
   const {
@@ -7254,6 +7254,7 @@ export default function AppLayout({
         </div>
 
         <div className="flex min-w-0 items-center gap-1 shrink-0">
+          <ResultNotificationBell />
           <LanguageSwitcher compact />
           <Badge className={cn("text-[10px] font-bold", tierLabel.cls)}>
             {tierLabel.label}
@@ -7326,6 +7327,7 @@ export default function AppLayout({
 
       {/* Contenu principal */}
       <main className="ltr:lg:pl-64 rtl:lg:pr-64 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0 min-h-screen w-full min-w-0 max-w-full flex flex-col">
+        <div className="hidden lg:flex items-center justify-end border-b border-slate-200 bg-white px-6 py-2" data-testid="desktop-notification-header"><ResultNotificationBell /></div>
         <div className="flex-1 min-w-0 max-w-full overflow-x-hidden">
           {children}
         </div>
@@ -7430,4 +7432,385 @@ export function usePageLanguage() {
       },
     };
   }, []);
+}
+
+const ResultNotificationsContext = createContext(null);
+const NOTIFICATION_MESSAGES = {
+  "fr": {
+    "Tes notifications": "Tes notifications",
+    "Les résultats confirmés des pronostics que tu suis.": "Les résultats confirmés des pronostics que tu suis.",
+    "Fermer": "Fermer",
+    "Contenu des notifications": "Contenu des notifications",
+    "Résultats": "Résultats",
+    "Pronostics suivis": "Pronostics suivis",
+    "Notifications temporairement indisponibles.": "Notifications temporairement indisponibles.",
+    "Réessayer": "Réessayer",
+    "Chargement…": "Chargement…",
+    "Marquer la liste comme lue": "Marquer la liste comme lue",
+    "Aucun résultat à notifier": "Aucun résultat à notifier",
+    "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.": "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.",
+    "Gagné": "Gagné",
+    "Perdu": "Perdu",
+    "Remboursé": "Remboursé",
+    "Score final": "Score final",
+    "Voir les résultats": "Voir les résultats",
+    "Aucun pronostic suivi en attente de résultat.": "Aucun pronostic suivi en attente de résultat.",
+    "Arrêter le suivi": "Arrêter le suivi",
+    "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.": "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.",
+    "Notifications : {{count}} non lues": "Notifications : {{count}} non lues",
+    "Suivi arrêté": "Suivi arrêté",
+    "Pronostic suivi": "Pronostic suivi",
+    "Suivre ce pronostic": "Suivre ce pronostic",
+    "Action impossible. Réessaie.": "Action impossible. Réessaie.",
+    "Le suivi de ce pronostic nécessite un accès Pro": "Le suivi de ce pronostic nécessite un accès Pro",
+    "Aucun pronostic disponible à suivre": "Aucun pronostic disponible à suivre",
+    "Le suivi s’active avant le début de la rencontre": "Le suivi s’active avant le début de la rencontre",
+    "Le résultat de cette sélection est déjà confirmé": "Le résultat de cette sélection est déjà confirmé",
+    "Tu peux suivre jusqu’à 200 pronostics à la fois": "Tu peux suivre jusqu’à 200 pronostics à la fois",
+    "Le suivi de ce marché n’est pas encore disponible": "Le suivi de ce marché n’est pas encore disponible"
+  },
+  "en": {
+    "Tes notifications": "Your notifications",
+    "Les résultats confirmés des pronostics que tu suis.": "Confirmed results for the predictions you follow.",
+    "Fermer": "Close",
+    "Contenu des notifications": "Notification content",
+    "Résultats": "Results",
+    "Pronostics suivis": "Followed predictions",
+    "Notifications temporairement indisponibles.": "Notifications temporarily unavailable.",
+    "Réessayer": "Try again",
+    "Chargement…": "Loading…",
+    "Marquer la liste comme lue": "Mark this list as read",
+    "Aucun résultat à notifier": "No results to notify",
+    "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.": "Click “Follow this prediction” on a card before kickoff. Its result will appear here once confirmed.",
+    "Gagné": "Won",
+    "Perdu": "Lost",
+    "Remboursé": "Refunded",
+    "Score final": "Final score",
+    "Voir les résultats": "View results",
+    "Aucun pronostic suivi en attente de résultat.": "No followed predictions awaiting a result.",
+    "Arrêter le suivi": "Stop following",
+    "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.": "Updates while the site is open. Wins, losses and refunds are all reported.",
+    "Notifications : {{count}} non lues": "Notifications: {{count}} unread",
+    "Suivi arrêté": "Stopped following",
+    "Pronostic suivi": "Following prediction",
+    "Suivre ce pronostic": "Follow this prediction",
+    "Action impossible. Réessaie.": "Unable to complete this action. Try again.",
+    "Le suivi de ce pronostic nécessite un accès Pro": "Following this prediction requires Pro access",
+    "Aucun pronostic disponible à suivre": "No available prediction to follow",
+    "Le suivi s’active avant le début de la rencontre": "Follow a prediction before the match starts",
+    "Le résultat de cette sélection est déjà confirmé": "This selection’s result is already confirmed",
+    "Tu peux suivre jusqu’à 200 pronostics à la fois": "You can follow up to 200 predictions at a time",
+    "Le suivi de ce marché n’est pas encore disponible": "Following this market is not available yet"
+  },
+  "es": {
+    "Tes notifications": "Tus notificaciones",
+    "Les résultats confirmés des pronostics que tu suis.": "Resultados confirmados de los pronósticos que sigues.",
+    "Fermer": "Cerrar",
+    "Contenu des notifications": "Contenido de las notificaciones",
+    "Résultats": "Resultados",
+    "Pronostics suivis": "Pronósticos seguidos",
+    "Notifications temporairement indisponibles.": "Notificaciones temporalmente no disponibles.",
+    "Réessayer": "Reintentar",
+    "Chargement…": "Cargando…",
+    "Marquer la liste comme lue": "Marcar esta lista como leída",
+    "Aucun résultat à notifier": "No hay resultados que notificar",
+    "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.": "Pulsa «Seguir este pronóstico» en una tarjeta antes del partido. Su resultado aparecerá aquí cuando se confirme.",
+    "Gagné": "Ganado",
+    "Perdu": "Perdido",
+    "Remboursé": "Reembolsado",
+    "Score final": "Marcador final",
+    "Voir les résultats": "Ver resultados",
+    "Aucun pronostic suivi en attente de résultat.": "No hay pronósticos seguidos pendientes de resultado.",
+    "Arrêter le suivi": "Dejar de seguir",
+    "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.": "Se actualiza mientras el sitio está abierto. Se notifican aciertos, fallos y reembolsos.",
+    "Notifications : {{count}} non lues": "Notificaciones: {{count}} sin leer",
+    "Suivi arrêté": "Seguimiento detenido",
+    "Pronostic suivi": "Siguiendo pronóstico",
+    "Suivre ce pronostic": "Seguir este pronóstico",
+    "Action impossible. Réessaie.": "No se pudo completar la acción. Reintenta.",
+    "Le suivi de ce pronostic nécessite un accès Pro": "Seguir este pronóstico requiere acceso Pro",
+    "Aucun pronostic disponible à suivre": "No hay un pronóstico disponible para seguir",
+    "Le suivi s’active avant le début de la rencontre": "El seguimiento se activa antes del inicio del partido",
+    "Le résultat de cette sélection est déjà confirmé": "El resultado de esta selección ya está confirmado",
+    "Tu peux suivre jusqu’à 200 pronostics à la fois": "Puedes seguir hasta 200 pronósticos a la vez",
+    "Le suivi de ce marché n’est pas encore disponible": "El seguimiento de este mercado aún no está disponible"
+  },
+  "pt": {
+    "Tes notifications": "As tuas notificações",
+    "Les résultats confirmés des pronostics que tu suis.": "Resultados confirmados dos prognósticos que segues.",
+    "Fermer": "Fechar",
+    "Contenu des notifications": "Conteúdo das notificações",
+    "Résultats": "Resultados",
+    "Pronostics suivis": "Prognósticos seguidos",
+    "Notifications temporairement indisponibles.": "Notificações temporariamente indisponíveis.",
+    "Réessayer": "Tentar novamente",
+    "Chargement…": "A carregar…",
+    "Marquer la liste comme lue": "Marcar esta lista como lida",
+    "Aucun résultat à notifier": "Sem resultados para notificar",
+    "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.": "Clica em «Seguir este prognóstico» num cartão antes do jogo. O resultado aparecerá aqui após confirmação.",
+    "Gagné": "Ganho",
+    "Perdu": "Perdido",
+    "Remboursé": "Reembolsado",
+    "Score final": "Resultado final",
+    "Voir les résultats": "Ver resultados",
+    "Aucun pronostic suivi en attente de résultat.": "Sem prognósticos seguidos a aguardar resultado.",
+    "Arrêter le suivi": "Deixar de seguir",
+    "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.": "Atualiza enquanto o site está aberto. Vitórias, derrotas e reembolsos são todos comunicados.",
+    "Notifications : {{count}} non lues": "Notificações: {{count}} por ler",
+    "Suivi arrêté": "Seguimento terminado",
+    "Pronostic suivi": "A seguir prognóstico",
+    "Suivre ce pronostic": "Seguir este prognóstico",
+    "Action impossible. Réessaie.": "Não foi possível concluir a ação. Tenta novamente.",
+    "Le suivi de ce pronostic nécessite un accès Pro": "Seguir este prognóstico requer acesso Pro",
+    "Aucun pronostic disponible à suivre": "Nenhum prognóstico disponível para seguir",
+    "Le suivi s’active avant le début de la rencontre": "O seguimento é ativado antes do início do jogo",
+    "Le résultat de cette sélection est déjà confirmé": "O resultado desta seleção já está confirmado",
+    "Tu peux suivre jusqu’à 200 pronostics à la fois": "Podes seguir até 200 prognósticos de cada vez",
+    "Le suivi de ce marché n’est pas encore disponible": "O seguimento deste mercado ainda não está disponível"
+  },
+  "de": {
+    "Tes notifications": "Deine Benachrichtigungen",
+    "Les résultats confirmés des pronostics que tu suis.": "Bestätigte Ergebnisse deiner verfolgten Tipps.",
+    "Fermer": "Schließen",
+    "Contenu des notifications": "Inhalt der Benachrichtigungen",
+    "Résultats": "Ergebnisse",
+    "Pronostics suivis": "Verfolgte Tipps",
+    "Notifications temporairement indisponibles.": "Benachrichtigungen sind vorübergehend nicht verfügbar.",
+    "Réessayer": "Erneut versuchen",
+    "Chargement…": "Wird geladen…",
+    "Marquer la liste comme lue": "Diese Liste als gelesen markieren",
+    "Aucun résultat à notifier": "Keine Ergebnisse zu melden",
+    "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.": "Klicke vor Spielbeginn auf „Diesen Tipp verfolgen“. Das bestätigte Ergebnis erscheint anschließend hier.",
+    "Gagné": "Gewonnen",
+    "Perdu": "Verloren",
+    "Remboursé": "Erstattet",
+    "Score final": "Endstand",
+    "Voir les résultats": "Ergebnisse ansehen",
+    "Aucun pronostic suivi en attente de résultat.": "Keine verfolgten Tipps mit ausstehendem Ergebnis.",
+    "Arrêter le suivi": "Nicht mehr verfolgen",
+    "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.": "Aktualisierung bei geöffneter Website. Gewinne, Verluste und Erstattungen werden gemeldet.",
+    "Notifications : {{count}} non lues": "Benachrichtigungen: {{count}} ungelesen",
+    "Suivi arrêté": "Verfolgung beendet",
+    "Pronostic suivi": "Tipp wird verfolgt",
+    "Suivre ce pronostic": "Diesen Tipp verfolgen",
+    "Action impossible. Réessaie.": "Aktion nicht möglich. Versuche es erneut.",
+    "Le suivi de ce pronostic nécessite un accès Pro": "Für diesen Tipp ist ein Pro-Zugang erforderlich",
+    "Aucun pronostic disponible à suivre": "Kein verfügbarer Tipp zum Verfolgen",
+    "Le suivi s’active avant le début de la rencontre": "Tipps können vor Spielbeginn verfolgt werden",
+    "Le résultat de cette sélection est déjà confirmé": "Das Ergebnis dieses Tipps ist bereits bestätigt",
+    "Tu peux suivre jusqu’à 200 pronostics à la fois": "Du kannst bis zu 200 Tipps gleichzeitig verfolgen",
+    "Le suivi de ce marché n’est pas encore disponible": "Dieser Markt kann noch nicht verfolgt werden"
+  },
+  "ar": {
+    "Tes notifications": "إشعاراتك",
+    "Les résultats confirmés des pronostics que tu suis.": "النتائج المؤكدة للتوقعات التي تتابعها.",
+    "Fermer": "إغلاق",
+    "Contenu des notifications": "محتوى الإشعارات",
+    "Résultats": "النتائج",
+    "Pronostics suivis": "التوقعات المتابَعة",
+    "Notifications temporairement indisponibles.": "الإشعارات غير متاحة مؤقتاً.",
+    "Réessayer": "إعادة المحاولة",
+    "Chargement…": "جارٍ التحميل…",
+    "Marquer la liste comme lue": "تحديد هذه القائمة كمقروءة",
+    "Aucun résultat à notifier": "لا توجد نتائج للإشعار بها",
+    "Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.": "اضغط «متابعة هذا التوقع» على البطاقة قبل بداية المباراة. ستظهر النتيجة هنا بعد تأكيدها.",
+    "Gagné": "فائز",
+    "Perdu": "خاسر",
+    "Remboursé": "مسترد",
+    "Score final": "النتيجة النهائية",
+    "Voir les résultats": "عرض النتائج",
+    "Aucun pronostic suivi en attente de résultat.": "لا توجد توقعات متابَعة بانتظار النتيجة.",
+    "Arrêter le suivi": "إيقاف المتابعة",
+    "Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.": "تحديث أثناء فتح الموقع. تُعرض النتائج الفائزة والخاسرة والمستردة جميعها.",
+    "Notifications : {{count}} non lues": "الإشعارات: {{count}} غير مقروءة",
+    "Suivi arrêté": "تم إيقاف المتابعة",
+    "Pronostic suivi": "تتم متابعة التوقع",
+    "Suivre ce pronostic": "متابعة هذا التوقع",
+    "Action impossible. Réessaie.": "تعذّر تنفيذ الإجراء. حاول مجدداً.",
+    "Le suivi de ce pronostic nécessite un accès Pro": "تتطلب متابعة هذا التوقع اشتراك Pro",
+    "Aucun pronostic disponible à suivre": "لا يوجد توقع متاح للمتابعة",
+    "Le suivi s’active avant le début de la rencontre": "يمكن تفعيل المتابعة قبل بداية المباراة",
+    "Le résultat de cette sélection est déjà confirmé": "تم تأكيد نتيجة هذا الاختيار بالفعل",
+    "Tu peux suivre jusqu’à 200 pronostics à la fois": "يمكنك متابعة ما يصل إلى 200 توقع في الوقت نفسه",
+    "Le suivi de ce marché n’est pas encore disponible": "متابعة هذا السوق غير متاحة بعد"
+  }
+};
+function useNotificationLanguage() {
+  const page = usePageLanguage();
+  const { language } = page;
+  const t = useCallback((key, values = {}) => {
+    const message = NOTIFICATION_MESSAGES[language]?.[key] || NOTIFICATION_MESSAGES.fr[key] || key;
+    return message.replace(/\{\{(\w+)\}\}/g, (all, name) => String(values[name] ?? all));
+  }, [language]);
+  return { ...page, t };
+}
+
+function ResultNotificationsProvider({ children }) {
+  const { user } = useAuth();
+  const uid = user?.id || null;
+  const uidRef = useRef(uid);
+  uidRef.current = uid;
+  const [data, setData] = useState({ owner: null, items: [], follows: [], unread_count: 0 });
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const [busy, setBusy] = useState(new Set());
+  const [open, setOpen] = useState(false);
+  const flight = useRef(null);
+  const actions = useRef(new Set());
+  const mounted = useRef(false);
+  const { t } = useNotificationLanguage();
+  const translation = useRef(t);
+  translation.current = t;
+  const refresh = useCallback(async (force = false) => {
+    if (!uid || !mounted.current || document.hidden) return;
+    if (flight.current) {
+      if (!force) return;
+      flight.current.abort();
+    }
+    const controller = new AbortController();
+    flight.current = controller;
+    setLoading(true);
+    try {
+      const response = await api.get("/notifications", { signal: controller.signal });
+      if (mounted.current && uidRef.current === uid && !controller.signal.aborted) {
+        const value = response.data || {};
+        setData({ owner: uid, items: Array.isArray(value.items) ? value.items : [], follows: Array.isArray(value.follows) ? value.follows : [], unread_count: Math.max(0, Number(value.unread_count) || 0) });
+        setFailed(false);
+      }
+    } catch {
+      if (mounted.current && uidRef.current === uid && !controller.signal.aborted) setFailed(true);
+    } finally {
+      if (flight.current === controller) {
+        flight.current = null;
+        if (mounted.current && uidRef.current === uid) setLoading(false);
+      }
+    }
+  }, [uid]);
+  useEffect(() => {
+    mounted.current = true;
+    setData({ owner: uid, items: [], follows: [], unread_count: 0 });
+    setBusy(new Set());
+    setOpen(false);
+    setFailed(false);
+    refresh(true);
+    const resume = () => { if (!document.hidden) refresh(); };
+    const timer = uid ? window.setInterval(resume, 60000) : null;
+    window.addEventListener("focus", resume);
+    document.addEventListener("visibilitychange", resume);
+    return () => {
+      mounted.current = false;
+      flight.current?.abort();
+      flight.current = null;
+      if (timer !== null) window.clearInterval(timer);
+      window.removeEventListener("focus", resume);
+      document.removeEventListener("visibilitychange", resume);
+    };
+  }, [uid, refresh]);
+  const perform = useCallback(async (key, request) => {
+    const actionKey = `${uid}:${key}`;
+    if (!uid || actions.current.has(actionKey)) return false;
+    actions.current.add(actionKey);
+    setBusy(previous => new Set([...previous, key]));
+    try {
+      await request();
+      if (mounted.current && uidRef.current === uid) await refresh(true);
+      return true;
+    } catch (error) {
+      if (mounted.current && uidRef.current === uid) {
+        const detail = error?.response?.data?.detail;
+        toast.error(translation.current(typeof detail === "string" && Object.prototype.hasOwnProperty.call(NOTIFICATION_MESSAGES.fr, detail) ? detail : "Action impossible. Réessaie."));
+      }
+      return false;
+    } finally {
+      actions.current.delete(actionKey);
+      if (mounted.current && uidRef.current === uid) setBusy(previous => { const next = new Set(previous); next.delete(key); return next; });
+    }
+  }, [uid, refresh]);
+  const follow = useCallback(matchId => perform(`follow:${matchId}`, () => api.post(`/predictions/${encodeURIComponent(matchId)}/follow`)), [perform]);
+  const unfollow = useCallback(id => perform(`unfollow:${id}`, () => api.delete(`/notifications/follows/${encodeURIComponent(id)}`)), [perform]);
+  const markRead = useCallback(ids => perform("read", () => api.post("/notifications/read", { ids: ids.slice(0, 50) })), [perform]);
+  const value = useMemo(() => ({ ...(data.owner === uid ? data : { items: [], follows: [], unread_count: 0 }), uid, loading, failed, busy, open, setOpen, refresh, follow, unfollow, markRead }), [data, uid, loading, failed, busy, open, refresh, follow, unfollow, markRead]);
+  return <ResultNotificationsContext.Provider value={value}>{children}{uid && <ResultNotificationsDialog />}</ResultNotificationsContext.Provider>;
+}
+
+export function FollowPickButton({ matchId, pick, market, disabled = false }) {
+  const state = useContext(ResultNotificationsContext);
+  const { t } = useNotificationLanguage();
+  if (!state?.uid || !matchId || !pick || disabled || (market && !["h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance"].includes(market))) return null;
+  const followed = state.follows.find(row => row.match_id === String(matchId) && row.pick === pick);
+  const busy = state.loading || state.busy.has(`follow:${matchId}`) || (followed && state.busy.has(`unfollow:${followed.id}`));
+  return <button type="button" data-testid="follow-pick" disabled={Boolean(busy || followed?.state === "resolved")} aria-pressed={Boolean(followed)} onClick={async event => {
+    event.preventDefault(); event.stopPropagation();
+    const ok = followed ? await state.unfollow(followed.id) : await state.follow(String(matchId));
+    if (ok) toast.success(t(followed ? "Suivi arrêté" : "Pronostic suivi"));
+  }} className={`mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold leading-6 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 disabled:opacity-60 ${followed ? "border-orange-200 bg-orange-50 text-orange-700" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:text-orange-700"}`}>
+    {busy ? <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : followed ? <Check className="h-4 w-4 shrink-0" aria-hidden="true" /> : <BellPlus className="h-4 w-4 shrink-0" aria-hidden="true" />}
+    {t(followed ? "Pronostic suivi" : "Suivre ce pronostic")}
+  </button>;
+}
+
+function ResultNotificationBell() {
+  const state = useContext(ResultNotificationsContext);
+  const { t, formatNumber } = useNotificationLanguage();
+  if (!state?.uid) return null;
+  return <button type="button" data-testid="notification-bell" onClick={() => { state.setOpen(true); state.refresh(); }} aria-haspopup="dialog" aria-expanded={state.open} aria-label={t("Notifications : {{count}} non lues", { count: formatNumber(state.unread_count) })} className="relative grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-orange-100 bg-orange-50 text-orange-600 hover:bg-orange-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">
+    <Bell className="h-5 w-5" aria-hidden="true" />
+    {state.unread_count > 0 && <span className="absolute -end-1 -top-1 min-w-5 rounded-full bg-rose-600 px-1 text-center text-[10px] font-bold leading-5 text-white" aria-hidden="true">{state.unread_count > 99 ? "99+" : formatNumber(state.unread_count)}</span>}
+  </button>;
+}
+
+function ResultNotificationsDialog() {
+  const state = useContext(ResultNotificationsContext);
+  const { t, bet, formatDate, formatNumber, direction } = useNotificationLanguage();
+  const navigate = useNavigate();
+  const dialog = useRef(null);
+  const titleId = useId();
+  const [tab, setTab] = useState("results");
+  useEffect(() => {
+    const element = dialog.current;
+    if (state.open && element && !element.open) element.showModal();
+    if (!state.open && element?.open) element.close();
+  }, [state.open]);
+  const unread = state.items.filter(item => !item.read_at).map(item => item.id);
+  const following = state.follows.filter(row => row.state === "following");
+  const date = value => value && Number.isFinite(new Date(value).getTime()) ? formatDate(value, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" }) : "—";
+  return <dialog ref={dialog} dir={direction} aria-labelledby={titleId} onCancel={() => state.setOpen(false)} onClose={() => state.setOpen(false)} onClick={event => { if (event.target === dialog.current) state.setOpen(false); }} className="fixed inset-0 z-[100] m-auto w-[calc(100%-1.5rem)] max-w-lg overflow-hidden rounded-3xl border border-slate-200 bg-white p-0 text-slate-900 shadow-2xl backdrop:bg-slate-950/40" data-testid="notifications-dialog">
+    <div className="flex max-h-[85dvh] flex-col">
+      <header className="flex items-start gap-3 border-b border-orange-100 bg-orange-50/70 p-5">
+        <span className="grid h-11 w-11 shrink-0 place-items-center rounded-2xl bg-orange-500 text-white"><Bell className="h-5 w-5" aria-hidden="true" /></span>
+        <div className="min-w-0 flex-1"><h2 id={titleId} className="font-heading text-xl font-extrabold">{t("Tes notifications")}</h2><p className="mt-1 text-sm leading-6 text-slate-600">{t("Les résultats confirmés des pronostics que tu suis.")}</p></div>
+        <button type="button" onClick={() => state.setOpen(false)} aria-label={t("Fermer")} className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-500 hover:bg-orange-100"><X className="h-5 w-5" aria-hidden="true" /></button>
+      </header>
+      <nav className="flex flex-wrap gap-2 border-b border-slate-100 px-4 py-3" aria-label={t("Contenu des notifications")}>
+        {[["results", "Résultats"], ["follows", "Pronostics suivis"]].map(([key, label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)} className={`min-h-11 rounded-xl px-3 py-2 text-sm font-bold ${tab === key ? "bg-slate-900 text-white" : "bg-slate-50 text-slate-600"}`}>{t(label)}{key === "follows" && <span className="ms-2 rounded-full bg-white/15 px-1.5 text-xs">{formatNumber(following.length)}</span>}</button>)}
+      </nav>
+      <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+        {state.failed && <div role="status" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6"><p>{t("Notifications temporairement indisponibles.")}</p><button type="button" className="mt-1 min-h-11 font-bold text-orange-700" onClick={() => state.refresh(true)}>{t("Réessayer")}</button></div>}
+        {state.loading && state.items.length === 0 && <p className="py-4 text-sm text-slate-500" role="status">{t("Chargement…")}</p>}
+        {tab === "results" ? <>
+          {unread.length > 0 && <button type="button" disabled={state.busy.has("read")} onClick={() => state.markRead(unread)} className="mb-3 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-orange-700"><CheckCheck className="h-4 w-4" aria-hidden="true" />{t("Marquer la liste comme lue")}</button>}
+          {!state.loading && !state.failed && state.items.length === 0 && <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-5 py-8 text-center"><BellPlus className="mx-auto mb-3 h-8 w-8 text-orange-400" aria-hidden="true" /><h3 className="font-bold">{t("Aucun résultat à notifier")}</h3><p className="mt-2 text-sm leading-6 text-slate-500">{t("Clique sur « Suivre ce pronostic » sur une carte avant le début du match. Son résultat apparaîtra ici après confirmation.")}</p></div>}
+          <div className="space-y-3">{state.items.map(item => {
+            const won = item.result === "won", lost = item.result === "lost";
+            const Icon = won ? CheckCircle2 : lost ? XCircle : MinusCircle;
+            return <article key={item.id} className={`rounded-2xl border p-4 ${!item.read_at ? "border-orange-200 bg-orange-50/30" : "border-slate-200 bg-white"}`} data-testid="result-notification">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><span className={`inline-flex items-center gap-1.5 rounded-full px-2 py-1 text-xs font-bold ${won ? "bg-emerald-100 text-emerald-800" : lost ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}><Icon className="h-4 w-4" aria-hidden="true" />{t(won ? "Gagné" : lost ? "Perdu" : "Remboursé")}</span><time className="text-xs text-slate-500" dateTime={item.confirmed_at}>{date(item.confirmed_at)}</time></div>
+              <h3 className="break-words text-base font-bold leading-6"><bdi>{item.home_team} vs {item.away_team}</bdi></h3>
+              <p className="mt-1 break-words text-sm leading-6 text-slate-600"><bdi>{bet(item.pick)}</bdi>{Number.isFinite(Number(item.pick_odds)) && Number(item.pick_odds) > 1 && <> · <bdi className="font-mono font-bold">{formatNumber(Number(item.pick_odds), { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</bdi></>}</p>
+              {item.final_score && <p className="mt-1 text-sm text-slate-500">{t("Score final")} : <bdi>{item.final_score}</bdi></p>}
+              <button type="button" disabled={state.busy.has("read")} onClick={async () => { if (!item.read_at) { const ok = await state.markRead([item.id]); if (!ok) return; } state.setOpen(false); navigate("/resultats"); }} className="mt-2 min-h-11 text-sm font-bold text-orange-700">{t("Voir les résultats")} →</button>
+            </article>;
+          })}</div>
+        </> : <div className="space-y-3">
+          {following.length === 0 && <p className="py-6 text-center text-sm leading-6 text-slate-500">{t("Aucun pronostic suivi en attente de résultat.")}</p>}
+          {following.map(row => <article key={row.id} className="rounded-2xl border border-slate-200 p-4"><h3 className="break-words text-sm font-bold leading-6"><bdi>{row.home_team} vs {row.away_team}</bdi></h3><p className="mt-1 break-words text-sm leading-6 text-slate-500"><bdi>{bet(row.pick)}</bdi></p><button type="button" disabled={state.busy.has(`unfollow:${row.id}`)} onClick={() => state.unfollow(row.id)} className="mt-2 min-h-11 text-sm font-semibold text-slate-600 underline underline-offset-4">{t("Arrêter le suivi")}</button></article>)}
+        </div>}
+      </div>
+      <p className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-500">{t("Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.")}</p>
+    </div>
+  </dialog>;
+}
+
+export default function AppLayout({ children }) {
+  return <ResultNotificationsProvider><AppLayoutContent>{children}</AppLayoutContent></ResultNotificationsProvider>;
 }
