@@ -21,7 +21,7 @@ FR_BOOKMAKERS = ("betclicfr", "winamaxfr", "unibetfr", "pmufr", "netbetfr")
 EU_BOOKMAKERS = FR_BOOKMAKERS + ("bet365", "pinnacle", "unibetuk", "unibeteu", "williamhill", "ladbrokesuk", "paddypower", "betway", "bwin", "betsson", "nordicbet")
 BOOKMAKER_PRIORITY = tuple(re.sub(r"[^a-z0-9]", "", v.lower()) for v in os.environ.get("WNPULSE_BOOKMAKER_PRIORITY", "").split(",") if v.strip()) or (FR_BOOKMAKERS if BOOKMAKER_PROFILE == "fr" else EU_BOOKMAKERS)
 # Exclusions éditoriales configurables, sans jugement automatique sur une licence.
-EXCLUDED_BOOKMAKERS = set(filter(None, (re.sub(r"[^a-z0-9]", "", v.lower()) for v in os.environ.get("WNPULSE_EXCLUDED_BOOKMAKERS", "onexbet,1xbet,melbet,sportybet").split(","))))
+EXCLUDED_BOOKMAKERS = set(filter(None, (re.sub(r"[^a-z0-9]", "", v.lower()) for v in os.environ.get("WNPULSE_EXCLUDED_BOOKMAKERS", "").split(","))))
 
 # ─── Seuils qualité ───────────────────────────────────────────────────────────
 MIN_ODDS = 1.15          # Redescendu a 1.15 sur demande explicite (volume/attractivite prioritaires sur le ROI mesure ; decision assumee malgre le ROI negatif observe sur cette plage dans le track record reel)
@@ -30,7 +30,7 @@ MIN_CONFIDENCE = 60.0    # Filtre des Top Picks/combinés ; principal : plancher
 MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
 MIN_BOOKMAKERS = 1       # Minimum pour analyser un marche disponible
 MIN_BOOKMAKERS_STRONG = 2     # minimum pour une recommandation forte
-MODEL_VERSION = "9.0-market-lines"
+MODEL_VERSION = "9.0.1-market-lines"
 CALIBRATION_MIN_SAMPLE = 30
 
 # ─── Seuils de label et ciblage de "bonnes cotes" ────────────────────────────
@@ -744,6 +744,9 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "away_team": away,
         "commence_time": match.get("commence_time"),
         "pick": None,
+        "has_prediction": False,
+        "analysis_status": "unavailable",
+        "analysis_reason": "no_usable_market",
         "pick_odds": None,
         "confidence": 0,
         "model_probability": 0,
@@ -767,6 +770,7 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
     }
 
     if not bookmakers:
+        empty["analysis_reason"] = "no_allowed_bookmaker"
         return empty
 
     market_keys = set()
@@ -794,10 +798,11 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
     # ajout arbitraire de +/-6 points à une probabilité n'est appliqué.
     real_data_used = bool(real_stats and real_stats.get("real_data_used") and not real_stats.get("estimated_ai"))
     market_results.sort(key=_market_sort_key, reverse=True)
-    primary_floor = _finite(os.environ.get("WNPULSE_MIN_PRIMARY_PROBABILITY", "55"))
-    primary_floor = max(50.0, min(95.0, primary_floor if primary_floor is not None else 55.0))
+    primary_floor = _finite(os.environ.get("WNPULSE_MIN_PRIMARY_PROBABILITY", "0"))
+    primary_floor = max(0.0, min(95.0, primary_floor if primary_floor is not None else 0.0))
     eligible = [candidate for candidate in market_results if candidate["confidence"] >= primary_floor]
     if not eligible:
+        empty["analysis_reason"] = "below_configured_threshold"
         empty["markets"] = market_results
         return empty
     recommendations = _top_recommendations(eligible, limit=4)
@@ -835,6 +840,9 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "away_team": away,
         "commence_time": match.get("commence_time"),
         "pick": best["pick"],
+        "has_prediction": True,
+        "analysis_status": "ready",
+        "analysis_reason": None,
         "pick_odds": best["pick_odds"],
         "confidence": best["confidence"],
         "model_probability": best.get("model_probability", best["confidence"]),
