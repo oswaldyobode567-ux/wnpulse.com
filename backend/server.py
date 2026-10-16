@@ -12638,6 +12638,167 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
 
 
 
+# ─── Suivi personnel et notifications de résultats ─────────────────────────
+# Lecture des résultats confirmés uniquement. Aucun calcul de sélection, aucun
+# appel de cotes, aucune modification de predictions_history dans ce module.
+
+class NotificationReadRequest(BaseModel):
+    ids: List[str] = Field(default_factory=list, max_length=50)
+
+
+async def _notification_user(payload: dict) -> dict:
+    user = await _get_user_from_payload(payload)
+    if not user or not user.get("id"):
+        raise HTTPException(status_code=401, detail="Connexion requise")
+    return user
+
+
+def _follow_identity(user_id: str, signature: str) -> str:
+    return hashlib.sha256(f"{user_id}::{signature}".encode()).hexdigest()
+
+
+async def _sync_user_result_notifications(user_id: str) -> None:
+    watches = await db.followed_predictions.find({"user_id": user_id, "state": "following"}).to_list(length=200)
+    if not watches:
+        return
+    ids = list({watch["match_id"] for watch in watches})
+    rows = await db.predictions_history.find(
+        {"match_id": {"$in": ids}, "result": {"$in": ["won", "lost", "void"]}},
+        {"match_id": 1, "signature": 1, "result": 1, "final_score": 1, "reconciled_at": 1, "market": 1},
+    ).sort("reconciled_at", -1).to_list(length=2000)
+    for watch in watches:
+        created = _parse_iso(watch.get("followed_at"))
+        if not created:
+            continue
+        same_match = [row for row in rows if str(row.get("match_id")) == watch["match_id"]
+                      and _parse_iso(row.get("reconciled_at"))
+                      and _parse_iso(row.get("reconciled_at")) >= created]
+        exact = next((row for row in same_match if row.get("signature") == watch["signature"] and row.get("market") == watch["prediction"].get("market")), None)
+        confirmed = exact
+        result = exact.get("result") if exact else None
+        if not result:
+            # Un autre pick du même match peut avoir le score final confirmé.
+            # Évaluer alors la sélection figée de l'utilisateur, pas le pick
+            # principal actuel (qui peut avoir changé depuis le suivi).
+            for row in same_match:
+                score = re.fullmatch(r"(\d+)\s*-\s*(\d+)", str(row.get("final_score") or ""))
+                if not score:
+                    continue
+                evaluated = _evaluate_pick_result(watch["prediction"], int(score[1]), int(score[2]))
+                if evaluated in ("won", "lost", "void"):
+                    result, confirmed = evaluated, row
+                    break
+        if result not in ("won", "lost", "void") or not confirmed:
+            continue
+        prediction = watch["prediction"]
+        notification = {
+            "_id": watch["_id"], "user_id": user_id, "follow_id": watch["_id"],
+            "match_id": watch["match_id"], "result": result,
+            "home_team": prediction.get("home_team"), "away_team": prediction.get("away_team"),
+            "sport_title": prediction.get("sport_title"), "pick": prediction.get("pick"),
+            "pick_odds": prediction.get("pick_odds"), "final_score": confirmed.get("final_score"),
+            "confirmed_at": confirmed["reconciled_at"], "read_at": None,
+        }
+        # _id est unique nativement : deux polls/workers ne créent pas de doublon.
+        # $setOnInsert préserve notamment l'état de lecture déjà enregistré.
+        await db.result_notifications.update_one(
+            {"_id": watch["_id"], "user_id": user_id}, {"$setOnInsert": notification}, upsert=True,
+        )
+        await db.followed_predictions.update_one(
+            {"_id": watch["_id"], "user_id": user_id, "state": "following"},
+            {"$set": {"state": "resolved", "result": result, "confirmed_at": confirmed["reconciled_at"]}},
+        )
+
+
+def _notification_public(row: Dict) -> Dict:
+    return {"id": row["_id"], **{key: row.get(key) for key in (
+        "match_id", "result", "home_team", "away_team", "sport_title", "pick",
+        "pick_odds", "final_score", "confirmed_at", "read_at",
+    )}}
+
+
+@app.get("/api/notifications")
+async def get_result_notifications(payload: dict = Depends(get_current_user_payload)):
+    user = await _notification_user(payload)
+    uid = user["id"]
+    await _sync_user_result_notifications(uid)
+    items = await db.result_notifications.find({"user_id": uid}).sort([("read_at", 1), ("confirmed_at", -1)]).to_list(length=50)
+    unread = await db.result_notifications.count_documents({"user_id": uid, "read_at": None})
+    pending = await db.followed_predictions.find({"user_id": uid, "state": "following"}).to_list(length=200)
+    recent = await db.followed_predictions.find({"user_id": uid, "state": "resolved"}).sort("followed_at", -1).to_list(length=50)
+    follows = [{"id": row["_id"], "match_id": row["match_id"], "pick": row["prediction"]["pick"],
+                "home_team": row["prediction"].get("home_team"), "away_team": row["prediction"].get("away_team"),
+                "state": row["state"]} for row in pending + recent]
+    return {"items": [_notification_public(row) for row in items], "unread_count": unread, "follows": follows}
+
+
+@app.post("/api/notifications/read")
+async def read_result_notifications(body: NotificationReadRequest, payload: dict = Depends(get_current_user_payload)):
+    user = await _notification_user(payload)
+    ids = list({value for value in body.ids if re.fullmatch(r"[a-f0-9]{64}", value)})
+    if ids:
+        await db.result_notifications.update_many(
+            {"user_id": user["id"], "_id": {"$in": ids}, "read_at": None},
+            {"$set": {"read_at": datetime.now(timezone.utc).isoformat()}},
+        )
+    return {"ok": True}
+
+
+@app.post("/api/predictions/{match_id}/follow")
+async def follow_prediction(match_id: str, payload: dict = Depends(get_current_user_payload)):
+    user = await _notification_user(payload)
+    snapshot = await _get_prediction_snapshot()
+    visible_matches = [match for match in snapshot["matches"] if not _match_is_finished(match)]
+    match = next((match for match in visible_matches if str(match.get("id") or match.get("match_id")) == match_id), None)
+    prediction = next((row for row in snapshot["predictions"] if str(row.get("match_id")) == match_id), None)
+    paid = bool(user.get("is_admin") or user.get("subscription", "free") != "free")
+    free_id = str(visible_matches[0].get("id") or visible_matches[0].get("match_id")) if visible_matches else None
+    if not paid:
+        allowed = {free_id}
+        # Le premier Top Pick est également visible gratuitement et peut
+        # différer du premier match chronologique du dashboard.
+        top = _apply_calibration([dict(row) for row in snapshot["predictions"] if row.get("pick") and not row.get("is_finished")], snapshot.get("calibration", {}))
+        top.sort(key=lambda row: row.get("effective_score", row.get("wp_score", 0)), reverse=True)
+        if top:
+            allowed.add(str(top[0].get("match_id")))
+        if match_id not in allowed:
+            raise HTTPException(status_code=403, detail="Le suivi de ce pronostic nécessite un accès Pro")
+    if not match or not prediction or not prediction.get("pick"):
+        raise HTTPException(status_code=404, detail="Aucun pronostic disponible à suivre")
+    starts = _parse_iso(prediction.get("commence_time") or match.get("commence_time"))
+    if not starts or starts <= datetime.now(timezone.utc) or prediction.get("is_live") or prediction.get("is_finished"):
+        raise HTTPException(status_code=409, detail="Le suivi s’active avant le début de la rencontre")
+    if prediction.get("market") not in ("h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance"):
+        raise HTTPException(status_code=409, detail="Le suivi de ce marché n’est pas encore disponible")
+    signature = _pick_signature(match_id, prediction["pick"])
+    identity = _follow_identity(user["id"], f"{signature}::{prediction.get('market')}")
+    existing = await db.followed_predictions.find_one({"_id": identity, "user_id": user["id"]})
+    if existing:
+        return {"ok": True, "id": identity, "state": existing["state"]}
+    history = await db.predictions_history.find_one({"signature": signature, "result": {"$in": ["won", "lost", "void"]}})
+    if history:
+        raise HTTPException(status_code=409, detail="Le résultat de cette sélection est déjà confirmé")
+    if await db.followed_predictions.count_documents({"user_id": user["id"], "state": "following"}) >= 200:
+        raise HTTPException(status_code=409, detail="Tu peux suivre jusqu’à 200 pronostics à la fois")
+    saved = {key: prediction.get(key) for key in ("pick", "pick_odds", "market", "market_label", "home_team", "away_team", "sport_title", "commence_time")}
+    saved["home_team"] = saved.get("home_team") or match.get("home_team")
+    saved["away_team"] = saved.get("away_team") or match.get("away_team")
+    await db.followed_predictions.update_one(
+        {"_id": identity, "user_id": user["id"]},
+        {"$setOnInsert": {"_id": identity, "user_id": user["id"], "match_id": match_id,
+                          "signature": signature, "prediction": saved, "state": "following",
+                          "followed_at": datetime.now(timezone.utc).isoformat()}}, upsert=True,
+    )
+    return {"ok": True, "id": identity, "state": "following"}
+
+
+@app.delete("/api/notifications/follows/{follow_id}")
+async def unfollow_prediction(follow_id: str, payload: dict = Depends(get_current_user_payload)):
+    user = await _notification_user(payload)
+    await db.followed_predictions.delete_one({"_id": follow_id, "user_id": user["id"]})
+    return {"ok": True}
+
+
 # ─── Centre de contrôle automatique WinPulse ────────────────────────────────
 # Audit fonctionnel quotidien non destructif. Il vérifie la disponibilité,
 # les données, les règles Free/Pro, les abonnements et les services critiques.
@@ -13577,6 +13738,12 @@ async def startup_event():
         pass
 
     # Rapports du contrôle automatique : historique limité et purge TTL.
+    try:
+        await db.followed_predictions.create_index([("user_id", 1), ("state", 1)])
+        await db.result_notifications.create_index([("user_id", 1), ("read_at", 1), ("confirmed_at", -1)])
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Notification indexes unavailable: %s", type(exc).__name__)
+
     try:
         await db.health_monitor_reports.create_index("started_at")
         await db.health_monitor_reports.create_index("expires_at", expireAfterSeconds=0)
