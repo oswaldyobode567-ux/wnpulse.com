@@ -91,7 +91,10 @@ def _record_odds_api_response(response, context: str = "") -> None:
 
 
 def _provider_status_snapshot() -> Dict[str, object]:
-    return dict(ODDS_API_USAGE_STATE)
+    state = dict(ODDS_API_USAGE_STATE)
+    state["extra_markets"] = dict(globals().get("EXTRA_MARKET_STATE", {}))
+    state["bookmaker_profile"] = os.environ.get("WNPULSE_BOOKMAKER_PROFILE", "europe")
+    return state
 
 
 def _reset_refresh_transient_state() -> None:
@@ -162,7 +165,7 @@ CACHE_TTL_DAY_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_DAY_MINUTES", "120"))
 CACHE_TTL_SOON_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_SOON_MINUTES", "30"))
 CACHE_TTL_NEAR_MINUTES = int(os.environ.get("ODDS_CACHE_TTL_NEAR_MINUTES", "5"))
 STALE_CACHE_MAX_HOURS = int(os.environ.get("ODDS_STALE_CACHE_MAX_HOURS", "24"))
-BOOKMAKER_WEIGHTS = {"pinnacle":1.00,"bet365":0.95,"1xbet":0.90,"betway":0.88,"sportybet":0.86,"melbet":0.84,"pmu":0.82}
+BOOKMAKER_WEIGHTS = {}  # Aucun coefficient sportif attribué arbitrairement à une marque.
 
 def _normalize_bookmaker_key(name: str) -> str:
     value = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
@@ -184,7 +187,7 @@ def _cache_ttl_for_matches(matches: List[Dict]) -> int:
     return CACHE_TTL_LONG_MINUTES
 
 def _bookmaker_quality(name: str) -> float:
-    return BOOKMAKER_WEIGHTS.get(_normalize_bookmaker_key(name), 0.75)
+    return 1.0  # Aucun poids sportif arbitraire selon la marque.
 
 def _annotate_bookmakers(matches: List[Dict]) -> List[Dict]:
     for match in matches:
@@ -382,6 +385,8 @@ def _regions_for_sport(sport_key: str) -> str:
     override = os.environ.get("ODDS_REGIONS", "").strip()
     if override:
         return override
+    if os.environ.get("WNPULSE_BOOKMAKER_PROFILE", "europe").strip().lower() == "fr":
+        return "fr"
     group = _sport_group_from_key(sport_key)
     if group in {"basketball", "hockey", "baseball", "american_football"}:
         return os.environ.get("ODDS_US_SPORTS_REGION", "us").strip() or "us"
@@ -791,6 +796,7 @@ _OAIO_MARKET_NAME_MAP = {
     "Draw No Bet": "draw_no_bet",
     "Totals": "totals",
     "Goals Over/Under": "totals",
+    "Double Chance": "double_chance",
     "Both Teams To Score": "btts",
 }
 
@@ -846,47 +852,37 @@ def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict], sport: st
                 odds_list = mk.get("odds", [])
                 if not odds_list:
                     continue
-                row = odds_list[0]  # ligne principale (hdp/point par defaut)
-                outcomes = []
-
-                if internal_key == "h2h":
-                    if row.get("home"):
-                        outcomes.append({"name": home, "price": float(row["home"])})
-                    if row.get("away"):
-                        outcomes.append({"name": away, "price": float(row["away"])})
-                    if row.get("draw"):
-                        outcomes.append({"name": "Draw", "price": float(row["draw"])})
-
-                elif internal_key == "draw_no_bet":
-                    if row.get("home"):
-                        outcomes.append({"name": home, "price": float(row["home"])})
-                    if row.get("away"):
-                        outcomes.append({"name": away, "price": float(row["away"])})
-
-                elif internal_key == "totals":
-                    point = row.get("hdp")
-                    if row.get("over"):
-                        entry = {"name": "Over", "price": float(row["over"])}
-                        if point is not None:
-                            entry["point"] = float(point)
-                        outcomes.append(entry)
-                    if row.get("under"):
-                        entry = {"name": "Under", "price": float(row["under"])}
-                        if point is not None:
-                            entry["point"] = float(point)
-                        outcomes.append(entry)
-
-                elif internal_key == "btts":
-                    if row.get("yes"):
-                        outcomes.append({"name": "Yes", "price": float(row["yes"])})
-                    if row.get("no"):
-                        outcomes.append({"name": "No", "price": float(row["no"])})
-
-                if outcomes:
-                    # Eviter les doublons de marche (ex: Totals + Goals Over/Under
-                    # mappent tous deux vers "totals" — on garde le premier trouve)
-                    if not any(m["key"] == internal_key for m in markets):
-                        markets.append({"key": internal_key, "outcomes": outcomes})
+                for row in odds_list:
+                    if not isinstance(row, dict):
+                        continue
+                    outcomes = []
+                    if internal_key in ("h2h", "draw_no_bet"):
+                        for field, name in (("home", home), ("away", away), ("draw", "Draw")):
+                            if field == "draw" and internal_key != "h2h":
+                                continue
+                            price = _valid_decimal(row.get(field))
+                            if price is not None:
+                                outcomes.append({"name": name, "price": price})
+                    elif internal_key == "totals":
+                        point = _valid_line(row.get("hdp"))
+                        if point is None:
+                            continue
+                        for field, name in (("over", "Over"), ("under", "Under")):
+                            price = _valid_decimal(row.get(field))
+                            if price is not None:
+                                outcomes.append({"name": name, "price": price, "point": point})
+                    elif internal_key == "btts":
+                        for field, name in (("yes", "Yes"), ("no", "No")):
+                            price = _valid_decimal(row.get(field))
+                            if price is not None:
+                                outcomes.append({"name": name, "price": price})
+                    elif internal_key == "double_chance":
+                        for field in ("1x", "x2", "12"):
+                            price = _valid_decimal(row.get(field) or row.get(field.upper()))
+                            if price is not None:
+                                outcomes.append({"name": field.upper(), "price": price})
+                    if outcomes:
+                        _merge_market_list(markets, [{"key": internal_key, "outcomes": outcomes}])
 
             if markets:
                 bookmakers.append({
@@ -909,6 +905,99 @@ def _convert_odds_api_io_event(event: Dict, odds_data: Optional[Dict], sport: st
         }
     except Exception:
         return None
+
+
+def _valid_decimal(value):
+    try:
+        result = float(value)
+        return result if math.isfinite(result) and 1 < result <= 1000 else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+def _valid_line(value):
+    try:
+        result = float(value)
+        return result if math.isfinite(result) else None
+    except (ValueError, TypeError, OverflowError):
+        return None
+
+
+EXTRA_MARKET_STATE = {"attempted": 0, "enriched": 0, "estimated_credits": 0, "status": "not_run"}
+
+
+async def _enrich_extra_markets(matches: List[Dict]):
+    """Worker-only, borné à 3 matchs / 12 crédits estimés par défaut.
+
+    La facturation réelle reste celle des en-têtes fournisseur. Aucune requête
+    additionnelle n'est faite pendant la lecture utilisateur du cache.
+    """
+    EXTRA_MARKET_STATE.update(attempted=0, enriched=0, estimated_credits=0, status="disabled", last_error=None)
+    if not ODDS_API_KEY or os.environ.get("ODDS_EXTRA_MARKETS_ENABLED", "true").lower() not in ("true", "1", "yes"):
+        return
+    def bounded(name, default, high):
+        try:
+            return max(0, min(high, int(os.environ.get(name, str(default)))))
+        except ValueError:
+            return default
+    max_events = bounded("ODDS_EXTRA_MAX_EVENTS", 3, 30)
+    budget = bounded("ODDS_EXTRA_CREDIT_BUDGET", 12, 240)
+    reserve = bounded("ODDS_EXTRA_RESERVE_CREDITS", 50, 10000)
+    wanted = "alternate_totals,btts,double_chance,draw_no_bet"
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for match in matches:
+        if not str(match.get("sport_key", "")).startswith("soccer_") or str(match.get("id", "")).startswith("oaio-"):
+            continue
+        try:
+            starts = datetime.fromisoformat(str(match.get("commence_time", "")).replace("Z", "+00:00"))
+            if starts.tzinfo is None:
+                starts = starts.replace(tzinfo=timezone.utc)
+            if now < starts <= now + timedelta(hours=48):
+                candidates.append((starts, match))
+        except (TypeError, ValueError):
+            continue
+    EXTRA_MARKET_STATE["status"] = "completed"
+    async with httpx.AsyncClient(timeout=15.0) as client:
+        for _, match in sorted(candidates, key=lambda row: row[0]):
+            regions = _regions_for_sport(match["sport_key"])
+            estimated = len(wanted.split(",")) * len(set(filter(None, regions.split(","))))
+            remaining = ODDS_API_USAGE_STATE.get("remaining")
+            if EXTRA_MARKET_STATE["attempted"] >= max_events or EXTRA_MARKET_STATE["estimated_credits"] + estimated > budget:
+                EXTRA_MARKET_STATE["status"] = "budget_limit"
+                break
+            if ODDS_API_USAGE_STATE.get("quota_exhausted") or (isinstance(remaining, (int, float)) and remaining - estimated < reserve):
+                EXTRA_MARKET_STATE["status"] = "quota_reserve"
+                break
+            EXTRA_MARKET_STATE["attempted"] += 1
+            EXTRA_MARKET_STATE["estimated_credits"] += estimated
+            try:
+                response = await client.get(f"{ODDS_API_BASE}/sports/{match['sport_key']}/events/{match['id']}/odds", params={"apiKey": ODDS_API_KEY, "regions": regions, "markets": wanted, "oddsFormat": "decimal", "dateFormat": "iso"})
+                _record_odds_api_response(response, context="extra_markets")
+                if response.status_code in (401, 403, 429):
+                    EXTRA_MARKET_STATE["status"] = "provider_unavailable"
+                    break
+                if response.status_code != 200:
+                    EXTRA_MARKET_STATE["last_error"] = "unsupported_market_or_plan" if response.status_code == 422 else f"http_{response.status_code}"
+                    continue
+                data = response.json()
+                if not isinstance(data, dict) or data.get("id") != match.get("id"):
+                    continue
+                if data.get("home_team") != match.get("home_team") or data.get("away_team") != match.get("away_team"):
+                    continue
+                books = {_normalize_bookmaker_key(book.get("key") or book.get("title")): book for book in match.get("bookmakers", [])}
+                for incoming in data.get("bookmakers", []) or []:
+                    key = _normalize_bookmaker_key(incoming.get("key") or incoming.get("title"))
+                    if key not in books:
+                        match.setdefault("bookmakers", []).append(incoming)
+                        books[key] = incoming
+                    else:
+                        _merge_market_list(books[key].setdefault("markets", []), incoming.get("markets", []))
+                EXTRA_MARKET_STATE["enriched"] += 1
+            except (httpx.HTTPError, ValueError, TypeError):
+                continue
+
+
 
 
 async def _fetch_odds_api_io_matches() -> List[Dict]:
@@ -1112,17 +1201,34 @@ def _same_event(a: Dict,b: Dict)->bool:
     return True if ta is None or tb is None else abs((ta-tb).total_seconds())<=21600
 
 def _merge_market_list(target_markets: List[Dict], incoming_markets: List[Dict]):
-    existing={m.get("key"):m for m in target_markets}
+    existing = {market.get("key"): market for market in target_markets}
     for market in incoming_markets:
-        key=market.get("key")
-        if not key: continue
+        key = market.get("key")
+        if not key:
+            continue
+        incoming = dict(market)
+        incoming["outcomes"] = [dict(outcome, quote_updated_at=outcome.get("quote_updated_at") or market.get("last_update")) for outcome in market.get("outcomes", []) if isinstance(outcome, dict)]
         if key not in existing:
-            target_markets.append(market); existing[key]=market; continue
-        target=existing[key].setdefault("outcomes",[])
-        seen={(str(o.get("name")),str(o.get("point"))) for o in target}
-        for outcome in market.get("outcomes",[]):
-            marker=(str(outcome.get("name")),str(outcome.get("point")))
-            if marker not in seen: target.append(outcome); seen.add(marker)
+            target_markets.append(incoming)
+            existing[key] = incoming
+            continue
+        target = existing[key].setdefault("outcomes", [])
+        def identity(outcome):
+            point = _valid_line(outcome.get("point"))
+            return (str(outcome.get("name")), point, str(outcome.get("description", "")))
+        positions = {identity(outcome): index for index, outcome in enumerate(target)}
+        for outcome in incoming["outcomes"]:
+            marker = identity(outcome)
+            if marker not in positions:
+                positions[marker] = len(target)
+                target.append(outcome)
+            else:
+                index = positions[marker]
+                old_time = target[index].get("quote_updated_at") or existing[key].get("last_update") or ""
+                new_time = outcome.get("quote_updated_at") or ""
+                if new_time and new_time > old_time:
+                    target[index] = outcome
+
 
 def _merge_events(events_a: List[Dict], events_b: List[Dict]) -> List[Dict]:
     merged=[dict(e) for e in events_a]
@@ -1167,9 +1273,8 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     if not ODDS_API_KEY:
         if previous_matches:
             return previous_matches
-        matches = get_all_mock_matches()
-        await _save_to_cache(db, matches)
-        return matches
+        # Pas de données de démonstration publiées comme cotes observées.
+        return []
 
     discovered = await _discover_active_sport_keys()
     if discovered:
@@ -1233,6 +1338,11 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
             matches = _merge_events(matches, secondary_matches)
     except Exception as exc:
         logger.warning("odds-api.io : echec global -> %s", exc)
+
+    try:
+        await _enrich_extra_markets(matches)
+    except Exception as exc:
+        logger.warning("Marchés supplémentaires indisponibles (%s), cotes de base conservées", type(exc).__name__)
 
     # Préserver le dernier cache valide d'une famille si ce refresh n'a ramené
     # aucun événement pour cette famille. Les événements expirés seront ensuite
