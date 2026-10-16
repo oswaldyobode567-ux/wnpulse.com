@@ -324,22 +324,10 @@ async def get_real_stats_map(db, matches: List[Dict]) -> Dict[str, Dict]:
     ]
     cursor = db.real_stats_cache.find({"_id": {"$in": keys}})
     async for doc in cursor:
-        try:
-            updated_at = datetime.fromisoformat(str(doc.get("updated_at", "")).replace("Z", "+00:00"))
-            if updated_at.tzinfo is None:
-                updated_at = updated_at.replace(tzinfo=timezone.utc)
-            if not 0 <= (datetime.now(timezone.utc) - updated_at).total_seconds() <= STATS_CACHE_TTL_MINUTES * 60:
-                continue
-        except (TypeError, ValueError):
-            continue
         result[doc["_id"]] = {
             "form_home": doc.get("form_home", ""),
             "form_away": doc.get("form_away", ""),
             "h2h": doc.get("h2h"),
-            "real_data_used": True,
-            "estimated_ai": False,
-            "source": "football-data.org",
-            "updated_at": doc.get("updated_at"),
         }
     return result
 
