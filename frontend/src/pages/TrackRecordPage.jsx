@@ -121,57 +121,60 @@ export default function TrackRecordPage() {
     setQuery("");
     setStatus("all");
   };
-  const content = <main className="wr-results mx-auto w-full min-w-0 max-w-7xl px-4 pb-24 pt-5 sm:px-6 sm:pt-7 lg:px-8" lang={i18n.language} dir={i18n.direction}>
+  const content = <main className="wr-results mx-auto w-full min-w-0 max-w-7xl px-3 pb-24 pt-3 sm:px-6 sm:pt-7 lg:px-8" lang={i18n.language} dir={i18n.direction}>
     <style>{`.wr-results{font-size:16px}.wr-results .wr-enter{animation:wr-enter .35s ease-out both}@keyframes wr-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.wr-results .wr-enter{animation:none}}.wr-results button:focus-visible,.wr-results a:focus-visible,.wr-results select:focus-visible,.wr-results input:focus-visible{outline:3px solid #fb923c;outline-offset:3px}`}</style>
-    <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
       <div className="flex items-center gap-2 text-sm font-semibold text-slate-500"><History className="h-4 w-4 text-orange-600" />{i18n.t("Track record")}</div>
       <Link to={user ? "/app" : "/"} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:border-orange-300 hover:text-orange-700" data-testid="track-back-dashboard">{user ? <LayoutDashboard className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4 rtl:rotate-180" />}{i18n.t(user ? "Tableau de bord" : "Retour à l’accueil")}</Link>
     </div>
-    <section className="wr-enter relative mb-5 overflow-hidden rounded-3xl bg-slate-950 p-6 text-white sm:p-8 lg:p-10" aria-labelledby="track-heading">
+    <section className="wr-enter relative mb-4 overflow-hidden rounded-2xl bg-slate-950 p-4 text-white sm:p-6 lg:p-8" aria-labelledby="track-heading">
       <div aria-hidden="true" className="pointer-events-none absolute -end-12 -top-24 h-80 w-80 rounded-full bg-orange-500/10 blur-3xl" />
-      <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center">
+      <div className="relative grid gap-4 lg:gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center">
         <div className="min-w-0">
-          <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold tracking-wide text-slate-300"><ShieldCheck className="h-4 w-4 text-orange-300" />{i18n.t("HISTORIQUE PUBLIC")}</div>
-          <h1 id="track-heading" className="font-heading text-4xl font-extrabold leading-[1.08] tracking-tight sm:text-5xl">{i18n.t("Le bilan.")}<br /><span className="text-orange-300">{i18n.t("Tous les résultats.")}</span></h1>
-          <p className="mt-5 max-w-xl text-base leading-7 text-slate-300">{i18n.t("Une vue claire sur les pronostics publiés : les victoires, les pertes et les remboursements, au même endroit.")}</p>
-          <a href="#track-journal" className="mt-6 inline-flex min-h-11 items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-slate-900 hover:bg-orange-50">{i18n.t("Explorer les résultats")}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></a>
+          <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold tracking-wide text-slate-300"><ShieldCheck className="h-4 w-4 text-orange-300" />{i18n.t("HISTORIQUE PUBLIC")}</div>
+          <h1 id="track-heading" className="font-heading text-2xl font-extrabold leading-tight tracking-tight sm:text-4xl">{i18n.t("Le bilan.")}<br /><span className="text-orange-300">{i18n.t("Tous les résultats.")}</span></h1>
+          <p className="mt-3 max-w-xl text-sm leading-6 text-slate-300">{i18n.t("Une vue claire sur les pronostics publiés : les victoires, les pertes et les remboursements, au même endroit.")}</p>
+          <a href="#track-journal" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-slate-900 hover:bg-orange-50">{i18n.t("Explorer les résultats")}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></a>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-5 sm:p-6">
+        <div className="rounded-xl border border-white/10 bg-white/5 p-3 sm:p-5">
           <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-sm font-semibold text-slate-300">{i18n.t("Taux de réussite")}</span><span className="rounded-full border border-white/10 px-2 py-1 text-xs text-slate-300">{i18n.t(sportName(sport))}</span></div>
-          <div className="mt-5 flex flex-wrap items-center gap-4 sm:gap-6">
-            <div aria-hidden="true" className="grid h-28 w-28 shrink-0 place-items-center rounded-full p-2 sm:h-36 sm:w-36" style={{
+          <div className="mt-3 flex items-center gap-3 sm:gap-6">
+            <div aria-hidden="true" className="grid h-20 w-20 shrink-0 place-items-center rounded-full p-1.5 sm:h-28 sm:w-28" style={{
               background: hasRate ? `conic-gradient(#34d399 ${rate * 3.6}deg,#334155 0deg)` : "#334155"
             }}>
-              <div className="flex h-full w-full flex-col items-center justify-center rounded-full bg-slate-950"><span className="font-mono text-3xl font-black" data-testid="track-win-rate">{hasRate ? displayPercent(i18n, rate) : "—"}</span><span className="mt-1 text-xs text-slate-400">{i18n.t("réussite")}</span></div>
+              <div className="flex h-full w-full flex-col items-center justify-center rounded-full bg-slate-950"><span className="font-mono text-xl sm:text-3xl font-black" data-testid="track-win-rate">{hasRate ? displayPercent(i18n, rate) : "—"}</span><span className="mt-1 text-xs text-slate-400">{i18n.t("réussite")}</span></div>
             </div>
-            <dl className="min-w-[124px] flex-1 space-y-3" aria-label={i18n.t("Taux de réussite") + " : " + (hasRate ? displayPercent(i18n, rate) : "—")}>
+            <dl className="min-w-0 flex-1 space-y-2" aria-label={i18n.t("Taux de réussite") + " : " + (hasRate ? displayPercent(i18n, rate) : "—")}>
               {[["won", stats.wins], ["lost", stats.losses], ["void", stats.voids]].map(([key, value]) => <div key={key} className="flex items-center justify-between gap-4"><dt className="flex items-center gap-2 text-sm text-slate-300"><span className={`h-2 w-2 rounded-full ${RESULTS[key].dot}`} />{i18n.t(RESULTS[key].text)}</dt><dd className="font-mono text-lg font-bold">{metric(value)}</dd></div>)}
             </dl>
           </div>
-          <p className="mt-5 border-t border-white/10 pt-4 text-xs leading-5 text-slate-400">{i18n.t("Les remboursements sont affichés séparément et ne comptent pas dans le taux de réussite.")}</p>
+          <p className="mt-3 border-t border-white/10 pt-3 text-xs leading-5 text-slate-400">{i18n.t("Les remboursements sont affichés séparément et ne comptent pas dans le taux de réussite.")}</p>
         </div>
       </div>
     </section>
-    <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4" data-testid="kpis">
+    <div className="mb-4 grid grid-cols-2 gap-2 lg:grid-cols-4" data-testid="kpis">
       <Metric icon={FileCheck2} label={i18n.t("Pronostics départagés")} value={metric(stats.total)} sub={i18n.t("Gagnés et perdus")} />
       <Metric icon={Trophy} label={i18n.t("Victoires")} value={metric(stats.wins)} sub={i18n.t("Dans le sport sélectionné")} />
       <Metric icon={Target} label={i18n.t("Cote moyenne")} value={metric(stats.avg_odds, 2)} sub={i18n.t("Sur les pronostics départagés")} />
       <Metric icon={Flame} label={i18n.t("Série en cours")} value={metric(stats.current_streak)} sub={i18n.t("Victoires consécutives")} />
     </div>
     {data?.transition_mode && data.note && <div className="mb-5 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-900" data-testid="transition-mode-banner"><Info className="mt-1 h-5 w-5 shrink-0" /><p>{i18n.t(data.note)}</p></div>}
-    <section id="track-journal" className="scroll-mt-24 rounded-3xl border border-slate-200 bg-white shadow-sm" aria-labelledby="track-journal-heading">
-      <header className="border-b border-slate-100 p-5 sm:p-6">
-        <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><div><h2 id="track-journal-heading" className="font-heading text-2xl font-extrabold text-slate-900">{i18n.t("Le journal des résultats")}</h2><p className="mt-1 text-sm leading-6 text-slate-500">{i18n.t("Les derniers résultats en premier.")}</p></div><button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" data-testid="track-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />{i18n.t("Actualiser")}</button></div>
-        <div className="flex flex-wrap gap-2" aria-label={i18n.t("Filtrer par sport")} data-testid="sport-filters">{SPORTS.map(([code, name, emoji]) => <button key={code} type="button" aria-pressed={sport === code} onClick={() => changeSport(code)} className={`inline-flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors ${sport === code ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300"}`}><span aria-hidden="true">{emoji}</span>{i18n.t(name)}</button>)}</div>
-        <div className="mt-5 grid gap-3 sm:grid-cols-[minmax(0,1fr)_200px]">
+    <section id="track-journal" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white shadow-sm" aria-labelledby="track-journal-heading">
+      <header className="border-b border-slate-100 p-3 sm:p-5">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h2 id="track-journal-heading" className="font-heading text-lg sm:text-2xl font-extrabold text-slate-900">{i18n.t("Le journal des résultats")}</h2><p className="mt-1 text-sm leading-6 text-slate-500">{i18n.t("Les derniers résultats en premier.")}</p></div><button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" data-testid="track-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />{i18n.t("Actualiser")}</button></div>
+        <div className="flex min-w-0 gap-2 overflow-x-auto pb-1 sm:flex-wrap" aria-label={i18n.t("Filtrer par sport")} data-testid="sport-filters">{SPORTS.map(([code, name, emoji]) => <button key={code} type="button" aria-pressed={sport === code} onClick={() => changeSport(code)} className={`inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border px-3 py-2 text-xs sm:text-sm font-semibold transition-colors ${sport === code ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300"}`}><span aria-hidden="true">{emoji}</span>{i18n.t(name)}</button>)}</div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-[minmax(0,1fr)_200px]">
           <div className="relative"><label className="sr-only" htmlFor="track-search">{i18n.t("Recherche sur cette page")}</label><Search className="pointer-events-none absolute start-4 top-3.5 h-5 w-5 text-slate-400" /><input id="track-search" type="search" value={query} onChange={event => setQuery(event.target.value)} placeholder={i18n.t("Équipe, championnat, compétition…")} className="h-12 w-full rounded-xl border border-slate-200 bg-slate-50 ps-12 pe-12 text-base text-slate-900" />{query && <button aria-label={i18n.t("Effacer la recherche")} type="button" onClick={() => setQuery("")} className="absolute end-1 top-0 grid h-12 w-10 place-items-center text-slate-500"><X className="h-4 w-4" /></button>}</div>
           <label className="sr-only" htmlFor="track-status">{i18n.t("Résultat")}</label><select id="track-status" value={status} onChange={event => setStatus(event.target.value)} className="h-12 rounded-xl border border-slate-200 bg-white px-3 text-base text-slate-700"><option value="all">{i18n.t("Tous les résultats")}</option>{Object.entries(RESULTS).map(([key, meta]) => <option key={key} value={key}>{i18n.t(meta.text)}</option>)}</select>
         </div>
         <p className="mt-3 text-xs leading-5 text-slate-500">{i18n.t("La recherche et le filtre de résultat portent uniquement sur la page affichée. Les statistiques restent celles du sport sélectionné.")}</p>
       </header>
       {loading ? <div role="status" aria-label={i18n.t("Chargement…")} className="space-y-3 p-5">{[0, 1, 2].map(key => <div key={key} className="h-32 animate-pulse rounded-2xl bg-slate-100" />)}</div> : error ? <div role="alert" className="px-6 py-12 text-center"><XCircle className="mx-auto mb-4 h-9 w-9 text-rose-500" /><h3 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Erreur de chargement")}</h3><p className="mx-auto mt-2 max-w-xl text-base leading-7 text-slate-500">{i18n.t(error)}</p><button type="button" onClick={() => setRefresh(value => value + 1)} className="mt-5 min-h-11 rounded-xl bg-orange-600 px-5 py-3 font-bold text-white">{i18n.t("Réessayer")}</button></div> : !visible.length ? <div className="px-6 py-12 text-center"><History className="mx-auto mb-4 h-9 w-9 text-slate-300" /><h3 className="font-heading text-xl font-bold text-slate-800">{i18n.t(rows.length ? "Aucun résultat pour ces filtres" : "Aucun résultat disponible.")}</h3><p className="mt-2 text-base text-slate-500">{i18n.t(rows.length ? "Essaie une autre recherche ou réinitialise les filtres de cette page." : "Les rencontres apparaîtront ici après confirmation de leur résultat.")}</p>{rows.length > 0 && <button type="button" onClick={resetPageFilters} className="mt-5 min-h-11 rounded-xl border border-slate-200 px-4 py-2 font-semibold">{i18n.t("Réinitialiser les filtres")}</button>}</div> : <>
-        <div className="divide-y divide-slate-100 lg:hidden" data-testid="results-mobile">{visible.map((row, index) => <ResultCard key={row.id || index} row={row} />)}</div>
-        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-5 py-5 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-5 py-5"><p className="break-words text-base font-bold leading-6 text-slate-900">{row.match || "—"}</p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-5 py-5"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-5 py-5 font-mono text-lg font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-5 py-5"><ResultBadge status={row.status} /></td></tr>)}</tbody></table></div>
+        <div className="lg:hidden" data-testid="results-mobile">{visible.map((row, index) => <div key={row.id || index}>
+          {(index === 0 || displayDate(i18n, row.date) !== displayDate(i18n, visible[index - 1].date)) && <h3 className="border-y border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 sm:px-5" data-testid="track-date-separator">{displayDate(i18n, row.date)}</h3>}
+          <ResultCard row={row} />
+        </div>)}</div>
+        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900">{row.match || "—"}</p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /></td></tr>)}</tbody></table></div>
       </>}
       <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 px-5 py-4"><div aria-live="polite" className="text-sm text-slate-500">{i18n.t("Page {{page}} sur {{total}}", {
             page: currentPage,
@@ -196,7 +199,7 @@ function Metric({
   value,
   sub
 }) {
-  return <div className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5"><Icon className="mb-3 h-5 w-5 text-orange-600" /><div className="min-h-10 text-xs font-bold uppercase leading-5 tracking-wide text-slate-500">{label}</div><div className="mt-1 font-mono text-3xl font-extrabold text-slate-900 sm:text-4xl">{value}</div><p className="mt-2 text-xs leading-5 text-slate-500">{sub}</p></div>;
+  return <div className="min-w-0 rounded-xl border border-slate-200 bg-white p-3 sm:p-5"><Icon className="mb-2 h-4 w-4 text-orange-600" /><div className="min-h-8 text-xs font-semibold leading-4 text-slate-500">{label}</div><div className="mt-1 font-mono text-2xl font-extrabold text-slate-900 sm:text-3xl">{value}</div><p className="mt-2 text-xs leading-5 text-slate-500">{sub}</p></div>;
 }
 function RiskBadge({
   label
@@ -217,7 +220,26 @@ function ResultCard({
   row
 }) {
   const i18n = useResultsLanguage();
-  return <article className="p-5" data-testid="track-result-card"><div className="mb-3 flex flex-wrap items-center justify-between gap-2"><span className="text-xs font-semibold text-slate-500">{displayDate(i18n, row.date)} · {i18n.t(sportName(row.sport))}</span><ResultBadge status={row.status} /></div><p className="mb-2 break-words text-xs leading-5 text-slate-500">{row.league || "—"}</p><h3 className="break-words font-heading text-xl font-extrabold leading-7 text-slate-900">{row.match || "—"}</h3><div className="mt-4 flex items-start justify-between gap-4 rounded-xl bg-slate-50 p-4"><div className="min-w-0"><p className="text-xs font-semibold text-slate-500">{i18n.t("Pronostic")}</p><p className="mt-1 break-words text-base font-bold leading-7 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></div><div className="shrink-0 text-end"><p className="text-xs text-slate-500">{i18n.t("Cote")}</p><strong className="mt-1 block font-mono text-2xl font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</strong></div></div></article>;
+  const result = resultStatus(row.status);
+  const accent = result === "won" ? "border-s-emerald-500" : result === "lost" ? "border-s-rose-400" : result === "void" ? "border-s-slate-400" : "border-s-amber-400";
+  return <article className={`min-w-0 border-b border-b-slate-100 border-s-[3px] p-3 sm:p-4 ${accent}`} data-testid="track-result-card">
+    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+      <p className="min-w-0 flex-1 basis-36 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p>
+      <ResultBadge status={row.status} />
+    </div>
+    <h4 dir="auto" className="break-words font-heading text-sm font-bold leading-5 text-slate-900 sm:text-base sm:leading-6">{row.match || "—"}</h4>
+    <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5">
+      <div className="min-w-0">
+        <p className="text-xs text-slate-500">{i18n.t("Pronostic")}</p>
+        <p className="mt-0.5 break-words text-sm font-bold leading-5 text-orange-700">{i18n.bet(row.pick) || "—"}</p>
+        <RiskBadge label={row.label} />
+      </div>
+      <div className="text-end">
+        <p className="text-xs text-slate-500">{i18n.t("Cote")}</p>
+        <strong className="mt-0.5 block font-mono text-xl font-extrabold tabular-nums text-slate-900">{displayNumber(i18n, row.odds, 2)}</strong>
+      </div>
+    </div>
+  </article>;
 }
 
 // Catalogue local : compatible avec le dernier AppLayout, sans fichier annexe.
