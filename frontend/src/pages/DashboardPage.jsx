@@ -1222,6 +1222,8 @@ export default function DashboardPage() {
   const today = useCalendarDay();
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const [refreshing,  setRefreshing] = useState(false);
+  // Open the nearest day by default; other dates remain available without a long wall of cards.
+  const [openDays, setOpenDays] = useState({});
   const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
   const isFree = subscriptionTier === "free" && !user?.is_admin;
   const isAdmin = Boolean(user?.is_admin);
@@ -1320,15 +1322,15 @@ export default function DashboardPage() {
   ];
   return (
     <AppLayout>
-      <div className="mx-auto max-w-7xl space-y-5 px-4 py-5 sm:space-y-6 sm:px-6 sm:py-7 lg:px-8" data-testid="dashboard-redesigned">
-        <Card className="relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-5 text-white sm:p-7">
+      <div className="mx-auto max-w-7xl space-y-3 px-3 py-3 sm:space-y-6 sm:px-6 sm:py-7 lg:px-8" data-testid="dashboard-redesigned">
+        <Card className="relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-4 text-white sm:p-7">
           <div className="pointer-events-none absolute -end-20 -top-24 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
           <div className="relative">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div className="min-w-0 flex-1 basis-60">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
                 <p className="mb-2 text-xs font-semibold leading-5 text-orange-200">{formatDate(new Date(), { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · WinPulse</p>
-                <h1 className="font-heading text-2xl font-extrabold leading-tight tracking-tight sm:text-3xl">{t("Tes pronostics, en un coup d’œil 🎯")}</h1>
-                <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                <h1 className="font-heading text-xl font-extrabold leading-tight tracking-tight sm:text-3xl">{t("Tes pronostics, en un coup d’œil 🎯")}</h1>
+                <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300 sm:mt-2 sm:text-sm sm:leading-6">
                   {isFree ? picksLoading ? t("Chargement des pronostics…") : pickCounts.total === 0 ? t("Aucun pick disponible actuellement") : t("Accès gratuit · Passe Pro pour débloquer les picks réservés")
                     : t("{{plan}} actif · Tous les picks disponibles", { plan: (isAdmin ? "admin" : subscriptionTier).toUpperCase() })}
                 </p>
@@ -1337,30 +1339,30 @@ export default function DashboardPage() {
                 aria-label={refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}
                 className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold transition-colors hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 disabled:opacity-60">
                 <RefreshCw className={`h-4 w-4 shrink-0 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
-                <span>{refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}</span>
+                <span className="sr-only sm:not-sr-only">{refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}</span>
               </button>
             </div>
-            <div className="mt-5 grid grid-cols-2 gap-2.5 sm:grid-cols-3 sm:gap-3">
-              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-3 sm:p-4">
-                <p className="min-h-10 text-xs font-medium leading-5 text-slate-300">{t("Picks disponibles")}</p>
-                <p className="mt-1 font-heading text-3xl font-extrabold tabular-nums" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : formatNumber(pickCounts.total)}</p>
+            <div className="mt-3 grid grid-cols-3 gap-2 sm:mt-5 sm:gap-3">
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-2.5 sm:p-4">
+                <p className="min-h-10 text-xs font-medium leading-4 sm:leading-5 text-slate-300">{t("Picks disponibles")}</p>
+                <p className="mt-1 font-heading text-2xl sm:text-3xl font-extrabold tabular-nums" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : formatNumber(pickCounts.total)}</p>
               </div>
-              <div className="rounded-xl border border-orange-300/15 bg-orange-500/10 p-3 sm:p-4">
-                <p className="min-h-10 text-xs font-medium leading-5 text-orange-100">{t("Accessibles avec ton compte")}</p>
-                <p className="mt-1 font-heading text-3xl font-extrabold tabular-nums text-orange-200" data-testid="accessible-picks-count">{picksLoading ? "…" : formatNumber(pickCounts.accessible)}</p>
+              <div className="rounded-xl border border-orange-300/15 bg-orange-500/10 p-2.5 sm:p-4">
+                <p className="min-h-10 text-xs font-medium leading-4 sm:leading-5 text-orange-100">{t("Accessibles avec ton compte")}</p>
+                <p className="mt-1 font-heading text-2xl sm:text-3xl font-extrabold tabular-nums text-orange-200" data-testid="accessible-picks-count">{picksLoading ? "…" : formatNumber(pickCounts.accessible)}</p>
               </div>
-              <Link to="/app/live" className="col-span-2 flex min-h-11 items-center justify-between gap-3 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 sm:col-span-1 sm:block sm:p-4">
+              <Link to="/app/live" className="flex min-h-11 flex-col items-start justify-between gap-1 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 sm:col-span-1 sm:block sm:p-4">
                 <p className="flex items-center gap-1.5 text-xs font-medium leading-5 text-slate-300 sm:min-h-10"><Radio className="h-4 w-4 text-rose-300" aria-hidden="true" />{t("En direct")}</p>
-                <p className="font-heading text-xl font-extrabold tabular-nums text-rose-200 sm:mt-1 sm:text-3xl">{formatNumber(liveCount)}</p>
+                <p className="font-heading text-2xl font-extrabold tabular-nums text-rose-200 sm:mt-1 sm:text-3xl">{formatNumber(liveCount)}</p>
               </Link>
             </div>
           </div>
         </Card>
 
         <Card className="min-w-0 rounded-2xl border-orange-100 bg-white p-4 shadow-sm sm:p-5" data-testid="dashboard-search">
-          <div className="mb-4">
-            <h2 className="font-heading text-lg font-bold text-slate-900 sm:text-xl">{t("Trouve ton prochain match")}</h2>
-            <p className="mt-1 text-sm leading-6 text-slate-500">{t("Recherche une équipe ou explore les championnats. Les filtres se combinent.")}</p>
+          <div className="mb-3">
+            <h2 className="font-heading text-base font-bold text-slate-900 sm:text-xl">{t("Trouve ton prochain match")}</h2>
+            <p className="mt-1 hidden text-sm leading-6 text-slate-500 sm:block">{t("Recherche une équipe ou explore les championnats. Les filtres se combinent.")}</p>
           </div>
           <label htmlFor="dashboard-search-input" className="sr-only">{t("Rechercher une rencontre")}</label>
           <div className="relative">
@@ -1371,10 +1373,10 @@ export default function DashboardPage() {
               aria-describedby="dashboard-search-help" data-testid="dashboard-search-input" />
             {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label={t("Effacer la recherche")} className="absolute end-1 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"><X className="h-4 w-4" aria-hidden="true" /></button>}
           </div>
-          <p id="dashboard-search-help" className="mt-2 text-xs leading-5 text-slate-500">{t("Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.")}</p>
-          <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={t("Sport")}>
+          <p id="dashboard-search-help" className="sr-only sm:not-sr-only sm:mt-2 sm:text-xs sm:leading-5 sm:text-slate-500">{t("Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.")}</p>
+          <div className="mt-3 flex min-w-0 gap-2 overflow-x-auto pb-1 sm:flex-wrap" role="group" aria-label={t("Sport")}>
             {SPORT_TABS.map(tab => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key}
-              className={`inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${sport === tab.key ? "border-orange-600 bg-orange-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50"}`}>
+              className={`inline-flex min-h-11 shrink-0 max-w-full items-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${sport === tab.key ? "border-orange-600 bg-orange-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50"}`}>
               <span aria-hidden="true">{tab.icon}</span><span>{t(tab.label)}</span>
               {tab.key !== "all" && sportCounts[tab.key] > 0 && <span className={`rounded-full px-1.5 text-xs tabular-nums ${sport === tab.key ? "bg-white/20" : "bg-slate-100 text-slate-500"}`}>{formatNumber(sportCounts[tab.key])}</span>}
             </button>)}
@@ -1408,7 +1410,7 @@ export default function DashboardPage() {
 
         <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
+            <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-lg sm:text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
               <p className="mt-1 text-sm leading-6 text-slate-500" aria-live="polite">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(filtered.length), leagues: formatNumber(leagueGroups.length) })}</p>
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-2"><label htmlFor="dashboard-sort" className="text-xs font-semibold text-slate-500">{t("Trier les matchs")}</label>
@@ -1418,17 +1420,17 @@ export default function DashboardPage() {
               </select>
             </div>
           </div>
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3 text-sm leading-6 text-slate-600"><p>{t("Les rencontres sont regroupées par date, puis par championnat.")}</p><p className="text-xs text-slate-500">{t("Horaires dans ton fuseau : {{zone}}", { zone: timeZone })}</p></div>
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-orange-100 bg-orange-50/60 px-3 py-2 text-xs leading-5 text-slate-600 sm:text-sm"><p>{t("Les rencontres sont regroupées par date, puis par championnat.")}</p><p className="text-xs text-slate-500">{t("Horaires dans ton fuseau : {{zone}}", { zone: timeZone })}</p></div>
           {loading ? <div className="space-y-6">{[1,2].map(number => <div key={number}><Skeleton className="mb-3 h-7 w-48" /><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(index => <Skeleton key={index} className="h-72 rounded-xl" />)}</div></div>)}</div>
             : filtered.length === 0 ? <Card className="rounded-2xl border-dashed border-slate-200 bg-white px-5 py-10 text-center"><Search className="mx-auto mb-3 h-7 w-7 text-orange-400" aria-hidden="true" /><p className="text-lg font-semibold text-slate-700">{hasSearch ? t("Aucune rencontre ne correspond à cette recherche et aux filtres.") : t("Aucun match pour ce filtre")}</p><p className="mt-2 text-sm leading-6 text-slate-500">{t("Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.")}</p><Button type="button" variant="outline" className="mt-4 min-h-11" onClick={resetFilters}>{t("Réinitialiser les filtres")}</Button></Card>
               : <div className="space-y-6">
-                <nav aria-label={t("Parcourir les journées")} className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3" data-testid="dashboard-day-navigation">
-                  {dayGroups.map(([key, dayMatches]) => <a key={key} href={`#day-${key}`} className={`inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${key === today ? "border-orange-500 bg-orange-500 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300"}`}>
+                <nav aria-label={t("Parcourir les journées")} className="flex min-w-0 gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 sm:flex-wrap sm:p-3" data-testid="dashboard-day-navigation">
+                  {dayGroups.map(([key, dayMatches]) => <a key={key} href={`#day-${key}`} onClick={() => { setOpenDays(previous => ({ ...previous, [key]: true })); }} className={`shrink-0 inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${key === today ? "border-orange-500 bg-orange-500 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300"}`}>
                     <span className="min-w-0 break-words">{calendarDayTitle(key, today, t, formatDate)}</span><span className="rounded-full bg-black/5 px-2 py-0.5 text-xs tabular-nums">{formatNumber(dayMatches.length)}</span>
                   </a>)}
                 </nav>
                 {todayCount === 0 && <div className="rounded-2xl border border-dashed border-orange-200 bg-orange-50/50 p-5" data-testid="dashboard-no-today"><h3 className="font-heading text-lg font-bold text-slate-900">{t("Matchs du jour")} · {formatDate(`${today}T12:00:00`, { day: "numeric", month: "long" })}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{t("Aucun match du jour avec ces filtres.")} {t("Voir les prochaines rencontres ci-dessous ou modifier les filtres.")}</p></div>}
-                {dayGroups.map(([key, dayMatches]) => <DaySection key={key} dayKey={key} today={today} matches={dayMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
+                {dayGroups.map(([key, dayMatches], index) => <DaySection key={key} expanded={hasSearch || (openDays[key] ?? index === 0)} onToggle={() => setOpenDays(previous => ({ ...previous, [key]: !(previous[key] ?? index === 0) }))} dayKey={key} today={today} matches={dayMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
               </div>}
 
         </section>
@@ -1461,7 +1463,7 @@ export default function DashboardPage() {
   );
 
 }
-function DaySection({ dayKey, today, matches, isAdmin, shareWA, isFree, onUpgrade, showAllMatches }) {
+function DaySection({ dayKey, today, matches, isAdmin, shareWA, isFree, onUpgrade, showAllMatches, expanded, onToggle }) {
   const { t, formatDate, formatNumber } = useDashboardLanguage();
   const [showAllLeagues, setShowAllLeagues] = useState(false);
   const groups = groupByLeague(matches);
@@ -1476,26 +1478,27 @@ function DaySection({ dayKey, today, matches, isAdmin, shareWA, isFree, onUpgrad
     return result;
   }, { live: 0, finished: 0, upcoming: 0 });
   return <section id={`day-${dayKey}`} aria-labelledby={`day-title-${dayKey}`} className="min-w-0 scroll-mt-6 space-y-4" data-testid="dashboard-day" data-day={dayKey}>
-    <header className={`relative overflow-hidden rounded-2xl border p-4 sm:p-5 ${isToday ? "border-orange-300 bg-gradient-to-br from-orange-50 via-white to-orange-50" : "border-slate-200 bg-white"}`}>
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-start gap-3">
-          <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-xl ${isToday ? "bg-orange-500 text-white shadow-md shadow-orange-200" : "bg-slate-100 text-slate-700"}`} aria-hidden="true">{dayKey === "undated" ? "?" : formatDate(`${dayKey}T12:00:00`, { day: "2-digit" })}</span>
-          <div className="min-w-0">
-            <p className="mb-1 text-xs font-bold uppercase tracking-wider text-orange-600">{t(isToday ? "Matchs du jour" : dayKey === tomorrow ? "Demain" : past ? "Jours précédents" : dayKey === "undated" ? "Date à confirmer" : "Prochains jours")}</p>
-            <h3 id={`day-title-${dayKey}`} className="break-words font-heading text-lg font-extrabold leading-7 text-slate-900 sm:text-2xl">{dayKey === "undated" ? t("Date à confirmer") : formatDate(`${dayKey}T12:00:00`, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</h3>
-            <p className="mt-1 text-sm leading-6 text-slate-500">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(matches.length), leagues: formatNumber(groups.length) })}</p>
-          </div>
-        </div>
-        <div className="flex flex-wrap gap-2 text-xs font-semibold">
+    <header className={`relative overflow-hidden rounded-2xl border p-3 sm:p-5 ${isToday ? "border-orange-300 bg-gradient-to-br from-orange-50 via-white to-orange-50" : "border-slate-200 bg-white"}`}>
+      <button type="button" onClick={onToggle} disabled={showAllMatches} aria-expanded={expanded} aria-controls={`day-content-${dayKey}`} className="flex min-h-11 w-full items-center gap-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 rounded-xl" data-testid="day-toggle">
+        <span className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
+          <span className={`grid h-10 w-10 sm:h-12 sm:w-12 shrink-0 place-items-center rounded-xl text-lg ${isToday ? "bg-orange-500 text-white shadow-md shadow-orange-200" : "bg-slate-100 text-slate-700"}`} aria-hidden="true">{dayKey === "undated" ? "?" : formatDate(`${dayKey}T12:00:00`, { day: "2-digit" })}</span>
+          <span className="min-w-0">
+            <span className="mb-1 block text-xs font-bold uppercase tracking-wider text-orange-600">{t(isToday ? "Matchs du jour" : dayKey === tomorrow ? "Demain" : past ? "Jours précédents" : dayKey === "undated" ? "Date à confirmer" : "Prochains jours")}</span>
+            <span role="heading" aria-level={3} id={`day-title-${dayKey}`} className="block break-words font-heading text-sm font-extrabold leading-5 text-slate-900 sm:text-xl sm:leading-7">{dayKey === "undated" ? t("Date à confirmer") : formatDate(`${dayKey}T12:00:00`, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</span>
+            <span className="mt-1 block text-xs leading-5 text-slate-500 sm:text-sm">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(matches.length), leagues: formatNumber(groups.length) })}</span>
+          </span>
+        </span>
+        <ChevronRight className={`h-5 w-5 shrink-0 text-orange-500 ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
+      </button>
+        <div className="mt-2 flex flex-wrap gap-2 text-xs font-semibold">
           {counts.live > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-rose-700"><Radio className="h-3.5 w-3.5" aria-hidden="true" />{formatNumber(counts.live)} {t("En direct")}</span>}
           {counts.upcoming > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">{formatNumber(counts.upcoming)} {t("À venir")}</span>}
           {counts.finished > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-500">{formatNumber(counts.finished)} {t("Terminés")}</span>}
         </div>
-      </div>
     </header>
-    <div className={`space-y-4 border-s-2 ps-2 sm:ps-4 ${isToday ? "border-orange-300" : "border-slate-200"}`}>
-      {visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
-      {!showAllMatches && groups.length > 4 && <button type="button" onClick={() => setShowAllLeagues(value => !value)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold leading-6 text-orange-700 hover:border-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="day-show-more">{t(showAllLeagues ? "Réduire cette journée" : "Voir tous les championnats de cette journée")}<span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs">{formatNumber(groups.length)}</span></button>}
+    <div id={`day-content-${dayKey}`} hidden={!expanded} className={`space-y-3 sm:space-y-4 border-s-2 ps-1 sm:ps-4 ${isToday ? "border-orange-300" : "border-slate-200"}`}>
+      {expanded && visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
+      {expanded && !showAllMatches && groups.length > 4 && <button type="button" onClick={() => setShowAllLeagues(value => !value)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold leading-6 text-orange-700 hover:border-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="day-show-more">{t(showAllLeagues ? "Réduire cette journée" : "Voir tous les championnats de cette journée")}<span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs">{formatNumber(groups.length)}</span></button>}
     </div>
   </section>;
 }
@@ -1515,16 +1518,16 @@ function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade, s
   const [expandedAll, setExpandedAll] = useState(false);
   const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
-  return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-3 sm:p-4" data-testid="dashboard-league">
+  return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-2 sm:p-4" data-testid="dashboard-league">
     <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-lg" aria-hidden="true">{getLeagueEmoji(league)}</span>
-      <h4 className="min-w-0 flex-1 basis-28 break-words font-heading text-base font-bold leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h4>
+      <h4 className="min-w-0 flex-1 basis-28 break-words font-heading text-sm sm:text-base font-bold leading-5 sm:leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h4>
       {liveCount > 0 && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">{formatNumber(liveCount)} {t("LIVE")}</span>}
       <span className="rounded-full bg-white px-2 py-1 text-xs font-bold tabular-nums text-slate-500">{formatNumber(matches.length)}</span>
       <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
     </button>
     {expanded && <>
-      <div className="grid min-w-0 gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} />)}</div>
+      <div className="grid min-w-0 gap-2.5 sm:gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} />)}</div>
       {!showAllMatches && matches.length > 6 && <button type="button" onClick={() => setExpandedAll(value => !value)} className="mt-3 flex min-h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-600 hover:border-orange-300 hover:text-orange-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="league-show-more">
         {expandedAll ? t("Réduire cette liste") : t("Voir {{count}} autres rencontres", { count: formatNumber(matches.length - visible.length) })}
       </button>}
