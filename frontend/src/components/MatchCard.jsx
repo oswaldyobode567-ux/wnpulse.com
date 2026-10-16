@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import { Link } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Radio, Lock, Send, Clock, CheckCircle2, XCircle, ArrowRight } from "lucide-react";
-import { useLanguage } from "@/components/AppLayout";
+import { useLanguage, FollowPickButton } from "@/components/AppLayout";
 
 const MATCH_MESSAGES = {
   "fr": {
@@ -542,6 +542,8 @@ export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade
           ) : <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" data-testid="match-selection-unavailable"><p className="font-semibold text-slate-700">{t("Sélection indisponible")}</p><p className="mt-1 text-slate-500">{t("Aucune sélection exploitable dans les données reçues pour cette rencontre.")}</p></div>)}
         </div>
       </Link>
+
+      {!locked && <FollowPickButton matchId={event.id} pick={pred.pick} market={pred.market} disabled={isFinished || isLive} />}
 
       {locked && <div className="mt-4 rounded-xl border border-dashed border-orange-200 bg-orange-50 p-3">
         <div className="mb-1 text-sm font-bold text-orange-700">{t("Pick verrouillé")}</div>
