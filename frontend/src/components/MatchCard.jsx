@@ -308,15 +308,19 @@ const MATCH_MESSAGES = {
 };
 
 // Même choix global que le menu et le dashboard. Aucun appel de traduction.
+const AVAILABILITY_MESSAGES = {"fr": {"Sélection indisponible": "Sélection indisponible", "Aucune sélection exploitable dans les données reçues pour cette rencontre.": "Aucune sélection exploitable dans les données reçues pour cette rencontre."}, "en": {"Sélection indisponible": "Selection unavailable", "Aucune sélection exploitable dans les données reçues pour cette rencontre.": "No usable selection in the data received for this match."}, "es": {"Sélection indisponible": "Selección no disponible", "Aucune sélection exploitable dans les données reçues pour cette rencontre.": "No hay una selección utilizable en los datos recibidos para este partido."}, "pt": {"Sélection indisponible": "Seleção indisponível", "Aucune sélection exploitable dans les données reçues pour cette rencontre.": "Não há uma seleção utilizável nos dados recebidos para este jogo."}, "de": {"Sélection indisponible": "Auswahl nicht verfügbar", "Aucune sélection exploitable dans les données reçues pour cette rencontre.": "Die empfangenen Daten enthalten keine verwertbare Auswahl für dieses Spiel."}, "ar": {"Sélection indisponible": "الاختيار غير متاح", "Aucune sélection exploitable dans les données reçues pour cette rencontre.": "لا يوجد اختيار قابل للاستخدام في البيانات المستلمة لهذه المباراة."}};
+Object.keys(AVAILABILITY_MESSAGES).forEach(language => Object.assign(MATCH_MESSAGES[language], AVAILABILITY_MESSAGES[language]));
+
 function useMatchLanguage() {
   const context = useLanguage();
+  const { language } = context;
   const t = useCallback((source, values = {}) => {
-    const dictionary = MATCH_MESSAGES[context.language] || MATCH_MESSAGES.fr;
+    const dictionary = MATCH_MESSAGES[language] || MATCH_MESSAGES.fr;
     const template = Object.prototype.hasOwnProperty.call(dictionary, source)
       ? dictionary[source] : source;
     return template.replace(/\{\{(\w+)\}\}/g, (placeholder, key) =>
       Object.prototype.hasOwnProperty.call(values, key) ? String(values[key] ?? "") : placeholder);
-  }, [context.language]);
+  }, [language]);
   return { ...context, t };
 }
 
@@ -451,7 +455,8 @@ export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade
   // déduire un direct ou une fin de match, selon le sport et les reports.
   const isFinished = Boolean(pred.is_finished || event.is_finished || event.completed);
   const isLive = !isFinished && Boolean(pred.is_live || event.is_live);
-  const locked = Boolean(pred.locked || (!pred.pick && isFree));
+  const unavailable = pred.analysis_status === "unavailable" || pred.has_prediction === false || (!pred.pick && !pred.locked);
+  const locked = !unavailable && Boolean(pred.locked || (!pred.pick && isFree));
   const teams = [event.home_team, event.away_team];
   const confidence = finiteNumber(pred.confidence);
   const hasConfidence = confidence !== null && confidence >= 0 && confidence <= 100;
@@ -534,7 +539,7 @@ export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade
 
               <SecondaryMarkets markets={pred.markets} primaryPick={pred.pick} primaryMarket={pred.market_label} teams={teams} />
             </div>
-          ) : <div className="py-2 text-sm italic leading-6 text-slate-500">{t("Analyse en cours…")}</div>)}
+          ) : <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" data-testid="match-selection-unavailable"><p className="font-semibold text-slate-700">{t("Sélection indisponible")}</p><p className="mt-1 text-slate-500">{t("Aucune sélection exploitable dans les données reçues pour cette rencontre.")}</p></div>)}
         </div>
       </Link>
 
