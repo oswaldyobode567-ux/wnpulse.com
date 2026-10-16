@@ -819,15 +819,134 @@ const DASHBOARD_MESSAGES = {
   }
 };
 
+const CALENDAR_MESSAGES = {
+  "fr": {
+    "Matchs du jour": "Matchs du jour",
+    "Demain": "Demain",
+    "Prochains jours": "Prochains jours",
+    "Jours précédents": "Jours précédents",
+    "Date à confirmer": "Date à confirmer",
+    "Les rencontres sont regroupées par date, puis par championnat.": "Les rencontres sont regroupées par date, puis par championnat.",
+    "Horaires dans ton fuseau : {{zone}}": "Horaires dans ton fuseau : {{zone}}",
+    "{{count}} rencontres": "{{count}} rencontres",
+    "Aucun match du jour avec ces filtres.": "Aucun match du jour avec ces filtres.",
+    "Voir les prochaines rencontres ci-dessous ou modifier les filtres.": "Voir les prochaines rencontres ci-dessous ou modifier les filtres.",
+    "Voir tous les championnats de cette journée": "Voir tous les championnats de cette journée",
+    "Réduire cette journée": "Réduire cette journée",
+    "Parcourir les journées": "Parcourir les journées",
+    "À venir": "À venir",
+    "Terminés": "Terminés",
+    "{{count}} journées": "{{count}} journées",
+    "Le tri reste indépendant pour chaque journée et chaque championnat.": "Le tri reste indépendant pour chaque journée et chaque championnat."
+  },
+  "en": {
+    "Matchs du jour": "Today’s matches",
+    "Demain": "Tomorrow",
+    "Prochains jours": "Coming days",
+    "Jours précédents": "Previous days",
+    "Date à confirmer": "Date to be confirmed",
+    "Les rencontres sont regroupées par date, puis par championnat.": "Matches are grouped by date, then by competition.",
+    "Horaires dans ton fuseau : {{zone}}": "Times in your time zone: {{zone}}",
+    "{{count}} rencontres": "{{count}} matches",
+    "Aucun match du jour avec ces filtres.": "No matches today with these filters.",
+    "Voir les prochaines rencontres ci-dessous ou modifier les filtres.": "Browse upcoming matches below or adjust the filters.",
+    "Voir tous les championnats de cette journée": "Show every competition for this day",
+    "Réduire cette journée": "Show fewer competitions",
+    "Parcourir les journées": "Browse match days",
+    "À venir": "Upcoming",
+    "Terminés": "Finished",
+    "{{count}} journées": "{{count}} days",
+    "Le tri reste indépendant pour chaque journée et chaque championnat.": "Sorting applies separately to each day and competition."
+  },
+  "es": {
+    "Matchs du jour": "Partidos de hoy",
+    "Demain": "Mañana",
+    "Prochains jours": "Próximos días",
+    "Jours précédents": "Días anteriores",
+    "Date à confirmer": "Fecha por confirmar",
+    "Les rencontres sont regroupées par date, puis par championnat.": "Los partidos se agrupan por fecha y después por competición.",
+    "Horaires dans ton fuseau : {{zone}}": "Horarios en tu zona: {{zone}}",
+    "{{count}} rencontres": "{{count}} partidos",
+    "Aucun match du jour avec ces filtres.": "No hay partidos de hoy con estos filtros.",
+    "Voir les prochaines rencontres ci-dessous ou modifier les filtres.": "Consulta los próximos partidos abajo o modifica los filtros.",
+    "Voir tous les championnats de cette journée": "Ver todas las competiciones de este día",
+    "Réduire cette journée": "Mostrar menos competiciones",
+    "Parcourir les journées": "Explorar las jornadas",
+    "À venir": "Próximos",
+    "Terminés": "Finalizados",
+    "{{count}} journées": "{{count}} días",
+    "Le tri reste indépendant pour chaque journée et chaque championnat.": "La clasificación se aplica por separado a cada día y competición."
+  },
+  "pt": {
+    "Matchs du jour": "Jogos de hoje",
+    "Demain": "Amanhã",
+    "Prochains jours": "Próximos dias",
+    "Jours précédents": "Dias anteriores",
+    "Date à confirmer": "Data a confirmar",
+    "Les rencontres sont regroupées par date, puis par championnat.": "Os jogos estão agrupados por data e depois por competição.",
+    "Horaires dans ton fuseau : {{zone}}": "Horários no teu fuso: {{zone}}",
+    "{{count}} rencontres": "{{count}} jogos",
+    "Aucun match du jour avec ces filtres.": "Sem jogos de hoje com estes filtros.",
+    "Voir les prochaines rencontres ci-dessous ou modifier les filtres.": "Consulta os próximos jogos abaixo ou ajusta os filtros.",
+    "Voir tous les championnats de cette journée": "Ver todas as competições deste dia",
+    "Réduire cette journée": "Mostrar menos competições",
+    "Parcourir les journées": "Explorar os dias",
+    "À venir": "Por começar",
+    "Terminés": "Terminados",
+    "{{count}} journées": "{{count}} dias",
+    "Le tri reste indépendant pour chaque journée et chaque championnat.": "A ordenação é aplicada separadamente a cada dia e competição."
+  },
+  "de": {
+    "Matchs du jour": "Spiele des Tages",
+    "Demain": "Morgen",
+    "Prochains jours": "Nächste Tage",
+    "Jours précédents": "Vergangene Tage",
+    "Date à confirmer": "Datum noch offen",
+    "Les rencontres sont regroupées par date, puis par championnat.": "Die Spiele sind nach Datum und anschließend nach Wettbewerb gruppiert.",
+    "Horaires dans ton fuseau : {{zone}}": "Zeiten in deiner Zeitzone: {{zone}}",
+    "{{count}} rencontres": "{{count}} Spiele",
+    "Aucun match du jour avec ces filtres.": "Heute keine Spiele mit diesen Filtern.",
+    "Voir les prochaines rencontres ci-dessous ou modifier les filtres.": "Sieh dir die nächsten Spiele unten an oder ändere die Filter.",
+    "Voir tous les championnats de cette journée": "Alle Wettbewerbe dieses Tages anzeigen",
+    "Réduire cette journée": "Weniger Wettbewerbe anzeigen",
+    "Parcourir les journées": "Spieltage durchsehen",
+    "À venir": "Bevorstehend",
+    "Terminés": "Beendet",
+    "{{count}} journées": "{{count}} Tage",
+    "Le tri reste indépendant pour chaque journée et chaque championnat.": "Die Sortierung gilt für jeden Tag und Wettbewerb getrennt."
+  },
+  "ar": {
+    "Matchs du jour": "مباريات اليوم",
+    "Demain": "غداً",
+    "Prochains jours": "الأيام القادمة",
+    "Jours précédents": "الأيام السابقة",
+    "Date à confirmer": "الموعد غير مؤكد",
+    "Les rencontres sont regroupées par date, puis par championnat.": "المباريات مرتبة حسب التاريخ ثم البطولة.",
+    "Horaires dans ton fuseau : {{zone}}": "الأوقات حسب منطقتك الزمنية: {{zone}}",
+    "{{count}} rencontres": "{{count}} مباراة",
+    "Aucun match du jour avec ces filtres.": "لا توجد مباريات اليوم بهذه الفلاتر.",
+    "Voir les prochaines rencontres ci-dessous ou modifier les filtres.": "تصفح المباريات القادمة أدناه أو غيّر الفلاتر.",
+    "Voir tous les championnats de cette journée": "عرض جميع بطولات هذا اليوم",
+    "Réduire cette journée": "عرض بطولات أقل",
+    "Parcourir les journées": "تصفح أيام المباريات",
+    "À venir": "قادمة",
+    "Terminés": "انتهت",
+    "{{count}} journées": "{{count}} أيام",
+    "Le tri reste indépendant pour chaque journée et chaque championnat.": "يطبق الترتيب بشكل مستقل داخل كل يوم وكل بطولة."
+  }
+};
+Object.keys(CALENDAR_MESSAGES).forEach(language => Object.assign(DASHBOARD_MESSAGES[language], CALENDAR_MESSAGES[language]));
+
 function useDashboardLanguage() {
   const context = useLanguage();
+  const { language, t: sharedTranslate } = context;
   const t = useCallback((source, values = {}) => {
-    const dictionary = DASHBOARD_MESSAGES[context.language] || DASHBOARD_MESSAGES.fr;
+    const dictionary = DASHBOARD_MESSAGES[language] || DASHBOARD_MESSAGES.fr;
     const message = Object.prototype.hasOwnProperty.call(dictionary, source)
-      ? dictionary[source] : context.t(source);
+      ? dictionary[source] : sharedTranslate(source);
     return message.replace(/\{\{(\w+)\}\}/g, (placeholder, key) =>
       Object.prototype.hasOwnProperty.call(values, key) ? String(values[key] ?? "") : placeholder);
-  }, [context.language, context.t]);
+  }, [language, sharedTranslate]);
   return { ...context, t };
 }
 
@@ -1010,6 +1129,39 @@ function getAvailablePickCounts(matches) {
   return { total, accessible, locked: total - accessible };
 }
 
+function localMatchDay(value) {
+  if (!value) return null;
+  const date = dayjs(value);
+  return date.isValid() ? date.format("YYYY-MM-DD") : null;
+}
+function groupDashboardDays(matches, today) {
+  const groups = new Map();
+  matches.forEach(match => {
+    const key = localMatchDay(match.commence_time) || "undated";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(match);
+  });
+  const rank = key => key === "undated" ? 2 : key < today ? 1 : 0;
+  return [...groups.entries()].sort(([a], [b]) => rank(a) - rank(b)
+    || (rank(a) === 1 ? b.localeCompare(a) : a.localeCompare(b)));
+}
+function calendarDayTitle(key, today, t, formatDate) {
+  if (key === "undated") return t("Date à confirmer");
+  if (key === today) return t("Matchs du jour");
+  if (key === dayjs(today).add(1, "day").format("YYYY-MM-DD")) return t("Demain");
+  return formatDate(`${key}T12:00:00`, { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+}
+function useCalendarDay() {
+  const [today, setToday] = useState(() => dayjs().format("YYYY-MM-DD"));
+  useEffect(() => {
+    const update = () => setToday(dayjs().format("YYYY-MM-DD"));
+    const timer = window.setInterval(update, 30000);
+    window.addEventListener("focus", update);
+    return () => { window.clearInterval(timer); window.removeEventListener("focus", update); };
+  }, []);
+  return today;
+}
+
 export default function DashboardPage() {
   const { user } = useAuth();
   const { t, formatDate, formatNumber } = useDashboardLanguage();
@@ -1067,7 +1219,8 @@ export default function DashboardPage() {
     ["q", "sport", "bet", "risk"].forEach(key => params.delete(key));
     return params;
   }, { replace: true });
-  const [showAll,     setShowAll]    = useState(false);
+  const today = useCalendarDay();
+  const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const [refreshing,  setRefreshing] = useState(false);
   const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
   const isFree = subscriptionTier === "free" && !user?.is_admin;
@@ -1155,7 +1308,8 @@ export default function DashboardPage() {
   }, [matches]);
   const orderedMatches = useMemo(() => sortDashboardMatches(filtered, sort), [filtered, sort]);
   const leagueGroups = useMemo(() => groupByLeague(orderedMatches), [orderedMatches]);
-  const visibleGroups = showAll || hasSearch ? leagueGroups : leagueGroups.slice(0, 6);
+  const dayGroups = useMemo(() => groupDashboardDays(orderedMatches, today), [orderedMatches, today]);
+  const todayCount = filtered.filter(match => localMatchDay(match.commence_time) === today).length;
   const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
   const advancedFilterCount = Number(betFilter !== "all") + Number(riskFilter !== "all");
   const activeFilters = [
@@ -1252,6 +1406,33 @@ export default function DashboardPage() {
           {hasSearch && <p className="mt-3 text-sm font-semibold leading-6 text-orange-700" aria-live="polite">{t(filtered.length === 1 ? "{{count}} rencontre trouvée dans les matchs chargés." : "{{count}} rencontres trouvées dans les matchs chargés.", { count: formatNumber(filtered.length) })}</p>}
         </Card>
 
+        <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
+          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+            <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
+              <p className="mt-1 text-sm leading-6 text-slate-500" aria-live="polite">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(filtered.length), leagues: formatNumber(leagueGroups.length) })}</p>
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center gap-2"><label htmlFor="dashboard-sort" className="text-xs font-semibold text-slate-500">{t("Trier les matchs")}</label>
+              <select id="dashboard-sort" value={sort} onChange={event => setSort(event.target.value)} title={t("Le tri reste indépendant pour chaque journée et chaque championnat.")}
+                className="min-h-11 max-w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-base text-slate-700 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-200" data-testid="dashboard-sort">
+                <option value="time">{t("Par horaire")}</option><option value="confidence">{t("Par confiance")}</option><option value="odds">{t("Par cote")}</option>
+              </select>
+            </div>
+          </div>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-orange-100 bg-orange-50/60 px-4 py-3 text-sm leading-6 text-slate-600"><p>{t("Les rencontres sont regroupées par date, puis par championnat.")}</p><p className="text-xs text-slate-500">{t("Horaires dans ton fuseau : {{zone}}", { zone: timeZone })}</p></div>
+          {loading ? <div className="space-y-6">{[1,2].map(number => <div key={number}><Skeleton className="mb-3 h-7 w-48" /><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(index => <Skeleton key={index} className="h-72 rounded-xl" />)}</div></div>)}</div>
+            : filtered.length === 0 ? <Card className="rounded-2xl border-dashed border-slate-200 bg-white px-5 py-10 text-center"><Search className="mx-auto mb-3 h-7 w-7 text-orange-400" aria-hidden="true" /><p className="text-lg font-semibold text-slate-700">{hasSearch ? t("Aucune rencontre ne correspond à cette recherche et aux filtres.") : t("Aucun match pour ce filtre")}</p><p className="mt-2 text-sm leading-6 text-slate-500">{t("Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.")}</p><Button type="button" variant="outline" className="mt-4 min-h-11" onClick={resetFilters}>{t("Réinitialiser les filtres")}</Button></Card>
+              : <div className="space-y-6">
+                <nav aria-label={t("Parcourir les journées")} className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-3" data-testid="dashboard-day-navigation">
+                  {dayGroups.map(([key, dayMatches]) => <a key={key} href={`#day-${key}`} className={`inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${key === today ? "border-orange-500 bg-orange-500 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300"}`}>
+                    <span className="min-w-0 break-words">{calendarDayTitle(key, today, t, formatDate)}</span><span className="rounded-full bg-black/5 px-2 py-0.5 text-xs tabular-nums">{formatNumber(dayMatches.length)}</span>
+                  </a>)}
+                </nav>
+                {todayCount === 0 && <div className="rounded-2xl border border-dashed border-orange-200 bg-orange-50/50 p-5" data-testid="dashboard-no-today"><h3 className="font-heading text-lg font-bold text-slate-900">{t("Matchs du jour")} · {formatDate(`${today}T12:00:00`, { day: "numeric", month: "long" })}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{t("Aucun match du jour avec ces filtres.")} {t("Voir les prochaines rencontres ci-dessous ou modifier les filtres.")}</p></div>}
+                {dayGroups.map(([key, dayMatches]) => <DaySection key={key} dayKey={key} today={today} matches={dayMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
+              </div>}
+
+        </section>
+
         <details className="rounded-2xl border border-orange-100 bg-gradient-to-r from-orange-50/70 to-white" data-testid="dashboard-featured">
           <summary className="flex min-h-14 cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 sm:px-5 [&::-webkit-details-marker]:hidden">
             <Trophy className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" /><h2 className="font-heading text-base font-bold text-slate-900">{t("Sélections à la une")}</h2>
@@ -1269,25 +1450,6 @@ export default function DashboardPage() {
           </div>
         </details>
 
-        <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
-          <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
-            <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
-              <p className="mt-1 text-sm leading-6 text-slate-500" aria-live="polite">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(filtered.length), leagues: formatNumber(leagueGroups.length) })}</p>
-            </div>
-            <div className="flex min-w-0 flex-wrap items-center gap-2"><label htmlFor="dashboard-sort" className="text-xs font-semibold text-slate-500">{t("Trier les matchs")}</label>
-              <select id="dashboard-sort" value={sort} onChange={event => setSort(event.target.value)} title={t("Le tri s’applique dans chaque championnat et utilise les données accessibles avec ton compte.")}
-                className="min-h-11 max-w-full rounded-xl border border-slate-200 bg-white px-3 py-2 text-base text-slate-700 focus:border-orange-500 focus:outline-none focus:ring-2 focus:ring-orange-200" data-testid="dashboard-sort">
-                <option value="time">{t("Par horaire")}</option><option value="confidence">{t("Par confiance")}</option><option value="odds">{t("Par cote")}</option>
-              </select>
-            </div>
-          </div>
-          {loading ? <div className="space-y-6">{[1,2].map(number => <div key={number}><Skeleton className="mb-3 h-7 w-48" /><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(index => <Skeleton key={index} className="h-72 rounded-xl" />)}</div></div>)}</div>
-            : filtered.length === 0 ? <Card className="rounded-2xl border-dashed border-slate-200 bg-white px-5 py-10 text-center"><Search className="mx-auto mb-3 h-7 w-7 text-orange-400" aria-hidden="true" /><p className="text-lg font-semibold text-slate-700">{hasSearch ? t("Aucune rencontre ne correspond à cette recherche et aux filtres.") : t("Aucun match pour ce filtre")}</p><p className="mt-2 text-sm leading-6 text-slate-500">{t("Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.")}</p><Button type="button" variant="outline" className="mt-4 min-h-11" onClick={resetFilters}>{t("Réinitialiser les filtres")}</Button></Card>
-              : <div className="space-y-6">{visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
-                {!showAll && !hasSearch && leagueGroups.length > 6 && <div className="rounded-xl border border-slate-200 bg-white p-4 text-center"><p className="mb-3 text-sm text-slate-500">{t("{{shown}} championnats affichés sur {{total}}", { shown: formatNumber(visibleGroups.length), total: formatNumber(leagueGroups.length) })}</p><Button type="button" variant="outline" onClick={() => setShowAll(true)} className="min-h-11 max-w-full whitespace-normal">{t("Voir {{count}} championnats supplémentaires", { count: formatNumber(leagueGroups.length - 6) })}</Button></div>}
-              </div>}
-        </section>
-
         <ValidatedSection picks={validated} />
 
         {isFree && !picksLoading && pickCounts.locked > 0 && <Card className="flex flex-col gap-4 rounded-2xl border-orange-200 bg-orange-50/60 p-4 sm:flex-row sm:items-center sm:p-5" data-testid="dashboard-upgrade">
@@ -1299,6 +1461,45 @@ export default function DashboardPage() {
   );
 
 }
+function DaySection({ dayKey, today, matches, isAdmin, shareWA, isFree, onUpgrade, showAllMatches }) {
+  const { t, formatDate, formatNumber } = useDashboardLanguage();
+  const [showAllLeagues, setShowAllLeagues] = useState(false);
+  const groups = groupByLeague(matches);
+  const visibleGroups = showAllLeagues || showAllMatches ? groups : groups.slice(0, 4);
+  const isToday = dayKey === today;
+  const tomorrow = dayjs(today).add(1, "day").format("YYYY-MM-DD");
+  const past = dayKey !== "undated" && dayKey < today;
+  const counts = matches.reduce((result, match) => {
+    const finished = match.completed || match.is_finished || match.prediction?.is_finished;
+    const live = !finished && (match.is_live || match.prediction?.is_live);
+    result[finished ? "finished" : live ? "live" : "upcoming"] += 1;
+    return result;
+  }, { live: 0, finished: 0, upcoming: 0 });
+  return <section id={`day-${dayKey}`} aria-labelledby={`day-title-${dayKey}`} className="min-w-0 scroll-mt-6 space-y-4" data-testid="dashboard-day" data-day={dayKey}>
+    <header className={`relative overflow-hidden rounded-2xl border p-4 sm:p-5 ${isToday ? "border-orange-300 bg-gradient-to-br from-orange-50 via-white to-orange-50" : "border-slate-200 bg-white"}`}>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="flex min-w-0 flex-1 items-start gap-3">
+          <span className={`grid h-12 w-12 shrink-0 place-items-center rounded-2xl text-xl ${isToday ? "bg-orange-500 text-white shadow-md shadow-orange-200" : "bg-slate-100 text-slate-700"}`} aria-hidden="true">{dayKey === "undated" ? "?" : formatDate(`${dayKey}T12:00:00`, { day: "2-digit" })}</span>
+          <div className="min-w-0">
+            <p className="mb-1 text-xs font-bold uppercase tracking-wider text-orange-600">{t(isToday ? "Matchs du jour" : dayKey === tomorrow ? "Demain" : past ? "Jours précédents" : dayKey === "undated" ? "Date à confirmer" : "Prochains jours")}</p>
+            <h3 id={`day-title-${dayKey}`} className="break-words font-heading text-lg font-extrabold leading-7 text-slate-900 sm:text-2xl">{dayKey === "undated" ? t("Date à confirmer") : formatDate(`${dayKey}T12:00:00`, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</h3>
+            <p className="mt-1 text-sm leading-6 text-slate-500">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(matches.length), leagues: formatNumber(groups.length) })}</p>
+          </div>
+        </div>
+        <div className="flex flex-wrap gap-2 text-xs font-semibold">
+          {counts.live > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-rose-700"><Radio className="h-3.5 w-3.5" aria-hidden="true" />{formatNumber(counts.live)} {t("En direct")}</span>}
+          {counts.upcoming > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">{formatNumber(counts.upcoming)} {t("À venir")}</span>}
+          {counts.finished > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-500">{formatNumber(counts.finished)} {t("Terminés")}</span>}
+        </div>
+      </div>
+    </header>
+    <div className={`space-y-4 border-s-2 ps-2 sm:ps-4 ${isToday ? "border-orange-300" : "border-slate-200"}`}>
+      {visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
+      {!showAllMatches && groups.length > 4 && <button type="button" onClick={() => setShowAllLeagues(value => !value)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold leading-6 text-orange-700 hover:border-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="day-show-more">{t(showAllLeagues ? "Réduire cette journée" : "Voir tous les championnats de cette journée")}<span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs">{formatNumber(groups.length)}</span></button>}
+    </div>
+  </section>;
+}
+
 function getLeagueEmoji(name = "") {
   const n = name.toLowerCase();
   if (n.includes("nba") || n.includes("basketball") || n.includes("euroleague")) return "🏀";
@@ -1317,7 +1518,7 @@ function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade, s
   return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-3 sm:p-4" data-testid="dashboard-league">
     <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
       <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-lg" aria-hidden="true">{getLeagueEmoji(league)}</span>
-      <h3 className="min-w-0 flex-1 basis-28 break-words font-heading text-base font-bold leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h3>
+      <h4 className="min-w-0 flex-1 basis-28 break-words font-heading text-base font-bold leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h4>
       {liveCount > 0 && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">{formatNumber(liveCount)} {t("LIVE")}</span>}
       <span className="rounded-full bg-white px-2 py-1 text-xs font-bold tabular-nums text-slate-500">{formatNumber(matches.length)}</span>
       <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
