@@ -49,6 +49,7 @@ from odds_service import (
 )
 from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
+    BOOKMAKER_PROFILE,
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
@@ -563,6 +564,8 @@ _PREMIUM_PREDICTION_FIELDS = (
     "confidence", "calibrated_probability", "effective_score", "wp_score",
     "model_probability", "estimated_win_probability", "selection_score",
     "stability_score", "dominance_score", "edge",
+    "pick_raw", "pick_point", "pick_team", "selection_id",
+    "selection_explanation", "expected_return_pct", "push_probability", "quality_notes",
 )
 
 
@@ -8194,31 +8197,37 @@ async def _invalidate_prediction_cache():
         _prediction_cache["source_cache_updated_at"] = None
 
 
-async def _compute_calibration_map() -> Dict[int, Dict]:
+def _calibration_key(row: Dict, bucket: int) -> str:
+    family = str(row.get("sport_key") or "unknown").split("_")[0]
+    return f"{family}|{row.get('market') or 'unknown'}|{bucket}"
+
+
+async def _compute_calibration_map() -> Dict[str, Dict]:
     resolved = await db.predictions_history.find(
-        {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION},
-        {"confidence": 1, "result": 1}
+        {"result": {"$in": ["won", "lost", "void"]}, "model_version": MODEL_VERSION},
+        {"confidence": 1, "result": 1, "sport_key": 1, "market": 1}
     ).to_list(length=10000)
-    buckets: Dict[int, Dict[str, int]] = {}
+    buckets: Dict[str, Dict] = {}
     for row in resolved:
         try:
             c = float(row.get("confidence", 0))
         except (TypeError, ValueError):
             continue
         bucket = max(0, min(95, int(c // 5) * 5))
-        item = buckets.setdefault(bucket, {"wins": 0, "total": 0})
+        item = buckets.setdefault(_calibration_key(row, bucket), {"wins": 0, "total": 0, "bucket": bucket})
         item["total"] += 1
         if row.get("result") == "won":
             item["wins"] += 1
 
     out = {}
-    for bucket, item in buckets.items():
+    for cohort, item in buckets.items():
+        bucket = item["bucket"]
         total = item["total"]
         if total < 30:
             continue
         prior = (bucket + 2.5) / 100.0
         calibrated = (item["wins"] + prior * 20.0) / (total + 20.0)
-        out[bucket] = {
+        out[cohort] = {
             "probability": round(calibrated * 100.0, 1),
             "wins": item["wins"],
             "total": total,
@@ -8271,26 +8280,26 @@ async def _get_calibration_map() -> Dict[int, Dict]:
     return snapshot["calibration"]
 
 
-def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) -> List[Dict]:
+def _apply_calibration(predictions: List[Dict], calibration: Dict[str, Dict]) -> List[Dict]:
     for p in predictions:
         try:
             c = float(p.get("confidence", 0))
         except (TypeError, ValueError):
             c = 0.0
         bucket = max(0, min(95, int(c // 5) * 5))
-        cal = calibration.get(bucket)
+        cal = calibration.get(_calibration_key(p, bucket))
         if cal:
             p["calibrated_probability"] = cal["probability"]
             p["calibration_sample"] = cal["total"]
             p["calibration_status"] = "empirique"
             p["effective_score"] = round(
-                float(p.get("wp_score", c)) * 0.70 + cal["probability"] * 0.30, 1
+                float(p.get("selection_score", p.get("wp_score", c))) * 0.70 + cal["probability"] * 0.30, 1
             )
         else:
             p["calibrated_probability"] = None
             p["calibration_sample"] = 0
             p["calibration_status"] = "insuffisant"
-            p["effective_score"] = round(float(p.get("wp_score", c)), 1)
+            p["effective_score"] = round(float(p.get("selection_score", p.get("wp_score", c))), 1)
     return predictions
 
 
@@ -8391,12 +8400,16 @@ async def get_prediction_model_status():
     pending = await db.predictions_history.count_documents({"result": "pending", "model_version": MODEL_VERSION})
     return {
         "model_version": MODEL_VERSION,
+        "bookmaker_profile": BOOKMAKER_PROFILE,
+        "probability_method": "bookmaker_consensus_by_exact_market_line",
+        "trained_sports_model": False,
+        "calibration_scope": "sport_family_and_market",
         "cache_ttl_seconds": PREDICTION_CACHE_TTL,
         "resolved_picks": resolved,
         "pending_picks": pending,
         "calibration_buckets": calibration,
         "calibration_ready": bool(calibration),
-        "note": "La probabilité calibrée n'est affichée qu'après accumulation d'au moins 30 résultats dans une tranche de confiance.",
+        "note": "Calibration descriptive après au moins 30 résultats de même sport, marché et tranche ; le moteur n'est pas un modèle sportif entraîné.",
     }
 
 
@@ -11000,13 +11013,13 @@ async def get_builder_match_stats(match_id: str, payload: dict = Depends(get_cur
         for mk in analyzed.get("markets", []):
             if mk.get("market") == market_key and pick_contains.lower() in (mk.get("pick") or "").lower():
                 odds = mk.get("pick_odds")
-                return round(100 / odds, 1) if odds else 0
+                return float(mk.get("confidence") or 0) if odds else 0
         return 0
 
     expectations = {
         "btts_yes_pct": _pct_for("syn_btts", "oui") or _pct_for("btts", "oui"),
-        "over_2_5_pct": _pct_for("syn_over_25", "plus de"),
-        "over_1_5_pct": _pct_for("syn_over_15", "plus de"),
+        "over_2_5_pct": _pct_for("totals", "Plus de 2.5") or _pct_for("syn_over_25", "plus de"),
+        "over_1_5_pct": _pct_for("totals", "Plus de 1.5") or _pct_for("syn_over_15", "plus de"),
         "clean_sheet_home_pct": _pct_for("syn_clean_sheet_home", home),
         "clean_sheet_away_pct": _pct_for("syn_clean_sheet_away", away),
     }
@@ -12172,7 +12185,10 @@ async def _save_predictions_to_history(matches: List[Dict]):
         for p in predictions:
             if not p.get("pick") or not p.get("match_id"):
                 continue
-            sig = _pick_signature(p["match_id"], p["pick"])
+            starts = _parse_iso(p.get("commence_time"))
+            if not starts or starts <= datetime.now(timezone.utc):
+                continue
+            sig = _pick_signature(p["match_id"], p.get("selection_id") or p["pick"])
             existing = await db.predictions_history.find_one({"signature": sig})
             if existing:
                 continue
@@ -12187,6 +12203,15 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "commence_time": p.get("commence_time"),
                 "pick": p["pick"],
                 "market": p.get("market"),
+                "selection_id": p.get("selection_id"),
+                "pick_raw": p.get("pick_raw"), "pick_point": p.get("pick_point"),
+                "pick_team": p.get("pick_team"),
+                "best_bookmaker": p.get("best_bookmaker"),
+                "best_bookmaker_key": p.get("best_bookmaker_key"),
+                "quote_updated_at": p.get("quote_updated_at"),
+                "probability_source": p.get("probability_source"),
+                "probability_basis": p.get("probability_basis"),
+                "expected_return_pct": p.get("expected_return_pct"),
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
                 "label": p.get("label"),
@@ -12566,6 +12591,60 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     away = norm(pred.get("away_team"))
     total_points = home_score + away_score
 
+    # Nouvelles prédictions : utiliser l'identité structurée, pas une recherche
+    # de chiffre dans un nom d'équipe (ex. Schalke 04) ou un libellé traduit.
+    if pred.get("selection_id"):
+        raw = str(pred.get("pick_raw") or "")
+        line = pred.get("pick_point")
+        if market == "h2h":
+            if raw == "Draw":
+                return "won" if home_score == away_score else "lost"
+            if raw in (pred.get("home_team"), pred.get("away_team")):
+                chosen, other = (home_score, away_score) if raw == pred.get("home_team") else (away_score, home_score)
+                return "won" if chosen > other else "lost"
+            return None
+        if market == "double_chance":
+            if raw not in ("1X", "X2", "12"):
+                return None
+            won = home_score >= away_score if raw == "1X" else away_score >= home_score if raw == "X2" else home_score != away_score
+            return "won" if won else "lost"
+        if market == "draw_no_bet":
+            if raw not in (pred.get("home_team"), pred.get("away_team")):
+                return None
+            if home_score == away_score:
+                return "void"
+            chosen, other = (home_score, away_score) if raw == pred.get("home_team") else (away_score, home_score)
+            return "won" if chosen > other else "lost"
+        if market == "btts":
+            if raw not in ("Yes", "No"):
+                return None
+            both = home_score > 0 and away_score > 0
+            return "won" if both == (raw == "Yes") else "lost"
+        if market in ("totals", "team_totals", "spreads"):
+            try:
+                line = float(line)
+                if not math.isfinite(line) or abs(line * 2 - round(line * 2)) > 1e-8:
+                    return None  # Les quarts de ligne demandent un règlement fractionné.
+            except (ValueError, TypeError):
+                return None
+            if market == "spreads":
+                if raw not in (pred.get("home_team"), pred.get("away_team")):
+                    return None
+                chosen, other = (home_score, away_score) if raw == pred.get("home_team") else (away_score, home_score)
+                delta = chosen + line - other
+            else:
+                if raw not in ("Over", "Under"):
+                    return None
+                points = total_points
+                if market == "team_totals":
+                    team = pred.get("pick_team")
+                    if team not in (pred.get("home_team"), pred.get("away_team")):
+                        return None
+                    points = home_score if team == pred.get("home_team") else away_score
+                delta = (points - line) * (1 if raw == "Over" else -1)
+            return "void" if delta == 0 else "won" if delta > 0 else "lost"
+        return None
+
     # 1X2 / Moneyline
     if market in ("h2h", "moneyline", "ml", "syn_home_win", "syn_away_win"):
         if home and (pick == home or home in pick):
@@ -12574,6 +12653,9 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
             return "won" if away_score > home_score else "lost"
         if any(token in pick for token in ("nul", "draw", "tie")):
             return "won" if home_score == away_score else "lost"
+
+    if market not in ("totals", "alternate_totals", "total", "syn_over_25", "syn_over_15", "") and any(token in pick for token in ("plus de", "moins de", "over", "under")):
+        return None
 
     # Totaux : français ou anglais (Plus de / Moins de / Over / Under)
     if market in ("totals", "total", "syn_over_25", "syn_over_15") or any(
