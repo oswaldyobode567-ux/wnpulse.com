@@ -1,7 +1,8 @@
-import { useCallback } from "react";
+import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { Link } from "react-router-dom";
 import { Card } from "@/components/ui/card";
-import { Radio, Lock, Send, Clock, CheckCircle2, XCircle, ArrowRight } from "lucide-react";
+import { Radio, Lock, Clock, CheckCircle2, XCircle, ArrowRight } from "lucide-react";
 import { useLanguage, FollowPickButton } from "@/components/AppLayout";
 
 const MATCH_MESSAGES = {
@@ -447,7 +448,7 @@ function SecondaryMarkets({ markets, primaryPick, primaryMarket, teams }) {
   );
 }
 
-export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade }) {
+export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const { t, formatDate, formatNumber } = useMatchLanguage();
   const event = match || {};
   const pred = event.prediction || {};
@@ -461,15 +462,9 @@ export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade
   const confidence = finiteNumber(pred.confidence);
   const hasConfidence = confidence !== null && confidence >= 0 && confidence <= 100;
   const edge = finiteNumber(pred.edge);
-  const canShare = Boolean(isAdmin && pred.pick && !locked && typeof onShareWA === "function");
   const borderClass = isLive ? "border-rose-300 ring-1 ring-rose-200"
     : isFinished ? "border-slate-200" : "border-orange-200/60";
-  const handleShare = eventClick => {
-    eventClick.preventDefault();
-    eventClick.stopPropagation();
-    if (canShare) onShareWA({ ...event, ...pred, id: event.id, home_team: event.home_team, away_team: event.away_team,
-      commence_time: event.commence_time, sport_title: event.sport_title }, eventClick);
-  };
+
 
   return (
     <Card className={`flex h-full min-w-0 flex-col border bg-white p-4 transition-shadow hover:shadow-md sm:p-5 ${borderClass}`} data-testid="match-card">
@@ -555,12 +550,148 @@ export default function MatchCard({ match, isAdmin, onShareWA, isFree, onUpgrade
         </Link>}
       </div>}
 
-      {canShare && <div className="mt-3 flex justify-end border-t border-slate-100 pt-3">
-        <button type="button" onClick={handleShare} className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-[#25D366] text-white shadow-sm transition-colors hover:bg-[#1ebe5c] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-green-600 focus-visible:ring-offset-2"
-          title={t("Partager WhatsApp (Admin)")} aria-label={t("Partager WhatsApp (Admin)")} data-testid="match-share">
-          <Send className="h-4 w-4" aria-hidden="true" />
-        </button>
-      </div>}
+      {isAdmin && !locked && !unavailable && <AdminShareActions isAdmin={isAdmin} item={{ ...event, prediction: pred }} />}
+
     </Card>
   );
+}
+
+// Admin-only composition. This module never sends messages automatically.
+const AdminShareContext = createContext(null);
+const SHARE_TEXT = {
+  fr: {admin:"Partage administrateur", select:"Sélectionner", selected:"sélectionnés", all:"Sélectionner les 20 premiers", clear:"Effacer", preview:"Préparer le message", close:"Fermer", part:"Message", copy:"Copier", copied:"Copié", copyError:"Sélectionne le texte pour le copier.", hint:"Choisis le groupe ou canal dans l’application, puis confirme l’envoi. Aucun envoi automatique.", scope:"Sélection limitée aux rencontres actuellement filtrées (20 maximum).", page:"Pour les résultats, seule la page affichée est sélectionnable.", picks:"PRONOSTICS WNPULSE", results:"RÉSULTATS WNPULSE", date:"Date", competition:"Compétition", match:"Rencontre", market:"Marché", pick:"Pronostic", odds:"Cote", risk:"Risque", confidence:"Confiance du moteur", bookmaker:"Bookmaker", won:"Gagné", lost:"Perdu", void:"Remboursé", pending:"En attente", result:"Résultat", safe:"Prudent", value:"Modéré", risky:"Risqué", zone:"Fuseau horaire", disclaimer:"18+ · Aucun gain garanti. Les performances passées ne garantissent pas les résultats futurs.", caption:"Sélections présentées individuellement, pas un combiné.", title:"Partager", empty:"Sélectionne au moins un pronostic.", unavailable:"Non renseigné"},
+  en: {admin:"Admin sharing",select:"Select",selected:"selected",all:"Select first 20",clear:"Clear",preview:"Prepare message",close:"Close",part:"Message",copy:"Copy",copied:"Copied",copyError:"Select the text to copy it.",hint:"Choose a group or channel in the app, then confirm sending. Nothing is sent automatically.",scope:"Selection is limited to currently filtered matches (maximum 20).",page:"For results, only the displayed page can be selected.",picks:"WNPULSE PICKS",results:"WNPULSE RESULTS",date:"Date",competition:"Competition",match:"Match",market:"Market",pick:"Pick",odds:"Odds",risk:"Risk",confidence:"Engine confidence",bookmaker:"Bookmaker",won:"Won",lost:"Lost",void:"Refunded",pending:"Pending",result:"Result",safe:"Lower risk",value:"Moderate",risky:"Higher risk",zone:"Time zone",disclaimer:"18+ · No guaranteed winnings. Past performance does not guarantee future results.",caption:"Individual selections, not an accumulator.",title:"Share",empty:"Select at least one pick.",unavailable:"Not provided"},
+  es: {admin:"Compartir como administrador",select:"Seleccionar",selected:"seleccionados",all:"Seleccionar los primeros 20",clear:"Borrar",preview:"Preparar mensaje",close:"Cerrar",part:"Mensaje",copy:"Copiar",copied:"Copiado",copyError:"Selecciona el texto para copiarlo.",hint:"Elige el grupo o canal en la aplicación y confirma el envío. No se envía automáticamente.",scope:"Solo encuentros filtrados actualmente (máximo 20).",page:"En resultados solo se puede seleccionar la página visible.",picks:"PRONÓSTICOS WNPULSE",results:"RESULTADOS WNPULSE",date:"Fecha",competition:"Competición",match:"Encuentro",market:"Mercado",pick:"Pronóstico",odds:"Cuota",risk:"Riesgo",confidence:"Confianza del motor",bookmaker:"Casa de apuestas",won:"Ganado",lost:"Perdido",void:"Reembolsado",pending:"Pendiente",result:"Resultado",safe:"Prudente",value:"Moderado",risky:"Arriesgado",zone:"Zona horaria",disclaimer:"18+ · Sin ganancias garantizadas. Los resultados pasados no garantizan resultados futuros.",caption:"Selecciones individuales, no una combinada.",title:"Compartir",empty:"Selecciona al menos un pronóstico.",unavailable:"No indicado"},
+  pt: {admin:"Partilha do administrador",select:"Selecionar",selected:"selecionados",all:"Selecionar os primeiros 20",clear:"Limpar",preview:"Preparar mensagem",close:"Fechar",part:"Mensagem",copy:"Copiar",copied:"Copiado",copyError:"Seleciona o texto para o copiar.",hint:"Escolhe o grupo ou canal na aplicação e confirma o envio. Não há envio automático.",scope:"Apenas jogos atualmente filtrados (máximo 20).",page:"Nos resultados, apenas a página apresentada pode ser selecionada.",picks:"PRONÓSTICOS WNPULSE",results:"RESULTADOS WNPULSE",date:"Data",competition:"Competição",match:"Jogo",market:"Mercado",pick:"Pronóstico",odds:"Cotação",risk:"Risco",confidence:"Confiança do motor",bookmaker:"Casa de apostas",won:"Ganho",lost:"Perdido",void:"Reembolsado",pending:"Pendente",result:"Resultado",safe:"Prudente",value:"Moderado",risky:"Arriscado",zone:"Fuso horário",disclaimer:"18+ · Sem ganhos garantidos. Resultados passados não garantem resultados futuros.",caption:"Seleções individuais, não uma múltipla.",title:"Partilhar",empty:"Seleciona pelo menos um pronóstico.",unavailable:"Não indicado"},
+  de: {admin:"Admin-Freigabe",select:"Auswählen",selected:"ausgewählt",all:"Erste 20 auswählen",clear:"Leeren",preview:"Nachricht vorbereiten",close:"Schließen",part:"Nachricht",copy:"Kopieren",copied:"Kopiert",copyError:"Text zum Kopieren markieren.",hint:"Gruppe oder Kanal in der App wählen und Versand bestätigen. Kein automatischer Versand.",scope:"Nur aktuell gefilterte Spiele (höchstens 20).",page:"Bei Ergebnissen ist nur die angezeigte Seite auswählbar.",picks:"WNPULSE TIPPS",results:"WNPULSE ERGEBNISSE",date:"Datum",competition:"Wettbewerb",match:"Begegnung",market:"Markt",pick:"Tipp",odds:"Quote",risk:"Risiko",confidence:"Modellvertrauen",bookmaker:"Buchmacher",won:"Gewonnen",lost:"Verloren",void:"Erstattet",pending:"Ausstehend",result:"Ergebnis",safe:"Vorsichtig",value:"Moderat",risky:"Riskant",zone:"Zeitzone",disclaimer:"18+ · Keine Gewinngarantie. Frühere Ergebnisse garantieren keine zukünftigen Ergebnisse.",caption:"Einzelne Tipps, keine Kombiwette.",title:"Teilen",empty:"Mindestens einen Tipp auswählen.",unavailable:"Keine Angabe"},
+  ar: {admin:"مشاركة المسؤول",select:"تحديد",selected:"محدد",all:"تحديد أول 20",clear:"مسح",preview:"تحضير الرسالة",close:"إغلاق",part:"رسالة",copy:"نسخ",copied:"تم النسخ",copyError:"حدد النص لنسخه.",hint:"اختر المجموعة أو القناة في التطبيق ثم أكّد الإرسال. لا يوجد إرسال تلقائي.",scope:"المباريات المفلترة حاليًا فقط (20 كحد أقصى).",page:"في النتائج يمكن تحديد الصفحة المعروضة فقط.",picks:"توقعات WNPULSE",results:"نتائج WNPULSE",date:"التاريخ",competition:"البطولة",match:"المباراة",market:"السوق",pick:"التوقع",odds:"المعامل",risk:"المخاطرة",confidence:"ثقة المحرك",bookmaker:"شركة المراهنات",won:"فاز",lost:"خسر",void:"مسترد",pending:"قيد الانتظار",result:"النتيجة",safe:"حذر",value:"متوسط",risky:"مرتفع المخاطرة",zone:"المنطقة الزمنية",disclaimer:"للبالغين 18+ · لا ضمان للأرباح. الأداء السابق لا يضمن النتائج المستقبلية.",caption:"اختيارات فردية وليست رهانًا مركبًا.",title:"مشاركة",empty:"حدد توقعًا واحدًا على الأقل.",unavailable:"غير مذكور"}
+};
+const SHARE_BUTTON = "inline-flex min-h-11 items-center justify-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 disabled:opacity-40";
+function useAdminShareLanguage() {
+  const { language } = useLanguage();
+  return SHARE_TEXT[language] || SHARE_TEXT.fr;
+}
+export function shareItemKey(item) {
+  const p = item?.prediction || item || {};
+  return JSON.stringify([item?.id || item?.match_id || item?.match || [item?.home_team,item?.away_team], item?.commence_time || item?.date, p.market_key || p.market_label, p.pick, p.pick_odds ?? p.odds]);
+}
+function shareEligible(item) {
+  const p = item?.prediction || item;
+  return Boolean(p && typeof p.pick === "string" && p.pick.trim() && !p.locked && p.has_prediction !== false && p.analysis_status !== "unavailable");
+}
+function shareClean(value) {
+  return String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, " ").trim();
+}
+export function buildShareMessages(items, kind, words, helpers) {
+  const { t, formatNumber, formatDate } = helpers;
+  const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const field = (label, value) => value !== null && value !== undefined && String(value).trim() ? `${label} : ${shareClean(value)}` : null;
+  const header = `🎯 ${kind === "results" ? words.results : words.picks}\n${words.zone} : ${zone}\n${words.caption}`;
+  const footer = `\n\n🌐 https://wnpulse.com\n${words.disclaimer}`;
+  const blocks = items.filter(shareEligible).map((item, index) => {
+    const p = item.prediction || item;
+    const teams = [item.home_team, item.away_team];
+    const odds = finiteNumber(p.pick_odds ?? p.odds);
+    const confidence = finiteNumber(p.confidence);
+    const value = item.commence_time || item.date;
+    const date = value && Number.isFinite(new Date(value).getTime()) ? formatDate(value, {year:"numeric",month:"2-digit",day:"2-digit", ...(item.commence_time || /T\d{2}:\d{2}/.test(String(value)) ? {hour:"2-digit",minute:"2-digit"} : {})}) : words.unavailable;
+    const status = String(p.status || item.status || "").toLowerCase();
+    const result = ["won","lost","void"].includes(status) ? words[status] : p.won === true ? words.won : p.won === false ? words.lost : words.pending;
+    return [ `${index + 1}. ${shareClean(item.match || teams.filter(Boolean).join(" vs ")) || words.unavailable}`,
+      field(words.competition, item.league || item.sport_title || item.sport), field(words.date,date),
+      field(words.market, p.market_label || p.market_key ? translateBetText(p.market_label || p.market_key,t,formatNumber,teams) : words.unavailable),
+      field(words.pick,translateBetText(p.pick,t,formatNumber,teams)),
+      field(words.odds, odds !== null && odds > 1 ? formatNumber(odds,{minimumFractionDigits:2,maximumFractionDigits:2}) : words.unavailable),
+      field(words.risk, words[p.label] || words.unavailable),
+      confidence !== null && confidence >= 0 && confidence <= 100 ? field(words.confidence,`${formatNumber(confidence,{maximumFractionDigits:0})}%`) : null,
+      field(words.bookmaker,p.best_bookmaker), kind === "results" ? field(words.result,result) : null,
+    ].filter(Boolean).join("\n");
+  });
+  // Whole selections stay together. A long batch becomes separate, explicitly numbered messages.
+  const groups=[]; let current=[]; let length=0;
+  const budget=1700-header.length-footer.length;
+  for (const block of blocks) {
+    if (current.length && length + block.length + 2 > budget) {groups.push(current);current=[];length=0;}
+    current.push(block);length+=block.length+2;
+  }
+  if(current.length)groups.push(current);
+  return groups.map((group,index)=>`${header}\n${words.part} ${index+1}/${groups.length}\n\n${group.join("\n\n")}${footer}`);
+}
+function ShareComposer({ items, kind, onClose }) {
+  const words=useAdminShareLanguage();
+  const helpers=useMatchLanguage();
+  const messages=buildShareMessages(items,kind,words,helpers);
+  const [part,setPart]=useState(0);
+  const [copied,setCopied]=useState("");
+  const dialog=useRef(null);
+  const current=messages[Math.min(part,Math.max(messages.length-1,0))] || "";
+  useEffect(()=>{
+    const node=dialog.current;
+    if(node && !node.open)node.showModal();
+    return ()=>{if(node?.open)node.close();};
+  },[]);
+  return <dialog ref={dialog} onCancel={onClose} onClick={event=>{if(event.target===event.currentTarget)onClose();}} aria-label={words.preview} className="m-auto w-[calc(100%-1.5rem)] max-w-xl max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 text-slate-900 shadow-2xl backdrop:bg-slate-950/60" data-testid="admin-share-composer">
+    <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">{words.preview}</h2><button type="button" onClick={onClose} className={SHARE_BUTTON}>{words.close}</button></div>
+    <p className="my-3 text-xs leading-5 text-slate-500">{words.hint}</p>
+    <div className="mb-2 flex flex-wrap gap-2" aria-label={words.part}>{messages.map((message,index)=><button type="button" key={index} aria-pressed={part===index} onClick={()=>{setPart(index);setCopied("");}} className={`${SHARE_BUTTON} ${part===index ? "border-orange-500 bg-orange-50 text-orange-700" : "border-slate-200"}`}>{words.part} {index+1}/{messages.length}</button>)}</div>
+    <label className="sr-only" htmlFor="admin-share-text">{words.preview}</label><textarea id="admin-share-text" readOnly value={current} dir="auto" className="h-72 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" />
+    <div className="mt-3 flex flex-wrap gap-2">
+      <a href={`https://wa.me/?text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-green-600 bg-green-600 text-white`} data-testid="admin-share-whatsapp">WhatsApp ↗</a>
+      <a href={`https://t.me/share/url?url=${encodeURIComponent("https://wnpulse.com")}&text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-sky-600 bg-sky-600 text-white`} data-testid="admin-share-telegram">Telegram ↗</a>
+      <button type="button" className={`${SHARE_BUTTON} border-slate-200`} onClick={async()=>{try{await navigator.clipboard.writeText(current);setCopied(words.copied);}catch{setCopied(words.copyError);}}}>{words.copy}</button>
+    </div><p className="mt-2 text-xs text-slate-500" role="status">{copied}</p>
+  </dialog>;
+}
+export function AdminShareProvider({isAdmin,items=[],kind="picks",children}) {
+  const [selection,setSelection]=useState([]);
+  const [individual,setIndividual]=useState(null);
+  const [bulkOpen,setBulkOpen]=useState(false);
+  const [owner,setOwner]=useState(null);
+  const {user}=useAuth();
+  const userId=user?.id;
+  const permitted=Boolean(isAdmin && user?.is_admin);
+  const available=new Map();
+  if(permitted)items.filter(shareEligible).forEach(item=>available.set(shareItemKey(item),item));
+  const keys=owner===userId ? selection.filter(key=>available.has(key)) : [];
+  const signature=JSON.stringify(Array.from(available, ([key,item])=>{
+    const prediction=item.prediction || item;
+    return [key,prediction.confidence,prediction.label,prediction.best_bookmaker,prediction.status,prediction.won,prediction.score_home,prediction.score_away,item.league,item.sport_title,item.match];
+  }));
+  useEffect(()=>{setSelection(previous=>previous.filter(key=>available.has(key)));setBulkOpen(false);setIndividual(null);
+    // Source changes invalidate the preview; no stale pick or previous page is shared.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  },[signature,userId]);
+  const selected=keys.map(key=>available.get(key));
+  const context={permitted,kind,available,keys,selected,
+    toggle(key){setOwner(userId);setSelection(keys.includes(key)?keys.filter(value=>value!==key):keys.length<20?[...keys,key]:keys);},
+    selectAll(){setOwner(userId);setSelection(Array.from(available.keys()).slice(0,20));},
+    clear(){setSelection([]);},open(item){setIndividual(item);setBulkOpen(false);},openBulk(){if(selected.length){setIndividual(null);setBulkOpen(true);}}
+  };
+  const preview=individual ? [individual] : bulkOpen ? selected : [];
+  return <AdminShareContext.Provider value={context}>{children}{permitted && preview.length>0 && <ShareComposer key={JSON.stringify(preview.map(shareItemKey))} items={preview} kind={kind} onClose={()=>{setIndividual(null);setBulkOpen(false);}} />}</AdminShareContext.Provider>;
+}
+export function AdminShareToolbar() {
+  const context=useContext(AdminShareContext),words=useAdminShareLanguage();
+  if(!context?.permitted)return null;
+  return <section className="my-3 rounded-xl border border-orange-200 bg-orange-50 p-3" aria-label={words.admin} data-testid="admin-share-toolbar">
+    <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-bold text-slate-900">{words.admin}</h2><span className="text-xs font-semibold text-orange-700" aria-live="polite">{context.keys.length}/20 {words.selected}</span></div>
+    <p className="mt-1 text-xs leading-5 text-slate-600">{words.scope} {context.kind==="results" ? words.page : ""}</p>
+    <div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={context.selectAll} disabled={!context.available.size} className={`${SHARE_BUTTON} border-orange-200 bg-white`}>{words.all}</button><button type="button" onClick={context.clear} disabled={!context.keys.length} className={`${SHARE_BUTTON} border-orange-200 bg-white`}>{words.clear}</button><button type="button" onClick={context.openBulk} disabled={!context.keys.length} className={`${SHARE_BUTTON} border-orange-600 bg-orange-600 text-white`} data-testid="admin-share-bulk">{words.preview}</button></div>
+  </section>;
+}
+export function AdminShareActions({item,isAdmin,kind="picks"}) {
+  const context=useContext(AdminShareContext),words=useAdminShareLanguage();
+  const {user}=useAuth();
+  const [preview,setPreview]=useState(false);
+  if(!isAdmin || !user?.is_admin || !shareEligible(item))return null;
+  const key=shareItemKey(item),selectable=context?.permitted && context.available.has(key);
+  const open=()=>{if(context?.permitted)context.open(item);else setPreview(true);};
+  return <div className="mt-3 border-t border-slate-100 pt-2" data-testid="admin-share-actions">
+    <div className="flex flex-wrap items-center gap-2">
+      {selectable && <label className="inline-flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-1 text-xs font-semibold text-slate-600"><input type="checkbox" checked={context.keys.includes(key)} disabled={!context.keys.includes(key) && context.keys.length>=20} onChange={()=>context.toggle(key)} className="h-4 w-4 accent-orange-600" aria-label={`${words.select} ${shareClean(item.match || item.home_team || "")}`} />{words.select}</label>}
+      <button type="button" onClick={open} className={`${SHARE_BUTTON} border-green-200 text-green-700`}>WhatsApp</button>
+      <button type="button" onClick={open} className={`${SHARE_BUTTON} border-sky-200 text-sky-700`}>Telegram</button>
+    </div>
+    {preview && <ShareComposer items={[item]} kind={kind} onClose={()=>setPreview(false)} />}
+  </div>;
 }
