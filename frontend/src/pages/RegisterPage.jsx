@@ -1,18 +1,68 @@
 import { useState } from "react";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { Activity, CheckCircle2, Gift, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { useAuth } from "@/contexts/AuthContext";
+import api from "@/lib/api";
 import { useLanguage } from "@/components/AppLayout";
 
-// Utilise registerWithWhatsapp de l’AuthContext existant ; paramètres inchangés.
+const ADULT_MESSAGES = {
+  "fr": {
+    "Je certifie avoir au moins 18 ans.": "Je certifie avoir au moins 18 ans.",
+    "Tu dois certifier avoir au moins 18 ans pour créer un compte.": "Tu dois certifier avoir au moins 18 ans pour créer un compte.",
+    "Rejoins notre canal Telegram": "Rejoins notre canal Telegram",
+    "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.": "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.",
+    "Rejoindre le canal": "Rejoindre le canal",
+    "Compte créé. Connecte-toi pour continuer.": "Compte créé. Connecte-toi pour continuer."
+  },
+  "en": {
+    "Je certifie avoir au moins 18 ans.": "I certify that I am at least 18 years old.",
+    "Tu dois certifier avoir au moins 18 ans pour créer un compte.": "You must certify that you are at least 18 to create an account.",
+    "Rejoins notre canal Telegram": "Join our Telegram channel",
+    "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.": "Find news and selections shared by WNPulse. Joining is optional.",
+    "Rejoindre le canal": "Join the channel",
+    "Compte créé. Connecte-toi pour continuer.": "Account created. Log in to continue."
+  },
+  "es": {
+    "Je certifie avoir au moins 18 ans.": "Certifico que tengo al menos 18 años.",
+    "Tu dois certifier avoir au moins 18 ans pour créer un compte.": "Debes certificar que tienes al menos 18 años para crear una cuenta.",
+    "Rejoins notre canal Telegram": "Únete a nuestro canal de Telegram",
+    "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.": "Descubre las novedades y selecciones de WNPulse. Unirse es opcional.",
+    "Rejoindre le canal": "Unirse al canal",
+    "Compte créé. Connecte-toi pour continuer.": "Cuenta creada. Inicia sesión para continuar."
+  },
+  "pt": {
+    "Je certifie avoir au moins 18 ans.": "Declaro que tenho pelo menos 18 anos.",
+    "Tu dois certifier avoir au moins 18 ans pour créer un compte.": "É necessário declarar que tens pelo menos 18 anos para criar uma conta.",
+    "Rejoins notre canal Telegram": "Junta-te ao nosso canal Telegram",
+    "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.": "Descobre as novidades e seleções da WNPulse. A adesão é opcional.",
+    "Rejoindre le canal": "Aderir ao canal",
+    "Compte créé. Connecte-toi pour continuer.": "Conta criada. Inicia sessão para continuar."
+  },
+  "de": {
+    "Je certifie avoir au moins 18 ans.": "Ich bestätige, dass ich mindestens 18 Jahre alt bin.",
+    "Tu dois certifier avoir au moins 18 ans pour créer un compte.": "Du musst bestätigen, dass du mindestens 18 Jahre alt bist, um ein Konto zu erstellen.",
+    "Rejoins notre canal Telegram": "Tritt unserem Telegram-Kanal bei",
+    "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.": "Neuigkeiten und Tipps von WNPulse. Der Beitritt ist freiwillig.",
+    "Rejoindre le canal": "Kanal beitreten",
+    "Compte créé. Connecte-toi pour continuer.": "Konto erstellt. Melde dich an, um fortzufahren."
+  },
+  "ar": {
+    "Je certifie avoir au moins 18 ans.": "أقر بأن عمري 18 عامًا على الأقل.",
+    "Tu dois certifier avoir au moins 18 ans pour créer un compte.": "يجب أن تقر بأن عمرك 18 عامًا على الأقل لإنشاء حساب.",
+    "Rejoins notre canal Telegram": "انضم إلى قناتنا على تيليغرام",
+    "Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.": "تابع أخبار وترشيحات WNPulse. الانضمام اختياري.",
+    "Rejoindre le canal": "الانضمام إلى القناة",
+    "Compte créé. Connecte-toi pour continuer.": "تم إنشاء الحساب. سجّل الدخول للمتابعة."
+  }
+};
+
+// Submit the full registration payload directly; reload so AuthContext reads the new session.
 export default function RegisterPage() {
-  const { t } = useLanguage();
-  const { registerWithWhatsapp } = useAuth();
-  const navigate = useNavigate();
+  const { t: globalTranslate, language } = useLanguage();
+  const t = (key) => ADULT_MESSAGES[language]?.[key] || globalTranslate(key);
   const [params] = useSearchParams();
   const initialReferral = (params.get("ref") || "").trim().toUpperCase();
   const [fullName, setFullName] = useState("");
@@ -22,6 +72,7 @@ export default function RegisterPage() {
   const [showReferral, setShowReferral] = useState(Boolean(initialReferral));
   const [whatsapp, setWhatsapp] = useState("");
   const [whatsappOptIn, setWhatsappOptIn] = useState(false);
+  const [ageConfirmed, setAgeConfirmed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
@@ -29,6 +80,10 @@ export default function RegisterPage() {
     event.preventDefault();
     if (loading) return;
     setError("");
+    if (!ageConfirmed) {
+      setError("Tu dois certifier avoir au moins 18 ans pour créer un compte.");
+      return;
+    }
     const normalizedNumber = whatsapp.trim().replace(/[\s().-]/g, "");
     if (!fullName.trim()) {
       setError("Renseigne ton nom.");
@@ -42,21 +97,27 @@ export default function RegisterPage() {
       setError("Renseigne ton numéro avec + et l’indicatif du pays, par exemple +2250700000000.");
       return;
     }
-    if (typeof registerWithWhatsapp !== "function") {
-      setError("Le formulaire d’inscription doit être mis à jour. Réessaie après actualisation de la page.");
-      return;
-    }
     setLoading(true);
     try {
-      await registerWithWhatsapp({
+      const { data } = await api.post("/auth/register", {
         email: email.trim(),
         password,
         full_name: fullName.trim(),
         referral_code: referralCode.trim() || null,
         whatsapp_number: normalizedNumber,
         whatsapp_marketing_opt_in: whatsappOptIn,
+        age_confirmed: ageConfirmed,
       });
-      navigate("/app", { replace: true });
+      if (!data?.access_token || !data?.user) throw new Error("L’inscription n’a pas abouti. Réessaie dans un instant.");
+      try {
+        localStorage.setItem("pronostix_token", data.access_token);
+        localStorage.setItem("pronostix_user", JSON.stringify(data.user));
+      } catch {
+        // The account already exists: do not invite the user to create it again.
+        setError("Compte créé. Connecte-toi pour continuer.");
+        return;
+      }
+      window.location.replace("/app");
     } catch (err) {
       const detail = err?.response?.data?.detail;
       const message = err?.response?.data?.message;
@@ -120,10 +181,19 @@ export default function RegisterPage() {
                   <span className="min-w-0 text-xs leading-relaxed text-slate-600">{t("J’accepte de recevoir sur WhatsApp les offres WinPulse et les invitations à ses groupes ou communautés privées, par contact manuel ou automatique. Cette autorisation est facultative et n’est pas nécessaire pour créer mon compte. Je peux la retirer depuis mon profil.")}</span>
                 </label>
               </div>
+              <label htmlFor="age-confirmed" className="flex min-h-12 cursor-pointer items-start gap-3 rounded-xl border border-orange-200 bg-orange-50 p-3">
+                <input id="age-confirmed" name="age_confirmed" type="checkbox" required checked={ageConfirmed} onChange={(event) => setAgeConfirmed(event.target.checked)} className="mt-0.5 h-5 w-5 shrink-0 accent-orange-600" data-testid="register-age-confirmed" />
+                <span className="text-sm font-semibold leading-6 text-slate-800">{t("Je certifie avoir au moins 18 ans.")}</span>
+              </label>
               {error && <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-700">{t(error)}</p>}
               <Button type="submit" disabled={loading} className="h-auto min-h-12 w-full whitespace-normal border-0 px-3 py-3 text-base font-bold text-white wp-gradient-warm hover:opacity-90" data-testid="register-submit-button">{loading ? <><Loader2 className="me-2 h-4 w-4 shrink-0 animate-spin" />{t("Création du compte…")}</> : t("Créer mon compte gratuit")}</Button>
             </form>
             <p className="mt-4 text-center text-xs leading-relaxed text-slate-500">{t("Aucun paiement demandé à l’inscription. WinPulse fournit des analyses statistiques et ne garantit aucun gain.")}</p>
+            <aside className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4" aria-label={t("Rejoins notre canal Telegram")}>
+              <h2 className="text-sm font-bold text-slate-900">{t("Rejoins notre canal Telegram")}</h2>
+              <p className="mt-1 text-xs leading-5 text-slate-600">{t("Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.")}</p>
+              <a href="https://t.me/wnpuls" target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex min-h-11 items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-800" data-testid="register-telegram">{t("Rejoindre le canal")} ↗</a>
+            </aside>
             <Link to="/legal/confidentialite" className="mt-3 block text-center text-xs text-orange-700 underline">{t("Politique de confidentialité")}</Link>
             <div className="mt-6 border-t border-slate-100 pt-5 text-center text-sm text-slate-500">{t("Déjà inscrit ?")} <Link to="/login" className="font-semibold text-orange-600" data-testid="goto-login-link">{t("Se connecter")}</Link></div>
           </Card>
