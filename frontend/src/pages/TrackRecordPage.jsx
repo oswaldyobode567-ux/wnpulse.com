@@ -4,6 +4,7 @@ import { ArrowLeft, ArrowRight, ArrowUpRight, CheckCircle2, ChevronDown, Chevron
 import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
+import { AdminShareProvider, AdminShareToolbar, AdminShareActions } from "@/components/MatchCard";
 const SPORTS = [["all", "Tous les sports", "◉"], ["football", "Football", "⚽"], ["basketball", "Basketball", "🏀"], ["tennis", "Tennis", "🎾"], ["hockey", "Hockey", "🏒"], ["baseball", "Baseball", "⚾"], ["mma", "MMA", "🥊"]];
 const RESULTS = {
   won: {
@@ -121,7 +122,7 @@ export default function TrackRecordPage() {
     setQuery("");
     setStatus("all");
   };
-  const content = <main className="wr-results mx-auto w-full min-w-0 max-w-7xl px-3 pb-24 pt-3 sm:px-6 sm:pt-7 lg:px-8" lang={i18n.language} dir={i18n.direction}>
+  const content = <AdminShareProvider isAdmin={Boolean(user?.is_admin)} items={loading || error ? [] : visible} kind="results"><main className="wr-results mx-auto w-full min-w-0 max-w-7xl px-3 pb-24 pt-3 sm:px-6 sm:pt-7 lg:px-8" lang={i18n.language} dir={i18n.direction}>
     <style>{`.wr-results{font-size:16px}.wr-results .wr-enter{animation:wr-enter .35s ease-out both}@keyframes wr-enter{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.wr-results .wr-enter{animation:none}}.wr-results button:focus-visible,.wr-results a:focus-visible,.wr-results select:focus-visible,.wr-results input:focus-visible{outline:3px solid #fb923c;outline-offset:3px}`}</style>
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
       <div className="flex items-center gap-2 text-sm font-semibold text-slate-500"><History className="h-4 w-4 text-orange-600" />{i18n.t("Track record")}</div>
@@ -169,12 +170,13 @@ export default function TrackRecordPage() {
         </div>
         <p className="mt-3 text-xs leading-5 text-slate-500">{i18n.t("La recherche et le filtre de résultat portent uniquement sur la page affichée. Les statistiques restent celles du sport sélectionné.")}</p>
       </header>
+      <div className="px-3 sm:px-5"><AdminShareToolbar /></div>
       {loading ? <div role="status" aria-label={i18n.t("Chargement…")} className="space-y-3 p-5">{[0, 1, 2].map(key => <div key={key} className="h-32 animate-pulse rounded-2xl bg-slate-100" />)}</div> : error ? <div role="alert" className="px-6 py-12 text-center"><XCircle className="mx-auto mb-4 h-9 w-9 text-rose-500" /><h3 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Erreur de chargement")}</h3><p className="mx-auto mt-2 max-w-xl text-base leading-7 text-slate-500">{i18n.t(error)}</p><button type="button" onClick={() => setRefresh(value => value + 1)} className="mt-5 min-h-11 rounded-xl bg-orange-600 px-5 py-3 font-bold text-white">{i18n.t("Réessayer")}</button></div> : !visible.length ? <div className="px-6 py-12 text-center"><History className="mx-auto mb-4 h-9 w-9 text-slate-300" /><h3 className="font-heading text-xl font-bold text-slate-800">{i18n.t(rows.length ? "Aucun résultat pour ces filtres" : "Aucun résultat disponible.")}</h3><p className="mt-2 text-base text-slate-500">{i18n.t(rows.length ? "Essaie une autre recherche ou réinitialise les filtres de cette page." : "Les rencontres apparaîtront ici après confirmation de leur résultat.")}</p>{rows.length > 0 && <button type="button" onClick={resetPageFilters} className="mt-5 min-h-11 rounded-xl border border-slate-200 px-4 py-2 font-semibold">{i18n.t("Réinitialiser les filtres")}</button>}</div> : <>
         <div className="lg:hidden" data-testid="results-mobile">{visible.map((row, index) => <div key={row.id || index}>
           {(index === 0 || displayDate(i18n, row.date) !== displayDate(i18n, visible[index - 1].date)) && <h3 className="border-y border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 sm:px-5" data-testid="track-date-separator">{displayDate(i18n, row.date)}</h3>}
           <ResultCard row={row} />
         </div>)}</div>
-        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900">{row.match || "—"}</p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /></td></tr>)}</tbody></table></div>
+        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900">{row.match || "—"}</p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /><AdminShareActions item={row} isAdmin={Boolean(user?.is_admin)} kind="results" /></td></tr>)}</tbody></table></div>
       </>}
       <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 px-5 py-4"><div aria-live="polite" className="text-sm text-slate-500">{i18n.t("Page {{page}} sur {{total}}", {
             page: currentPage,
@@ -190,7 +192,7 @@ export default function TrackRecordPage() {
     </section>}
     <div className="mt-7 flex flex-col justify-between gap-4 rounded-2xl border border-orange-100 bg-orange-50/60 p-5 sm:flex-row sm:items-center"><div><h2 className="font-heading text-lg font-extrabold text-slate-900">{i18n.t("Et pour les prochaines rencontres ?")}</h2><p className="mt-1 text-sm leading-6 text-slate-600">{i18n.t("Consulte les sélections disponibles et leurs explications.")}</p></div><Link to={user ? "/app" : "/register"} className="inline-flex min-h-12 shrink-0 items-center justify-center gap-2 rounded-xl bg-orange-600 px-5 py-3 font-bold text-white hover:bg-orange-700">{i18n.t(user ? "Voir les pronostics" : "Créer un compte gratuit")}<ArrowUpRight className="h-4 w-4" /></Link></div>
     <p className="mx-auto mt-6 max-w-2xl text-center text-xs leading-6 text-slate-500">{i18n.t("Les performances passées ne garantissent pas les résultats futurs. 18+ · Joue responsable.")}</p>
-  </main>;
+  </main></AdminShareProvider>;
   return user ? <AppLayout>{content}</AppLayout> : <div className="min-h-screen bg-slate-50"><header className="border-b border-slate-200 bg-white"><div className="mx-auto flex max-w-7xl flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6"><Link to="/" className="flex min-h-11 items-center gap-2.5 font-heading text-lg font-extrabold text-slate-900"><span className="grid h-10 w-10 place-items-center rounded-xl bg-orange-600 text-white"><Zap className="h-5 w-5" /></span>WinPulse</Link><div className="flex flex-wrap gap-2"><Link to="/login" className="inline-flex min-h-11 items-center rounded-xl px-3 py-2 text-sm font-bold text-slate-700">{i18n.t("Connexion")}</Link><Link to="/register" className="inline-flex min-h-11 items-center rounded-xl bg-orange-600 px-3 py-2 text-sm font-bold text-white">{i18n.t("Créer un compte gratuit")}</Link></div></div></header>{content}</div>;
 }
 function Metric({
@@ -220,6 +222,7 @@ function ResultCard({
   row
 }) {
   const i18n = useResultsLanguage();
+  const { user } = useAuth();
   const result = resultStatus(row.status);
   const accent = result === "won" ? "border-s-emerald-500" : result === "lost" ? "border-s-rose-400" : result === "void" ? "border-s-slate-400" : "border-s-amber-400";
   return <article className={`min-w-0 border-b border-b-slate-100 border-s-[3px] p-3 sm:p-4 ${accent}`} data-testid="track-result-card">
@@ -239,6 +242,7 @@ function ResultCard({
         <strong className="mt-0.5 block font-mono text-xl font-extrabold tabular-nums text-slate-900">{displayNumber(i18n, row.odds, 2)}</strong>
       </div>
     </div>
+    <AdminShareActions item={row} isAdmin={Boolean(user?.is_admin)} kind="results" />
   </article>;
 }
 
