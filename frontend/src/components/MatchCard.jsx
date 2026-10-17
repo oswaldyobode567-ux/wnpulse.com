@@ -657,9 +657,10 @@ export function AdminShareProvider({isAdmin,items=[],kind="picks",children}) {
     const prediction=item.prediction || item;
     return [key,prediction.confidence,prediction.label,prediction.best_bookmaker,prediction.status,prediction.won,prediction.score_home,prediction.score_away,item.league,item.sport_title,item.match];
   }));
-  useEffect(()=>{setSelection(previous=>previous.filter(key=>available.has(key)));setBulkOpen(false);setIndividual(null);
+  useEffect(()=>{
+    const validKeys=new Set(JSON.parse(signature).map(row=>row[0]));
+    setSelection(previous=>previous.filter(key=>validKeys.has(key)));setBulkOpen(false);setIndividual(null);
     // Source changes invalidate the preview; no stale pick or previous page is shared.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   },[signature,userId]);
   const selected=keys.map(key=>available.get(key));
   const context={permitted,kind,available,keys,selected,
