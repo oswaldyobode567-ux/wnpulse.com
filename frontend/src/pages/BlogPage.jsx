@@ -44,25 +44,52 @@ function useSeoMeta({ title, description, canonical, ogImage }) {
   }, [title, description, canonical, ogImage]);
 }
 
+
+function safeBlogUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const base = new URL(api.defaults?.baseURL || "/api", window.location.origin);
+    const url = new URL(value, base.origin);
+    return ["https:", "http:"].includes(url.protocol) ? url.href : "";
+  } catch { return ""; }
+}
+function BlogImage({ post, className = "", loading = "lazy" }) {
+  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
+  const identity = candidates.join("|");
+  const [failed, setFailed] = useState({ identity, urls: [] });
+  const failedUrls = failed.identity === identity ? failed.urls : [];
+  const src = candidates.find(url => !failedUrls.includes(url));
+  return src ? <img src={src} alt={post.cover_alt || post.title || "Sport"} className={className} loading={loading} decoding="async" onError={() => setFailed(previous => ({ identity, urls: [...(previous.identity === identity ? previous.urls : []), src] }))} /> : <div role="img" aria-label="Illustration sportive WinPulse" className={`${className} grid place-items-center bg-gradient-to-br from-slate-950 to-orange-900 text-white`}><div className="text-center p-5"><Activity className="h-12 w-12 mx-auto text-orange-400" /><div className="mt-3 font-bold">{post.sport || "WinPulse"}</div><div className="text-xs mt-1 text-orange-200">Illustration sportive</div></div></div>;
+}
+
 export default function BlogPage() {
   const [posts, setPosts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const [query, setQuery] = useState("");
+  const [category, setCategory] = useState("Tous");
 
   useSeoMeta({
-    title: "Blog WinPulse — Stratégies, conseils et guides de paris sportifs",
-    description: "Tous nos guides et stratégies pour parier intelligemment au Bénin : bankroll, value betting, MTN MoMo, CAN 2026 et plus.",
+    title: "Blog WinPulse — Actualités sportives et analyses",
+    description: "Football, tennis, basketball et autres sports : actualités sourcées, guides et analyses WinPulse.",
     canonical: "https://wnpulse.com/blog",
   });
 
   useEffect(() => {
-    api.get("/blog/posts")
-      .then((r) => setPosts(r.data.posts))
-      .finally(() => setLoading(false));
-  }, []);
-
-  const featured = posts[0];
-  const rest = posts.slice(1);
-
+    let active = true;
+    setLoading(true); setError(false);
+    api.get("/blog/posts").then(r => {
+      if (!Array.isArray(r.data?.posts)) throw new Error("Réponse invalide");
+      if (active) setPosts(r.data.posts.filter(p => p && p.slug && p.title));
+    }).catch(() => { if (active) setError(true); }).finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [retry]);
+  const normalize = value => String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const categories = ["Tous", ...new Set(posts.map(p => p.sport || p.category || "Guides"))];
+  const filtered = posts.filter(p => (category === "Tous" || (p.sport || p.category || "Guides") === category) && normalize([p.title,p.excerpt,p.sport,p.category,p.source_name,...(Array.isArray(p.tags)?p.tags:[])].join(" ")).includes(normalize(query)));
+  const featured = filtered[0];
+  const rest = filtered.slice(1);
   return (
     <div className="min-h-screen bg-neutral-50">
       <header className="sticky top-0 z-40 bg-white/85 backdrop-blur-xl border-b border-neutral-200">
@@ -90,39 +117,42 @@ export default function BlogPage() {
         <div className="absolute -bottom-24 -left-24 h-72 w-72 rounded-full bg-rose-400/30 blur-3xl pointer-events-none" />
         <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24 relative text-center">
           <div className="inline-flex items-center gap-2 rounded-full bg-white/10 backdrop-blur-sm border border-white/20 px-3 py-1 text-xs font-bold text-orange-200 mb-5">
-            <BookOpen className="h-3.5 w-3.5" /> Le blog des parieurs malins
+            <BookOpen className="h-3.5 w-3.5" /> Le sport, ses actualités et ses analyses
           </div>
           <h1 className="font-heading text-4xl sm:text-6xl font-black tracking-tighter leading-[0.95]">
-            Stratégies, guides et<br />
+            Actualités, décryptages et<br />
             <span className="bg-gradient-to-r from-orange-300 via-rose-300 to-amber-300 bg-clip-text text-transparent">
-              vraies astuces
+              analyses sportives
             </span>{" "}
-            pour gagner
+            pour comprendre
           </h1>
           <p className="mt-5 text-slate-300 text-base sm:text-lg max-w-2xl mx-auto">
-            Sans bullshit, sans promesses farfelues. Juste des conseils concrets de notre équipe WinPulse basée à Cotonou.
+            Explore les publications disponibles par sport. Les revues de presse renvoient vers le média original ; les guides sont à lire sur WinPulse.
           </p>
         </div>
       </section>
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-12">
-        {loading ? (
+        <div className="mb-8 space-y-4">
+          <label className="block text-sm font-semibold text-slate-700">Rechercher un article, une équipe ou une compétition
+            <input type="search" value={query} onChange={e=>setQuery(e.target.value)} placeholder="Football, mercato, tennis…" className="mt-2 w-full rounded-xl border border-slate-300 bg-white px-4 py-3 text-base" />
+          </label>
+          <div className="flex flex-wrap gap-2">{categories.map(c=><button key={c} type="button" aria-pressed={category===c} onClick={()=>setCategory(c)} className={`min-h-11 rounded-full border px-4 py-2 text-sm font-semibold ${category===c ? "bg-slate-950 text-white border-slate-950" : "bg-white border-slate-200 text-slate-700"}`}>{c}</button>)}</div>
+          {!loading && !error && <p role="status" className="text-sm text-slate-500">{filtered.length} publication(s) affichée(s)</p>}
+        </div>
+        {error ? <Card className="p-8 text-center"><h2 className="font-bold text-xl">Impossible de charger les articles</h2><p className="my-3 text-slate-600">Le serveur ne répond pas correctement. Réessaie dans un instant.</p><Button onClick={()=>setRetry(n=>n+1)}>Réessayer</Button></Card> : loading ? (
           <div className="grid md:grid-cols-3 gap-6">
             {[1, 2, 3, 4, 5, 6].map((i) => <Skeleton key={i} className="h-72" />)}
           </div>
         ) : (
           <>
+            {!featured && <Card className="p-8 text-center"><h2 className="text-xl font-bold">{posts.length ? "Aucun résultat pour cette recherche" : "Aucune publication disponible"}</h2><p className="mt-3 text-slate-600">{posts.length ? "Essaie un autre sport ou un autre mot-clé." : "Les actualités apparaîtront ici après leur synchronisation par le serveur."}</p></Card>}
             {/* Featured post */}
             {featured && (
               <Link to={`/blog/${featured.slug}`} data-testid={`blog-featured-${featured.slug}`}>
                 <Card className="group relative overflow-hidden border-neutral-200 mb-10 grid md:grid-cols-5 hover:shadow-2xl transition-shadow">
                   <div className="md:col-span-3 aspect-video md:aspect-auto bg-slate-100 relative overflow-hidden">
-                    <img
-                      src={featured.cover}
-                      alt={featured.title}
-                      className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700"
-                      loading="lazy"
-                    />
+                    <BlogImage post={featured} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="eager" />
                     <div className="absolute top-3 left-3">
                       <Badge className="bg-orange-500 text-white border-0 font-bold">
                         <Sparkles className="h-3 w-3 mr-1" /> À la une
@@ -138,7 +168,7 @@ export default function BlogPage() {
                     <h2 className="font-heading text-2xl sm:text-3xl font-extrabold tracking-tight text-slate-900 group-hover:text-orange-700 transition-colors">
                       {featured.title}
                     </h2>
-                    <p className="mt-3 text-sm text-slate-600 leading-relaxed">{featured.excerpt}</p>
+                    <p className="mt-3 text-sm text-slate-600 leading-relaxed">{featured.excerpt}</p><p className="mt-3 text-xs text-orange-700 font-semibold">{featured.source_url ? `Revue de presse · ${featured.source_name || "Source externe"}` : "Guide WinPulse"}</p>
                     <div className="mt-5 flex items-center gap-4 text-xs text-slate-500">
                       <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {dayjs(featured.published_at).format("D MMM YYYY")}</span>
                       <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> {featured.read_min} min</span>
@@ -159,12 +189,7 @@ export default function BlogPage() {
                 <Link key={p.slug} to={`/blog/${p.slug}`} data-testid={`blog-card-${p.slug}`}>
                   <Card className="group h-full overflow-hidden border-neutral-200 hover:shadow-xl hover:-translate-y-1 transition-all flex flex-col">
                     <div className="relative aspect-[16/10] bg-slate-100 overflow-hidden">
-                      <img
-                        src={p.cover}
-                        alt={p.title}
-                        className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
-                        loading="lazy"
-                      />
+                      <BlogImage post={p} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                     </div>
                     <div className="p-5 flex-1 flex flex-col">
                       <div className="flex flex-wrap gap-1.5 mb-2.5">
@@ -175,7 +200,7 @@ export default function BlogPage() {
                       <h3 className="font-heading text-lg font-extrabold text-slate-900 group-hover:text-orange-700 transition-colors leading-snug">
                         {p.title}
                       </h3>
-                      <p className="mt-2 text-sm text-slate-600 leading-relaxed flex-1 line-clamp-2">{p.excerpt}</p>
+                      <p className="mt-2 text-sm text-slate-600 leading-relaxed flex-1 line-clamp-2">{p.excerpt}</p><p className="mt-3 text-xs text-orange-700 font-semibold">{p.source_url ? `Revue de presse · ${p.source_name || "Source externe"}` : "Guide WinPulse"}</p>
                       <div className="mt-4 flex items-center justify-between text-xs text-slate-500">
                         <span className="flex items-center gap-1"><Calendar className="h-3 w-3" /> {dayjs(p.published_at).format("D MMM YYYY")}</span>
                         <span className="flex items-center gap-1"><Clock className="h-3 w-3" /> {p.read_min} min</span>
@@ -218,7 +243,7 @@ export default function BlogPage() {
             <span className="text-slate-300">·</span>
             <Link to="/legal/jeu-responsable" className="text-rose-600 hover:text-rose-700 font-semibold">Jeu responsable · 18+</Link>
           </div>
-          <div className="text-sm text-slate-500">© 2026 WinPulse SARL · Cotonou, Bénin</div>
+          <div className="text-sm text-slate-500">© 2026 WinPulse · 18+ · Joue responsable</div>
         </div>
       </footer>
     </div>
