@@ -184,7 +184,8 @@ function readDailyResults(data, date, now = new Date()) {
 }
 
 export default function LandingPage() {
-  const { t, locale, formatNumber } = useLanguage();
+  const { t, locale, formatNumber, language } = useLanguage();
+  const telegramLabel = ({fr: "Rejoindre notre canal Telegram", en: "Join our Telegram channel", es: "Únete a nuestro canal de Telegram", pt: "Junta-te ao nosso canal Telegram", de: "Unserem Telegram-Kanal beitreten", ar: "انضم إلى قناتنا على تيليغرام"})[language] || "Rejoindre notre canal Telegram";
   const motionRoot = useLandingMotion();
   const navigate = useNavigate();
   const { user } = useAuth();
@@ -385,6 +386,7 @@ export default function LandingPage() {
                   {t("Découvrir l’offre Pro")}
                 </Button>
               </div>
+              <div className="mt-3"><a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500" data-testid="landing-telegram">{telegramLabel} ↗</a></div>
               <Link to="/resultats" className="wp-result-link mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-slate-600" data-testid="hero-results-btn">{t("Consulter l’historique complet")}<ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" /></Link>
               <div className="wp-enter mt-5 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6" style={{ "--wp-delay": "320ms" }}>
                 <div className="flex items-center gap-2">
