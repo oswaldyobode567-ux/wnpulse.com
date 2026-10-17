@@ -14,6 +14,24 @@ import "dayjs/locale/fr";
 
 dayjs.locale("fr");
 
+
+function safeBlogUrl(value) {
+  if (typeof value !== "string" || !value.trim()) return "";
+  try {
+    const base = new URL(api.defaults?.baseURL || "/api", window.location.origin);
+    const url = new URL(value, base.origin);
+    return ["https:", "http:"].includes(url.protocol) ? url.href : "";
+  } catch { return ""; }
+}
+function BlogImage({ post, className = "", loading = "lazy" }) {
+  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
+  const identity = candidates.join("|");
+  const [failed, setFailed] = useState({ identity, urls: [] });
+  const failedUrls = failed.identity === identity ? failed.urls : [];
+  const src = candidates.find(url => !failedUrls.includes(url));
+  return src ? <img src={src} alt={post.cover_alt || post.title || "Sport"} className={className} loading={loading} decoding="async" onError={() => setFailed(previous => ({ identity, urls: [...(previous.identity === identity ? previous.urls : []), src] }))} /> : <div role="img" aria-label="Illustration sportive WinPulse" className={`${className} grid place-items-center bg-gradient-to-br from-slate-950 to-orange-900 text-white`}><div className="text-center p-5"><Activity className="h-12 w-12 mx-auto text-orange-400" /><div className="mt-3 font-bold">{post.sport || "WinPulse"}</div><div className="text-xs mt-1 text-orange-200">Illustration sportive</div></div></div>;
+}
+
 /** Tiny markdown → JSX renderer (handles h2, h3, lists, bold, links, code, tables, paragraphs, blockquotes). */
 function renderMarkdown(md) {
   if (!md) return null;
@@ -22,7 +40,7 @@ function renderMarkdown(md) {
   let i = 0;
 
   const renderInline = (text) =>
-    text
+    String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;")
       // bold
       .replace(/\*\*(.+?)\*\*/g, '<strong class="font-bold text-slate-900">$1</strong>')
       // italic
@@ -30,7 +48,10 @@ function renderMarkdown(md) {
       // code
       .replace(/`([^`]+)`/g, '<code class="bg-slate-100 text-rose-600 px-1.5 py-0.5 rounded text-sm font-mono">$1</code>')
       // links
-      .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" class="text-orange-600 font-semibold hover:underline">$1</a>');
+      .replace(/\[(.+?)\]\((.+?)\)/g, (_, label, url) => {
+        const safe = safeBlogUrl(url.replace(/&amp;/g,"&"));
+        return safe ? `<a href="${safe.replace(/&/g,"&amp;").replace(/"/g,"&quot;").replace(/</g,"&lt;")}" target="_blank" rel="noopener noreferrer" class="text-orange-600 font-semibold hover:underline">${label}</a>` : label;
+      });
 
   while (i < lines.length) {
     const line = lines[i];
@@ -218,14 +239,18 @@ export default function BlogPostPage() {
   const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const [retry, setRetry] = useState(0);
 
   useEffect(() => {
-    setLoading(true);
-    api.get(`/blog/posts/${slug}`)
-      .then((r) => setData(r.data))
-      .catch(() => setData(null))
-      .finally(() => setLoading(false));
-  }, [slug]);
+    let active = true;
+    setLoading(true); setData(null); setError(false);
+    api.get(`/blog/posts/${encodeURIComponent(slug)}`)
+      .then(r => { if (active) setData(r.data); })
+      .catch(err => { if (active) { setData(null); setError(err?.response?.status !== 404); } })
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [slug, retry]);
 
   const post = data?.post;
   const canonical = `https://wnpulse.com/blog/${slug}`;
@@ -283,9 +308,9 @@ export default function BlogPostPage() {
     return (
       <div className="min-h-screen bg-neutral-50 flex items-center justify-center p-6">
         <Card className="p-8 text-center max-w-md">
-          <h1 className="font-heading text-2xl font-extrabold text-slate-900 mb-2">Article introuvable</h1>
-          <p className="text-sm text-slate-600 mb-5">Cet article n'existe pas ou a été retiré.</p>
-          <Button onClick={() => navigate("/blog")}>Retour au blog</Button>
+          <h1 className="font-heading text-2xl font-extrabold text-slate-900 mb-2">{error ? "Chargement indisponible" : "Article introuvable"}</h1>
+          <p className="text-sm text-slate-600 mb-5">{error ? "Le serveur ne répond pas correctement. Réessaie dans un instant." : "Cet article n’existe pas ou a été retiré."}</p>
+          {error && <Button className="mb-3" onClick={()=>setRetry(n=>n+1)}>Réessayer</Button>}<Button onClick={() => navigate("/blog")}>Retour au blog</Button>
         </Card>
       </div>
     );
@@ -320,7 +345,7 @@ export default function BlogPostPage() {
             {post.title}
           </h1>
           <p className="mt-5 text-lg text-slate-600 leading-relaxed">{post.excerpt}</p>
-          <div className="mt-5 flex items-center gap-5 text-sm text-slate-500">
+          <div className="mt-5 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm text-slate-500">
             <span className="flex items-center gap-1.5"><Calendar className="h-3.5 w-3.5" /> {dayjs(post.published_at).format("D MMMM YYYY")}</span>
             <span className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> {post.read_min} min de lecture</span>
             <span className="hidden sm:inline text-slate-400">·</span>
@@ -330,12 +355,13 @@ export default function BlogPostPage() {
 
         {/* Cover */}
         <div className="relative aspect-[16/9] bg-slate-100 rounded-2xl overflow-hidden mb-10 shadow-xl">
-          <img src={post.cover} alt={post.title} className="absolute inset-0 w-full h-full object-cover" />
+          <BlogImage key={post.slug} post={post} className="absolute inset-0 w-full h-full object-cover" loading="eager" />
         </div>
 
+        {safeBlogUrl(post.source_url) && <aside className="mb-8 rounded-2xl border border-orange-200 bg-orange-50 p-5" aria-label="Source de l’actualité"><p className="text-xs uppercase tracking-wider font-bold text-orange-700">Revue de presse · {post.source_name || "Média original"}</p><p className="mt-2 text-sm leading-relaxed text-slate-700">Cette publication présente un lien d’actualité. Le reportage complet et les déclarations sont à consulter auprès du média cité.</p><a href={safeBlogUrl(post.source_url)} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center mt-3 rounded-xl bg-slate-950 text-white px-4 py-2 font-semibold text-sm">Lire l’article original ↗</a></aside>}
         {/* Body */}
         <div className="prose-wp" data-testid="post-content">
-          {renderMarkdown(post.content_md)}
+          {renderMarkdown(post.content_md || post.content || post.body || "Le contenu de cette publication n’est pas encore disponible.")}
         </div>
 
         {/* Share */}
@@ -360,7 +386,7 @@ export default function BlogPostPage() {
                 <Link key={r.slug} to={`/blog/${r.slug}`} className="group">
                   <Card className="h-full overflow-hidden hover:shadow-lg transition-shadow">
                     <div className="aspect-[16/10] bg-slate-100 overflow-hidden">
-                      <img src={r.cover} alt={r.title} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" loading="lazy" />
+                      <BlogImage post={r} className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                     </div>
                     <div className="p-4">
                       <h4 className="font-heading font-bold text-sm text-slate-900 group-hover:text-orange-700 leading-snug line-clamp-2">{r.title}</h4>
@@ -381,7 +407,7 @@ export default function BlogPostPage() {
           <div className="relative flex flex-col sm:flex-row items-center justify-between gap-4">
             <div>
               <div className="font-heading text-xl sm:text-2xl font-black tracking-tight">Applique cette stratégie aujourd'hui</div>
-              <p className="mt-1.5 text-white/90 text-sm">Crée ton compte gratuit, reçois nos 3 picks du jour.</p>
+              <p className="mt-1.5 text-white/90 text-sm">Découvre les pronostics et les analyses disponibles sur WinPulse.</p>
             </div>
             <Link to="/register">
               <Button className="bg-white text-slate-900 hover:bg-slate-100 font-bold whitespace-nowrap shadow-xl">
@@ -394,7 +420,7 @@ export default function BlogPostPage() {
 
       <footer className="border-t border-neutral-200 bg-white mt-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 text-center text-xs text-slate-500">
-          © 2026 WinPulse SARL · Cotonou, Bénin · 18+ · Joue responsable
+          © 2026 WinPulse · 18+ · Joue responsable
         </div>
       </footer>
     </div>
