@@ -1,4 +1,4 @@
-"""WNPulse blog_seed : articles historiques, gestion du blog et actualités automatiques.
+"""WNPulse blog_seed v2 : couvertures locales et collecte multisport ciblée.
 
 Remplace le fichier blog_seed.py existant avec le server.py associé.
 BLOG_POSTS reste disponible pour les anciens imports. Les articles historiques
@@ -885,6 +885,17 @@ def serialize_post(doc, full=False, admin=False):
     keys = ("slug", "title", "excerpt", "cover", "category", "sport", "tags", "published_at", "updated_at", "read_min", "author", "source_url", "source_name", "information_date", "kind", "auto_generated", "source_date_kind", "source_seen_at", "collector")
     result = {key: doc.get(key) for key in keys}
     result["id"] = str(doc["_id"])
+    provided = doc.get("cover")
+    try:
+        cover = safe_cover(provided) if isinstance(provided, str) else ""
+    except ValueError:
+        cover = ""
+    result["cover"] = cover or default_blog_cover(doc.get("sport") or "")
+    result["cover_kind"] = "provided" if cover and not cover.startswith("/api/blog/covers/") else "illustration"
+    result["cover_alt"] = ("Illustration WNPulse · " + (doc.get("sport") or "Guides et analyses")) if result["cover_kind"] == "illustration" else doc.get("title", "")
+    result["fallback_cover"] = default_blog_cover(doc.get("sport") or "")
+    for alias in ("image", "image_url", "thumbnail", "cover_image", "cover_url", "imageUrl"):
+        result[alias] = result["cover"]
     if full:
         result["content"] = doc.get("content", "")
         result["body"] = result["content"]  # Compatibility with simple existing readers.
@@ -1158,6 +1169,54 @@ async def bootstrap_blog(db):
             {"$setOnInsert": {**cleaned, "author": "WinPulse", "created_at": now, "updated_at": now,
                               "published_at": now, "revision": 1}}, upsert=True)
 
+
+# Self-hosted, original vector illustrations: no hotlinking, licence ambiguity,
+# external image fetch, optional package, or publisher photograph.
+BLOG_COVER_VERSION = "2026-10-17-v1"
+BLOG_COVERS = {
+    "football": ("Football", "football"), "basketball": ("Basketball", "basketball"),
+    "tennis": ("Tennis", "tennis"), "rugby": ("Rugby", "rugby"),
+    "hockey": ("Hockey", "hockey"), "athletisme": ("Athlétisme", "athletics"),
+    "sports-mecaniques": ("Sports mécaniques", "racing"),
+    "autres-sports": ("Multisports", "multisport"), "guides": ("Guides & analyses", "guides"),
+}
+
+def default_blog_cover(sport=""):
+    key = slugify(sport) if sport else "guides"
+    if key not in BLOG_COVERS:
+        key = "autres-sports" if sport else "guides"
+    return f"/api/blog/covers/{key}.svg?v={BLOG_COVER_VERSION}"
+
+
+def blog_cover_svg(key):
+    if key not in BLOG_COVERS:
+        raise LookupError("Illustration introuvable.")
+    title, kind = BLOG_COVERS[key]
+    drawings = {
+        "football": '<rect x="710" y="115" width="360" height="400" rx="20"/><path d="M710 315h360M890 115v400"/><circle cx="890" cy="315" r="77"/><circle cx="890" cy="315" r="12" fill="#fb923c"/>',
+        "basketball": '<circle cx="890" cy="315" r="170"/><path d="M720 315h340M890 145v340M770 195c200 70 200 170 0 240M1010 195c-200 70-200 170 0 240"/>',
+        "tennis": '<circle cx="890" cy="315" r="160"/><path d="M773 204c160 10 160 212 0 222M1007 204c-160 10-160 212 0 222"/>',
+        "rugby": '<ellipse cx="890" cy="315" rx="185" ry="110" transform="rotate(-30 890 315)"/><path d="m810 360 160-90m-126 94-21-36m54 17-21-36m54 17-21-36m54 17-21-36"/>',
+        "hockey": '<path d="m780 170 125 225h140l-20 48H879L740 195"/><ellipse cx="1000" cy="485" rx="65" ry="18" fill="#fb923c"/>',
+        "athletics": '<path d="M690 500c0-310 420-310 420 0M745 500c0-240 310-240 310 0M800 500c0-175 200-175 200 0M855 500c0-100 90-100 90 0"/>',
+        "racing": '<path d="M760 485V145h300v190H760"/><path d="M760 145h60v60h60v-60h60v60h60v-60h60v60h-60v65h60v65h-60v-65h-60v65h-60v-65h-60v65h-60v-65h60v-65h-60z" fill="#fb923c" stroke="none"/>',
+        "multisport": '<circle cx="890" cy="315" r="160"/><path d="m890 165 35 105 110 5-85 68 28 105-88-60-88 60 28-105-85-68 110-5z"/>',
+        "guides": '<rect x="735" y="160" width="310" height="320" rx="24"/><path d="M780 230h220M780 290h160M780 350h200M780 410h120"/>',
+    }
+    label = html.escape(title)
+    return (f'<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-label="Illustration WNPulse : {label}">'
+            '<defs><linearGradient id="bg" x2="1" y2="1"><stop stop-color="#020617"/><stop offset="1" stop-color="#172033"/></linearGradient></defs>'
+            '<rect width="1200" height="675" fill="url(#bg)"/><circle cx="1140" cy="100" r="370" fill="#f97316" opacity=".08"/>'
+            '<path d="M70 80h33l18-24 22 48 18-24h37" fill="none" stroke="#f97316" stroke-width="9" stroke-linecap="round"/>'
+            '<text x="218" y="94" font-family="Arial,sans-serif" font-size="38" font-weight="800" fill="#fff">WNPULSE</text>'
+            '<rect x="70" y="225" width="70" height="8" rx="4" fill="#f97316"/>'
+            f'<text x="70" y="322" font-family="Arial,sans-serif" font-size="52" font-weight="800" fill="#fff">{label}</text>'
+            '<text x="70" y="378" font-family="Arial,sans-serif" font-size="26" fill="#cbd5e1">Le sport, sous tous ses angles.</text>'
+            f'<g fill="none" stroke="#fb923c" stroke-width="9" stroke-linejoin="round" opacity=".9">{drawings[kind]}</g>'
+            '<path d="M70 565h1060" stroke="#334155"/><text x="70" y="612" font-family="Arial,sans-serif" font-size="24" fill="#94a3b8">wnpulse.com</text>'
+            '<text x="1130" y="612" text-anchor="end" font-family="Arial,sans-serif" font-size="20" fill="#94a3b8">Illustration éditoriale</text></svg>')
+
+
 GDELT_URL = "https://api.gdeltproject.org/api/v2/doc/doc"
 
 COLLECTOR_ID = "gdelt_sports"
@@ -1167,9 +1226,14 @@ SOURCE_NAMES = {
     "maxifoot.fr": "Maxifoot", "rmcsport.bfmtv.com": "RMC Sport", "sports.fr": "Sports.fr",
     "afrik-foot.com": "Afrik-Foot", "sofoot.com": "SO FOOT", "france24.com": "France 24",
     "rfi.fr": "RFI", "francetvinfo.fr": "Franceinfo", "olympics.com": "Olympics",
+    "basketusa.com": "Basket USA", "basketsession.com": "BasketSession", "bebasket.fr": "BeBasket",
+    "tennisactu.net": "Tennis Actu", "welovetennis.fr": "We Love Tennis", "rugbyrama.fr": "Rugbyrama",
+    "motorsport.com": "Motorsport", "autohebdo.fr": "Auto Hebdo", "rds.ca": "RDS",
+    "radio-canada.ca": "Radio-Canada", "nhl.com": "NHL", "athle.fr": "Fédération française d’athlétisme",
 }
 
 FOOTBALL_SOURCES = {"footmercato.net", "maxifoot.fr", "afrik-foot.com", "sofoot.com"}
+SPORT_SOURCE_HINTS = {"basketusa.com": "Basketball", "basketsession.com": "Basketball", "bebasket.fr": "Basketball", "tennisactu.net": "Tennis", "welovetennis.fr": "Tennis", "rugbyrama.fr": "Rugby", "motorsport.com": "Sports mécaniques", "autohebdo.fr": "Sports mécaniques", "nhl.com": "Hockey", "athle.fr": "Athlétisme"}
 
 SPORT_WORDS = [
     ("Basketball", r"\b(basket(?:ball)?|nba|wnba|euroleague|euroligue)\b"),
@@ -1191,8 +1255,10 @@ def bounded_env(name, default, minimum, maximum):
 def config():
     return {
         "enabled": os.environ.get("BLOG_AUTO_NEWS_ENABLED", "true").strip().lower() not in {"0", "false", "no"},
-        "interval_minutes": bounded_env("BLOG_AUTO_NEWS_INTERVAL_MINUTES", 60, 30, 360),
-        "daily_limit": bounded_env("BLOG_AUTO_NEWS_DAILY_LIMIT", 5, 1, 12),
+        "interval_minutes": bounded_env("BLOG_AUTO_NEWS_INTERVAL_MINUTES", 30, 30, 360),
+        "daily_limit": bounded_env("BLOG_AUTO_NEWS_DAILY_LIMIT", 16, 1, 40),
+        "batch_limit": bounded_env("BLOG_AUTO_NEWS_BATCH_LIMIT", 4, 1, 8),
+        "per_sport_daily_limit": bounded_env("BLOG_AUTO_NEWS_PER_SPORT_DAILY_LIMIT", 3, 1, 10),
         "max_age_hours": 48,
         "provider": "GDELT",
         "requires_key": False,
@@ -1246,8 +1312,8 @@ def sport_and_category(title, domain):
     if re.search(r"\b(casino|code.promo|pronostic.gagnant|gain.garanti)\b", text):
         return None
     sport = next((name for name, pattern in SPORT_WORDS if re.search(pattern, text)), None)
-    if not sport and domain in FOOTBALL_SOURCES:
-        sport = "Football"
+    if not sport:
+        sport = "Football" if domain in FOOTBALL_SOURCES else SPORT_SOURCE_HINTS.get(domain)
     if not sport:
         return None
     if re.search(r"\b(mercato|transfert|transfers|recrutement|recrute|signature|pret|rumeur)\b", text):
@@ -1275,6 +1341,8 @@ def candidate(row, now=None):
     url, domain = result
     identified = sport_and_category(title, domain)
     if not identified:
+        identified = sport_and_category(title + " " + urlsplit(url).path.replace("/", " ").replace("-", " "), domain)
+    if not identified:
         return None
     # Do not turn an explicitly old title into today's story after re-indexing.
     years = re.findall(r"\b(20\d{2})\b", title)
@@ -1286,11 +1354,58 @@ def candidate(row, now=None):
             "url_hash": hashlib.sha256(url.encode()).hexdigest(),
             "title_hash": hashlib.sha256(re.sub(r"\W+", " ", normalized_text(title)).strip().encode()).hexdigest()}
 
-def query():
-    # DOC searches an English translation of the original French news text.
-    sports = '(football OR soccer OR basketball OR tennis OR rugby OR hockey OR athletics OR "formula 1" OR transfers)'
-    domains = "(" + " OR ".join("domain:" + domain for domain in SOURCE_NAMES) + ")"
-    return sports + " sourcelang:french " + domains
+SPORT_QUERIES = {
+    "Football": '(football OR soccer OR "premier league" OR mercato)',
+    "Basketball": '(basketball OR NBA OR WNBA OR euroleague)',
+    "Tennis": '(tennis OR ATP OR WTA OR "grand slam")',
+    "Rugby": '(rugby OR "six nations" OR "top 14")',
+    "Hockey": '(hockey OR NHL)',
+    "Athlétisme": '(athletics OR marathon OR sprint)',
+    "Sports mécaniques": '("formula 1" OR "formule 1" OR MotoGP OR motorsport)',
+    "Autres sports": '(cycling OR handball OR volleyball OR boxing OR swimming)',
+}
+
+def query(sport=None):
+    # GDELT searches translated text. Publisher filtering happens locally,
+    # so the provider query does not depend on a long, fragile domain OR list.
+    terms = SPORT_QUERIES.get(sport) or '(football OR basketball OR tennis OR rugby OR hockey OR athletics OR "formula 1")'
+    return terms + " sourcelang:french"
+
+
+def rotate_sport(state):
+    sports = list(SPORT_QUERIES)
+    try:
+        cursor = int(state.get("sport_cursor", 0))
+    except (TypeError, ValueError):
+        cursor = 0
+    return sports[cursor % len(sports)], (cursor + 1) % len(sports)
+
+
+async def daily_sport_counts(db, day):
+    docs = await db.blog_posts.find({"auto_day": day}, {"sport": 1}).limit(1000).to_list(length=1000)
+    counts = {}
+    for doc in docs:
+        key = doc.get("sport") or "Autres sports"
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def balanced_candidates(rows, counts):
+    # Remove local duplicates before picking a first item from each sport.
+    unique, urls, titles = [], set(), set()
+    for item in sorted(rows, key=lambda row: row["seen_at"], reverse=True):
+        if item["url_hash"] in urls or item["title_hash"] in titles:
+            continue
+        urls.add(item["url_hash"]); titles.add(item["title_hash"]); unique.append(item)
+    ordered = []
+    totals = dict(counts)
+    while unique:
+        index = min(range(len(unique)), key=lambda i: totals.get(unique[i]["sport"], 0))
+        item = unique.pop(index)
+        ordered.append(item)
+        totals[item["sport"]] = totals.get(item["sport"], 0) + 1
+    return ordered
+
 
 class ProviderFailure(Exception):
     def __init__(self, code, delay_seconds=900):
@@ -1311,8 +1426,8 @@ def retry_delay(value, now=None):
             delay = 3600
     return max(900, min(delay, 86400))
 
-async def fetch_candidates():
-    params = {"query": query(), "mode": "artlist", "format": "json", "maxrecords": 100,
+async def fetch_candidates(sport=None):
+    params = {"query": query(sport), "mode": "artlist", "format": "json", "maxrecords": 100,
               "timespan": "48h", "sort": "datedesc"}
     try:
         async with httpx.AsyncClient(timeout=18, follow_redirects=False) as client:
@@ -1344,20 +1459,26 @@ def build_post(item, now=None):
     local = now.astimezone(ZoneInfo("Africa/Porto-Novo"))
     seen = parse_date(item["seen_at"])
     seen_local = seen.astimezone(ZoneInfo("Africa/Porto-Novo"))
+    headline = re.sub(r"([\\`*_{}\[\]<>#])", r"\\\1", item["title"])
     content = (
-        f"## Dans la revue de presse\n\n"
-        f"Un titre de {item['source']} concernant le {item['sport'].lower()} est à découvrir. "
-        "Retrouve les faits, les précisions et le contexte dans l’article du média d’origine.\n\n"
-        f"## Lire l’article d’origine\n\n[Consulter {item['source']}]({item['url']})\n\n"
+        f"## Le titre à la une\n\n{headline}\n\n"
+        f"**Sport :** {item['sport']} · **Rubrique :** {item['category']}\n\n"
+        f"**Source :** {item['source']}\n\n"
+        f"## Lire les faits et le contexte\n\n"
+        f"[Ouvrir l’article de {item['source']}]({item['url']})\n\n"
+        "Cette fiche de revue de presse signale un titre d’actualité. "
+        "Le reportage, les précisions et les éventuelles déclarations sont à consulter chez le média cité. "
+        "WNPulse ne reproduit pas le texte intégral et n’invente ni résultat ni citation.\n\n"
         f"Titre repéré le {seen_local.strftime('%d/%m/%Y à %H:%M')} (heure de Porto-Novo). "
-        "La date de repérage ne constitue pas une confirmation de la date de publication du média."
+        "Ce repérage n’est pas une confirmation de la date de publication originale.\n\n"
+        "L’image de couverture est une illustration WNPulse du sport concerné, pas une photographie de l’événement."
     )
     return {"_id": "news:" + item["url_hash"], "slug": "actu-" + (slugify(item["title"])[:92].rstrip("-") or "sport") + "-" + item["url_hash"][:12],
-            "title": item["title"], "excerpt": f"{item['sport']} · {item['category']} : un titre de {item['source']} à découvrir dans notre revue de presse.",
-            "content": content, "category": item["category"], "sport": item["sport"], "cover": "",
+            "title": item["title"], "excerpt": f"{item['sport']} · {item['category']} — {item['title']} Source : {item['source']}.",
+            "content": content, "category": item["category"], "sport": item["sport"], "cover": default_blog_cover(item["sport"]),
             "tags": [item["sport"], item["category"], "Revue de presse"], "status": "published", "author": "WinPulse",
             "created_at": now.isoformat(), "updated_at": now.isoformat(), "published_at": now.isoformat(),
-            "read_min": None, "revision": 1, "kind": "news_link", "auto_generated": True,
+            "read_min": 1, "revision": 1, "kind": "news_link", "auto_generated": True,
             "auto_day": local.date().isoformat(), "auto_url_hash": item["url_hash"], "auto_title_hash": item["title_hash"],
             "source_name": item["source"], "source_url": item["url"], "information_date": seen_local.date().isoformat(),
             "source_date_kind": "observed", "source_seen_at": seen.isoformat(), "collector": "GDELT"}
@@ -1367,6 +1488,11 @@ async def bootstrap_news(db):
     await db.blog_posts.create_index("auto_title_hash", unique=True, sparse=True)
     await db.blog_posts.create_index("auto_day")
     await db.blog_news_state.update_one({"_id": COLLECTOR_ID}, {"$setOnInsert": {"paused": False, "status": "waiting", "last_added": 0}}, upsert=True)
+    await db.blog_news_state.update_one(
+        {"_id": COLLECTOR_ID, "collector_version": {"$ne": "multisport-v2"}, "paused": {"$ne": True},
+         "status": {"$in": ["waiting", "ok", "no_new_items", "daily_limit"]}},
+        {"$set": {"collector_version": "multisport-v2", "next_poll_at": utc_now().isoformat()}})
+
 
 async def news_status(db, scheduler_active=True):
     state = await db.blog_news_state.find_one({"_id": COLLECTOR_ID}) or {}
@@ -1374,12 +1500,16 @@ async def news_status(db, scheduler_active=True):
     now = utc_now()
     today = now.astimezone(ZoneInfo("Africa/Porto-Novo")).date().isoformat()
     count = await db.blog_posts.count_documents({"auto_day": today})
+    per_sport = await daily_sport_counts(db, today)
     until = parse_date(state.get("lease_until"))
     busy = bool(until and until > now and state.get("status") == "running")
     return {**settings, "paused": bool(state.get("paused")), "scheduler_active": bool(scheduler_active),
             "status": "running" if busy else ("interrupted" if state.get("status") == "running" else state.get("status", "waiting")),
             "last_attempt_at": state.get("last_attempt_at"), "last_success_at": state.get("last_success_at"),
             "last_added": state.get("last_added", 0), "today_added": count,
+            "sport_counts": per_sport, "target_sport": state.get("target_sport"),
+            "last_candidates": state.get("last_candidates", 0), "collector_version": "multisport-v2",
+            "cover_provider": "WNPulse self-hosted illustrations",
             "next_poll_at": state.get("next_poll_at"), "last_error": state.get("last_error"), "date": today}
 
 async def set_paused(db, paused):
@@ -1424,21 +1554,20 @@ async def synchronize_news(db, fetcher=None):
             state_update = {"status": "daily_limit", "last_error": None, "last_added": 0,
                             "next_poll_at": (now + timedelta(minutes=settings["interval_minutes"])).isoformat()}
             return {"status": "daily_limit", "added": 0}
-        rows = await asyncio.wait_for((fetcher or fetch_candidates)(), timeout=22)
+        target_sport, next_cursor = rotate_sport(state)
+        await db.blog_news_state.update_one({"_id": COLLECTOR_ID, "owner": owner}, {"$set": {"target_sport": target_sport, "sport_cursor": next_cursor}})
+        rows = await asyncio.wait_for(fetcher() if fetcher else fetch_candidates(target_sport), timeout=22)
+        per_sport = await daily_sport_counts(db, today)
         existing = await db.blog_posts.find({"auto_generated": True}, {"auto_title_hash": 1, "auto_url_hash": 1}).sort("created_at", -1).limit(1000).to_list(length=1000)
         known_titles = {doc.get("auto_title_hash") for doc in existing}
         known_urls = {doc.get("auto_url_hash") for doc in existing}
-        # Spread imports across sports and media before adding repeated sources.
-        rows.sort(key=lambda row: row["seen_at"], reverse=True)
-        distinct, remainder, sources, sports = [], [], set(), set()
-        for item in rows:
-            if item["domain"] not in sources or item["sport"] not in sports:
-                distinct.append(item); sources.add(item["domain"]); sports.add(item["sport"])
-            else:
-                remainder.append(item)
-        for item in distinct + remainder:
-            if count + added >= settings["daily_limit"] or added >= 2:
+        # Exclude previously imported/edited/deleted items before balancing sports.
+        rows = [item for item in rows if item["url_hash"] not in known_urls and item["title_hash"] not in known_titles]
+        for item in balanced_candidates(rows, per_sport):
+            if count + added >= settings["daily_limit"] or added >= settings["batch_limit"]:
                 break
+            if per_sport.get(item["sport"], 0) >= settings["per_sport_daily_limit"]:
+                continue
             if item["url_hash"] in known_urls or item["title_hash"] in known_titles:
                 continue
             latest = await db.blog_news_state.find_one({"_id": COLLECTOR_ID}) or {}
@@ -1457,8 +1586,9 @@ async def synchronize_news(db, fetcher=None):
             except DuplicateKeyError:
                 continue  # Includes tombstones and previously edited/unpublished imports.
             added += 1; known_urls.add(item["url_hash"]); known_titles.add(item["title_hash"])
+            per_sport[item["sport"]] = per_sport.get(item["sport"], 0) + 1
         state_update = {"status": "ok" if added else "no_new_items", "last_error": None, "last_added": added,
-                        "last_success_at": utc_now().isoformat(),
+                        "last_success_at": utc_now().isoformat(), "last_candidates": len(rows), "collector_version": "multisport-v2",
                         "next_poll_at": (utc_now() + timedelta(minutes=settings["interval_minutes"])).isoformat()}
         return {"status": state_update["status"], "added": added}
     except (ProviderFailure, asyncio.TimeoutError) as exc:
