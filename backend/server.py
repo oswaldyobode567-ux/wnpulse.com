@@ -55,7 +55,7 @@ from prediction_engine import (
 )
 from ai_service import generate_analysis
 from blog_seed import (
-    bootstrap_blog, list_posts as blog_list_posts, get_post as blog_get_post,
+    bootstrap_blog, blog_cover_svg, list_posts as blog_list_posts, get_post as blog_get_post,
     save_post as blog_save_post, delete_post as blog_delete_post, BlogConflictError,
 )
 from blog_seed import (
@@ -9474,37 +9474,66 @@ async def _blog_response(operation):
         raise HTTPException(status_code=503, detail="Le blog est temporairement indisponible. Réessaie dans un instant.")
 
 
+def _blog_absolute_images(result, request):
+    # Only known local cover paths are rewritten. No external URL is fetched.
+    base = str(request.base_url).rstrip("/")
+    if (request.headers.get("x-forwarded-proto") or "").split(",", 1)[0].strip() == "https" and base.startswith("http://"):
+        base = "https://" + base[7:]
+    posts = result.get("posts") if isinstance(result, dict) else None
+    if not isinstance(posts, list):
+        posts = [result["post"]] if isinstance(result, dict) and isinstance(result.get("post"), dict) else []
+    for post in posts:
+        for key in ("cover", "fallback_cover", "image", "image_url", "thumbnail", "cover_image", "cover_url", "imageUrl"):
+            value = post.get(key)
+            if isinstance(value, str) and value.startswith("/api/blog/covers/"):
+                post[key] = base + value
+    return result
+
+
+@app.get("/api/blog/covers/{sport}.svg", include_in_schema=False)
+async def get_blog_cover(sport: str, request: Request):
+    try:
+        svg = blog_cover_svg(sport)
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Illustration introuvable")
+    etag = '"' + hashlib.sha256(svg.encode("utf-8")).hexdigest()[:24] + '"'
+    headers = {"Cache-Control": "public, max-age=86400", "ETag": etag}
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=304, headers=headers)
+    return Response(content=svg, media_type="image/svg+xml", headers=headers)
+
+
 @app.get("/api/blog/posts")
-async def get_blog_posts(limit: int = Query(default=50, ge=1, le=200), category: str = "", sport: str = ""):
+async def get_blog_posts(request: Request, limit: int = Query(default=50, ge=1, le=200), category: str = "", sport: str = ""):
     filters = {"limit": limit}
     if category:
         filters["category"] = category
     if sport:
         filters["sport"] = sport
-    return await _blog_response(blog_list_posts(db, **filters))
+    return _blog_absolute_images(await _blog_response(blog_list_posts(db, **filters)), request)
 
 
 @app.get("/api/blog/posts/{slug}")
-async def get_blog_post(slug: str):
-    return await _blog_response(blog_get_post(db, slug))
+async def get_blog_post(slug: str, request: Request):
+    return _blog_absolute_images(await _blog_response(blog_get_post(db, slug)), request)
 
 
 @app.get("/api/blog/admin/posts")
-async def admin_blog_posts(payload: dict = Depends(get_current_user_payload)):
+async def admin_blog_posts(request: Request, payload: dict = Depends(get_current_user_payload)):
     await _require_admin(payload)
-    return await _blog_response(blog_list_posts(db, limit=200, admin=True))
+    return _blog_absolute_images(await _blog_response(blog_list_posts(db, limit=200, admin=True)), request)
 
 
 @app.post("/api/blog/admin/posts", status_code=201)
-async def admin_blog_create(data: BlogPostInput, payload: dict = Depends(get_current_user_payload)):
+async def admin_blog_create(data: BlogPostInput, request: Request, payload: dict = Depends(get_current_user_payload)):
     admin = await _require_admin(payload)
-    return await _blog_response(blog_save_post(db, data.dict(), admin["id"]))
+    return _blog_absolute_images(await _blog_response(blog_save_post(db, data.dict(), admin["id"])), request)
 
 
 @app.put("/api/blog/admin/posts/{post_id}")
-async def admin_blog_update(post_id: str, data: BlogPostInput, payload: dict = Depends(get_current_user_payload)):
+async def admin_blog_update(post_id: str, data: BlogPostInput, request: Request, payload: dict = Depends(get_current_user_payload)):
     admin = await _require_admin(payload)
-    return await _blog_response(blog_save_post(db, data.dict(), admin["id"], post_id=post_id))
+    return _blog_absolute_images(await _blog_response(blog_save_post(db, data.dict(), admin["id"], post_id=post_id)), request)
 
 
 @app.delete("/api/blog/admin/posts/{post_id}")
