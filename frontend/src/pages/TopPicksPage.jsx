@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, CalendarDays, CheckCircle2, ChevronRight, Flame, Info, Lock, Radio, RefreshCw, Send, Sparkles, Target, Trophy } from "lucide-react";
+import { ArrowRight, CalendarDays, CheckCircle2, ChevronRight, Flame, Info, Lock, Radio, RefreshCw, Sparkles, Target, Trophy } from "lucide-react";
 import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
-import { toast } from "sonner";
+import { AdminShareProvider, AdminShareToolbar, AdminShareActions } from "@/components/MatchCard";
 const BET_FILTERS = [{
   key: "all",
   label: "Tous"
@@ -96,21 +96,7 @@ export default function TopPicksPage() {
   const visibleCount = picks.filter(pick => !pick.locked && Boolean(pick.pick)).length;
   const lockedCount = picks.length - visibleCount;
   const liveCount = picks.filter(pick => pick.is_live).length;
-  const shareWA = (p, e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const text = [i18n.t("\uD83C\uDFAF *Pick WinPulse*", {}), `${p.sport_title} · ${i18n.formatPattern(p.commence_time, "DD/MM HH:mm")}`, "", i18n.t("*{{v0}}* vs *{{v1}}*", {
-      v0: p.home_team,
-      v1: p.away_team
-    }), `👉 ${p.pick} @ *${p.pick_odds}*`, i18n.t("March\xE9 : {{v0}}", {
-      v0: p.market_label || "—"
-    }), i18n.t("Confiance IA : {{v0}}%", {
-      v0: Math.round(p.confidence || 0)
-    }), "", "https://wnpulse.com"].join("\n");
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
-    toast.success(i18n.t("WhatsApp ouvert"));
-  };
-  return <AppLayout><main className="wp-top mx-auto max-w-7xl px-4 pb-24 pt-6 sm:px-6 lg:px-8" lang={i18n.language} dir={i18n.direction}>
+  return <AppLayout><AdminShareProvider isAdmin={isAdmin} items={loading || error ? [] : filtered} kind="picks"><main className="wp-top mx-auto max-w-7xl px-4 pb-24 pt-6 sm:px-6 lg:px-8" lang={i18n.language} dir={i18n.direction}>
     <style>{`.wp-top{font-size:16px}.wp-top .wp-pick-in{animation:wp-pick-in .35s ease-out both}@keyframes wp-pick-in{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}@media(prefers-reduced-motion:reduce){.wp-top .wp-pick-in{animation:none}}.wp-top a:focus-visible,.wp-top button:focus-visible{outline:3px solid #fb923c;outline-offset:3px}`}</style>
     <section className="relative mb-6 overflow-hidden rounded-3xl bg-slate-950 p-6 text-white sm:p-8 lg:p-10" aria-labelledby="top-picks-title">
       <div className="pointer-events-none absolute -end-20 -top-16 h-80 w-80 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
@@ -132,7 +118,8 @@ export default function TopPicksPage() {
     <div className="mb-4 flex flex-wrap items-end justify-between gap-2"><h2 className="font-heading text-xl font-extrabold text-slate-900">{i18n.t(betFilter === "all" ? "Le classement du jour" : "Ta sélection de marchés")}</h2><p className="text-sm text-slate-500" aria-live="polite">{!loading && i18n.t("{{count}} pronostics affichés", {
             count: filtered.length
           })}</p></div>
-    {loading ? <div className="grid gap-5 md:grid-cols-2" role="status" aria-label={i18n.t("Chargement…")}>{[0, 1, 2, 3].map(index => <div key={index} className="h-80 animate-pulse rounded-3xl border border-slate-200 bg-white p-5"><div className="mb-8 h-5 w-24 rounded-lg bg-slate-100" /><div className="mb-3 h-7 w-4/5 rounded-lg bg-slate-100" /><div className="mb-8 h-7 w-3/5 rounded-lg bg-slate-100" /><div className="h-24 rounded-2xl bg-slate-100" /></div>)}</div> : error ? <div role="alert" className="rounded-3xl border border-rose-200 bg-white px-6 py-14 text-center"><Info className="mx-auto mb-4 h-9 w-9 text-rose-500" /><h3 className="font-heading text-xl font-extrabold text-slate-900">{i18n.t("Impossible de charger les pronostics.")}</h3><button type="button" onClick={() => setRefresh(value => value + 1)} className="mt-5 min-h-11 rounded-xl bg-orange-600 px-5 py-3 font-bold text-white">{i18n.t("Réessayer")}</button></div> : !filtered.length ? <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center"><Target className="mx-auto mb-4 h-9 w-9 text-slate-300" /><h3 className="font-heading text-xl font-extrabold text-slate-900">{i18n.t("Aucun pick pour ce marché.")}</h3><button type="button" onClick={() => setBetFilter("all")} className="mt-5 min-h-11 rounded-xl border border-slate-200 px-5 py-2 font-bold text-slate-700">{i18n.t("Voir tous les picks")}</button></div> : <div className="grid items-stretch gap-5 md:grid-cols-2" data-testid="top-picks-grid">{filtered.map(pick => <PickCard key={pick.match_id} pick={pick} rank={picks.indexOf(pick) + 1} featured={picks.indexOf(pick) === 0 && !pick.locked && Boolean(pick.pick)} isAdmin={isAdmin} onShare={event => shareWA(pick, event)} onUpgrade={() => setPayState({
+    <AdminShareToolbar />
+    {loading ? <div className="grid gap-5 md:grid-cols-2" role="status" aria-label={i18n.t("Chargement…")}>{[0, 1, 2, 3].map(index => <div key={index} className="h-80 animate-pulse rounded-3xl border border-slate-200 bg-white p-5"><div className="mb-8 h-5 w-24 rounded-lg bg-slate-100" /><div className="mb-3 h-7 w-4/5 rounded-lg bg-slate-100" /><div className="mb-8 h-7 w-3/5 rounded-lg bg-slate-100" /><div className="h-24 rounded-2xl bg-slate-100" /></div>)}</div> : error ? <div role="alert" className="rounded-3xl border border-rose-200 bg-white px-6 py-14 text-center"><Info className="mx-auto mb-4 h-9 w-9 text-rose-500" /><h3 className="font-heading text-xl font-extrabold text-slate-900">{i18n.t("Impossible de charger les pronostics.")}</h3><button type="button" onClick={() => setRefresh(value => value + 1)} className="mt-5 min-h-11 rounded-xl bg-orange-600 px-5 py-3 font-bold text-white">{i18n.t("Réessayer")}</button></div> : !filtered.length ? <div className="rounded-3xl border border-dashed border-slate-300 bg-white px-6 py-14 text-center"><Target className="mx-auto mb-4 h-9 w-9 text-slate-300" /><h3 className="font-heading text-xl font-extrabold text-slate-900">{i18n.t("Aucun pick pour ce marché.")}</h3><button type="button" onClick={() => setBetFilter("all")} className="mt-5 min-h-11 rounded-xl border border-slate-200 px-5 py-2 font-bold text-slate-700">{i18n.t("Voir tous les picks")}</button></div> : <div className="grid items-stretch gap-5 md:grid-cols-2" data-testid="top-picks-grid">{filtered.map(pick => <PickCard key={pick.match_id} pick={pick} rank={picks.indexOf(pick) + 1} featured={picks.indexOf(pick) === 0 && !pick.locked && Boolean(pick.pick)} isAdmin={isAdmin} onUpgrade={() => setPayState({
           isOpen: true,
           tier: "PRO"
         })} />)}</div>}
@@ -141,14 +128,13 @@ export default function TopPicksPage() {
         isOpen: false,
         tier: payState.tier
       })} targetTier={payState.tier} />
-  </main></AppLayout>;
+  </main></AdminShareProvider></AppLayout>;
 }
 function PickCard({
   pick,
   rank,
   featured,
   isAdmin,
-  onShare,
   onUpgrade
 }) {
   const i18n = useResultsLanguage();
@@ -174,7 +160,8 @@ function PickCard({
                 maximumFractionDigits: 0
               })} %</strong></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-orange-500" style={{
               width: `${confidence}%`
-            }} /></div></div> : <span className="text-xs text-slate-400">{i18n.t(locked ? "Détails réservés aux abonnés" : "Analyse disponible sur la fiche")}</span>}</div><div className="flex items-center gap-2">{isAdmin && !locked && <button type="button" onClick={onShare} aria-label={i18n.t("Partager sur WhatsApp (Admin)")} className="grid h-11 w-11 place-items-center rounded-xl border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100" data-testid={`admin-share-whatsapp-top-${pick.match_id}`}><Send className="h-4 w-4" /></button>}<Link to={target} aria-label={i18n.t("Voir l’analyse du match")} className="grid h-11 w-11 place-items-center rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50"><ChevronRight className="h-5 w-5 rtl:rotate-180" /></Link></div></footer>
+            }} /></div></div> : <span className="text-xs text-slate-400">{i18n.t(locked ? "Détails réservés aux abonnés" : "Analyse disponible sur la fiche")}</span>}</div><div className="flex items-center gap-2"><Link to={target} aria-label={i18n.t("Voir l’analyse du match")} className="grid h-11 w-11 place-items-center rounded-xl border border-slate-200 text-slate-700 hover:bg-slate-50"><ChevronRight className="h-5 w-5 rtl:rotate-180" /></Link></div></footer>
+    {!locked && <div className="px-5 pb-3 sm:px-6"><AdminShareActions item={pick} isAdmin={isAdmin} /></div>}
   </article>;
 }
 
