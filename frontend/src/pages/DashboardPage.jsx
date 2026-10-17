@@ -1239,23 +1239,6 @@ export default function DashboardPage() {
       .catch(() => {});
     return () => { ok = false; };
   }, [lastUpdate, topRetry]);
-  const shareWA = useCallback((p, e) => {
-    e.preventDefault(); e.stopPropagation();
-    const text = [
-      `🎯 *Pick WinPulse*`,
-      `${p.sport_title || ""} · ${formatDate(p.commence_time, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}`,
-      ``,
-      `*${p.home_team}* vs *${p.away_team}*`,
-      `✅ ${translateBetText(p.pick, t, formatNumber, [p.home_team, p.away_team])} @ *${formatNumber(p.pick_odds, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}*`,
-      p.best_bookmaker ? `💰 ${t("chez {{bookmaker}}", { bookmaker: `*${p.best_bookmaker}*` })}` : "",
-      t("🎯 Confiance : {{confidence}}%", { confidence: formatNumber(Math.round(p.confidence || 0)) }),
-      ``,
-      `📱 wnpulse.com`,
-      t("💳 Pro dès {{price}} · Paiement mobile", { price: priceLabel }),
-    ].join("\n");
-    window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank", "noopener,noreferrer");
-    toast.success(t("WhatsApp ouvert !"));
-  }, [priceLabel, t, formatDate, formatNumber]);
   const handleRefresh = useCallback(async () => {
     if (refreshing) return;
     setRefreshing(true);
@@ -1432,7 +1415,7 @@ export default function DashboardPage() {
                   </a>)}
                 </nav>
                 {todayCount === 0 && <div className="rounded-2xl border border-dashed border-orange-200 bg-orange-50/50 p-5" data-testid="dashboard-no-today"><h3 className="font-heading text-lg font-bold text-slate-900">{t("Matchs du jour")} · {formatDate(`${today}T12:00:00`, { day: "numeric", month: "long" })}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{t("Aucun match du jour avec ces filtres.")} {t("Voir les prochaines rencontres ci-dessous ou modifier les filtres.")}</p></div>}
-                {dayGroups.map(([key, dayMatches], index) => <DaySection key={key} expanded={hasSearch || (openDays[key] ?? index === 0)} onToggle={() => setOpenDays(previous => ({ ...previous, [key]: !(previous[key] ?? index === 0) }))} dayKey={key} today={today} matches={dayMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
+                {dayGroups.map(([key, dayMatches], index) => <DaySection key={key} expanded={hasSearch || (openDays[key] ?? index === 0)} onToggle={() => setOpenDays(previous => ({ ...previous, [key]: !(previous[key] ?? index === 0) }))} dayKey={key} today={today} matches={dayMatches} isAdmin={isAdmin} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
               </div>}
 
         </section>
@@ -1449,7 +1432,7 @@ export default function DashboardPage() {
                 : visibleTopPicks.length === 0 ? <p className="py-3 text-sm leading-6 text-slate-500">{hasSearch ? t("Aucune sélection à la une pour cette recherche.") : t("Aucune sélection à la une pour le moment.")}</p>
                   : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{visibleTopPicks.slice(0,3).map(prediction => <MatchCard key={prediction.match_id || prediction.id}
                     match={{ id: prediction.match_id || prediction.id, home_team: prediction.home_team, away_team: prediction.away_team, sport_title: prediction.sport_title, sport_key: prediction.sport_key, commence_time: prediction.commence_time, prediction }}
-                    isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} />)}</div>}
+                    isAdmin={isAdmin} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} />)}</div>}
             <Link to="/app/top" className="mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-orange-600 hover:underline">{t("Tout voir")}<ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" /></Link>
           </div>
         </details>
@@ -1466,7 +1449,7 @@ export default function DashboardPage() {
   );
 
 }
-function DaySection({ dayKey, today, matches, isAdmin, shareWA, isFree, onUpgrade, showAllMatches, expanded, onToggle }) {
+function DaySection({ dayKey, today, matches, isAdmin, isFree, onUpgrade, showAllMatches, expanded, onToggle }) {
   const { t, formatDate, formatNumber } = useDashboardLanguage();
   const [showAllLeagues, setShowAllLeagues] = useState(false);
   const groups = groupByLeague(matches);
@@ -1500,7 +1483,7 @@ function DaySection({ dayKey, today, matches, isAdmin, shareWA, isFree, onUpgrad
         </div>
     </header>
     <div id={`day-content-${dayKey}`} hidden={!expanded} className={`space-y-3 sm:space-y-4 border-s-2 ps-1 sm:ps-4 ${isToday ? "border-orange-300" : "border-slate-200"}`}>
-      {expanded && visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} shareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
+      {expanded && visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
       {expanded && !showAllMatches && groups.length > 4 && <button type="button" onClick={() => setShowAllLeagues(value => !value)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold leading-6 text-orange-700 hover:border-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="day-show-more">{t(showAllLeagues ? "Réduire cette journée" : "Voir tous les championnats de cette journée")}<span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs">{formatNumber(groups.length)}</span></button>}
     </div>
   </section>;
@@ -1515,7 +1498,7 @@ function getLeagueEmoji(name = "") {
   if (n.includes("mma") || n.includes("ufc")) return "🥊";
   return "⚽";
 }
-function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade, showAllMatches = false }) {
+function LeagueSection({ league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false }) {
   const { t, formatNumber } = useDashboardLanguage();
   const [expanded, setExpanded] = useState(true);
   const [expandedAll, setExpandedAll] = useState(false);
@@ -1530,7 +1513,7 @@ function LeagueSection({ league, matches, isAdmin, shareWA, isFree, onUpgrade, s
       <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
     </button>
     {expanded && <>
-      <div className="grid min-w-0 gap-2.5 sm:gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} onShareWA={shareWA} isFree={isFree} onUpgrade={onUpgrade} />)}</div>
+      <div className="grid min-w-0 gap-2.5 sm:gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} />)}</div>
       {!showAllMatches && matches.length > 6 && <button type="button" onClick={() => setExpandedAll(value => !value)} className="mt-3 flex min-h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-600 hover:border-orange-300 hover:text-orange-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="league-show-more">
         {expandedAll ? t("Réduire cette liste") : t("Voir {{count}} autres rencontres", { count: formatNumber(matches.length - visible.length) })}
       </button>}
