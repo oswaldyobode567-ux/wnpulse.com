@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import AppLayout, { useLanguage } from "@/components/AppLayout";
-import MatchCard from "@/components/MatchCard";
+import MatchCard, { AdminShareProvider, AdminShareToolbar } from "@/components/MatchCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1322,6 +1322,7 @@ export default function DashboardPage() {
   ];
   return (
     <AppLayout>
+      <AdminShareProvider isAdmin={isAdmin} items={filtered} kind="picks">
       <div className="mx-auto max-w-7xl space-y-3 px-3 py-3 sm:space-y-6 sm:px-6 sm:py-7 lg:px-8" data-testid="dashboard-redesigned">
         <Card className="relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-4 text-white sm:p-7">
           <div className="pointer-events-none absolute -end-20 -top-24 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
@@ -1408,6 +1409,7 @@ export default function DashboardPage() {
           {hasSearch && <p className="mt-3 text-sm font-semibold leading-6 text-orange-700" aria-live="polite">{t(filtered.length === 1 ? "{{count}} rencontre trouvée dans les matchs chargés." : "{{count}} rencontres trouvées dans les matchs chargés.", { count: formatNumber(filtered.length) })}</p>}
         </Card>
 
+        <AdminShareToolbar />
         <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-lg sm:text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
@@ -1459,6 +1461,7 @@ export default function DashboardPage() {
           <Button type="button" className="min-h-11 w-full whitespace-normal border-0 bg-gradient-to-r from-orange-500 to-rose-500 px-5 text-white hover:opacity-90 sm:w-auto" onClick={() => navigate("/app/abonnement")}>{t("Découvrir Pro")}<ChevronRight className="ms-1 h-4 w-4 shrink-0 rtl:rotate-180" aria-hidden="true" /></Button>
         </Card>}
       </div>
+      </AdminShareProvider>
     </AppLayout>
   );
 
