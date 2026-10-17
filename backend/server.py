@@ -7823,6 +7823,7 @@ class RegisterPayload(BaseModel):
     referral_code: Optional[str] = Field(default=None, max_length=64)
     whatsapp_number: str = Field(min_length=1, max_length=40)
     whatsapp_marketing_opt_in: StrictBool = False
+    age_confirmed: StrictBool = False
 
 
 class LoginPayload(BaseModel):
@@ -7862,6 +7863,8 @@ def _whatsapp_contact_fields(user: Dict) -> Dict:
 
 @app.post("/api/auth/register")
 async def register(payload: RegisterPayload, request: Request):
+    if payload.age_confirmed is not True:
+        raise HTTPException(status_code=400, detail="Tu dois certifier avoir au moins 18 ans pour créer un compte.")
     await _consume_security_limit("register_ip", _client_rate_key(request), limit=8, window_seconds=3600)
     email_addr = payload.email.lower().strip()
     whatsapp_number = _normalize_whatsapp_number(payload.whatsapp_number)
@@ -7899,6 +7902,9 @@ async def register(payload: RegisterPayload, request: Request):
         "referral_code": user_id[:8].upper(),
         "referred_by": referred_by,
         "referral_reward_claimed": False,
+        "age_confirmed": True,
+        "age_confirmed_at": registered_at,
+        "age_confirmation_version": "wnpulse-adult-declaration-2026-10-17",
         "whatsapp_number": whatsapp_number,
         "whatsapp_marketing_opt_in": payload.whatsapp_marketing_opt_in,
         "whatsapp_opt_in_at": registered_at if payload.whatsapp_marketing_opt_in else None,
