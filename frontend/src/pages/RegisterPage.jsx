@@ -192,7 +192,7 @@ export default function RegisterPage() {
             <aside className="mt-4 rounded-xl border border-sky-200 bg-sky-50 p-4" aria-label={t("Rejoins notre canal Telegram")}>
               <h2 className="text-sm font-bold text-slate-900">{t("Rejoins notre canal Telegram")}</h2>
               <p className="mt-1 text-xs leading-5 text-slate-600">{t("Retrouve les actualités et les sélections partagées par WNPulse. Adhésion facultative.")}</p>
-              <a href="https://t.me/wnpuls" target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex min-h-11 items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-800" data-testid="register-telegram">{t("Rejoindre le canal")} ↗</a>
+              <a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex min-h-11 items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-800" data-testid="register-telegram">{t("Rejoindre le canal")} ↗</a>
             </aside>
             <Link to="/legal/confidentialite" className="mt-3 block text-center text-xs text-orange-700 underline">{t("Politique de confidentialité")}</Link>
             <div className="mt-6 border-t border-slate-100 pt-5 text-center text-sm text-slate-500">{t("Déjà inscrit ?")} <Link to="/login" className="font-semibold text-orange-600" data-testid="goto-login-link">{t("Se connecter")}</Link></div>
