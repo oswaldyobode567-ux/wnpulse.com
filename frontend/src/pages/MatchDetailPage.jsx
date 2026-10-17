@@ -6,10 +6,10 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio, Send, TrendingUp } from "lucide-react";
+import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio, TrendingUp } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
-import { toast } from "sonner";
+import { AdminShareActions } from "@/components/MatchCard";
 function analysisPayload(response) {
   const value = response?.ai_analysis ?? response?.analysis;
   if (typeof value === "string" && value.trim()) {
@@ -234,21 +234,7 @@ export default function MatchDetailPage() {
                 <strong className="text-slate-700">{i18n.t("Bookmakers utilis\xE9s :")}</strong>{i18n.tx(" ")}
                 {i18n.tx((p.bookmakers_used || []).slice(0, 5).map(b => b.title || b.key).join(", ") || "—")}
               </div>
-              <Button onClick={() => {
-            const text = i18n.t("\uD83C\uDFAF *Pick WinPulse*\n{{v0}} \xB7 {{v1}}\n\n*{{v2}}* vs *{{v3}}*\n\uD83D\uDC49 {{v4}} @ *{{v5}}*\nConfiance IA : {{v6}}%\nMarch\xE9 : {{v7}}\n\nhttps://wnpulse.com", {
-              v0: data.sport_title,
-              v1: i18n.formatPattern(data.commence_time, "DD/MM HH:mm"),
-              v2: data.home_team,
-              v3: data.away_team,
-              v4: i18n.bet(p.pick),
-              v5: p.pick_odds,
-              v6: Math.round(p.confidence || 0),
-              v7: i18n.bet(p.market_label)
-            });
-            window.open(`https://wa.me/?text=${encodeURIComponent(text)}`, "_blank");
-            toast.success("WhatsApp ouvert");
-          }} size="sm" className="bg-[#25D366] hover:bg-[#1ebe5c] text-white h-8" data-testid="admin-share-whatsapp-detail">
-                <Send className="h-3.5 w-3.5 me-1.5" />{i18n.t("Partager")}</Button>
+              <AdminShareActions isAdmin={isAdmin} item={{ ...data, prediction: p }} />
             </div>)}
         </Card>)}
         {i18n.tx(!locked && <Card className="mb-6 border-orange-200 bg-orange-50/40 p-6" data-testid="pick-explanation">
