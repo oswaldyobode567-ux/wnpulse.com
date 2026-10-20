@@ -33,7 +33,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, Str
 from pydantic import BaseModel, EmailStr, Field, StrictBool, StrictInt
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from pymongo import ReturnDocument
+from pymongo import ReturnDocument, UpdateOne
 from pymongo.errors import DuplicateKeyError
 
 from auth import (
@@ -8251,6 +8251,33 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
         matches = await fetch_all_matches(db)
         real_stats_map = await get_real_stats_map(db, matches)
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        # Freeze first experimental forecast before kickoff in a separate collection.
+        # This never touches official history or the settlement/payment paths.
+        operations = []
+        captured_at = datetime.now(timezone.utc)
+        for prediction in predictions:
+            shadow = prediction.get("shadow_analysis") or {}
+            try:
+                kickoff = datetime.fromisoformat(str(prediction.get("commence_time")).replace("Z", "+00:00"))
+                if kickoff.tzinfo is None:
+                    kickoff = kickoff.replace(tzinfo=timezone.utc)
+                if kickoff <= captured_at or not prediction.get("match_id") or shadow.get("status") != "experimental":
+                    continue
+            except (ValueError, TypeError):
+                continue
+            identity = f"{shadow['version']}:{prediction['match_id']}:{kickoff.isoformat()}"
+            operations.append(UpdateOne({"_id":identity}, {"$setOnInsert":{
+                "match_id":prediction["match_id"], "commence_time":prediction.get("commence_time"),
+                "captured_at":captured_at.isoformat(), "sport_key":prediction.get("sport_key"),
+                "home_team":prediction.get("home_team"), "away_team":prediction.get("away_team"),
+                "public_pick":prediction.get("pick"), "public_odds":prediction.get("pick_odds"),
+                "public_confidence":prediction.get("confidence"), "shadow":shadow,
+            }}, upsert=True))
+        if operations:
+            try:
+                await asyncio.wait_for(db.prediction_shadow_history.bulk_write(operations, ordered=False), timeout=2.0)
+            except Exception as exc:
+                logging.getLogger("winpulse.shadow").warning("Experimental archive unavailable (%s)", type(exc).__name__)
         calibration = await _compute_calibration_map()
         # Le cache des prédictions doit suivre immédiatement le cache Mongo des
         # matchs. Sans ce contrôle, un refresh du flux pouvait laisser l'API
