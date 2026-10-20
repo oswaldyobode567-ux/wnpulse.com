@@ -802,7 +802,6 @@ def analyze_all(matches: List[Dict], real_stats_map: Optional[Dict] = None) -> L
     return [
         analyze_match(m, real_stats_map=real_stats_map)
         for m in matches
-        if m.get("bookmakers")
     ]
 
 
@@ -1388,3 +1387,134 @@ def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
         "ultra_safe": ultra_safe,
         "families": per_family,
     }
+
+# Experimental football model: never replaces the public selection.
+def _shadow_analysis(match, stats_map=None):
+    import math
+    def number(value):
+        try:
+            value = float(value)
+            return value if math.isfinite(value) else None
+        except (ValueError, TypeError):
+            return None
+    result = {"version": "shadow-football-0.1", "mode": "shadow",
+              "status": "market_only", "candidates": [], "calibrated": False}
+    if not str(match.get("sport_key", "")).startswith("soccer"):
+        result["reason"] = "sport_model_not_available"
+        return result
+    stats = lookup_real_stats(stats_map or {}, match.get("home_team", ""), match.get("away_team", "")) or {}
+    cutoff = match.get("commence_time")
+    try:
+        kickoff = datetime.fromisoformat(cutoff.replace("Z", "+00:00"))
+        kickoff = kickoff.replace(tzinfo=timezone.utc) if kickoff.tzinfo is None else kickoff
+        now = datetime.now(timezone.utc)
+        as_of = min(now, kickoff)
+    except (ValueError, TypeError, AttributeError):
+        result["reason"] = "invalid_kickoff"
+        return result
+    def history(rows):
+        valid = []
+        seen = set()
+        for row in rows or []:
+            try:
+                played = datetime.fromisoformat(row["date"].replace("Z", "+00:00"))
+                played = played.replace(tzinfo=timezone.utc) if played.tzinfo is None else played
+                gf, ga = number(row.get("goals_for")), number(row.get("goals_against"))
+                identity = row.get("id") or (row["date"], gf, ga)
+                if played < as_of and 0 <= (as_of-played).days <= 365 and gf is not None and ga is not None and 0 <= gf <= 30 and 0 <= ga <= 30 and identity not in seen:
+                    valid.append((played, gf, ga)); seen.add(identity)
+            except (ValueError, TypeError, KeyError):
+                continue
+        return sorted(valid, reverse=True)[:10]
+    home = history(stats.get("history_home"))
+    away = history(stats.get("history_away"))
+    result["sample"] = {"home": len(home), "away": len(away)}
+    if len(home) < 5 or len(away) < 5:
+        result["reason"] = "insufficient_observed_history"
+        return result
+    def rates(rows):
+        weights = [math.exp(-math.log(2)*(as_of-r[0]).days/90) for r in rows]
+        # Explicit weak prior to limit small-sample extremes, not a learned league baseline.
+        return tuple((sum(w*r[i] for w,r in zip(weights,rows))+3*1.3)/(sum(weights)+3) for i in (1,2))
+    hf, ha = rates(home); af, aa = rates(away)
+    lh, la = max(.15,min(5,(hf+aa)/2)), max(.15,min(5,(af+ha)/2))
+    ph = [math.exp(-lh)*lh**i/math.factorial(i) for i in range(21)]
+    pa = [math.exp(-la)*la**i/math.factorial(i) for i in range(21)]
+    grid = [(h,a,ph[h]*pa[a]) for h in range(21) for a in range(21)]
+    mass = sum(v for _,_,v in grid)
+    def probability(key, name, point):
+        if key == "h2h":
+            predicate = (lambda h,a:h>a) if name==match.get("home_team") else (lambda h,a:a>h) if name==match.get("away_team") else (lambda h,a:h==a) if name.lower()=="draw" else None
+        elif key == "totals" and point is not None and point % 1 == .5:
+            predicate = (lambda h,a:h+a>point) if name.lower()=="over" else (lambda h,a:h+a<point) if name.lower()=="under" else None
+        elif key == "btts":
+            predicate = (lambda h,a:h>0 and a>0) if name.lower()=="yes" else (lambda h,a:h==0 or a==0) if name.lower()=="no" else None
+        else:
+            predicate = None
+        return sum(v for h,a,v in grid if predicate(h,a))/mass if predicate else None
+    groups = {}
+    for book in match.get("bookmakers", []) or []:
+        book_id = book.get("key") or book.get("title")
+        if not book_id:
+            continue
+        for market in book.get("markets", []) or []:
+            key = market.get("key")
+            if key not in ("h2h", "totals", "btts"):
+                continue
+            lines = {}
+            for outcome in market.get("outcomes", []) or []:
+                name = str(outcome.get("name", "")); odds = number(outcome.get("price"))
+                point = number(outcome.get("point")) if key=="totals" else None
+                if odds is not None and odds>1 and name:
+                    lines.setdefault(point, {})[name]=(odds,outcome)
+            for point, outcomes in lines.items():
+                names = set(outcomes)
+                expected = {match.get("home_team"),match.get("away_team"),"Draw"} if key=="h2h" else {"Over","Under"} if key=="totals" else {"Yes","No"}
+                if names != expected:
+                    continue
+                margin = sum(1/v[0] for v in outcomes.values())
+                for name,(odds,_) in outcomes.items():
+                    p = probability(key,name,point)
+                    if p is None:
+                        continue
+                    entry = groups.setdefault((key,point,name), {"probs":{},"odds":0,"bookmaker":None,"sport_probability":p})
+                    entry["probs"][book_id]=(1/odds)/margin
+                    if odds>entry["odds"]:
+                        entry["odds"]=odds;entry["bookmaker"]=book.get("title") or book_id
+    # Weight is deliberately conservative and experimental; validate before promotion.
+    weight = .25 * min(1, min(len(home),len(away))/10)
+    for (key,point,name),entry in groups.items():
+        market_p = statistics.median(entry["probs"].values())
+        p = weight*entry["sport_probability"]+(1-weight)*market_p
+        result["candidates"].append({"market":key,"point":point,"pick":name,
+            "odds":entry["odds"],"bookmaker":entry["bookmaker"],"num_books":len(entry["probs"]),
+            "market_probability":round(100*market_p,2),"sport_probability":round(100*entry["sport_probability"],2),
+            "experimental_probability":round(100*p,2),"expected_return":round(p*entry["odds"]-1,4)})
+    result["candidates"].sort(key=lambda c:c["expected_return"],reverse=True)
+    result.update(status="experimental" if groups else "market_only", reason="observed_history" if groups else "no_supported_quoted_market",
+                  expected_goals={"home":round(lh,3),"away":round(la,3)},sport_weight=weight,
+                  generated_at=now.isoformat(),as_of=as_of.isoformat())
+    return result
+
+
+_public_analyze_match = analyze_match
+
+
+def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
+    # Keep public historical behaviour until prospective validation of the new model.
+    home, away = match.get("home_team", ""), match.get("away_team", "")
+    observed = lookup_real_stats(real_stats_map or {}, home, away)
+    public_stats = {}
+    if observed:
+        key = "".join(c.lower() for c in home if c.isalnum()) + "|" + "".join(c.lower() for c in away if c.isalnum())
+        public_stats[key] = {k:v for k,v in observed.items() if k not in ("real_data_used", "history_home", "history_away")}
+    result = _public_analyze_match(match, real_stats_map=public_stats)
+    result["analysis_status"] = "available" if result.get("pick") else "unavailable"
+    result["unavailable_reason"] = None if result.get("pick") else (
+        "no_bookmaker_quotes" if not match.get("bookmakers") else "no_eligible_quoted_selection")
+    try:
+        result["shadow_analysis"] = _shadow_analysis(match,real_stats_map)
+    except Exception:
+        # Experimental analysis must never take down the public feed.
+        result["shadow_analysis"] = {"mode":"shadow","status":"error","reason":"experimental_analysis_failed","candidates":[]}
+    return result
