@@ -51,6 +51,7 @@ from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
+    _legacy_build_today_combos_by_sport,
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
@@ -10913,11 +10914,124 @@ def _prepare_today_combo_tier(tier: dict, tier_key: str, is_paid: bool) -> dict:
     prepared["legs"] = visible
     if prepared["locked"]:
         # In a two-leg preview, the total odds would reveal the hidden leg's odds.
-        for field in ("total_odds", "avg_confidence", "combined_probability", "correlation_penalty"):
+        for field in ("total_odds", "avg_confidence", "combined_probability", "correlation_penalty", "independence_estimate", "candidate_count"):
             prepared[field] = None
         prepared["tagline"] = "Sélections complètes réservées aux abonnés"
         prepared["description"] = "Consulte les rencontres ; débloque leurs sélections avec Pro."
     return prepared
+
+
+_today_quality_lock = asyncio.Lock()
+_today_quality_cache = {"at":0.0,"data":None,"source":None}
+
+
+async def _archive_today_combos(data, version):
+    """Store every distinct published ticket before kickoff, never rewrite its odds."""
+    operations = []
+    captured = datetime.now(timezone.utc)
+    day = (captured+timedelta(hours=1)).date().isoformat()
+    for family_key,family in data.get("families",{}).items():
+        for tier_key,tier in family.get("tiers",{}).items():
+            legs = tier.get("legs") or []
+            if len(legs)<2 or any(not _parse_iso(p.get("commence_time")) or _parse_iso(p.get("commence_time"))<=captured for p in legs):
+                continue
+            fingerprint = [[p.get("match_id"),p.get("market"),p.get("pick"),p.get("pick_point"),p.get("pick_odds")] for p in legs]
+            identity = hashlib.sha256(json.dumps([version,day,family_key,tier_key,fingerprint],sort_keys=True,ensure_ascii=False).encode()).hexdigest()
+            tier["ticket_id"] = identity
+            operations.append(UpdateOne({"_id":identity},{"$setOnInsert":{
+                "_id":identity,"version":version,"day":day,"family":family_key,"tier":tier_key,
+                "captured_at":captured.isoformat(),"ticket":copy.deepcopy(tier),"result":"pending"}},upsert=True))
+    if operations:
+        await db.today_combo_history.bulk_write(operations,ordered=False)
+
+
+async def _quality_today_data(matches):
+    async with _today_quality_lock:
+        cache_source = await db.odds_cache.find_one({"_id":"all_matches"},{"updated_at":1})
+        source_stamp = (cache_source or {}).get("updated_at")
+        cached = _today_quality_cache["data"]
+        if cached and _today_quality_cache["source"]==source_stamp and time.monotonic()-_today_quality_cache["at"]<60:
+            # A cached ticket must never contain a newly-started fixture.
+            if all(_parse_iso(p.get("commence_time")) and _parse_iso(p["commence_time"])>datetime.now(timezone.utc)
+                   for f in cached["families"].values() for t in f["tiers"].values() for p in t.get("legs",[])):
+                return copy.deepcopy(cached)
+        result = build_today_combos_by_sport(matches)
+        try:
+            await asyncio.wait_for(_archive_today_combos(result,"today-quality-1"),timeout=3)
+            # Baseline is observational only. It does not influence public selection.
+            legacy = _legacy_build_today_combos_by_sport(matches)
+            await asyncio.wait_for(_archive_today_combos(legacy,"today-legacy"),timeout=3)
+            result["history_saved"] = True
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Combo history not saved: %s",type(exc).__name__)
+            result["history_saved"] = False
+        _today_quality_cache.update(at=time.monotonic(),data=copy.deepcopy(result),source=source_stamp)
+        return result
+
+
+async def _settle_today_combo_history():
+    # Only use exact, already-confirmed market outcomes from the official track.
+    # Unsupported/unmatched markets remain pending; never infer a win from time.
+    pending = await db.today_combo_history.find({"result":"pending"}).sort("captured_at",1).to_list(length=None)
+    match_ids = list({str(p.get("match_id")) for row in pending for p in row["ticket"].get("legs",[])})
+    if not match_ids:
+        return
+    outcomes = await db.predictions_history.find({"match_id":{"$in":match_ids},"result":{"$in":["won","lost","void"]}}).to_list(length=None)
+    index = {}
+    for outcome in outcomes:
+        key = (str(outcome.get("match_id")),outcome.get("market"),outcome.get("pick"))
+        index.setdefault(key,[]).append(outcome)
+    operations = []
+    for row in pending:
+        results,returned = [],1.0
+        for leg in row["ticket"].get("legs",[]):
+            choices = index.get((str(leg.get("match_id")),leg.get("market"),leg.get("pick")),[])
+            start = _parse_iso(leg.get("commence_time"))
+            exact = next((p for p in choices if start and _parse_iso(p.get("commence_time"))
+                          and abs((start-_parse_iso(p["commence_time"])).total_seconds())<60
+                          and p.get("home_team")==leg.get("home_team") and p.get("away_team")==leg.get("away_team")
+                          and ("pick_point" not in p or p.get("pick_point")==leg.get("pick_point"))),None)
+            state = exact.get("result") if exact else "pending"
+            results.append(state)
+            if state=="won":
+                returned *= float(leg["pick_odds"])
+        result = "lost" if "lost" in results else "pending" if "pending" in results else "void" if all(v=="void" for v in results) else "won"
+        if result!="pending":
+            operations.append(UpdateOne({"_id":row["_id"],"result":"pending"},{"$set":{
+                "result":result,"leg_results":results,"settled_at":datetime.now(timezone.utc).isoformat(),
+                "unit_return":0 if result=="lost" else round(returned,6)}}))
+    if operations:
+        await db.today_combo_history.bulk_write(operations,ordered=False)
+
+
+@app.get("/api/admin/today-combos/evaluation")
+async def today_combos_evaluation(payload:dict=Depends(get_current_user_payload)):
+    user = await _get_user_from_payload(payload)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403,detail="Accès administrateur requis")
+    await _settle_today_combo_history()
+    rows = await db.today_combo_history.find({}).sort("captured_at",1).to_list(length=None)
+    # One first-captured ticket per day/family/tier/version; refreshes aren't extra trials.
+    first = {}
+    for row in rows:
+        key = (row["version"],row["day"],row["family"],row["tier"])
+        first.setdefault(key,row)
+    groups = {}
+    for row in first.values():
+        key = (row["version"],row["family"],row["tier"])
+        group = groups.setdefault(key,{"version":key[0],"family":key[1],"tier":key[2],"tickets":0,"won":0,"lost":0,"void":0,"pending":0,"unit_return":0.0})
+        group["tickets"]+=1
+        group[row["result"]]+=1
+        group["unit_return"]+=row.get("unit_return",0)
+    for group in groups.values():
+        settled = group["won"]+group["lost"]+group["void"]
+        group["settled"] = settled
+        group["settlement_coverage_percent"] = round(100*settled/group["tickets"],1)
+        group["comparison_ready"] = False
+        group["roi_percent"] = round((group["unit_return"]/settled-1)*100,2) if settled else None
+        group["win_rate_percent"] = round(group["won"]/(group["won"]+group["lost"])*100,2) if group["won"]+group["lost"] else None
+    return {"sample_unit":"Premier ticket par jour, sport, format et version", "groups":list(groups.values()),
+            "automatic_promotion":False,"note":"Groupes corrélés possibles. Résultats inconnus exclus du rendement et comptés en attente. Aucun avantage démontré à ce stade."}
 
 
 async def _load_today_combo_data(payload: Optional[dict]) -> dict:
@@ -10937,7 +11051,7 @@ async def _load_today_combo_data(payload: Optional[dict]) -> dict:
         except (ValueError, TypeError):
             continue
     # Keep the engine's selections and scores; only exclude unavailable events.
-    result = copy.deepcopy(build_today_combos_by_sport(upcoming))
+    result = await _quality_today_data(upcoming)
     for family in result.get("families", {}).values():
         family["tiers"] = {
             key: _prepare_today_combo_tier(tier, key, is_paid)
@@ -10947,7 +11061,7 @@ async def _load_today_combo_data(payload: Optional[dict]) -> dict:
         result["ultra_safe"] = _prepare_today_combo_tier(result["ultra_safe"], "ultra_safe", is_paid)
     result["access"] = {"is_paid": is_paid}
     result["upcoming_matches_today"] = result.get("total_matches_today", 0)
-    result["schedule_timezone"] = "UTC"  # The existing engine's today boundary.
+    result["schedule_timezone"] = "Africa/Porto-Novo"  # Existing engine uses UTC+1.
     result["loaded_at"] = now.isoformat()
     return result
 
@@ -13968,6 +14082,12 @@ async def _full_refresh_and_track():
     except Exception:
         pass
     await _reconcile_predictions_with_scores(force_score_refresh=True)
+    try:
+        upcoming_for_combos = [m for m in all_matches if _parse_iso(m.get("commence_time")) and _parse_iso(m["commence_time"])>datetime.now(timezone.utc)]
+        await _quality_today_data(upcoming_for_combos)
+        await _settle_today_combo_history()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Combo comparison refresh failed: %s",type(exc).__name__)
     await _invalidate_prediction_cache()
     try:
         await _sync_retained_value_bets(await _get_prediction_snapshot(), force=True)
@@ -14240,4 +14360,3 @@ async def shutdown_event():
             pass
     if scheduler.running:
         scheduler.shutdown(wait=False)
-
