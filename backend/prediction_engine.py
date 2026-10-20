@@ -1724,3 +1724,117 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         # Experimental analysis must never take down the public feed.
         result["shadow_analysis"] = {"mode":"shadow","status":"error","reason":"experimental_analysis_failed","candidates":[]}
     return result
+
+# Personalized construction reuses today's quality gates without limiting the feed.
+PERSONAL_COMBO_VERSION = "personal-quality-1"
+
+
+def _personal_window(period, zone_name="Africa/Porto-Novo", now=None):
+    from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+    try:
+        zone = ZoneInfo(zone_name)
+    except (ZoneInfoNotFoundError, ValueError, TypeError):
+        raise ValueError("Invalid timezone")
+    now = now or datetime.now(timezone.utc)
+    local = now.astimezone(zone)
+    midnight = local.replace(hour=0,minute=0,second=0,microsecond=0)
+    if period=="today":
+        start,end = local,midnight+timedelta(days=1)
+    elif period=="tomorrow":
+        start,end = midnight+timedelta(days=1),midnight+timedelta(days=2)
+    elif period=="48h":
+        return now.astimezone(timezone.utc),now.astimezone(timezone.utc)+timedelta(hours=48)
+    elif period=="weekend":
+        shift = -1 if local.weekday()==6 else (5-local.weekday())%7
+        saturday = midnight+timedelta(days=shift)
+        start,end = max(local,saturday),saturday+timedelta(days=2)
+    else:
+        raise ValueError("Invalid period")
+    return start.astimezone(timezone.utc),end.astimezone(timezone.utc)
+
+
+def _personal_match_time(match):
+    if not isinstance(match.get("commence_time"),str) or "T" not in match["commence_time"]:
+        return None
+    try:
+        value = datetime.fromisoformat(str(match.get("commence_time") or "").replace("Z","+00:00"))
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    except (TypeError,ValueError):
+        return None
+
+
+def personal_combo_options(matches, now=None):
+    now = now or datetime.now(timezone.utc)
+    sports,leagues,books = {},{},{}
+    for match in matches:
+        start = _personal_match_time(match)
+        if not start or start<=now or match.get("completed") or match.get("is_finished"):
+            continue
+        key = str(match.get("sport_key") or "")
+        sport = key.split("_",1)[0]
+        if key and sport:
+            sports[sport] = {"key":sport,"label":sport}
+            leagues[key] = {"key":key,"sport":sport,"label":match.get("sport_title") or key}
+        for book in match.get("bookmakers",[]) or []:
+            identity = str(book.get("key") or book.get("title") or "").strip()
+            if identity:
+                books[identity] = {"key":identity,"label":book.get("title") or identity}
+    return {"sports":sorted(sports.values(),key=lambda x:x["key"]),
+            "leagues":sorted(leagues.values(),key=lambda x:x["label"]),
+            "bookmakers":sorted(books.values(),key=lambda x:x["label"])}
+
+
+def build_personalized_combos(matches, preferences, now=None):
+    now = now or datetime.now(timezone.utc)
+    profiles = {"safe":TODAY_QUALITY_PROFILES[0],"balanced":TODAY_QUALITY_PROFILES[1],"bold":TODAY_QUALITY_PROFILES[2]}
+    profile_key = preferences.get("profile","balanced")
+    if profile_key not in profiles:
+        raise ValueError("Invalid profile")
+    wanted = preferences.get("max_legs",4)
+    if isinstance(wanted,bool) or not isinstance(wanted,int) or not 2<=wanted<=8:
+        raise ValueError("Invalid match count")
+    zone_name = preferences.get("timezone") or "Africa/Porto-Novo"
+    period = preferences.get("period","today")
+    start,end = _personal_window(period,zone_name,now)
+    sports = set(preferences.get("sports") or [])
+    leagues = set(preferences.get("leagues") or [])
+    excluded = {str(v) for v in preferences.get("excluded_match_ids") or []}
+    bookmaker = preferences.get("bookmaker") or "auto"
+    selected_matches = []
+    for match in matches:
+        stamp = _personal_match_time(match)
+        key = str(match.get("sport_key") or "")
+        identity = str(match.get("id") or match.get("match_id") or "")
+        if not stamp or not start<=stamp<end or stamp<=now or identity in excluded:
+            continue
+        if sports and key.split("_",1)[0] not in sports or leagues and key not in leagues:
+            continue
+        if match.get("is_finished") or match.get("completed"):
+            continue
+        selected_matches.append({**match,"commence_time":stamp.astimezone(timezone.utc).isoformat()})
+    pool = _today_pool(selected_matches)
+    if bookmaker!="auto":
+        pool = [{**p,"_quotes":{bookmaker:p["_quotes"][bookmaker]}} for p in pool if bookmaker in p["_quotes"]]
+    original = profiles[profile_key]
+    maximum = min(wanted,original[3])
+    profile = (original[0],original[1],min(original[2],maximum),maximum,*original[4:])
+    legs,count = _today_select(pool,profile,set())
+    principal = _today_ticket(legs,profile,count)
+    signature = tuple(sorted((p["match_id"],p["market"],p["pick"],str(p.get("pick_point"))) for p in legs))
+    alternatives,_ = _today_select(pool,profile,{p["match_id"] for p in legs},{signature}) if legs else ([],count)
+    alternative = _today_ticket(alternatives,profile,count) if alternatives else None
+    principal["shortened"] = bool(legs) and len(legs)<maximum
+    if alternative:
+        alternative["shortened"] = len(alternatives)<maximum
+    shared = sorted({p["match_id"] for p in legs} & {p["match_id"] for p in alternatives})
+    for ticket in (principal,alternative):
+        if ticket is not None:
+            ticket["shared_matches"] = shared
+            ticket["selection_version"] = PERSONAL_COMBO_VERSION
+    expires = min([now+timedelta(minutes=5)]+[_personal_match_time(p) for p in legs+alternatives if _personal_match_time(p)])
+    return {"principal":principal,"alternative":alternative,
+            "preferences":{**preferences,"max_legs":maximum,"timezone":zone_name},
+            "period_start":start.isoformat(),"period_end":end.isoformat(),
+            "available_matches":len(selected_matches),"eligible_selections":count,
+            "generated_at":now.isoformat(),"expires_at":expires.isoformat(),
+            "selection_version":PERSONAL_COMBO_VERSION}
