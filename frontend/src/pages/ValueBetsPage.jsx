@@ -8,7 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Target, Lock, Sparkles, Info, CalendarDays, Clock, RefreshCw, ChevronDown } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import PaymentModal from "@/components/payment/PaymentModal";
+
 const TIME_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
 function numberFormat(i18n) {
   return new Intl.NumberFormat(i18n.locale, {
@@ -108,7 +108,7 @@ function filterBets(bets, dateFilter, sortOrder, now) {
   const selectedDay = dateFilter === "today" ? dayKey(now) : dateFilter === "tomorrow" ? tomorrowKey(now) : null;
   return bets.filter(bet => {
     const stamp = matchTimestamp(bet.commence_time || bet.start_time);
-    if (stamp !== null && stamp <= now) return false;
+    if (["finished", "cancelled", "canceled"].includes(bet.state) || bet.completed === true) return false;
     return selectedDay === null || stamp !== null && dayKey(stamp) === selectedDay;
   }).sort((a, b) => {
     const aTime = matchTimestamp(a.commence_time || a.start_time) ?? Infinity;
@@ -122,10 +122,24 @@ function filterBets(bets, dateFilter, sortOrder, now) {
 function metric(i18n, value, suffix = " %") {
   return value === null ? "Non communiqué" : `${numberFormat(i18n).format(value)}${suffix}`;
 }
+const RETENTION = {
+ fr: ["Sélections conservées jusqu’à la fin ou l’annulation confirmée du match. Les chiffres affichés sont ceux de la détection, pas une garantie de valeur actuelle.", "Actualisation indisponible : les dernières sélections restent affichées.", "Cote à la détection", "À venir", "En direct", "Match commencé · fin à confirmer", "Dernière cote observée", "Cote actuelle non confirmée", "L’avantage initial n’est plus détecté", "Détecté le"],
+ en: ["Selections remain until the match is confirmed finished or cancelled. Figures refer to detection, not guaranteed current value.", "Refresh unavailable: previous selections remain visible.", "Odds at detection", "Upcoming", "Live", "Started · finish unconfirmed", "Last observed odds", "Current odds unconfirmed", "Initial edge no longer detected", "Detected on"],
+ es: ["Las selecciones se conservan hasta el final o cancelación confirmados. Las cifras corresponden a la detección, no al valor actual garantizado.", "Sin actualización: se mantienen las últimas selecciones.", "Cuota al detectar", "Próximo", "En directo", "Iniciado · final sin confirmar", "Última cuota observada", "Cuota actual sin confirmar", "Ventaja inicial ya no detectada", "Detectado el"],
+ pt: ["Seleções mantidas até ao fim ou cancelamento confirmado. Os números são da deteção e não garantem valor atual.", "Atualização indisponível: últimas seleções mantidas.", "Cotação na deteção", "Por começar", "Ao vivo", "Iniciado · fim por confirmar", "Última cotação observada", "Cotação atual não confirmada", "Vantagem inicial já não detetada", "Detetado em"],
+ de: ["Auswahlen bleiben bis zum bestätigten Spielende oder zur Absage. Zahlen gelten zum Erkennungszeitpunkt, nicht als Zusage eines aktuellen Vorteils.", "Aktualisierung nicht verfügbar: letzte Auswahlen bleiben sichtbar.", "Quote bei Erkennung", "Bevorstehend", "Live", "Begonnen · Ende unbestätigt", "Zuletzt beobachtete Quote", "Aktuelle Quote unbestätigt", "Ursprünglicher Vorteil nicht mehr erkannt", "Erkannt am"],
+ ar: ["تبقى الاختيارات حتى تأكيد نهاية المباراة أو إلغائها. الأرقام تخص وقت الاكتشاف ولا تضمن قيمة حالية.", "التحديث غير متاح: تبقى آخر الاختيارات ظاهرة.", "السعر عند الاكتشاف", "قادمة", "مباشر", "بدأت · النهاية غير مؤكدة", "آخر سعر مرصود", "السعر الحالي غير مؤكد", "لم تعد الأفضلية الأصلية مرصودة", "اكتُشف في"]
+};
+function retentionCopy(i18n) {
+ const code = String(i18n.language || i18n.lang || i18n.locale || "fr").slice(0,2);
+ const [retained, stale, original, upcoming, live, started, lastOdds, missing, lostEdge, detected] = RETENTION[code] || RETENTION.fr;
+ return {retained, stale, original, upcoming, live, started, lastOdds, missing, lostEdge, detected};
+}
 function ValueBetCard({
   bet
 }) {
   const i18n = usePageLanguage();
+  const copy = retentionCopy(i18n);
   const kickoff = kickoffLabels(i18n, matchTimestamp(bet.commence_time || bet.start_time));
   const {
     odds,
@@ -148,6 +162,7 @@ function ValueBetCard({
           }))}
           </Badge>
         </div>
+        <div className="mt-3 text-xs font-semibold text-slate-600">{bet.phase === "live" ? copy.live : matchTimestamp(bet.commence_time) !== null && matchTimestamp(bet.commence_time) <= Date.now() ? copy.started : copy.upcoming}</div>
         <h2 className="mt-4 break-words font-heading text-xl font-extrabold leading-snug text-slate-900">
           {i18n.tx(bet.home_team || "Équipe domicile")}<span className="mx-2 font-normal text-slate-400">{i18n.t("vs")}</span>{i18n.tx(bet.away_team || "Équipe extérieure")}
         </h2>
@@ -161,11 +176,16 @@ function ValueBetCard({
           <p className="text-xs font-semibold text-slate-600">{i18n.tx(bet.market_label || "Marché non communiqué")}</p>
           <div className="mt-2 flex flex-wrap items-center justify-between gap-3">
             <p className="min-w-0 break-words text-base font-bold text-orange-700">{i18n.tx(bet.pick || "Sélection non communiquée")}</p>
-            <span className="shrink-0 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-slate-800">{i18n.rich("Cote {{v0}}", {
+            <span className="shrink-0 rounded-lg bg-white px-3 py-2 text-sm font-semibold text-slate-800">{i18n.rich(`${bet.historical_quote ? copy.original : i18n.t("Cote")} {{v0}}`, {
               v0: <strong className="ms-1 font-mono text-lg">{i18n.tx(odds === null ? "—" : oddsFormat(i18n).format(odds))}</strong>
             })}</span>
           </div>
         </div>
+        {bet.historical_quote && <div className="mt-3 space-y-1 text-xs leading-relaxed text-slate-500">
+          {bet.detected_at && <p>{copy.detected} {new Intl.DateTimeFormat(i18n.locale, {dateStyle:"short", timeStyle:"short"}).format(new Date(bet.detected_at))}</p>}
+          <p>{bet.quote_available && finiteNumber(bet.current_odds) > 1 ? `${copy.lastOdds} : ${oddsFormat(i18n).format(bet.current_odds)}` : copy.missing}</p>
+          {bet.quote_available && !bet.value_currently_detected && <p className="text-amber-700">{copy.lostEdge}</p>}
+        </div>}
         <dl className="mt-5 grid grid-cols-1 gap-3 min-[400px]:grid-cols-2">
           <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-600">{i18n.t("Estimation WinPulse")}</dt><dd className="mt-1 font-mono text-base font-bold text-slate-900">{i18n.tx(metric(i18n, probability))}</dd></div>
           <div className="rounded-lg bg-slate-50 p-3"><dt className="text-xs text-slate-600">{i18n.t("Probabilit\xE9 implicite de la cote")}</dt><dd className="mt-1 font-mono text-base font-bold text-slate-900">{i18n.tx(metric(i18n, implied))}</dd></div>
@@ -190,6 +210,7 @@ function ValueBetCard({
 }
 export default function ValueBetsPage() {
   const i18n = usePageLanguage();
+  const copy = retentionCopy(i18n);
   const {
     user,
     loading: authLoading = false
@@ -203,10 +224,6 @@ export default function ValueBetsPage() {
   const [reloadKey, setReloadKey] = useState(0);
   const [dateFilter, setDateFilter] = useState("all");
   const [sortOrder, setSortOrder] = useState("edge");
-  const [payState, setPayState] = useState({
-    isOpen: false,
-    tier: "PRO"
-  });
   const tier = String(user?.subscription || user?.subscription_tier || "free").trim().toLowerCase();
   const expiry = matchTimestamp(user?.subscription_expires_at);
   const isFree = !user || !user.is_admin && (tier === "free" || expiry !== null && expiry <= now);
@@ -216,18 +233,14 @@ export default function ValueBetsPage() {
     bets: []
   };
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    const timer = window.setInterval(() => { setNow(Date.now()); if (document.visibilityState === "visible") setReloadKey(value => value + 1); }, 60_000);
     return () => window.clearInterval(timer);
   }, []);
   useEffect(() => {
     if (authLoading || isFree) return;
     const controller = new AbortController();
     let active = true;
-    setRequest({
-      key: accessKey,
-      status: "loading",
-      bets: []
-    });
+    setRequest(previous => ({ key: accessKey, status: "loading", bets: previous.key === accessKey ? previous.bets : [] }));
     api.get("/value-bets", {
       signal: controller.signal,
       timeout: 15_000
@@ -238,18 +251,18 @@ export default function ValueBetsPage() {
       if (active) setRequest({
         key: accessKey,
         status: "ready",
-        bets
+        bets, stale: Boolean(data.stale)
       });
     }).catch(error => {
       if (!active || controller.signal.aborted) return;
       const status = error?.response?.status;
-      setRequest({
+      setRequest(previous => ({
         key: accessKey,
         status: status === 403 ? "locked" : "error",
-        bets: [],
+        bets: status === 401 || status === 403 || previous.key !== accessKey ? [] : previous.bets,
         message: status === 401 ? "Ta session a expiré. Reconnecte-toi pour consulter les sélections." : "Les sélections ne peuvent pas être chargées pour le moment. Réessaie dans quelques instants.",
         sessionExpired: status === 401
-      });
+      }));
     });
     return () => {
       active = false;
@@ -257,10 +270,6 @@ export default function ValueBetsPage() {
     };
   }, [authLoading, isFree, accessKey, reloadKey]);
   const visibleBets = useMemo(() => filterBets(current.bets, dateFilter, sortOrder, now), [current.bets, dateFilter, sortOrder, now]);
-  const startedCount = current.bets.filter(bet => {
-    const start = matchTimestamp(bet.commence_time || bet.start_time);
-    return start !== null && start <= now;
-  }).length;
   const locked = isFree || current.status === "locked";
   return <AppLayout>
       <div className="mx-auto max-w-6xl px-4 py-8 sm:px-6 lg:px-8">
@@ -290,15 +299,12 @@ export default function ValueBetsPage() {
           </div>
         </Card>
 
-        {i18n.tx(authLoading || !locked && current.status === "loading" ? <div className="grid gap-5 md:grid-cols-2" role="status" aria-label={i18n.t("Chargement des sélections")}><Skeleton className="h-80" /><Skeleton className="h-80" /></div> : locked ? <Card className="border-dashed border-orange-200 bg-white p-8 text-center" data-testid="value-bets-locked">
+        {i18n.tx(authLoading || !locked && current.status === "loading" && !current.bets.length ? <div className="grid gap-5 md:grid-cols-2" role="status" aria-label={i18n.t("Chargement des sélections")}><Skeleton className="h-80" /><Skeleton className="h-80" /></div> : locked ? <Card className="border-dashed border-orange-200 bg-white p-8 text-center" data-testid="value-bets-locked">
             <Lock className="mx-auto mb-3 h-10 w-10 text-orange-500" aria-hidden="true" />
             <h2 className="mb-2 font-heading text-2xl font-extrabold text-slate-900">{i18n.t("Les value bets sont r\xE9serv\xE9s \xE0 Pro")}</h2>
             <p className="mx-auto mb-5 max-w-xl text-sm leading-relaxed text-slate-600">{i18n.t("Acc\xE8de aux rencontres, dates, march\xE9s et explications des s\xE9lections avec ton abonnement Pro.")}</p>
-            {i18n.tx(user ? <Button className="wp-gradient-warm border-0 text-white" data-testid="upgrade-value-bets-btn" onClick={() => setPayState({
-          isOpen: true,
-          tier: "PRO"
-        })}><Sparkles className="me-2 h-4 w-4" aria-hidden="true" />{i18n.t("D\xE9couvrir l\u2019offre Pro")}</Button> : <Button asChild className="wp-gradient-warm border-0 text-white"><Link to="/register">{i18n.t("Cr\xE9er mon compte")}</Link></Button>)}
-          </Card> : current.status === "error" ? <Card className="border-amber-200 bg-white p-8 text-center" role="alert">
+            {i18n.tx(user ? <Button asChild className="wp-gradient-warm border-0 text-white" data-testid="upgrade-value-bets-btn"><Link to="/app/abonnement"><Sparkles className="me-2 h-4 w-4" aria-hidden="true" />{i18n.t("Découvrir l’offre Pro")}</Link></Button> : <Button asChild className="wp-gradient-warm border-0 text-white"><Link to="/register">{i18n.t("Cr\xE9er mon compte")}</Link></Button>)}
+          </Card> : current.status === "error" && !current.bets.length ? <Card className="border-amber-200 bg-white p-8 text-center" role="alert">
             <p className="mb-4 text-sm text-slate-700">{i18n.tx(current.message)}</p>
             {i18n.tx(current.sessionExpired ? <Button asChild variant="outline"><Link to="/login">{i18n.t("Se reconnecter")}</Link></Button> : <Button variant="outline" onClick={() => setReloadKey(value => value + 1)}>{i18n.t("R\xE9essayer")}</Button>)}
           </Card> : <>
@@ -315,26 +321,18 @@ export default function ValueBetsPage() {
               </div>
               <div className="flex flex-wrap gap-3">
                 <label className="text-xs font-semibold text-slate-600">{i18n.rich("Date{{v0}}", {
-                v0: <select className="mt-1 block min-h-11 rounded-lg border border-neutral-200 bg-white px-3 text-sm font-normal text-slate-800" value={dateFilter} onChange={event => setDateFilter(event.target.value)}><option value="all">{i18n.t("Toutes les dates \xE0 venir")}</option><option value="today">{i18n.t("Aujourd\u2019hui")}</option><option value="tomorrow">{i18n.t("Demain")}</option></select>
+                v0: <select className="mt-1 block min-h-11 rounded-lg border border-neutral-200 bg-white px-3 text-sm font-normal text-slate-800" value={dateFilter} onChange={event => setDateFilter(event.target.value)}><option value="all">{i18n.t("Toutes les dates")}</option><option value="today">{i18n.t("Aujourd\u2019hui")}</option><option value="tomorrow">{i18n.t("Demain")}</option></select>
               })}</label>
                 <label className="text-xs font-semibold text-slate-600">{i18n.rich("Tri{{v0}}", {
                 v0: <select className="mt-1 block min-h-11 rounded-lg border border-neutral-200 bg-white px-3 text-sm font-normal text-slate-800" value={sortOrder} onChange={event => setSortOrder(event.target.value)}><option value="edge">{i18n.t("\xC9cart estim\xE9 d\xE9croissant")}</option><option value="date">{i18n.t("Date et heure")}</option></select>
               })}</label>
               </div>
             </div>
-            {i18n.tx(startedCount > 0 && <p className="mb-4 text-xs text-slate-500">{i18n.rich("{{v0}} s\xE9lection{{v1}} dont le match a d\xE9j\xE0 commenc\xE9 {{v2}} plus propos\xE9e{{v3}} ici.", {
-            v0: i18n.tx(startedCount),
-            v1: i18n.tx(startedCount === 1 ? "" : "s"),
-            v2: i18n.tx(startedCount === 1 ? "n’est" : "ne sont"),
-            v3: i18n.tx(startedCount === 1 ? "" : "s")
-          })}</p>)}
-            {i18n.tx(!visibleBets.length ? <Card className="border-neutral-200 bg-white p-10 text-center"><p className="font-semibold text-slate-800">{i18n.tx(dateFilter === "all" ? "Aucune sélection à venir disponible pour le moment." : "Aucune sélection disponible pour cette date.")}</p><p className="mt-2 text-sm text-slate-500">{i18n.tx(dateFilter === "all" ? "Reviens plus tard ou actualise les données." : "Essaie toutes les dates à venir.")}</p>{i18n.tx(dateFilter !== "all" && <Button variant="outline" className="mt-4" onClick={() => setDateFilter("all")}>{i18n.t("Voir toutes les dates")}</Button>)}</Card> : <div className="grid gap-5 md:grid-cols-2" data-testid="value-bets-list">{i18n.tx(visibleBets.map((bet, index) => <ValueBetCard key={`${bet.match_id || bet.id || `${bet.home_team}-${bet.away_team}`}:${bet.commence_time || bet.start_time || "unknown"}:${bet.market_label}:${bet.pick}:${index}`} bet={bet} />))}</div>)}
+            <p className="mb-4 rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm leading-relaxed text-slate-600">{copy.retained}</p>
+            {(current.status === "error" || current.stale) && <p role="alert" className="mb-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-800">{copy.stale}</p>}
+            {i18n.tx(!visibleBets.length ? <Card className="border-neutral-200 bg-white p-10 text-center"><p className="font-semibold text-slate-800">{i18n.tx(dateFilter === "all" ? "Aucune sélection disponible pour le moment." : "Aucune sélection disponible pour cette date.")}</p><p className="mt-2 text-sm text-slate-500">{i18n.tx(dateFilter === "all" ? "Reviens plus tard ou actualise les données." : "Essaie toutes les dates.")}</p>{i18n.tx(dateFilter !== "all" && <Button variant="outline" className="mt-4" onClick={() => setDateFilter("all")}>{i18n.t("Voir toutes les dates")}</Button>)}</Card> : <div className="grid gap-5 md:grid-cols-2" data-testid="value-bets-list">{i18n.tx(visibleBets.map((bet) => <ValueBetCard key={bet.id || `${bet.match_id || `${bet.home_team}-${bet.away_team}`}:${bet.commence_time}:${bet.market}:${bet.pick}:${bet.pick_point}`} bet={bet} />))}</div>)}
           </>)}
         <p className="mt-6 text-xs leading-relaxed text-slate-500">{i18n.t("Les estimations ne garantissent aucun r\xE9sultat. V\xE9rifie les cotes et les r\xE8gles du march\xE9 avant utilisation. 18+.")}</p>
       </div>
-      {i18n.tx(user && <PaymentModal isOpen={payState.isOpen} onClose={() => setPayState(state => ({
-      ...state,
-      isOpen: false
-    }))} targetTier={payState.tier} />)}
     </AppLayout>;
 }
