@@ -1388,6 +1388,212 @@ def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
         "families": per_family,
     }
 
+# Today-only selector. Public match predictions and other combo endpoints are unchanged.
+TODAY_SELECTION_VERSION = "today-quality-1"
+TODAY_QUALITY_PROFILES = (
+    ("sure", "Safe", 3, 3, 70, 45, 2, 7, 0.40),
+    ("booster", "Équilibré", 4, 6, 64, 35, 2, 9, 0.18),
+    ("jackpot", "Jackpot", 5, 8, 60, 25, 1, 11, 0.07),
+)
+
+
+def _today_number(value, default=None):
+    import math
+    try:
+        value = float(value)
+        return value if math.isfinite(value) else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _today_quotes(match, market):
+    """Actual same-market quotes, never attribute another market's bookmaker."""
+    quotes = {}
+    for book in match.get("bookmakers", []) or []:
+        key = str(book.get("key") or book.get("title") or "").strip()
+        if not key:
+            continue
+        for raw_market in book.get("markets", []) or []:
+            if raw_market.get("key") != market.get("market"):
+                continue
+            for outcome in raw_market.get("outcomes", []) or []:
+                if outcome.get("name") != market.get("pick_raw"):
+                    continue
+                if _today_number(outcome.get("point")) != _today_number(market.get("pick_point")):
+                    continue
+                price = _today_number(outcome.get("price"))
+                if price and price > 1:
+                    previous = quotes.get(key)
+                    if not previous or price > previous["odds"]:
+                        quotes[key] = {"odds":price, "title":book.get("title") or key,
+                                       "last_update":raw_market.get("last_update") or book.get("last_update")}
+    return quotes
+
+
+def _today_pool(matches):
+    candidates = []
+    for match in matches:
+        if not _is_upcoming(match.get("commence_time", "")) or match.get("completed") or match.get("is_finished"):
+            continue
+        analysis = analyze_match(match)
+        for market in analysis.get("markets", []) or []:
+            if market.get("source") != "bookmaker" or market.get("synthetic") or market.get("is_combo"):
+                continue
+            probability = _today_number(market.get("model_probability"))
+            confidence = _today_number(market.get("confidence"))
+            stability = _today_number(market.get("stability_score"))
+            books = _today_number(market.get("num_books"))
+            odds = _today_number(market.get("pick_odds"))
+            if any(v is None for v in (probability, confidence, stability, books, odds)):
+                continue
+            if not (0 < probability < 100 and 0 <= confidence <= 100 and 0 <= stability <= 100 and odds > 1 and books >= 1):
+                continue
+            quotes = _today_quotes(match, market)
+            if not quotes:
+                continue
+            quality = round(confidence*.50 + stability*.30 + min(100,books*25)*.20, 2)
+            candidates.append({**market, **{k:match.get(k) for k in (
+                "sport_key","sport_title","home_team","away_team","commence_time","country")},
+                "match_id":str(match.get("id") or match.get("match_id") or ""),
+                "quality_score":quality, "model_probability":probability, "confidence":confidence,
+                "stability_score":stability, "num_books":int(books), "pick_odds":odds, "_quotes":quotes})
+    return [p for p in candidates if p["match_id"]]
+
+
+def _today_common_books(legs):
+    if not legs:
+        return set()
+    return set.intersection(*(set(p["_quotes"]) for p in legs))
+
+
+def _today_joint(legs):
+    # Uncalibrated independence approximation, NOT an empirical success rate.
+    import math
+    return math.prod(p["model_probability"]/100 for p in legs)
+
+
+def _today_team_overlap(a, b):
+    teams_a = {str(a.get(k) or "").strip().casefold() for k in ("home_team","away_team")} - {""}
+    teams_b = {str(b.get(k) or "").strip().casefold() for k in ("home_team","away_team")} - {""}
+    return bool(teams_a & teams_b)
+
+
+def _today_objective(legs, previous):
+    mean = statistics.mean(p["quality_score"] for p in legs)
+    leagues = [p.get("sport_key") for p in legs]
+    concentration = len(legs)-len(set(leagues))
+    shared = sum(str(p["match_id"]) in previous for p in legs)
+    # Soft concentration/overlap preferences are heuristics, not correlation estimates.
+    return mean - 1.5*concentration - 2*shared
+
+
+def _today_select(pool, profile, previous, forbidden=()):
+    key,label,preferred,maximum,min_conf,min_stability,min_books,gap,min_joint = profile
+    eligible = [p for p in pool if p["confidence"]>=min_conf and p["stability_score"]>=min_stability and p["num_books"]>=min_books]
+    eligible.sort(key=lambda p:(-p["quality_score"],-p["model_probability"],p["match_id"],p["market"],p["pick"]))
+    # Bound search by distinct fixtures, retaining up to two genuine market alternatives each.
+    per_match = {}
+    for p in eligible:
+        if p["match_id"] not in per_match and len(per_match)>=28:
+            continue
+        bucket = per_match.setdefault(p["match_id"],[])
+        if len(bucket)<2:
+            bucket.append(p)
+    candidates = [p for bucket in per_match.values() for p in bucket]
+    seeds = []
+    for i,a in enumerate(candidates):
+        for b in candidates[i+1:]:
+            pair = [a,b]
+            if a["match_id"]==b["match_id"] or _today_team_overlap(a,b) or not _today_common_books(pair):
+                continue
+            if _today_joint(pair)<min_joint or abs(a["quality_score"]-b["quality_score"])>gap:
+                continue
+            seeds.append(pair)
+    seeds.sort(key=lambda legs:_today_objective(legs,previous),reverse=True)
+    choices = []
+    for seed in seeds[:24]:
+        selected = list(seed)
+        for candidate in candidates:
+            if len(selected)>=maximum:
+                break
+            if any(candidate["match_id"]==p["match_id"] or _today_team_overlap(candidate,p) for p in selected):
+                continue
+            # Never lower criteria to fill a requested count. Beyond the nominal
+            # length only candidates nearly as strong as the original pair qualify.
+            allowed_gap = gap if len(selected)<preferred else 2
+            if candidate["quality_score"] < statistics.mean(p["quality_score"] for p in seed)-allowed_gap:
+                continue
+            extended = selected+[candidate]
+            if not _today_common_books(extended) or _today_joint(extended)<min_joint:
+                continue
+            selected = extended
+        choices.append(selected)
+    choices = [legs for legs in choices if tuple(sorted((p["match_id"],p["market"],p["pick"],str(p.get("pick_point"))) for p in legs)) not in forbidden]
+    if not choices:
+        return [],len(eligible)
+    choices.sort(key=lambda legs:(_today_objective(legs,previous), min(len(legs),preferred)),reverse=True)
+    return choices[0],len(eligible)
+
+
+def _today_ticket(legs, profile, candidate_count):
+    import math
+    key,label,preferred,maximum,*_ = profile
+    if not legs:
+        return {"tier":key,"label":label,"legs":[],"leg_count":0,"total_odds":0,
+                "avg_confidence":None,"combined_probability":None,"status":"preparing",
+                "shortened":True,"preferred_legs":preferred,"maximum_legs":maximum,
+                "candidate_count":candidate_count,"selection_version":TODAY_SELECTION_VERSION}
+    common = _today_common_books(legs)
+    bookmaker = max(sorted(common),key=lambda book:math.prod(p["_quotes"][book]["odds"] for p in legs))
+    output = []
+    for leg in sorted(legs,key=lambda p:(p["commence_time"],p["match_id"])):
+        quote = leg["_quotes"][bookmaker]
+        output.append({**{k:v for k,v in leg.items() if not k.startswith("_")},
+                       "pick_odds":quote["odds"],"best_bookmaker":quote["title"],
+                       "bookmaker_key":bookmaker,"quote_updated_at":quote["last_update"],
+                       "edge":round(leg["model_probability"]-100/quote["odds"],2),
+                       "selection_reason":{"confidence":leg["confidence"],"stability":leg["stability_score"],
+                                           "bookmakers":leg["num_books"],"quality":leg["quality_score"]}})
+    return {"tier":key,"label":label,"legs":output,"leg_count":len(output),
+            "total_odds":round(math.prod(p["pick_odds"] for p in output),2),
+            "avg_confidence":round(statistics.mean(p["confidence"] for p in output),1),
+            "combined_probability":None,"independence_estimate":round(_today_joint(legs)*100,1),
+            "probability_validated":False,"bookmaker":output[0]["best_bookmaker"],
+            "bookmaker_key":bookmaker,"status":"ready","shortened":len(output)<preferred,
+            "preferred_legs":preferred,"maximum_legs":maximum,"candidate_count":candidate_count,
+            "selection_version":TODAY_SELECTION_VERSION}
+
+
+# Retained solely as a benchmark, not used to choose new public tickets.
+_legacy_build_today_combos_by_sport = build_today_combos_by_sport
+
+
+def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
+    today_matches = [m for m in matches if _is_today(m.get("commence_time", "")) and _is_upcoming(m.get("commence_time", ""))]
+    picks = _today_pool(today_matches)
+    families = {}
+    for family_key,family_label in SPORT_FAMILIES:
+        pool = picks if family_key=="all" else [p for p in picks if str(p.get("sport_key") or "").startswith(family_key)]
+        tiers,previous,ticket_sets = {},set(),set()
+        for profile in TODAY_QUALITY_PROFILES:
+            legs,count = _today_select(pool,profile,previous,ticket_sets)
+            signature = tuple(sorted((p["match_id"],p["market"],p["pick"],str(p.get("pick_point"))) for p in legs))
+            duplicate = signature in ticket_sets and bool(legs)
+            # Don't advertise the exact same combination as another product.
+            tier = _today_ticket([] if duplicate else legs,profile,count)
+            if duplicate:
+                tier["unavailable_reason"] = "duplicate"
+            else:
+                ticket_sets.add(signature)
+                previous.update(p["match_id"] for p in legs)
+            tiers[profile[0]] = tier
+        for tier in tiers.values():
+            tier["shared_matches"] = [p["match_id"] for p in tier["legs"] if sum(any(q["match_id"]==p["match_id"] for q in other["legs"]) for other in tiers.values())>1]
+        families[family_key] = {"family_key":family_key,"family_label":family_label,
+            "matches_today":sum(family_key=="all" or str(m.get("sport_key") or "").startswith(family_key) for m in today_matches),"tiers":tiers}
+    return {"generated_at":datetime.now(timezone.utc).isoformat(),"total_matches_today":len(today_matches),
+            "selection_version":TODAY_SELECTION_VERSION,"families":families}
+
 # Experimental football model: never replaces the public selection.
 def _shadow_analysis(match, stats_map=None):
     import math
