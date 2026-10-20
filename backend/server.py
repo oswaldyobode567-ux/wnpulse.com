@@ -11347,13 +11347,155 @@ async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_
 
 # ─── Value bets ───────────────────────────────────────────────────────────
 
+
+_value_retention_lock = asyncio.Lock()
+_value_retention_synced_at = 0.0
+
+
+def _value_identity(match_id, market, pick, point=None):
+    raw = json.dumps([str(match_id), market, pick, point], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _value_number(value):
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError,ValueError):
+        return None
+
+
+def _value_source_state(source):
+    status = str(source.get("status") or source.get("state") or "").strip().lower()
+    if status in ("cancelled","canceled"):
+        return "cancelled"
+    if source.get("completed") is True or status in ("finished","final","completed","full_time"):
+        return "finished"
+    return None
+
+
+async def _sync_retained_value_bets(snapshot, force=False):
+    global _value_retention_synced_at
+    async with _value_retention_lock:
+        if not force and time.monotonic()-_value_retention_synced_at < 45:
+            return
+        now = datetime.now(timezone.utc)
+        stamp = now.isoformat()
+        existing = await db.value_bet_archive.find({"state":"active"}).to_list(length=None)
+        by_id = {row["_id"]:row for row in existing}
+        matches = {str(m.get("id") or m.get("match_id")):m for m in snapshot.get("matches",[])}
+        terminal = {}
+        for identity,match in matches.items():
+            state = _value_source_state(match)
+            if state:
+                terminal[identity] = (state,match)
+        for cache_id in ("all_scores","live_scores"):
+            cache = await db.scores_cache.find_one({"_id":cache_id})
+            for score in (cache or {}).get("data",[]) or []:
+                identity = str(score.get("id") or score.get("match_id") or "")
+                state = _value_source_state(score)
+                if identity and state:
+                    terminal[identity] = (state,score)
+        observed = {}
+        for prediction in snapshot.get("predictions",[]):
+            match_id = str(prediction.get("match_id") or prediction.get("id") or "")
+            match = matches.get(match_id)
+            if not match_id or match is None:
+                continue
+            for market in prediction.get("markets",[]) or []:
+                if market.get("source") != "bookmaker" or market.get("synthetic"):
+                    continue
+                pick = str(market.get("pick") or "").strip()
+                key = market.get("market") or market.get("market_key")
+                odds, edge = _value_number(market.get("pick_odds")), _value_number(market.get("edge"))
+                if not key or not pick or odds is None or odds<=1 or edge is None:
+                    continue
+                probability = _value_number(market.get("model_probability"))
+                if probability is None:
+                    probability = 100/odds+edge
+                if not 0<=probability<=100:
+                    continue
+                identity = _value_identity(match_id,key,pick,market.get("pick_point"))
+                observed[identity] = {"match_id":match_id,"sport_key":match.get("sport_key"),
+                    "sport_title":match.get("sport_title"),"home_team":match.get("home_team"),
+                    "away_team":match.get("away_team"),"country":match.get("country"),
+                    "commence_time":match.get("commence_time"),"market":key,"market_label":market.get("market_label"),
+                    "pick":pick,"pick_point":market.get("pick_point"),"pick_odds":odds,
+                    "our_prob":probability,"implied_prob":100/odds,"edge":edge,
+                    "bookmaker":market.get("best_bookmaker")}
+        operations = []
+        for identity,candidate in observed.items():
+            if identity in by_id:
+                continue
+            starts = _parse_iso(candidate.get("commence_time"))
+            if not starts or starts <= now or candidate["edge"]<1.5 or candidate["match_id"] in terminal:
+                continue
+            row = {"_id":identity,**candidate,"state":"active","detected_at":stamp,
+                   "original_commence_time":candidate.get("commence_time")}
+            by_id[identity] = row
+            operations.append(UpdateOne({"_id":identity},{"$setOnInsert":row},upsert=True))
+        for identity,row in by_id.items():
+            match = matches.get(str(row.get("match_id")))
+            quote = observed.get(identity)
+            starts = _parse_iso((match or {}).get("commence_time") or row.get("commence_time"))
+            update = {"checked_at":stamp,"quote_available":quote is not None,
+                      "phase":"upcoming" if starts and starts>now else "started_unconfirmed"}
+            if match and match.get("is_live") is True:
+                update["phase"] = "live"
+            if match and match.get("commence_time"):
+                update["commence_time"] = match["commence_time"]
+            if quote:
+                update.update(current_odds=quote["pick_odds"],current_probability=quote["our_prob"],
+                              current_edge=quote["edge"],last_quote_at=stamp,
+                              value_currently_detected=quote["edge"]>=1.5)
+            else:
+                update["value_currently_detected"] = False
+            ending = terminal.get(str(row.get("match_id")))
+            if ending:
+                state,source = ending
+                source_time = _parse_iso(source.get("commence_time"))
+                # Don't apply a stale score for a rescheduled fixture or another team pairing.
+                same_time = not starts or not source_time or abs((starts-source_time).total_seconds())<=12*3600
+                same_teams = all(not source.get(k) or source[k]==row.get(k) for k in ("home_team","away_team"))
+                if same_time and same_teams:
+                    update.update(state=state,phase=state,finished_confirmed_at=stamp)
+            operations.append(UpdateOne({"_id":identity},{"$set":update}))
+        if operations:
+            # Ordered execution ensures inserts precede status updates for new detections.
+            await db.value_bet_archive.bulk_write(operations,ordered=True)
+        _value_retention_synced_at = time.monotonic()
+
+
+async def _retained_value_response(snapshot):
+    sync_error = False
+    try:
+        await _sync_retained_value_bets(snapshot)
+    except Exception as exc:
+        logging.getLogger("winpulse.value").warning("Value retention refresh failed (%s)",type(exc).__name__)
+        sync_error = True
+    rows = await db.value_bet_archive.find({"state":"active"}).sort("commence_time",1).to_list(length=None)
+    for row in rows:
+        row["id"] = row.pop("_id")
+        row["historical_quote"] = True
+        if sync_error:
+            row["quote_available"] = False
+    return {"count":len(rows),"bets":rows,"retained":True,"stale":sync_error,
+            "note":"Cote de détection conservée. Suppression de la liste active uniquement sur fin ou annulation confirmée."}
+
+
 @app.get("/api/value-bets")
 async def get_value_bets(payload: dict = Depends(get_current_user_payload)):
     await _require_paid_access(payload)
-    snapshot = await _get_prediction_snapshot()
-    matches = snapshot["matches"]
-    bets = find_value_bets(matches, min_edge=1.5, limit=30)
-    return {"count": len(bets), "bets": bets}
+    try:
+        snapshot = await _get_prediction_snapshot()
+    except Exception as exc:
+        logging.getLogger("winpulse.value").warning("Value source unavailable (%s)", type(exc).__name__)
+        rows = await db.value_bet_archive.find({"state":"active"}).sort("commence_time",1).to_list(length=None)
+        for row in rows:
+            row["id"] = row.pop("_id")
+            row.update(historical_quote=True, quote_available=False)
+        return {"count":len(rows), "bets":rows, "retained":True, "stale":True}
+    return await _retained_value_response(snapshot)
 
 
 # ─── Plans (alias) ────────────────────────────────────────────────────────
@@ -13827,6 +13969,10 @@ async def _full_refresh_and_track():
         pass
     await _reconcile_predictions_with_scores(force_score_refresh=True)
     await _invalidate_prediction_cache()
+    try:
+        await _sync_retained_value_bets(await _get_prediction_snapshot(), force=True)
+    except Exception as exc:
+        logging.getLogger("winpulse.value").warning("Scheduled value retention failed (%s)", type(exc).__name__)
     return matches
 
 
@@ -14094,3 +14240,4 @@ async def shutdown_event():
             pass
     if scheduler.running:
         scheduler.shutdown(wait=False)
+
