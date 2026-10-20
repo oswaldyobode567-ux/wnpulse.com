@@ -226,6 +226,23 @@ def _compute_h2h(home_matches: List[Dict], home_id: int, away_id: int,
 
 # ─── Point d'entree : refresh planifie (cache tout, pas d'appel live) ───────
 
+
+def _observed_history(matches, team_id):
+    rows = []
+    for match in matches:
+        if match.get("status") != "FINISHED":
+            continue
+        home = (match.get("homeTeam") or {}).get("id")
+        away = (match.get("awayTeam") or {}).get("id")
+        score = (match.get("score") or {}).get("fullTime") or {}
+        if team_id not in (home,away) or score.get("home") is None or score.get("away") is None:
+            continue
+        rows.append({"id":match.get("id"),"date":match.get("utcDate"),
+                     "goals_for":score["home"] if home==team_id else score["away"],
+                     "goals_against":score["away"] if home==team_id else score["home"],
+                     "venue":"home" if home==team_id else "away"})
+    return rows
+
 async def refresh_real_stats_cache(db, matches: List[Dict]) -> Dict:
     """
     Pour chaque match a venir dans une des 12 competitions couvertes,
@@ -297,6 +314,9 @@ async def refresh_real_stats_cache(db, matches: List[Dict]) -> Dict:
                     "form_away": form_away,
                     "h2h": h2h,
                     "competition": code,
+                    "history_home": _observed_history(home_matches, home_id),
+                    "history_away": _observed_history(away_matches, away_id),
+                    "source": "football-data.org",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 }},
                 upsert=True,
@@ -328,6 +348,11 @@ async def get_real_stats_map(db, matches: List[Dict]) -> Dict[str, Dict]:
             "form_home": doc.get("form_home", ""),
             "form_away": doc.get("form_away", ""),
             "h2h": doc.get("h2h"),
+            "real_data_used": bool(doc.get("form_home") or doc.get("form_away") or doc.get("h2h")),
+            "history_home": doc.get("history_home", []),
+            "history_away": doc.get("history_away", []),
+            "source": doc.get("source", "football-data.org"),
+            "updated_at": doc.get("updated_at"),
         }
     return result
 
