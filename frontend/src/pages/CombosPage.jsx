@@ -1,799 +1,129 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { AlertCircle, ArrowRight, Check, ChevronDown, Clock, Copy, Gift, CalendarDays, Info, Layers, Loader2, Lock, RefreshCw, Rocket, Scale, Shield, Sparkles, X } from "lucide-react";
-import api from "@/lib/api";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
+import { ArrowRight, Check, ChevronDown, Clock, Copy, Info, Layers, Loader2, Lock, RefreshCw, SlidersHorizontal, Sparkles, X } from "lucide-react";
 import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
-import { cn } from "@/lib/utils";
-const COMBOS_STYLES = `/* Scoped styles independent of generated Tailwind utility classes. */
-.wp3-combos {
-  --wp3-ink: #142033;
-  --wp3-muted: #55657a;
-  --wp3-orange: #ea580c;
-  --wp3-line: #e3e8ef;
-  width: 100%; max-width: 1280px; margin: 0 auto; padding: 32px 24px 56px;
-  color: var(--wp3-ink); font-size: 16px; line-height: 1.6;
-}
-.wp3-combos *, .wp3-combos *::before, .wp3-combos *::after { box-sizing: border-box; }
-.wp3-combos h1, .wp3-combos h2, .wp3-combos h3, .wp3-combos p, .wp3-combos dl, .wp3-combos dd { margin: 0; }
-.wp3-combos button, .wp3-combos textarea { font: inherit; }
-.wp3-combos button { cursor: pointer; }
-.wp3-combos svg { width: 20px; height: 20px; flex-shrink: 0; }
-.wp3-combos a { text-decoration: none; }
-.wp3-combos :is(button, a, summary, textarea):focus-visible { outline: 3px solid #ea580c; outline-offset: 4px; }
-.wp3-combos :is(h1, h2, h3, p, dt, dd, span, strong, b) { overflow-wrap: anywhere; }
-.wp3-combos .wp3-hero {
-  position: relative; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr) 280px;
-  gap: 32px; padding: 42px; border-radius: 30px; color: #fff;
-  background: radial-gradient(ellipse at 100% 0%, #734125 0%, transparent 55%), linear-gradient(135deg, #121c2c, #17283b);
-  box-shadow: 0 18px 40px rgb(20 32 51 / 12%);
-}
-.wp3-combos .wp3-hero-eyebrow { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; color: #fdba74; font-size: 14px; font-weight: 800; letter-spacing: .1em; }
-.wp3-combos .wp3-hero h1 { margin-top: 20px; font-size: clamp(36px, 4.5vw, 58px); font-weight: 850; line-height: 1.08; letter-spacing: -.045em; }
-.wp3-combos .wp3-hero h1 span { color: #ffad67; }
-.wp3-combos .wp3-hero-description { max-width: 590px; margin-top: 22px; color: #e0e7f0; font-size: 18px; line-height: 1.65; }
-.wp3-combos .wp3-hero-meta { display: flex; flex-wrap: wrap; gap: 12px 22px; margin-top: 26px; font-size: 14px; color: #d4dfec; }
-.wp3-combos .wp3-hero-meta span { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
-.wp3-combos .wp3-hero-side { display: flex; flex-direction: column; justify-content: center; gap: 18px; min-width: 0; }
-.wp3-combos .wp3-hero-profile { padding: 22px; border: 1px solid rgb(255 255 255 / 18%); border-radius: 20px; background: rgb(255 255 255 / 7%); }
-.wp3-combos .wp3-hero-profile > span { font-size: 14px; color: #d4dfec; }
-.wp3-combos .wp3-hero-profile > strong { display: block; font-size: 32px; line-height: 1.2; margin: 7px 0 10px; }
-.wp3-combos .wp3-hero-profile p { color: #d4dfec; font-size: 16px; }
-.wp3-combos .wp3-button {
-  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
-  min-height: 48px; height: auto; padding: 12px 18px; border: 1px solid transparent; border-radius: 12px;
-  white-space: normal; font-size: 16px; line-height: 1.45; font-weight: 750; text-align: center;
-  transition: background-color .15s, border-color .15s; max-width: 100%;
-}
-.wp3-combos .wp3-button:disabled { cursor: not-allowed; opacity: .65; }
-.wp3-combos .wp3-button--primary { background: #c2410c; color: #fff; }
-.wp3-combos .wp3-button--primary:hover:not(:disabled) { background: #9a3412; }
-.wp3-combos .wp3-button--light { background: #fff; border-color: #d9e1e9; color: #142033; }
-.wp3-combos .wp3-button--light:hover:not(:disabled) { background: #fff7ed; border-color: #fb923c; }
-.wp3-combos .wp3-button--hero { background: #ffad67; color: #172033; width: 100%; }
-.wp3-combos .wp3-profile-section { margin: 36px 0 30px; }
-.wp3-combos .wp3-section-heading { display: flex; align-items: flex-start; justify-content: space-between; flex-wrap: wrap; gap: 20px; margin-bottom: 20px; }
-.wp3-combos .wp3-section-heading > div { min-width: 0; }
-.wp3-combos .wp3-eyebrow { color: #9a3412; font-size: 14px; font-weight: 800; letter-spacing: .065em; line-height: 1.5; }
-.wp3-combos .wp3-section-heading h2 { margin-top: 7px; font-size: 26px; font-weight: 800; line-height: 1.25; letter-spacing: -.025em; }
-.wp3-combos .wp3-section-heading p:not(.wp3-eyebrow) { margin-top: 8px; font-size: 16px; color: var(--wp3-muted); }
-.wp3-combos .wp3-section-heading p.wp3-first-start { font-size: 14px; }
-.wp3-combos .wp3-profile-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
-.wp3-combos .wp3-profile { position: relative; min-width: 0; background: #fff; border: 2px solid var(--wp3-line); border-radius: 22px; padding: 22px; text-align: start; color: var(--wp3-ink); }
-.wp3-combos .wp3-profile-top { display: flex; align-items: center; gap: 12px; }
-.wp3-combos .wp3-profile-icon { display: grid; place-items: center; width: 46px; height: 46px; border-radius: 14px; background: #fff2e8; color: #c2410c; }
-.wp3-combos .wp3-profile-icon svg { width: 25px; height: 25px; }
-.wp3-combos .wp3-profile-index { margin-inline-start: auto; color: #64748b; font-weight: 800; font-size: 18px; }
-.wp3-combos .wp3-profile-title { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 18px; }
-.wp3-combos .wp3-profile-title strong { font-size: 24px; font-weight: 850; }
-.wp3-combos .wp3-profile > p { margin-top: 8px; color: var(--wp3-muted); font-size: 16px; line-height: 1.6; }
-.wp3-combos .wp3-profile-stats { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 10px; margin-top: 22px; padding-top: 16px; border-top: 1px solid var(--wp3-line); font-size: 14px; }
-.wp3-combos .wp3-profile-stats b { display: flex; align-items: center; gap: 6px; }
-.wp3-combos .wp3-profile-stats svg { width: 16px; height: 16px; }
-.wp3-combos .wp3-profile--emerald .wp3-profile-icon { background: #ecfdf5; color: #047857; }
-.wp3-combos .wp3-profile--rose .wp3-profile-icon { background: #fff1f2; color: #be123c; }
-.wp3-combos .wp3-profile--selected { background: #142033; color: #fff; border-color: #f97316; box-shadow: 0 8px 22px rgb(20 32 51 / 14%); }
-.wp3-combos .wp3-profile--selected > p, .wp3-combos .wp3-profile--selected .wp3-profile-index { color: #d4dfec; }
-.wp3-combos .wp3-profile--selected .wp3-profile-stats { border-color: #435268; }
-.wp3-combos .wp3-selected-check { color: #fdba74; }
-.wp3-combos .wp3-free-label { color: #065f46; background: #d1fae5; border-radius: 20px; padding: 3px 10px; font-size: 14px; font-weight: 700; }
-.wp3-combos :is(.wp3-comparison, .wp3-reading, .wp3-explanation) summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; min-height: 52px; padding: 15px 18px; font-weight: 750; font-size: 16px; line-height: 1.5; }
-.wp3-combos summary::-webkit-details-marker { display: none; }
-.wp3-combos summary svg:last-child { margin-inline-start: auto; transition: transform .15s; }
-.wp3-combos details[open] > summary svg:last-child { transform: rotate(180deg); }
-.wp3-combos .wp3-comparison { margin-top: 18px; border: 1px solid var(--wp3-line); border-radius: 16px; background: #fff; }
-.wp3-combos .wp3-compare-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; padding: 0 18px 18px; }
-.wp3-combos .wp3-compare-card { padding: 18px; border-radius: 14px; background: #f6f8fb; min-width: 0; }
-.wp3-combos .wp3-compare-card h3 { font-size: 20px; margin-bottom: 15px; }
-.wp3-combos .wp3-compare-card .wp3-button { width: 100%; margin-top: 16px; }
-.wp3-combos .wp3-comparison-note { padding: 0 18px 18px; font-size: 14px; color: var(--wp3-muted); }
-.wp3-combos .wp3-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 28px; align-items: start; }
-.wp3-combos .wp3-selections, .wp3-combos .wp3-sidebar { min-width: 0; }
-.wp3-combos .wp3-sidebar { position: sticky; top: 24px; scroll-margin-top: 90px; }
-.wp3-combos .wp3-match-list { display: grid; gap: 20px; }
-.wp3-combos .wp3-match-card { min-width: 0; background: #fff; border: 1px solid var(--wp3-line); border-radius: 22px; padding: 24px; box-shadow: 0 5px 16px rgb(20 32 51 / 4%); }
-.wp3-combos .wp3-match-top { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 12px; }
-.wp3-combos .wp3-selection-number { display: grid; place-items: center; min-width: 38px; height: 38px; border-radius: 11px; background: #142033; color: #fff; font-size: 16px; font-weight: 800; }
-.wp3-combos .wp3-match-meta { flex: 1 1 180px; min-width: 0; }
-.wp3-combos .wp3-match-meta > p { font-size: 16px; line-height: 1.55; font-weight: 700; }
-.wp3-combos .wp3-match-meta > div { display: flex; flex-wrap: wrap; gap: 8px 12px; margin-top: 5px; font-size: 14px; color: var(--wp3-muted); }
-.wp3-combos .wp3-match-meta > div > span { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-.wp3-combos .wp3-match-meta svg { width: 16px; height: 16px; }
-.wp3-combos .wp3-country { border: 1px solid #e3e8ef; border-radius: 20px; padding: 0 8px; color: #42536b; }
-.wp3-combos .wp3-risk { display: inline-flex; align-items: center; max-width: 100%; border-radius: 20px; padding: 4px 10px; font-size: 14px; font-weight: 750; border: 1px solid #d9e1e9; background: #f6f8fb; color: #42536b; }
-.wp3-combos .wp3-risk--safe { color: #065f46; background: #ecfdf5; border-color: #a7f3d0; }
-.wp3-combos .wp3-risk--moderate { color: #854d0e; background: #fefce8; border-color: #fde68a; }
-.wp3-combos .wp3-risk--risky { color: #9f1239; background: #fff1f2; border-color: #fecdd3; }
-.wp3-combos .wp3-fixture { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 20px; align-items: start; margin-top: 24px; }
-.wp3-combos .wp3-date-stamp { display: flex; flex-direction: column; align-items: center; text-align: center; border: 1px solid var(--wp3-line); border-radius: 14px; background: #f6f8fb; padding: 12px 7px; color: #42536b; font-size: 14px; line-height: 1.5; min-width: 0; }
-.wp3-combos .wp3-date-stamp strong { font-size: 28px; font-weight: 850; line-height: 1.1; color: #142033; }
-.wp3-combos .wp3-date-stamp b { margin-top: 7px; border-top: 1px solid #dce3ec; padding-top: 7px; width: 100%; font-size: 14px; color: #142033; }
-.wp3-combos .wp3-team-pair { min-width: 0; }
-.wp3-combos .wp3-team-pair p { font-size: 23px; font-weight: 800; line-height: 1.35; letter-spacing: -.015em; }
-.wp3-combos .wp3-team-pair > span { display: block; font-size: 14px; color: #55657a; padding: 5px 0; }
-.wp3-combos .wp3-pick-grid { display: grid; grid-template-columns: minmax(0, 1fr) 100px; margin-top: 24px; border: 1px solid #fed7aa; border-radius: 15px; background: #fff7ed; overflow: hidden; }
-.wp3-combos .wp3-pick { min-width: 0; border-left: 4px solid #ea580c; padding: 16px 18px; }
-.wp3-combos .wp3-pick p { margin-top: 7px; font-size: 22px; line-height: 1.4; font-weight: 800; }
-.wp3-combos .wp3-leg-odds { min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; background: #ffedd5; padding: 14px 10px; }
-.wp3-combos .wp3-leg-odds > span { font-size: 14px; color: #9a3412; font-weight: 700; }
-.wp3-combos .wp3-leg-odds strong { color: #9a3412; font-size: 28px; line-height: 1.3; font-weight: 850; }
-.wp3-combos .wp3-confidence { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 14px; padding: 14px 0 0; color: #55657a; font-size: 16px; }
-.wp3-combos .wp3-confidence strong { color: #142033; font-size: 18px; }
-.wp3-combos .wp3-explanation { border: 1px solid var(--wp3-line); border-radius: 12px; margin-top: 20px; }
-.wp3-combos .wp3-explanation > div { border-top: 1px solid var(--wp3-line); padding: 16px 18px; }
-.wp3-combos :is(.wp3-explanation, .wp3-reading) p { color: #55657a; font-size: 16px; line-height: 1.7; }
-.wp3-combos :is(.wp3-explanation, .wp3-reading) p + p { margin-top: 12px; }
-.wp3-combos .wp3-match-link { min-height: 48px; display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 12px; color: #c2410c; font-size: 16px; font-weight: 750; }
-.wp3-combos .wp3-view-switch { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--wp3-line); border-radius: 12px; background: #fff; }
-.wp3-combos .wp3-view-switch button { display: flex; align-items: center; justify-content: center; gap: 7px; padding: 10px 14px; min-height: 44px; border: 0; border-radius: 9px; color: #55657a; background: transparent; font-size: 16px; font-weight: 700; }
-.wp3-combos .wp3-view-switch button[aria-pressed="true"] { background: #142033; color: #fff; }
-.wp3-combos .wp3-view-switch svg { width: 18px; height: 18px; }
-.wp3-combos .wp3-agenda .wp3-match-card { border-left: 4px solid #ea580c; }
-.wp3-combos .wp3-agenda .wp3-date-stamp { background: #fff7ed; border-color: #fed7aa; }
-.wp3-combos .wp3-ticket { position: relative; border: 1px solid #d9e1e9; border-radius: 22px; background: #fff; overflow: hidden; box-shadow: 0 12px 28px rgb(20 32 51 / 8%); }
-.wp3-combos .wp3-ticket > header { padding: 24px; background: #142033; color: #fff; }
-.wp3-combos .wp3-ticket > header .wp3-eyebrow { color: #fdba74; }
-.wp3-combos .wp3-ticket h2 { font-size: 25px; font-weight: 800; line-height: 1.3; margin-top: 8px; }
-.wp3-combos .wp3-ticket header > span { display: block; margin-top: 8px; font-size: 14px; color: #d4dfec; }
-.wp3-combos .wp3-ticket-rows { padding: 22px 22px 4px; }
-.wp3-combos .wp3-ticket-row { display: flex; gap: 10px; padding-bottom: 16px; }
-.wp3-combos .wp3-ticket-row > b { display: grid; place-items: center; height: 25px; min-width: 25px; margin-top: 3px; border-radius: 50%; background: #fff2e8; color: #c2410c; font-size: 14px; }
-.wp3-combos .wp3-ticket-row > div { min-width: 0; }
-.wp3-combos .wp3-ticket-row p { font-size: 16px; font-weight: 750; line-height: 1.55; }
-.wp3-combos .wp3-ticket-row p > span { color: #55657a; font-weight: 500; }
-.wp3-combos .wp3-ticket-row div > span { display: block; margin-top: 5px; font-size: 14px; color: #9a3412; }
-.wp3-combos .wp3-ticket-total { padding: 24px 22px; border-top: 2px dashed #d9e1e9; border-bottom: 2px dashed #d9e1e9; background: #fff7ed; }
-.wp3-combos .wp3-ticket-total > span { font-size: 16px; font-weight: 700; color: #9a3412; }
-.wp3-combos .wp3-ticket-total > strong { display: block; margin: 5px 0; font-size: 48px; line-height: 1.15; letter-spacing: -.025em; color: #9a3412; font-weight: 850; }
-.wp3-combos .wp3-ticket-total > strong.wp3-reserved { font-size: 26px; }
-.wp3-combos .wp3-ticket-total p { margin-top: 10px; font-size: 14px; color: #78513a; line-height: 1.65; }
-.wp3-combos .wp3-ticket-bottom { padding: 24px 22px; }
-.wp3-combos .wp3-metric { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: start; gap: 5px 12px; margin-top: 13px; }
-.wp3-combos .wp3-metric:first-child { margin-top: 0; }
-.wp3-combos .wp3-metric dt { color: #55657a; font-size: 16px; line-height: 1.55; flex: 1 1 130px; }
-.wp3-combos .wp3-metric dd { font-size: 18px; font-weight: 800; color: #142033; }
-.wp3-combos .wp3-ticket-bottom > .wp3-button { width: 100%; min-height: 52px; margin-top: 22px; }
-.wp3-combos .wp3-copy-help { margin-top: 12px; font-size: 14px; color: #55657a; line-height: 1.65; }
-.wp3-combos .wp3-reading { margin-top: 20px; border: 1px solid var(--wp3-line); border-radius: 16px; background: #fff; }
-.wp3-combos .wp3-reading > div { padding: 0 18px 18px; }
-.wp3-combos .wp3-alert { display: flex; align-items: flex-start; gap: 12px; margin: 20px 0; padding: 18px; border: 1px solid #fcd34d; border-radius: 15px; background: #fffbeb; color: #854d0e; font-size: 16px; line-height: 1.65; }
-.wp3-combos .wp3-alert > svg { margin-top: 3px; }
-.wp3-combos .wp3-alert > div { min-width: 0; }
-.wp3-combos .wp3-alert p + p { margin-top: 8px; }
-.wp3-combos .wp3-alert .wp3-button { margin-top: 12px; }
-.wp3-combos .wp3-alert--compact { font-size: 14px; margin: 14px 0 0; padding: 10px 12px; }
-.wp3-combos .wp3-loading, .wp3-combos .wp3-state { border: 1px solid var(--wp3-line); border-radius: 22px; background: #fff; text-align: center; padding: 42px 24px; }
-.wp3-combos :is(.wp3-loading, .wp3-state) > svg { width: 34px; height: 34px; color: #c2410c; margin: 0 auto 18px; }
-.wp3-combos :is(.wp3-loading, .wp3-state) h2 { font-size: 25px; line-height: 1.3; font-weight: 800; }
-.wp3-combos :is(.wp3-loading, .wp3-state) p { max-width: 550px; margin: 12px auto 0; font-size: 16px; color: #55657a; }
-.wp3-combos .wp3-state .wp3-button { margin-top: 22px; }
-.wp3-combos .wp3-skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 30px; }
-.wp3-combos .wp3-skeleton-grid > div { height: 110px; border-radius: 16px; background: #eef2f7; }
-.wp3-combos .wp3-upgrade { display: flex; align-items: flex-start; gap: 26px; padding: 36px; border-radius: 24px; border: 1px solid #fed7aa; background: linear-gradient(130deg, #fff7ed, #fff); }
-.wp3-combos .wp3-upgrade-icon { display: grid; place-items: center; width: 76px; height: 76px; flex-shrink: 0; border-radius: 22px; background: #142033; color: #fdba74; }
-.wp3-combos .wp3-upgrade-icon svg { width: 30px; height: 30px; }
-.wp3-combos .wp3-upgrade h2 { margin: 8px 0 14px; font-size: 30px; font-weight: 800; line-height: 1.25; }
-.wp3-combos .wp3-upgrade p:not(.wp3-eyebrow) { max-width: 640px; font-size: 17px; color: #55657a; }
-.wp3-combos .wp3-upgrade .wp3-button { margin-top: 24px; }
-.wp3-combos .wp3-free-banner { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 14px; background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 16px; padding: 20px; margin-bottom: 24px; color: #065f46; }
-.wp3-combos .wp3-free-banner > div { flex: 1 1 220px; }
-.wp3-combos .wp3-free-banner strong { font-size: 18px; }
-.wp3-combos .wp3-free-banner p { font-size: 16px; margin-top: 5px; }
-.wp3-combos .wp3-locked-pick { display: flex; align-items: flex-start; flex-wrap: wrap; gap: 14px; padding: 18px; background: #fff7ed; border-radius: 15px; margin-top: 24px; }
-.wp3-combos .wp3-locked-pick > svg { color: #c2410c; margin-top: 3px; }
-.wp3-combos .wp3-locked-pick > div { flex: 1 1 180px; min-width: 0; }
-.wp3-combos .wp3-locked-pick p { font-size: 15px; color: #55657a; margin-top: 7px; }
-.wp3-combos .wp3-manual-copy { margin-top: 20px; border: 1px solid var(--wp3-line); border-radius: 16px; background: #fff; padding: 18px; }
-.wp3-combos .wp3-manual-copy > div { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 750; }
-.wp3-combos .wp3-manual-copy button { display: grid; place-items: center; min-height: 44px; min-width: 44px; border: 0; border-radius: 10px; background: #f6f8fb; color: #42536b; }
-.wp3-combos .wp3-manual-copy textarea { width: 100%; min-height: 280px; margin-top: 12px; border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px; font-size: 16px; line-height: 1.65; color: #142033; resize: vertical; }
-.wp3-combos .wp3-manual-copy p { font-size: 14px; color: #55657a; margin-top: 10px; }
-.wp3-combos .wp3-refresh-note { display: flex; align-items: center; gap: 8px; margin-top: 22px; font-size: 14px; color: #55657a; }
-.wp3-combos .wp3-mobile-summary { display: none; }
-.wp3-combos .wp3-spinning { animation: wp3-spin 1s linear infinite; }
-@keyframes wp3-spin { to { transform: rotate(360deg); } }
-@media (max-width: 1100px) {
-  .wp3-combos .wp3-main { grid-template-columns: minmax(0, 1fr) 310px; gap: 20px; }
-  .wp3-combos .wp3-hero { padding: 32px; gap: 24px; grid-template-columns: minmax(0, 1fr) 250px; }
-}
-@media (max-width: 900px) {
-  .wp3-combos .wp3-main { grid-template-columns: minmax(0, 1fr); }
-  .wp3-combos .wp3-sidebar { position: static; }
-  .wp3-combos .wp3-mobile-summary { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; border: 1px solid #fed7aa; border-radius: 15px; background: #fff7ed; padding: 16px 18px; margin: 0 0 20px; color: #9a3412; font-size: 16px; }
-  .wp3-combos .wp3-mobile-summary > span:first-child { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-  .wp3-combos .wp3-mobile-summary strong { font-size: 26px; }
-  .wp3-combos .wp3-mobile-summary > span:last-child { display: flex; align-items: center; gap: 6px; font-weight: 700; }
-}
-@media (max-width: 760px) {
-  .wp3-combos { padding: 20px 16px 40px; }
-  .wp3-combos .wp3-hero { grid-template-columns: minmax(0, 1fr); padding: 28px 24px; border-radius: 24px; }
-  .wp3-combos .wp3-hero h1 { font-size: 40px; }
-  .wp3-combos .wp3-hero-description { font-size: 17px; }
-  .wp3-combos .wp3-hero-side { gap: 12px; }
-  .wp3-combos .wp3-hero-profile { padding: 16px 18px; }
-  .wp3-combos .wp3-hero-profile strong { font-size: 26px; }
-  .wp3-combos .wp3-profile-grid, .wp3-combos .wp3-compare-grid { grid-template-columns: minmax(0, 1fr); }
-  .wp3-combos .wp3-profile { padding: 20px; }
-  .wp3-combos .wp3-profile { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 5px 12px; }
-  .wp3-combos .wp3-profile-top { grid-column: 1; grid-row: 1 / 3; align-items: flex-start; }
-  .wp3-combos .wp3-profile-index { display: none; }
-  .wp3-combos .wp3-selected-check { position: absolute; top: 22px; inset-inline-end: 18px; }
-  .wp3-combos .wp3-profile-title { grid-column: 2; margin-top: 0; padding-inline-end: 20px; }
-  .wp3-combos .wp3-profile-title strong { font-size: 22px; }
-  .wp3-combos .wp3-profile > p { grid-column: 2; margin-top: 0; }
-  .wp3-combos .wp3-profile-stats { grid-column: 1 / -1; }
-  .wp3-combos .wp3-profile-stats { margin-top: 14px; padding-top: 12px; }
-  .wp3-combos .wp3-section-heading h2 { font-size: 24px; }
-  .wp3-combos .wp3-upgrade { flex-direction: column; padding: 24px; }
-  .wp3-combos .wp3-upgrade h2 { font-size: 28px; }
-  .wp3-combos .wp3-free-banner .wp3-button, .wp3-combos .wp3-upgrade .wp3-button { width: 100%; }
-}
-@media (max-width: 480px) {
-  .wp3-combos { padding: 16px 12px 32px; }
-  .wp3-combos .wp3-hero { padding: 26px 20px; }
-  .wp3-combos .wp3-hero h1 { font-size: 36px; }
-  .wp3-combos .wp3-hero-description { font-size: 16px; }
-  .wp3-combos .wp3-match-card { padding: 18px; border-radius: 18px; }
-  .wp3-combos .wp3-match-meta { flex-basis: 160px; }
-  .wp3-combos .wp3-match-top > .wp3-risk { margin-inline-start: 50px; }
-  .wp3-combos .wp3-fixture { grid-template-columns: 62px minmax(0, 1fr); gap: 14px; }
-  .wp3-combos .wp3-date-stamp { padding: 10px 4px; }
-  .wp3-combos .wp3-date-stamp strong { font-size: 25px; }
-  .wp3-combos .wp3-team-pair p { font-size: 21px; }
-  .wp3-combos .wp3-pick-grid { grid-template-columns: minmax(0, 1fr); }
-  .wp3-combos .wp3-pick { padding: 16px; }
-  .wp3-combos .wp3-pick p { font-size: 21px; }
-  .wp3-combos .wp3-leg-odds { flex-direction: row; justify-content: space-between; gap: 12px; padding: 10px 16px; }
-  .wp3-combos .wp3-leg-odds strong { font-size: 30px; }
-  .wp3-combos .wp3-view-switch { width: 100%; }
-  .wp3-combos .wp3-view-switch button { flex: 1 1 0; min-width: 0; padding: 10px 8px; }
-  .wp3-combos .wp3-skeleton-grid { grid-template-columns: minmax(0, 1fr); }
-  .wp3-combos .wp3-ticket > header, .wp3-combos .wp3-ticket-bottom, .wp3-combos .wp3-ticket-total { padding: 22px; }
-  .wp3-combos .wp3-reading summary, .wp3-combos .wp3-explanation summary { padding-inline-start: 14px; padding-inline-end: 14px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .wp3-combos *, .wp3-combos *::before, .wp3-combos *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
-}
+import api from "@/lib/api";
+
+const COPY = {"fr": {"personal": "Combinés personnalisés", "title": "Tes préférences. Le moteur compose.", "intro": "Choisis une période, tes sports et ton bookmaker. Le moteur recherche un ticket cohérent, sans ajouter de matchs pour le remplir.", "otherTools": "Autres outils de combinés", "todayLink": "Voir les recommandations du jour", "builderLink": "Choisir mes matchs manuellement", "preferences": "1. Tes préférences", "preferenceHint": "Ces filtres concernent uniquement ce ticket.", "period": "Période", "today": "Aujourd’hui", "tomorrow": "Demain", "48h": "Prochaines 48 heures", "weekend": "Ce week-end / prochain week-end", "zone": "Fuseau horaire", "profile": "Profil de sélection", "safe": "Prudent", "balanced": "Équilibré", "bold": "Audacieux", "safeNote": "Le profil ne garantit pas l’issue du ticket.", "maximum": "Nombre maximal de rencontres", "noPadding": "Un maximum, pas un quota : moins de matchs si nécessaire. Minimum de deux pour un combiné.", "sports": "Sports", "all": "Tous", "competitions": "Compétitions", "search": "Rechercher un championnat", "allCompetitions": "Toutes les compétitions des sports choisis", "narrowSearch": "Utilise la recherche pour afficher d’autres compétitions.", "bookmaker": "Bookmaker", "autoBook": "Automatique · un bookmaker commun", "bookHint": "Les marchés doivent exister chez ce même bookmaker. Vérifie les cotes et l’acceptation du ticket sur sa plateforme.", "excludedCount": "{{count}} rencontre(s) exclue(s)", "resetExcluded": "Réintégrer les rencontres exclues", "generate": "Construire mon combiné", "building": "Recherche des sélections…", "rebuildNote": "Exclure un match recalcule tout le ticket et peut changer les autres choix.", "resultTitle": "2. Ta proposition", "resultHint": "Un ticket principal et une alternative, si les données le permettent.", "automatic": "Construction automatique", "searchQuality": "Qualité, compatibilité des marchés et bookmaker commun.", "startTitle": "Un combiné qui suit tes préférences", "startText": "Règle les filtres puis lance la construction. Aucun ticket n’est fabriqué s’il manque des sélections compatibles.", "available": "{{count}} rencontre(s) dans les filtres", "updated": "Calculé le", "stale": "Ce calcul a expiré ou une rencontre commence. Recalcule avant de copier le ticket.", "recalculate": "Recalculer", "main": "Ticket principal", "alternative": "Alternative", "matches": "{{count}} rencontres", "total": "Cote totale observée", "shortened": "Ticket raccourci : les critères ne justifient pas d’ajouter d’autres rencontres.", "shared": "Les deux propositions partagent des rencontres : leurs résultats ne sont pas indépendants.", "why": "Pourquoi ce choix ?", "consensus": "Probabilité de consensus", "stability": "Stabilité entre sources", "sources": "Bookmakers analysés", "quality": "Indice de classement", "qualityNote": "Le classement combine le consensus, la stabilité et la couverture des sources. Il ne constitue pas une probabilité de réussite du combiné.", "analysis": "Analyse du match", "exclude": "Exclure et recalculer", "copy": "Copier ce ticket", "copied": "Ticket copié.", "manualCopy": "Copie manuelle du ticket", "noAlternative": "Une seule proposition retenue", "noAlternativeText": "Aucune alternative distincte ne satisfait les mêmes critères.", "noTicket": "Pas de ticket compatible actuellement", "noTicketText": "Le flux disponible ne fournit pas au moins deux sélections compatibles avec ces préférences et les critères de qualité. Essaie une autre période ou élargis tes filtres.", "proTitle": "La construction personnalisée est réservée à Pro", "proText": "Choisis tes préférences et laisse le moteur rechercher les sélections avec un abonnement actif.", "upgrade": "Découvrir Pro", "sessionTitle": "Reconnecte-toi", "sessionText": "Ta session doit être renouvelée pour accéder à cet outil.", "login": "Se connecter", "failure": "Impossible de terminer la demande. Réessaie dans un instant.", "backendMissing": "La nouvelle fonction serveur n’est pas encore disponible. Déploie les deux fichiers backend avant cette page.", "retry": "Réessayer", "disclaimer": "18+ · Aucun gain garanti. Les cotes évoluent et les probabilités du moteur restent des estimations."}, "en": {"personal": "Personalized combinations", "title": "Your preferences. The engine builds.", "intro": "Choose a period, sports and bookmaker. The engine looks for a coherent ticket without adding matches just to fill it.", "otherTools": "Other combination tools", "todayLink": "See today’s recommendations", "builderLink": "Choose my matches manually", "preferences": "1. Your preferences", "preferenceHint": "These filters apply only to this ticket.", "period": "Period", "today": "Today", "tomorrow": "Tomorrow", "48h": "Next 48 hours", "weekend": "This / next weekend", "zone": "Time zone", "profile": "Selection profile", "safe": "Cautious", "balanced": "Balanced", "bold": "Bold", "safeNote": "The profile does not guarantee the ticket’s outcome.", "maximum": "Maximum number of matches", "noPadding": "A maximum, not a quota: fewer matches when needed. At least two for a combination.", "sports": "Sports", "all": "All", "competitions": "Competitions", "search": "Search a competition", "allCompetitions": "All competitions for selected sports", "narrowSearch": "Use search to show other competitions.", "bookmaker": "Bookmaker", "autoBook": "Automatic · one common bookmaker", "bookHint": "Markets must exist at the same bookmaker. Check prices and ticket acceptance on its platform.", "excludedCount": "{{count}} match(es) excluded", "resetExcluded": "Restore excluded matches", "generate": "Build my combination", "building": "Finding selections…", "rebuildNote": "Excluding a match rebuilds the whole ticket and may change other picks.", "resultTitle": "2. Your proposal", "resultHint": "A main ticket and an alternative when the data permits.", "automatic": "Automatic construction", "searchQuality": "Quality, market compatibility and a common bookmaker.", "startTitle": "A combination matching your preferences", "startText": "Set the filters and start building. No ticket is forced when compatible selections are missing.", "available": "{{count}} match(es) within filters", "updated": "Calculated on", "stale": "This calculation expired or a match is starting. Recalculate before copying.", "recalculate": "Recalculate", "main": "Main ticket", "alternative": "Alternative", "matches": "{{count}} matches", "total": "Observed total odds", "shortened": "Shortened ticket: criteria do not justify adding more matches.", "shared": "The proposals share matches: their outcomes are not independent.", "why": "Why this pick?", "consensus": "Consensus probability", "stability": "Stability across sources", "sources": "Bookmakers analysed", "quality": "Ranking score", "qualityNote": "Ranking combines consensus, stability and source coverage. It is not the combination’s win probability.", "analysis": "Match analysis", "exclude": "Exclude and rebuild", "copy": "Copy this ticket", "copied": "Ticket copied.", "manualCopy": "Copy ticket manually", "noAlternative": "One proposal retained", "noAlternativeText": "No distinct alternative meets the same criteria.", "noTicket": "No compatible ticket right now", "noTicketText": "The available feed does not provide at least two selections matching these preferences and quality criteria. Try another period or broader filters.", "proTitle": "Personalized construction is for Pro", "proText": "Choose your preferences and let the engine search with an active subscription.", "upgrade": "Explore Pro", "sessionTitle": "Sign in again", "sessionText": "Renew your session to access this tool.", "login": "Sign in", "failure": "Unable to complete the request. Try again shortly.", "backendMissing": "The new server function is not available yet. Deploy both backend files before this page.", "retry": "Retry", "disclaimer": "18+ · No guaranteed winnings. Odds change and engine probabilities remain estimates."}, "es": {"personal": "Combinadas personalizadas", "title": "Tus preferencias. El motor combina.", "intro": "Elige período, deportes y casa. El motor busca un boleto coherente sin añadir partidos para rellenar.", "otherTools": "Otras herramientas", "todayLink": "Ver recomendaciones de hoy", "builderLink": "Elegir mis partidos manualmente", "preferences": "1. Tus preferencias", "preferenceHint": "Los filtros solo afectan a este boleto.", "period": "Período", "today": "Hoy", "tomorrow": "Mañana", "48h": "Próximas 48 horas", "weekend": "Este / próximo fin de semana", "zone": "Zona horaria", "profile": "Perfil de selección", "safe": "Prudente", "balanced": "Equilibrado", "bold": "Audaz", "safeNote": "El perfil no garantiza resultados.", "maximum": "Número máximo de partidos", "noPadding": "Un máximo, no una cuota: menos partidos si es necesario. Mínimo dos.", "sports": "Deportes", "all": "Todos", "competitions": "Competiciones", "search": "Buscar competición", "allCompetitions": "Todas las competiciones de los deportes elegidos", "narrowSearch": "Busca para ver otras competiciones.", "bookmaker": "Casa de apuestas", "autoBook": "Automático · una casa común", "bookHint": "Los mercados deben existir en la misma casa. Verifica cuotas y aceptación.", "excludedCount": "{{count}} partido(s) excluido(s)", "resetExcluded": "Restaurar partidos excluidos", "generate": "Crear mi combinada", "building": "Buscando selecciones…", "rebuildNote": "Excluir un partido recalcula todo el boleto y puede cambiar otros pronósticos.", "resultTitle": "2. Tu propuesta", "resultHint": "Un boleto principal y una alternativa si los datos lo permiten.", "automatic": "Construcción automática", "searchQuality": "Calidad, compatibilidad de mercados y casa común.", "startTitle": "Una combinada según tus preferencias", "startText": "Configura los filtros y crea. No se fuerza un boleto sin selecciones compatibles.", "available": "{{count}} partido(s) con estos filtros", "updated": "Calculado el", "stale": "El cálculo caducó o comienza un partido. Recalcula antes de copiar.", "recalculate": "Recalcular", "main": "Boleto principal", "alternative": "Alternativa", "matches": "{{count}} partidos", "total": "Cuota total observada", "shortened": "Boleto reducido: los criterios no justifican añadir más partidos.", "shared": "Las propuestas comparten partidos: resultados no independientes.", "why": "¿Por qué este pronóstico?", "consensus": "Probabilidad de consenso", "stability": "Estabilidad entre fuentes", "sources": "Casas analizadas", "quality": "Índice de clasificación", "qualityNote": "Combina consenso, estabilidad y cobertura. No es la probabilidad de ganar la combinada.", "analysis": "Análisis del partido", "exclude": "Excluir y recalcular", "copy": "Copiar boleto", "copied": "Boleto copiado.", "manualCopy": "Copia manual del boleto", "noAlternative": "Una sola propuesta válida", "noAlternativeText": "Ninguna alternativa distinta cumple los mismos criterios.", "noTicket": "Sin boleto compatible ahora", "noTicketText": "El flujo no ofrece al menos dos selecciones compatibles. Prueba otro período o filtros más amplios.", "proTitle": "Construcción personalizada para Pro", "proText": "Elige preferencias y deja buscar al motor con una suscripción activa.", "upgrade": "Descubrir Pro", "sessionTitle": "Inicia sesión de nuevo", "sessionText": "Renueva tu sesión para acceder.", "login": "Iniciar sesión", "failure": "No se pudo completar. Inténtalo de nuevo.", "backendMissing": "La función del servidor no está disponible. Despliega ambos archivos backend primero.", "retry": "Reintentar", "disclaimer": "18+ · Sin ganancias garantizadas. Las cuotas cambian y las probabilidades son estimaciones."}, "pt": {"personal": "Combinadas personalizadas", "title": "As tuas preferências. O motor combina.", "intro": "Escolhe período, desportos e casa. O motor procura um bilhete coerente sem jogos só para preencher.", "otherTools": "Outras ferramentas", "todayLink": "Ver recomendações do dia", "builderLink": "Escolher jogos manualmente", "preferences": "1. As tuas preferências", "preferenceHint": "Filtros apenas para este bilhete.", "period": "Período", "today": "Hoje", "tomorrow": "Amanhã", "48h": "Próximas 48 horas", "weekend": "Este / próximo fim de semana", "zone": "Fuso horário", "profile": "Perfil de seleção", "safe": "Prudente", "balanced": "Equilibrado", "bold": "Arrojado", "safeNote": "O perfil não garante resultados.", "maximum": "Número máximo de jogos", "noPadding": "Um máximo, não uma quota: menos jogos se necessário. Mínimo dois.", "sports": "Desportos", "all": "Todos", "competitions": "Competições", "search": "Pesquisar competição", "allCompetitions": "Todas as competições dos desportos escolhidos", "narrowSearch": "Pesquisa para ver outras competições.", "bookmaker": "Casa de apostas", "autoBook": "Automático · uma casa comum", "bookHint": "Os mercados devem existir na mesma casa. Verifica cotações e aceitação.", "excludedCount": "{{count}} jogo(s) excluído(s)", "resetExcluded": "Restaurar jogos excluídos", "generate": "Criar a minha combinada", "building": "A procurar seleções…", "rebuildNote": "Excluir um jogo recalcula todo o bilhete e pode mudar outras escolhas.", "resultTitle": "2. A tua proposta", "resultHint": "Um bilhete principal e uma alternativa se os dados permitirem.", "automatic": "Construção automática", "searchQuality": "Qualidade, compatibilidade e casa comum.", "startTitle": "Uma combinada segundo as tuas preferências", "startText": "Define os filtros e cria. Sem forçar bilhetes sem seleções compatíveis.", "available": "{{count}} jogo(s) nos filtros", "updated": "Calculado em", "stale": "O cálculo expirou ou um jogo vai começar. Recalcula antes de copiar.", "recalculate": "Recalcular", "main": "Bilhete principal", "alternative": "Alternativa", "matches": "{{count}} jogos", "total": "Cotação total observada", "shortened": "Bilhete reduzido: os critérios não justificam mais jogos.", "shared": "As propostas partilham jogos: resultados não independentes.", "why": "Porquê esta escolha?", "consensus": "Probabilidade de consenso", "stability": "Estabilidade entre fontes", "sources": "Casas analisadas", "quality": "Índice de classificação", "qualityNote": "Combina consenso, estabilidade e cobertura. Não é a probabilidade de vitória da combinada.", "analysis": "Análise do jogo", "exclude": "Excluir e recalcular", "copy": "Copiar bilhete", "copied": "Bilhete copiado.", "manualCopy": "Cópia manual do bilhete", "noAlternative": "Uma única proposta válida", "noAlternativeText": "Nenhuma alternativa distinta cumpre os mesmos critérios.", "noTicket": "Sem bilhete compatível agora", "noTicketText": "O fluxo não oferece duas seleções compatíveis. Tenta outro período ou filtros mais amplos.", "proTitle": "Construção personalizada para Pro", "proText": "Escolhe preferências e deixa o motor procurar com uma subscrição ativa.", "upgrade": "Descobrir Pro", "sessionTitle": "Inicia sessão novamente", "sessionText": "Renova a sessão para aceder.", "login": "Iniciar sessão", "failure": "Não foi possível concluir. Tenta novamente.", "backendMissing": "A função do servidor não está disponível. Publica os dois ficheiros backend primeiro.", "retry": "Tentar novamente", "disclaimer": "18+ · Sem ganhos garantidos. As cotações mudam e as probabilidades são estimativas."}, "de": {"personal": "Persönliche Kombis", "title": "Deine Wünsche. Der Motor kombiniert.", "intro": "Wähle Zeitraum, Sportarten und Anbieter. Der Motor sucht eine passende Kombination ohne Auffüllspiele.", "otherTools": "Weitere Kombi-Werkzeuge", "todayLink": "Heutige Empfehlungen ansehen", "builderLink": "Spiele selbst auswählen", "preferences": "1. Deine Wünsche", "preferenceHint": "Die Filter gelten nur für diesen Schein.", "period": "Zeitraum", "today": "Heute", "tomorrow": "Morgen", "48h": "Nächste 48 Stunden", "weekend": "Dieses / nächstes Wochenende", "zone": "Zeitzone", "profile": "Auswahlprofil", "safe": "Vorsichtig", "balanced": "Ausgewogen", "bold": "Offensiv", "safeNote": "Das Profil garantiert kein Ergebnis.", "maximum": "Maximale Spielanzahl", "noPadding": "Eine Obergrenze, keine Pflicht: bei Bedarf weniger Spiele. Mindestens zwei.", "sports": "Sportarten", "all": "Alle", "competitions": "Wettbewerbe", "search": "Wettbewerb suchen", "allCompetitions": "Alle Wettbewerbe der gewählten Sportarten", "narrowSearch": "Suche nach weiteren Wettbewerben.", "bookmaker": "Anbieter", "autoBook": "Automatisch · ein gemeinsamer Anbieter", "bookHint": "Alle Märkte müssen beim selben Anbieter existieren. Quoten und Annahme dort prüfen.", "excludedCount": "{{count}} Spiel(e) ausgeschlossen", "resetExcluded": "Ausgeschlossene Spiele wieder zulassen", "generate": "Meine Kombi erstellen", "building": "Auswahl wird gesucht…", "rebuildNote": "Ein Ausschluss berechnet den ganzen Schein neu und kann andere Tipps ändern.", "resultTitle": "2. Dein Vorschlag", "resultHint": "Ein Hauptschein und eine Alternative, wenn die Daten es erlauben.", "automatic": "Automatisch erstellt", "searchQuality": "Qualität, Marktkompatibilität und gemeinsamer Anbieter.", "startTitle": "Eine Kombi nach deinen Wünschen", "startText": "Filter einstellen und starten. Ohne passende Tipps wird kein Schein erzwungen.", "available": "{{count}} Spiel(e) im Filter", "updated": "Berechnet am", "stale": "Berechnung abgelaufen oder Spielbeginn. Vor dem Kopieren neu berechnen.", "recalculate": "Neu berechnen", "main": "Hauptschein", "alternative": "Alternative", "matches": "{{count}} Spiele", "total": "Beobachtete Gesamtquote", "shortened": "Verkürzter Schein: Kriterien rechtfertigen keine weiteren Spiele.", "shared": "Gemeinsame Spiele: Ergebnisse sind nicht unabhängig.", "why": "Warum dieser Tipp?", "consensus": "Konsenswahrscheinlichkeit", "stability": "Stabilität zwischen Quellen", "sources": "Analysierte Anbieter", "quality": "Rangwert", "qualityNote": "Kombiniert Konsens, Stabilität und Quellenabdeckung. Keine Gewinnwahrscheinlichkeit der Kombi.", "analysis": "Spielanalyse", "exclude": "Ausschließen und neu berechnen", "copy": "Schein kopieren", "copied": "Schein kopiert.", "manualCopy": "Schein manuell kopieren", "noAlternative": "Ein Vorschlag ausgewählt", "noAlternativeText": "Keine andere Alternative erfüllt dieselben Kriterien.", "noTicket": "Derzeit kein passender Schein", "noTicketText": "Der Datenstrom bietet keine zwei passenden Tipps. Anderen Zeitraum oder breitere Filter versuchen.", "proTitle": "Persönliche Erstellung für Pro", "proText": "Mit aktivem Abo Wünsche festlegen und Tipps suchen lassen.", "upgrade": "Pro entdecken", "sessionTitle": "Erneut anmelden", "sessionText": "Sitzung erneuern, um das Werkzeug zu nutzen.", "login": "Anmelden", "failure": "Anfrage nicht abgeschlossen. Bitte erneut versuchen.", "backendMissing": "Neue Serverfunktion fehlt. Zuerst beide Backend-Dateien bereitstellen.", "retry": "Erneut versuchen", "disclaimer": "18+ · Kein Gewinn garantiert. Quoten ändern sich; Wahrscheinlichkeiten sind Schätzungen."}, "ar": {"personal": "رهانات مجمعة مخصصة", "title": "تفضيلاتك. والمحرك يختار.", "intro": "اختر الفترة والرياضات ومقدم الأسعار. يبحث المحرك عن تذكرة متناسقة دون إضافة مباريات لمجرد الملء.", "otherTools": "أدوات أخرى", "todayLink": "توصيات اليوم", "builderLink": "اختيار مبارياتي يدوياً", "preferences": "١. تفضيلاتك", "preferenceHint": "تخص هذه الفلاتر هذه التذكرة فقط.", "period": "الفترة", "today": "اليوم", "tomorrow": "غداً", "48h": "الساعات الـ٤٨ القادمة", "weekend": "نهاية هذا الأسبوع أو القادمة", "zone": "المنطقة الزمنية", "profile": "ملف الاختيار", "safe": "حذر", "balanced": "متوازن", "bold": "جريء", "safeNote": "لا يضمن الملف نتيجة التذكرة.", "maximum": "الحد الأقصى للمباريات", "noPadding": "حد أقصى وليس عدداً إلزامياً: مباريات أقل عند الحاجة. الحد الأدنى مباراتان.", "sports": "الرياضات", "all": "الكل", "competitions": "البطولات", "search": "البحث عن بطولة", "allCompetitions": "جميع بطولات الرياضات المختارة", "narrowSearch": "استخدم البحث لإظهار بطولات أخرى.", "bookmaker": "مقدم الأسعار", "autoBook": "تلقائي · مقدم مشترك واحد", "bookHint": "يجب توفر الأسواق لدى المقدم نفسه. تحقق من الأسعار وقبول التذكرة على منصته.", "excludedCount": "عدد المباريات المستبعدة: {{count}}", "resetExcluded": "إعادة السماح بالمباريات المستبعدة", "generate": "إنشاء تذكرتي", "building": "جارٍ البحث عن الاختيارات…", "rebuildNote": "استبعاد مباراة يعيد حساب التذكرة كاملة وقد يغير الاختيارات الأخرى.", "resultTitle": "٢. اقتراحك", "resultHint": "تذكرة رئيسية وبديل إذا سمحت البيانات.", "automatic": "إنشاء تلقائي", "searchQuality": "الجودة وتوافق الأسواق ومقدم مشترك.", "startTitle": "تذكرة تناسب تفضيلاتك", "startText": "اضبط الفلاتر ثم ابدأ. لا تُفرض تذكرة عند نقص الاختيارات المتوافقة.", "available": "عدد المباريات ضمن الفلاتر: {{count}}", "updated": "حُسب في", "stale": "انتهت صلاحية الحساب أو بدأت مباراة. أعد الحساب قبل النسخ.", "recalculate": "إعادة الحساب", "main": "التذكرة الرئيسية", "alternative": "البديل", "matches": "عدد المباريات: {{count}}", "total": "المعامل الإجمالي المرصود", "shortened": "تذكرة مختصرة: المعايير لا تبرر إضافة مباريات أخرى.", "shared": "يشترك الاقتراحان في مباريات: نتائجهما ليست مستقلة.", "why": "لماذا هذا الاختيار؟", "consensus": "احتمال الإجماع", "stability": "الاستقرار بين المصادر", "sources": "مقدمو الأسعار المحللون", "quality": "مؤشر الترتيب", "qualityNote": "يجمع الترتيب الإجماع والاستقرار وتغطية المصادر. لا يمثل احتمال نجاح التذكرة.", "analysis": "تحليل المباراة", "exclude": "استبعاد وإعادة الحساب", "copy": "نسخ التذكرة", "copied": "نُسخت التذكرة.", "manualCopy": "نسخ التذكرة يدوياً", "noAlternative": "اقتراح واحد مؤهل", "noAlternativeText": "لا يوجد بديل مختلف يستوفي المعايير نفسها.", "noTicket": "لا توجد تذكرة متوافقة حالياً", "noTicketText": "لا يوفر التدفق اختيارين متوافقين مع التفضيلات ومعايير الجودة. جرّب فترة أخرى أو وسّع الفلاتر.", "proTitle": "الإنشاء المخصص لمشتركي Pro", "proText": "حدد تفضيلاتك ودع المحرك يبحث باشتراك نشط.", "upgrade": "اكتشاف Pro", "sessionTitle": "سجّل الدخول مجدداً", "sessionText": "جدد جلستك للوصول إلى الأداة.", "login": "تسجيل الدخول", "failure": "تعذر إتمام الطلب. حاول بعد قليل.", "backendMissing": "وظيفة الخادم غير متاحة بعد. انشر ملفي الخادم قبل هذه الصفحة.", "retry": "إعادة المحاولة", "disclaimer": "١٨+ · لا أرباح مضمونة. تتغير الأسعار وتبقى الاحتمالات تقديرات."}};
+const SPORT_NAMES = {"fr": {"soccer": "Football", "basketball": "Basketball", "tennis": "Tennis", "icehockey": "Hockey", "baseball": "Baseball", "americanfootball": "Football US", "mma": "MMA", "rugby": "Rugby", "cricket": "Cricket"}, "en": {"soccer": "Football", "basketball": "Basketball", "tennis": "Tennis", "icehockey": "Hockey", "baseball": "Baseball", "americanfootball": "American football", "mma": "MMA", "rugby": "Rugby", "cricket": "Cricket"}, "es": {"soccer": "Fútbol", "basketball": "Baloncesto", "tennis": "Tenis", "icehockey": "Hockey", "baseball": "Béisbol", "americanfootball": "Fútbol americano", "mma": "MMA", "rugby": "Rugby", "cricket": "Críquet"}, "pt": {"soccer": "Futebol", "basketball": "Basquetebol", "tennis": "Ténis", "icehockey": "Hóquei", "baseball": "Basebol", "americanfootball": "Futebol americano", "mma": "MMA", "rugby": "Râguebi", "cricket": "Críquete"}, "de": {"soccer": "Fußball", "basketball": "Basketball", "tennis": "Tennis", "icehockey": "Eishockey", "baseball": "Baseball", "americanfootball": "American Football", "mma": "MMA", "rugby": "Rugby", "cricket": "Cricket"}, "ar": {"soccer": "كرة القدم", "basketball": "كرة السلة", "tennis": "التنس", "icehockey": "الهوكي", "baseball": "البيسبول", "americanfootball": "كرة القدم الأمريكية", "mma": "الفنون القتالية المختلطة", "rugby": "الرجبي", "cricket": "الكريكيت"}};
+const LIMITS = {safe:3, balanced:6, bold:8};
+const CSS = `
+.pc-page{max-width:1320px;margin:auto;padding:28px 20px 64px;color:#172438;font-size:16px;line-height:1.6;--pc-line:#e1e7ef}
+.pc-page *{box-sizing:border-box;min-width:0}.pc-page h1,.pc-page h2,.pc-page h3,.pc-page p{margin:0}.pc-page button,.pc-page input,.pc-page select,.pc-page textarea{font:inherit}.pc-page button{cursor:pointer}.pc-page button:disabled{cursor:wait;opacity:.6}.pc-page svg{width:19px;height:19px;flex-shrink:0}.pc-page :is(button,input,select,a,summary,textarea):focus-visible{outline:3px solid #fb923c;outline-offset:3px}.pc-page :is(h1,h2,h3,p,span,strong,a){overflow-wrap:anywhere}
+.pc-hero{padding:32px;border-radius:26px;background:radial-gradient(at 100% 0,#6b3521,transparent 60%),#111e30;color:white}.pc-eyebrow{display:flex;align-items:center;gap:9px;font-size:12px;font-weight:800;letter-spacing:.08em;text-transform:uppercase;color:#fdba74}.pc-hero h1{font-size:clamp(28px,4vw,44px);line-height:1.15;margin:14px 0}.pc-hero p{max-width:760px;color:#dbe4ef}.pc-links{display:flex;gap:12px;flex-wrap:wrap;margin-top:22px}.pc-links a{display:inline-flex;align-items:center;gap:8px;color:inherit;padding:8px 12px;border:1px solid #ffffff40;border-radius:10px;text-decoration:none;font-size:14px}
+.pc-layout{display:grid;grid-template-columns:340px minmax(0,1fr);align-items:start;gap:24px;margin-top:24px}.pc-panel,.pc-ticket,.pc-empty{border:1px solid var(--pc-line);background:#fff;border-radius:22px;padding:22px}.pc-panel h2,.pc-results h2{font-size:22px;font-weight:800;line-height:1.3}.pc-sub{font-size:14px;color:#64748b;margin-top:6px!important}.pc-field{border-top:1px solid #eef1f5;margin-top:20px;padding-top:18px}.pc-field>label,.pc-field>legend,.pc-field>summary{display:block;font-size:14px;font-weight:750;margin-bottom:10px}.pc-page fieldset{padding:0;border:0;margin:0}.pc-page fieldset.pc-field{border-top:1px solid #eef1f5;padding-top:18px;margin-top:20px}.pc-page select,.pc-search{width:100%;min-height:46px;padding:10px 12px;border:1px solid #cbd5e1;border-radius:10px;color:#172438;background:#fff;font-size:16px}.pc-chips{display:flex;flex-wrap:wrap;gap:7px}.pc-chip{border:1px solid #d8e1eb;background:#fff;border-radius:20px;padding:8px 11px;min-height:44px;font-size:13px;font-weight:650;color:#475569}.pc-chip[aria-pressed=true]{border-color:#172438;background:#172438;color:white}.pc-radio{display:flex;gap:6px}.pc-radio button{flex:1;min-height:46px;border:1px solid #d8e1eb;border-radius:10px;background:white;padding:7px;font-size:13px;font-weight:750}.pc-radio button[aria-pressed=true]{background:#fff1e7;border-color:#ea580c;color:#9a3412}.pc-checks{max-height:210px;overflow:auto;margin-top:10px}.pc-checks label{display:flex;align-items:center;gap:10px;padding:9px 2px;font-size:14px;cursor:pointer}.pc-checks input{width:18px;height:18px;flex-shrink:0;accent-color:#ea580c}.pc-button{display:inline-flex;justify-content:center;align-items:center;gap:8px;min-height:46px;padding:11px 15px;border-radius:11px;border:1px solid #d8e1eb;background:white;color:#172438;font-weight:750;text-decoration:none;font-size:14px;max-width:100%;white-space:normal}.pc-button.primary{background:#c2410c;border-color:#c2410c;color:white}.pc-wide{width:100%;margin-top:20px}.pc-note{font-size:12px;color:#64748b;margin-top:10px!important;line-height:1.6}.pc-excluded{margin-top:16px;background:#fff7ed;border-radius:12px;padding:12px;font-size:13px}.pc-excluded button{border:0;background:transparent;text-decoration:underline;color:#9a3412;min-height:44px;display:block}
+.pc-results-head{display:flex;justify-content:space-between;align-items:start;gap:12px;margin-bottom:18px}.pc-results-head>span{background:#f1f5f9;padding:6px 10px;border-radius:20px;font-size:12px;color:#475569}.pc-empty{text-align:center;padding:44px 24px;color:#64748b}.pc-empty>svg{width:34px;height:34px;margin:0 auto 14px;color:#ea580c}.pc-empty h3{font-size:21px;color:#172438;margin-bottom:8px}.pc-result-meta{border:1px solid #fed7aa;border-radius:14px;background:#fff7ed;padding:14px 16px;font-size:13px;color:#7c2d12;margin-bottom:18px}.pc-alert{padding:14px 16px;border:1px solid #fcd34d;border-radius:12px;background:#fffbeb;color:#92400e;font-size:14px;margin-bottom:16px}.pc-grid{display:grid;gap:20px}.pc-ticket{padding:0;overflow:hidden}.pc-ticket-head{display:flex;justify-content:space-between;gap:18px;padding:22px;background:#f8fafc;border-bottom:1px solid var(--pc-line)}.pc-ticket.main .pc-ticket-head{background:#162438;color:white}.pc-ticket-head h3{font-size:22px;font-weight:850}.pc-ticket-head p{font-size:13px;opacity:.8;margin-top:5px}.pc-odds{text-align:end;flex-shrink:0}.pc-odds small{display:block;font-size:11px;opacity:.8}.pc-odds strong{font:850 30px/1.3 ui-monospace,monospace}.pc-ticket-body{padding:20px}.pc-book{font-size:13px;color:#64748b}.pc-book strong{color:#334155}.pc-inline-note{font-size:13px;color:#92400e;background:#fffbeb;border-radius:10px;padding:10px 12px;margin-top:12px!important}.pc-legs{display:grid;gap:14px;margin-top:18px}.pc-leg{border:1px solid var(--pc-line);border-radius:15px;padding:15px}.pc-leg-top{display:flex;align-items:start;gap:10px}.pc-index{display:grid;place-items:center;background:#fff1e7;color:#c2410c;border-radius:50%;width:27px;height:27px;flex-shrink:0;font-size:13px;font-weight:800}.pc-leg-top>div{flex:1}.pc-leg h4{font-size:17px;font-weight:800;line-height:1.4;margin:0}.pc-leg small{display:block;color:#64748b;font-size:12px;margin-top:4px}.pc-pick{display:flex;align-items:center;justify-content:space-between;gap:14px;border-radius:10px;background:#fff7ed;padding:12px;margin:12px 0}.pc-pick p{font-size:15px;font-weight:800;color:#9a3412}.pc-pick span{font-size:12px;color:#64748b}.pc-pick strong{font:800 22px ui-monospace,monospace;flex-shrink:0}.pc-leg details{font-size:13px;color:#64748b}.pc-leg summary{display:flex;align-items:center;gap:7px;cursor:pointer;min-height:44px;font-weight:650}.pc-leg details p{margin-top:7px}.pc-leg-footer{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;margin-top:8px}.pc-leg-footer a,.pc-leg-footer button{display:inline-flex;align-items:center;gap:6px;min-height:44px;background:none;border:0;padding:4px 0;font-size:12px;color:#9a3412;text-decoration:none;font-weight:700}.pc-copy{margin-top:16px;width:100%}.pc-page textarea{display:block;width:100%;margin-top:12px;min-height:200px;padding:12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px}.pc-footer{font-size:12px;color:#64748b;margin-top:24px}.pc-spin{animation:pc-spin 1s linear infinite}@keyframes pc-spin{to{transform:rotate(360deg)}}
+@media(min-width:1200px){.pc-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:900px){.pc-layout{grid-template-columns:minmax(0,1fr)}.pc-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:0 22px}.pc-actions{grid-column:1/-1}}@media(max-width:520px){.pc-page{padding:16px 12px 40px}.pc-hero{padding:24px 20px;border-radius:20px}.pc-form-grid{display:block}.pc-panel,.pc-empty{padding:20px 16px}.pc-ticket-head,.pc-ticket-body{padding:18px 15px}.pc-links a{width:100%;font-size:13px}.pc-ticket-head h3{font-size:20px}.pc-odds strong{font-size:26px}.pc-results-head{flex-wrap:wrap}.pc-leg{padding:13px}.pc-radio button{font-size:12px}}
+@media(prefers-reduced-motion:reduce){.pc-spin{animation:none}}
 `;
-const TIERS = [{
-  key: "safe",
-  label: "Sécurité",
-  icon: Shield,
-  accent: "emerald",
-  description: "Le profil prudent, à examiner sélection par sélection."
-}, {
-  key: "balanced",
-  label: "Équilibre",
-  icon: Scale,
-  accent: "orange",
-  description: "Un profil intermédiaire pour comparer les cotes et la confiance."
-}, {
-  key: "jackpot",
-  label: "Jackpot",
-  icon: Rocket,
-  accent: "rose",
-  description: "Le profil offensif : une cote élevée implique davantage d’incertitude."
-}];
-const FRESH_FOR_MS = 5 * 60 * 1000;
-function object(value) {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-function text(value, fallback = "") {
-  return typeof value === "string" && value.trim() ? value.trim() : fallback;
-}
-function number(value) {
-  if (typeof value !== "number" && typeof value !== "string") return null;
-  if (typeof value === "string" && !/^\s*-?\d+(?:[.,]\d+)?\s*$/.test(value)) return null;
-  const result = Number(typeof value === "string" ? value.replace(",", ".") : value);
-  return Number.isFinite(result) ? result : null;
-}
-function percentage(value) {
-  const result = number(value);
-  return result !== null && result >= 0 && result <= 100 ? result : null;
-}
-function odds(value) {
-  const result = number(value);
-  return result !== null && result > 1 ? result : null;
-}
-function formatNumber(i18n, value, digits = 2) {
-  return value === null ? "—" : new Intl.NumberFormat(i18n.locale, {
-    maximumFractionDigits: digits
-  }).format(value);
-}
-function dateValue(value) {
-  if (typeof value !== "string" || !value.includes("T")) return null;
-  const result = Date.parse(value);
-  return Number.isFinite(result) ? result : null;
-}
-function dateLabel(i18n, value) {
-  const date = dateValue(value);
-  return date === null ? "Horaire non communiqué" : new Intl.DateTimeFormat(i18n.locale, {
-    day: "2-digit",
-    month: "short",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(new Date(date));
-}
-function paidAccount(account, now = Date.now()) {
-  if (!object(account)) return false;
-  if (account.is_admin === true) return true;
-  const tier = text(account.subscription, text(account.subscription_tier)).toLowerCase();
-  if (!tier || ["free", "none", "expired", "inactive", "null", "undefined"].includes(tier)) return false;
-  if (account.subscription_expires_at) {
-    const expiration = dateValue(account.subscription_expires_at);
-    if (expiration === null || expiration <= now) return false;
-  }
-  return true;
-}
-function normalizeCombos(payload) {
-  if (!object(payload)) throw new Error("INVALID_COMBOS");
-  if (Object.keys(payload).length && !TIERS.some(tier => Object.prototype.hasOwnProperty.call(payload, tier.key))) throw new Error("INVALID_COMBOS");
-  const result = {};
-  for (const tier of TIERS) {
-    const raw = payload[tier.key];
-    if (raw === null || raw === undefined) {
-      result[tier.key] = null;
-      continue;
-    }
-    if (!object(raw) || raw.legs !== undefined && raw.legs !== null && !Array.isArray(raw.legs)) throw new Error("INVALID_COMBOS");
-    result[tier.key] = {
-      label: text(raw.label, tier.label),
-      tagline: text(raw.tagline),
-      description: text(raw.description),
-      total_odds: odds(raw.total_odds),
-      avg_confidence: percentage(raw.avg_confidence),
-      combined_probability: percentage(raw.combined_probability),
-      unlocked_for_free: raw.unlocked_for_free === true,
-      locked: raw.locked === true || payload.access?.is_paid === false && raw.unlocked_for_free !== true,
-      legs: (raw.legs || []).map((row, index) => {
-        const leg = object(row) ? row : {};
-        const identifier = leg.match_id ?? leg.id;
-        return {
-          match_id: ["string", "number"].includes(typeof identifier) ? String(identifier) : "",
-          key: `${identifier ?? "missing"}-${index}`,
-          home_team: text(leg.home_team),
-          away_team: text(leg.away_team),
-          sport_title: text(leg.sport_title),
-          league: text(leg.league_name, text(leg.league)),
-          country: text(leg.country_name, text(leg.country)),
-          commence_time: dateValue(leg.commence_time) === null ? null : leg.commence_time,
-          completed: leg.completed === true || leg.is_finished === true,
-          pick: text(leg.pick),
-          pick_odds: odds(leg.pick_odds),
-          market_label: text(leg.market_label),
-          market: text(leg.market),
-          pick_point: number(leg.pick_point),
-          label: text(leg.label),
-          confidence: percentage(leg.confidence),
-          locked: leg.locked === true
-        };
-      })
-    };
-  }
-  return result;
-}
-function unlockedTier(combo, account, now) {
-  return Boolean(combo && !combo.locked && (combo.unlocked_for_free || paidAccount(account, now)));
-}
-function legStatus(leg, now) {
-  if (leg.completed) return "finished";
-  const date = dateValue(leg.commence_time);
-  return date === null ? "unknown" : date <= now ? "started" : "upcoming";
-}
-function completeTicket(combo, account, now, loadedAt) {
-  return Boolean(unlockedTier(combo, account, now) && combo.legs.length >= 2 && loadedAt !== null && now - loadedAt >= 0 && now - loadedAt < FRESH_FOR_MS && combo.legs.every(leg => !leg.locked && leg.home_team && leg.away_team && leg.pick && leg.pick_odds !== null && legStatus(leg, now) === "upcoming"));
-}
-function ticketText(i18n, combo) {
-  return [i18n.t("WNPulse \xB7 Combin\xE9 {{v0}}", {
-    v0: combo.label
-  }), i18n.t("Horaires : {{v0}}", {
-    v0: Intl.DateTimeFormat().resolvedOptions().timeZone || i18n.t("heure locale du navigateur")
-  }), ...combo.legs.map((leg, index) => [i18n.t("{{v0}}. {{v1}} vs {{v2}}", {
-    v0: index + 1,
-    v1: leg.home_team,
-    v2: leg.away_team
-  }), [leg.league || leg.sport_title, i18n.tx(leg.country)].filter(Boolean).join(" · "), dateLabel(i18n, leg.commence_time), [i18n.bet(leg.market_label), i18n.bet(leg.pick)].filter(Boolean).join(" : "), i18n.t("Cote : {{v0}}", {
-    v0: formatNumber(i18n, leg.pick_odds)
-  })].filter(Boolean).join("\n")), combo.total_odds !== null ? i18n.t("Cote totale du moteur : {{v0}}", {
-    v0: formatNumber(i18n, combo.total_odds)
-  }) : i18n.t("Cote totale non communiquée"), i18n.t("Sélections et cotes à vérifier avant le début des rencontres.")].join("\n\n");
-}
-function loadError(i18n, failure) {
-  if (failure?.message === "INVALID_COMBOS" || failure?.message === "INVALID_ACCOUNT") return i18n.t("Les données reçues sont incomplètes. Réessaie pour obtenir une sélection valide.");
-  if (["ECONNABORTED", "ETIMEDOUT"].includes(failure?.code)) return i18n.t("Le serveur met trop de temps à répondre. Tu peux réessayer.");
-  if (failure?.response?.status === 429) return i18n.t("Les actualisations sont temporairement limitées. Réessaie dans quelques instants.");
-  return i18n.t("Impossible d’actualiser les combinés pour le moment. Réessaie dans quelques instants.");
-}
-function chronologicalLegs(combo, viewMode) {
-  const rows = (combo?.legs || []).map((leg, index) => ({
-    leg,
-    index
-  }));
-  return viewMode === "agenda" ? rows.sort((a, b) => (dateValue(a.leg.commence_time) ?? Infinity) - (dateValue(b.leg.commence_time) ?? Infinity) || a.index - b.index) : rows;
-}
-function explainMarket(i18n, leg) {
-  const normalized = value => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  const market = normalized(`${leg.market} ${leg.market_label}`),
-    pick = normalized(leg.pick);
-  if (/double.?chance/.test(market)) return i18n.t("Deux issues sont couvertes : celles indiquées par la sélection. Vérifie la période à laquelle le marché s’applique.");
-  if (/draw_no_bet|nul rembourse/.test(market)) return i18n.t("Le choix porte sur une victoire. En cas de nul sur la période couverte, le règlement de ce marché prévoit le remboursement.");
-  if (/btts|equipes marquent/.test(market)) return i18n.t("Le pari concerne le fait que les deux équipes marquent, ou non, pendant la période couverte par le marché.");
-  if (/handicap|spreads/.test(market)) return i18n.t("Le résultat est évalué après application du handicap indiqué. La ligne et la période du marché déterminent le règlement.");
-  if (/total/.test(market) || /moins de|plus de|over|under/.test(pick)) {
-    const values = leg.pick.match(/\d+(?:[.,]\d+)?/g);
-    const threshold = leg.pick_point ?? (values?.length ? number(values[values.length - 1]) : null);
-    if (threshold !== null && threshold % 1 === 0.5) {
-      if (/moins de|under/.test(pick)) return i18n.t("Le total doit rester inf\xE9rieur \xE0 {{v0}} sur la p\xE9riode couverte par ce march\xE9.", {
-        v0: formatNumber(i18n, threshold)
-      });
-      if (/plus de|over/.test(pick)) return i18n.t("Le total doit d\xE9passer {{v0}} sur la p\xE9riode couverte par ce march\xE9.", {
-        v0: formatNumber(i18n, threshold)
-      });
-    }
-    return i18n.t("Le pari porte sur le total indiqué. Les règles de règlement dépendent de la ligne et de la période choisies.");
-  }
-  if (/vainqueur|victoire|h2h|1x2/.test(market)) return /^(nul|draw|match nul)$/.test(pick) ? i18n.t("La sélection prévoit un match nul sur la période couverte par le marché.") : i18n.t("Le moteur retient {{v0}} comme vainqueur sur la p\xE9riode couverte par le march\xE9.", {
-    v0: i18n.bet(leg.pick)
-  });
-  return i18n.t("Le pronostic se lit avec son marché : consulte la fiche du match pour vérifier la période et les informations disponibles.");
-}
-function RiskBadge({
-  label
-}) {
-  const i18n = usePageLanguage();
-  if (!label) return null;
-  const normalized = label.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  const risk = /risqu|risky/.test(normalized) ? "risky" : /modere|value/.test(normalized) ? "moderate" : /sur|safe/.test(normalized) ? "safe" : "neutral";
-  return <span className={`wp3-risk wp3-risk--${risk}`}>{i18n.tx(label)}</span>;
-}
-function DateStamp({
-  value
-}) {
-  const i18n = usePageLanguage();
-  const timestamp = dateValue(value);
-  if (timestamp === null) return <div className="wp3-date-stamp"><CalendarDays aria-hidden="true" /><span>{i18n.t("\xC0 confirmer")}</span></div>;
-  const date = new Date(timestamp);
-  return <div className="wp3-date-stamp" aria-hidden="true">
-    <strong>{i18n.tx(new Intl.DateTimeFormat(i18n.locale, {
-        day: "2-digit"
-      }).format(date))}</strong>
-    <span>{i18n.tx(new Intl.DateTimeFormat(i18n.locale, {
-        month: "short"
-      }).format(date))}</span>
-    <b>{i18n.tx(new Intl.DateTimeFormat(i18n.locale, {
-        hour: "2-digit",
-        minute: "2-digit"
-      }).format(date))}</b>
-  </div>;
-}
-function SelectionCard({
-  leg,
-  index,
-  unlocked,
-  now,
-  onUpgrade
-}) {
-  const i18n = usePageLanguage();
-  const visible = unlocked && !leg.locked,
-    status = legStatus(leg, now);
-  const competition = leg.league || leg.sport_title || "Compétition non communiquée";
-  const href = leg.match_id ? `/app/match/${encodeURIComponent(leg.match_id)}` : null;
-  return <article className="wp3-match-card" data-testid={`combo-leg-${leg.match_id || index}`}>
-    <div className="wp3-match-top">
-      <div className="wp3-selection-number">{i18n.tx(String(index + 1).padStart(2, "0"))}</div>
-      <div className="wp3-match-meta"><p>{i18n.tx(competition)}</p><div>{i18n.tx(leg.country && <span className="wp3-country">{i18n.tx(leg.country)}</span>)}<span><Clock aria-hidden="true" />{i18n.tx(dateLabel(i18n, leg.commence_time))}</span></div></div>
-      {i18n.tx(visible && <RiskBadge label={i18n.tx(leg.label)} />)}
-    </div>
-    {i18n.tx((status === "started" || status === "finished") && <p className="wp3-alert wp3-alert--compact">{i18n.tx(status === "finished" ? "Rencontre terminée · actualise le combiné" : "Rencontre commencée · actualise le combiné")}</p>)}
-    <div className="wp3-fixture">
-      <DateStamp value={leg.commence_time} />
-      <div className="wp3-team-pair"><p>{i18n.tx(leg.home_team || "Équipe non communiquée")}</p><span>{i18n.t("contre")}</span><p>{i18n.tx(leg.away_team || "Équipe non communiquée")}</p></div>
-    </div>
-    {i18n.tx(visible ? <>
-      <div className="wp3-pick-grid">
-        <div className="wp3-pick"><span className="wp3-eyebrow">{i18n.tx(leg.market_label || "Pronostic sélectionné")}</span><p>{i18n.tx(leg.pick || "Sélection non communiquée")}</p></div>
-        <div className="wp3-leg-odds"><span>{i18n.t("Cote")}</span><strong>{i18n.tx(formatNumber(i18n, leg.pick_odds))}</strong></div>
-      </div>
-      <div className="wp3-confidence"><span>{i18n.t("Confiance du moteur")}</span><strong>{i18n.tx(leg.confidence === null ? "Non communiquée" : `${formatNumber(i18n, leg.confidence, 1)} %`)}</strong></div>
-      <details className="wp3-explanation"><summary><span>{i18n.t("Ce que signifie ce pronostic")}</span><ChevronDown aria-hidden="true" /></summary><div>
-        <p>{i18n.tx(explainMarket(i18n, leg))}</p>
-        <p>{i18n.tx(leg.confidence === null ? "Aucun score de confiance n’a été communiqué pour cette sélection." : `La confiance de ${formatNumber(i18n, leg.confidence, 1)} % est l’indicateur fourni par le moteur ; elle ne constitue pas un taux de réussite observé.`)}</p>
-      </div></details>
-      {i18n.tx(href && <Link to={href} className="wp3-match-link">{i18n.t("Consulter la rencontre")}<ArrowRight aria-hidden="true" /></Link>)}
-    </> : <div className="wp3-locked-pick"><Lock aria-hidden="true" /><div><strong>{i18n.t("Le pronostic est r\xE9serv\xE9 aux abonn\xE9s")}</strong><p>{i18n.t("D\xE9bloque la s\xE9lection, son march\xE9 et sa cote.")}</p></div><button type="button" className="wp3-button wp3-button--light" onClick={onUpgrade}>{i18n.t("Voir les abonnements")}<ArrowRight aria-hidden="true" /></button></div>)}
-  </article>;
-}
+function numeric(value) { const n=Number(value); return value!==null && value!==undefined && Number.isFinite(n) ? n : null; }
+function validTicket(ticket) { return ticket && Array.isArray(ticket.legs) && ticket.legs.length>=2 && ticket.legs.every(p=>p.match_id && p.pick && numeric(p.pick_odds)>1 && Number.isFinite(Date.parse(p.commence_time))); }
+function toggle(list,key) { return list.includes(key)?list.filter(v=>v!==key):[...list,key]; }
+
 export default function CombosPage() {
-  const i18n = usePageLanguage();
-  const {
-    user,
-    loading: authLoading = false
-  } = useAuth();
-  const navigate = useNavigate();
-  const [combos, setCombos] = useState(null);
-  const [account, setAccount] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [accessState, setAccessState] = useState("waiting");
-  const [error, setError] = useState("");
-  const [activeTier, setActiveTier] = useState("balanced");
-  const [viewMode, setViewMode] = useState("cards");
-  const [loadedAt, setLoadedAt] = useState(null);
-  const [now, setNow] = useState(Date.now);
-  const [copyNotice, setCopyNotice] = useState("");
-  const [manualCopy, setManualCopy] = useState("");
-  const mountedRef = useRef(false);
-  const requestRef = useRef(null);
-  const snapshotRef = useRef(null);
-  const tierChosenRef = useRef(false);
-  const copyGenerationRef = useRef(0);
-  const sessionKey = user?.id || user?.email || "anonymous";
-  const fetchCombos = useCallback(async () => {
-    if (!mountedRef.current || requestRef.current) return;
-    const controller = new AbortController();
-    requestRef.current = controller;
-    setRefreshing(true);
-    try {
-      // Verify current access independently of the cached AuthContext profile.
-      const [profile, selection] = await Promise.allSettled([api.get("/auth/me", {
-        timeout: 8000,
-        signal: controller.signal
-      }), api.get("/predictions/combos", {
-        timeout: 16000,
-        signal: controller.signal
-      })]);
-      if (!mountedRef.current || controller.signal.aborted) return;
-      const statuses = [profile, selection].filter(result => result.status === "rejected").map(result => result.reason?.response?.status);
-      if (statuses.includes(401)) {
-        snapshotRef.current = null;
-        setCombos(null);
-        setAccount(null);
-        setLoadedAt(null);
-        setAccessState("unauthorized");
-        setError("");
-        return;
-      }
-      if (profile.status === "fulfilled") {
-        if (!object(profile.value.data)) throw new Error("INVALID_ACCOUNT");
-        setAccount(profile.value.data);
-      }
-      if (selection.status === "rejected" && selection.reason?.response?.status === 403) {
-        snapshotRef.current = null;
-        setCombos(null);
-        setLoadedAt(null);
-        setAccessState("locked");
-        setError("");
-        return;
-      }
-      if (profile.status === "rejected") throw profile.reason;
-      if (selection.status === "rejected") throw selection.reason;
-      const data = normalizeCombos(selection.value.data);
-      snapshotRef.current = data;
-      setCombos(data);
-      setLoadedAt(Date.now());
-      setNow(Date.now());
-      setAccessState("ready");
-      setError("");
-      if (!tierChosenRef.current && !paidAccount(profile.value.data)) {
-        const free = TIERS.find(tier => data[tier.key]?.unlocked_for_free && data[tier.key].legs.length > 0 && !data[tier.key].locked && data[tier.key].legs.every(leg => !leg.locked));
-        if (free) setActiveTier(free.key);
-      }
-    } catch (failure) {
-      if (mountedRef.current && !controller.signal.aborted) {
-        setError(loadError(i18n, failure));
-        if (!snapshotRef.current) setAccessState("error");
-      }
-    } finally {
-      if (requestRef.current === controller) {
-        requestRef.current = null;
-        if (mountedRef.current && !controller.signal.aborted) {
-          setLoading(false);
-          setRefreshing(false);
-        }
-      }
-    }
-  }, [i18n]);
-  useEffect(() => {
-    if (authLoading) return;
-    mountedRef.current = true;
-    snapshotRef.current = null;
-    tierChosenRef.current = false;
-    setCombos(null);
-    setAccount(null);
-    setLoadedAt(null);
-    setLoading(true);
-    setAccessState("waiting");
-    setError("");
-    fetchCombos();
-    const refreshVisible = () => {
-      if (document.visibilityState === "visible") fetchCombos();
-    };
-    const timer = window.setInterval(refreshVisible, 120000);
-    document.addEventListener("visibilitychange", refreshVisible);
-    window.addEventListener("focus", refreshVisible);
-    return () => {
-      mountedRef.current = false;
-      requestRef.current?.abort();
-      requestRef.current = null;
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", refreshVisible);
-      window.removeEventListener("focus", refreshVisible);
-      copyGenerationRef.current += 1;
-    };
-  }, [authLoading, sessionKey, user?.subscription, user?.subscription_tier, fetchCombos]);
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 60000);
-    const tick = () => setNow(Date.now());
-    document.addEventListener("visibilitychange", tick);
-    return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", tick);
-    };
-  }, []);
-  useEffect(() => {
-    copyGenerationRef.current += 1;
-    setCopyNotice("");
-    setManualCopy("");
-  }, [activeTier, combos, accessState]);
-  const tier = TIERS.find(item => item.key === activeTier) || TIERS[1];
-  const activeCombo = combos?.[tier.key];
-  const unlocked = unlockedTier(activeCombo, account, now);
-  const fullAccess = unlocked && activeCombo?.legs.every(leg => !leg.locked);
-  const isPaid = paidAccount(account, now);
-  const freeTier = TIERS.find(item => combos?.[item.key]?.unlocked_for_free && combos[item.key].legs.length > 0 && !combos[item.key].locked && combos[item.key].legs.every(leg => !leg.locked));
-  const stale = loadedAt !== null && now - loadedAt >= FRESH_FOR_MS;
-  const unavailable = activeCombo?.legs.some(leg => ["started", "finished"].includes(legStatus(leg, now))) || false;
-  const canCopy = completeTicket(activeCombo, account, now, loadedAt);
-  const orderedLegs = useMemo(() => chronologicalLegs(activeCombo, viewMode), [activeCombo, viewMode]);
-  const firstStart = useMemo(() => {
-    const starts = (activeCombo?.legs || []).map(leg => dateValue(leg.commence_time)).filter(value => value !== null);
-    return starts.length ? new Date(Math.min(...starts)).toISOString() : null;
-  }, [activeCombo]);
-  const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone || "heure locale", []);
-  const upgrade = () => navigate("/app/abonnement");
-  function chooseTier(key) {
-    tierChosenRef.current = true;
-    setActiveTier(key);
+  const i18n=usePageLanguage();
+  const {user,loading:authLoading=false}=useAuth();
+  const lang=String(i18n.language||i18n.locale||"fr").slice(0,2);
+  const messages=COPY[lang]||COPY.fr;
+  const t=(key,values={})=>(messages[key]||COPY.fr[key]||key).replace(/\{\{(\w+)\}\}/g,(_,k)=>String(values[k]??""));
+  const n=(v)=>numeric(v)===null?"—":new Intl.NumberFormat(i18n.locale,{maximumFractionDigits:2}).format(Number(v));
+  const zone=useMemo(()=>Intl.DateTimeFormat().resolvedOptions().timeZone||"Africa/Porto-Novo",[]);
+  const date=(v)=>Number.isFinite(Date.parse(v))?new Intl.DateTimeFormat(i18n.locale,{dateStyle:"medium",timeStyle:"short",timeZone:zone}).format(new Date(v)):"—";
+  const [form,setForm]=useState({period:"today",timezone:zone,profile:"balanced",max_legs:4,sports:[],leagues:[],bookmaker:"auto",excluded_match_ids:[]});
+  const [options,setOptions]=useState(null),[access,setAccess]=useState("loading"),[error,setError]=useState("");
+  const [busy,setBusy]=useState(false),[result,setResult]=useState(null),[search,setSearch]=useState("");
+  const [now,setNow]=useState(Date.now),[notice,setNotice]=useState(""),[manual,setManual]=useState("");
+  const request=useRef(null),optionRequest=useRef(null),epoch=useRef(0),copyEpoch=useRef(0);
+  const owner=`${user?.id||user?.email||"guest"}:${user?.subscription||user?.subscription_tier||"free"}:${user?.subscription_expires_at||""}:${Boolean(user?.is_admin)}`;
+  const [resultOwner,setResultOwner]=useState(null);
+  const visibleResult=resultOwner===owner?result:null;
+  const handleFailure=(failure)=>{
+    const status=failure?.response?.status;
+    if(status===401||status===403){setAccess(status===401?"unauthorized":"locked");setResult(null);setOptions(null);}
+    else setError(t(status===404?"backendMissing":"failure"));
+  };
+  useEffect(()=>{
+    if(authLoading)return;
+    const current=++epoch.current;
+    const controller=new AbortController();optionRequest.current=controller;
+    setAccess("loading");setOptions(null);setResult(null);setError("");setBusy(false);setNotice("");setManual("");
+    api.get("/combos/personalized/options",{signal:controller.signal,timeout:20000}).then(({data})=>{
+      if(controller.signal.aborted||epoch.current!==current)return;
+      if(!data||![data.sports,data.leagues,data.bookmakers].every(Array.isArray))throw new Error("Invalid options");
+      setOptions(data);setAccess("ready");
+    }).catch(failure=>{if(!controller.signal.aborted&&epoch.current===current){const status=failure?.response?.status;setAccess(status===401?"unauthorized":status===403?"locked":"error");setError(status===401||status===403?"":(COPY[lang]||COPY.fr)[status===404?"backendMissing":"failure"]);}});
+    return()=>{epoch.current++;copyEpoch.current++;controller.abort();request.current?.abort();};
+  },[authLoading,owner,lang]);
+  useEffect(()=>{const timer=window.setInterval(()=>setNow(Date.now()),30000);return()=>window.clearInterval(timer);},[]);
+  function change(patch){request.current?.abort();copyEpoch.current++;setBusy(false);setResult(null);setNotice("");setManual("");setError("");setForm(previous=>({...previous,...patch}));}
+  async function build(preferences=form){
+    if(access!=="ready")return;
+    request.current?.abort();const controller=new AbortController();request.current=controller;const current=epoch.current;
+    copyEpoch.current++;setBusy(true);setResult(null);setNotice("");setManual("");setError("");
+    try{
+      const {data}=await api.post("/combos/personalized",preferences,{signal:controller.signal,timeout:25000});
+      if(controller.signal.aborted||epoch.current!==current)return;
+      if(!data||!data.principal||!Array.isArray(data.principal.legs)||!Number.isFinite(Date.parse(data.expires_at)))throw new Error("Invalid ticket");
+      if(data.principal.legs.length&&!validTicket(data.principal)||data.alternative&&!validTicket(data.alternative))throw new Error("Invalid ticket");
+      setResultOwner(owner);setResult(data);setNow(Date.now());
+    }catch(failure){if(!controller.signal.aborted&&epoch.current===current)handleFailure(failure);}
+    finally{if(!controller.signal.aborted&&epoch.current===current)setBusy(false);}
   }
-  async function copyCombo() {
-    if (!completeTicket(activeCombo, account, Date.now(), loadedAt)) return;
-    const content = ticketText(i18n, activeCombo),
-      generation = copyGenerationRef.current;
-    try {
-      if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable");
-      await navigator.clipboard.writeText(content);
-      if (mountedRef.current && generation === copyGenerationRef.current) {
-        setCopyNotice("Combiné copié.");
-        setManualCopy("");
-      }
-    } catch {
-      if (mountedRef.current && generation === copyGenerationRef.current) {
-        setCopyNotice("La copie automatique est indisponible. Sélectionne le texte ci-dessous.");
-        setManualCopy(content);
-      }
-    }
+  function exclude(identity){if(form.excluded_match_ids.length>=30)return;const next={...form,excluded_match_ids:[...new Set([...form.excluded_match_ids,identity])]};setForm(next);build(next);}
+  const fresh=visibleResult&&Date.parse(visibleResult.expires_at)>now;
+  const canUse=(ticket)=>visibleResult&&Date.parse(visibleResult.expires_at)>Date.now()&&validTicket(ticket)&&ticket.legs.every(p=>Date.parse(p.commence_time)>Date.now());
+  async function copyTicket(ticket){
+    if(!canUse(ticket))return;
+    const content=["WNPulse · "+t("personal"),t("bookmaker")+" : "+ticket.bookmaker, t("zone")+" : "+zone,"",...ticket.legs.map((p,i)=>`${i+1}. ${p.home_team} vs ${p.away_team}\n${p.sport_title}\n${date(p.commence_time)}\n${i18n.bet(p.market_label)} : ${i18n.bet(p.pick)} @ ${n(p.pick_odds)}`),"",t("total")+" : "+n(ticket.total_odds),t("disclaimer"),"https://wnpulse.com"].join("\n");
+    const current=copyEpoch.current;
+    try{if(!navigator.clipboard?.writeText)throw new Error("Clipboard");await navigator.clipboard.writeText(content);if(current===copyEpoch.current)setNotice(t("copied"));}
+    catch{if(current===copyEpoch.current)setManual(content);}
   }
-  return <AppLayout>
-      <style>{i18n.tx(COMBOS_STYLES)}</style>
-      <div className="wp3-combos" data-testid="combos-page" data-layout="combos-studio">
-        <header className="wp3-hero">
-          <div className="wp3-hero-main">
-            <p className="wp3-hero-eyebrow"><Layers aria-hidden="true" />{i18n.t("WNPULSE \xB7 LES COMBIN\xC9S")}</p>
-            <h1>{i18n.rich("Lis le match.{{v0}}{{v1}}", {
-              v0: <br />,
-              v1: <span>{i18n.t("Choisis ton combin\xE9.")}</span>
-            })}</h1>
-            <p className="wp3-hero-description">{i18n.t("Trois profils. Chaque rencontre expliqu\xE9e. Toutes les s\xE9lections r\xE9unies dans un ticket clair.")}</p>
-            <div className="wp3-hero-meta"><span><Clock aria-hidden="true" />{i18n.rich("Horaires : {{v0}}", {
-                v0: i18n.tx(timeZone)
-              })}</span>{i18n.tx(loadedAt !== null && <span>{i18n.rich("{{v0}} \xE0 {{v1}}", {
-                v0: i18n.tx(stale ? "Dernier chargement" : "Actualisé"),
-                v1: i18n.tx(new Intl.DateTimeFormat(i18n.locale, {
-                  hour: "2-digit",
-                  minute: "2-digit"
-                }).format(new Date(loadedAt)))
-              })}</span>)}</div>
-          </div>
-          <div className="wp3-hero-side">
-            <div className="wp3-hero-profile"><span>{i18n.t("Profil s\xE9lectionn\xE9")}</span><strong>{i18n.tx(tier.label)}</strong><p>{i18n.tx(activeCombo ? i18n.t("{{v0}} s\xE9lection{{v1}} dans ce ticket", {
-                v0: activeCombo.legs.length,
-                v1: activeCombo.legs.length > 1 ? "s" : ""
-              }) : "Choisis un profil pour explorer ses sélections")}</p></div>
-            <button type="button" onClick={() => fetchCombos()} disabled={loading || refreshing || authLoading} className="wp3-button wp3-button--hero" data-testid="refresh-combos-btn"><RefreshCw aria-hidden="true" className={refreshing ? "wp3-spinning" : ""} />{i18n.tx(refreshing ? "Actualisation…" : "Actualiser les combinés")}</button>
-          </div>
-        </header>
-
-        <section className="wp3-profile-section" aria-labelledby="wp3-profiles-title">
-          <div className="wp3-section-heading"><div><p className="wp3-eyebrow">{i18n.t("01 \xB7 Choisis ton profil")}</p><h2 id="wp3-profiles-title">{i18n.t("Quel combin\xE9 veux-tu explorer ?")}</h2></div></div>
-          <div className="wp3-profile-grid">
-            {i18n.tx(TIERS.map((item, index) => {
-            const Icon = item.icon,
-              combo = combos?.[item.key],
-              selected = tier.key === item.key;
-            const visible = unlockedTier(combo, account, now) && combo.legs.length > 0 && combo.legs.every(leg => !leg.locked);
-            return <button type="button" key={item.key} aria-pressed={selected} onClick={() => chooseTier(item.key)} data-testid={`tier-tab-${item.key}`} className={cn("wp3-profile", `wp3-profile--${item.accent}`, selected && "wp3-profile--selected")}>
-                <div className="wp3-profile-top"><span className="wp3-profile-icon"><Icon aria-hidden="true" /></span><span className="wp3-profile-index">0{i18n.tx(index + 1)}</span>{i18n.tx(selected && <Check aria-hidden="true" className="wp3-selected-check" />)}</div>
-                <div className="wp3-profile-title"><strong>{i18n.tx(item.label)}</strong>{i18n.tx(combo?.unlocked_for_free && !combo.locked && combo.legs.length > 0 && combo.legs.every(leg => !leg.locked) && <span className="wp3-free-label">{i18n.t("Gratuit")}</span>)}</div>
-                <p>{i18n.tx(item.description)}</p>
-                <div className="wp3-profile-stats"><span>{i18n.tx(combo ? i18n.t("{{v0}} s\xE9lection{{v1}}", {
-                    v0: combo.legs.length,
-                    v1: combo.legs.length > 1 ? "s" : ""
-                  }) : "Profil à découvrir")}</span><b>{i18n.tx(visible ? combo.total_odds !== null ? i18n.t("Cote {{v0}}", {
-                    v0: formatNumber(i18n, combo.total_odds)
-                  }) : "Cote non fournie" : <>{i18n.tx(combo?.legs.length > 0 && <Lock aria-hidden="true" />)}{i18n.tx(loading ? "En attente" : !combo || !combo.legs.length ? "Indisponible" : "Accès Pro")}</>)}</b></div>
-              </button>;
-          }))}
-          </div>
-          {i18n.tx(combos && <details className="wp3-comparison">
-            <summary><Scale aria-hidden="true" /><span>{i18n.t("Comparer les trois profils")}</span><ChevronDown aria-hidden="true" /></summary>
-            <div className="wp3-compare-grid">{i18n.tx(TIERS.map(item => {
-              const combo = combos[item.key],
-                accessible = unlockedTier(combo, account, now) && combo.legs.length > 0 && combo.legs.every(leg => !leg.locked);
-              return <div key={item.key} className="wp3-compare-card"><h3>{i18n.tx(item.label)}</h3><dl><Metric label={i18n.t("Sélections")} value={combo ? combo.legs.length : "Non disponible"} /><Metric label={i18n.t("Cote totale")} value={!combo?.legs.length ? "Non disponible" : accessible ? formatNumber(i18n, combo.total_odds) : "Réservée"} /><Metric label={i18n.t("Confiance moyenne")} value={accessible && combo.avg_confidence !== null ? `${formatNumber(i18n, combo.avg_confidence, 1)} %` : "—"} /><Metric label={i18n.t("Probabilité combinée estimée")} value={accessible && combo.combined_probability !== null ? `${formatNumber(i18n, combo.combined_probability, 1)} %` : "—"} /></dl><button type="button" className="wp3-button wp3-button--light" onClick={() => chooseTier(item.key)}>{i18n.t("Explorer ce profil")}<ArrowRight aria-hidden="true" /></button></div>;
-            }))}</div><p className="wp3-comparison-note">{i18n.t("Les indicateurs proviennent du moteur. La confiance moyenne et la probabilit\xE9 combin\xE9e d\xE9crivent deux choses diff\xE9rentes.")}</p>
-          </details>)}
-        </section>
-
-        {i18n.tx(error && <div role="alert" className="wp3-alert"><AlertCircle aria-hidden="true" /><div><p>{i18n.tx(error)}</p>{i18n.tx(combos && <p>{i18n.t("La derni\xE8re s\xE9lection charg\xE9e reste affich\xE9e.")}</p>)}<button type="button" onClick={() => fetchCombos()} disabled={refreshing} className="wp3-button wp3-button--light">{i18n.t("R\xE9essayer")}</button></div></div>)}
-
-        {i18n.tx(loading || authLoading ? <section role="status" aria-label={i18n.t("Chargement des combinés")} className="wp3-loading"><Loader2 aria-hidden="true" className="wp3-spinning" /><h2>{i18n.t("Pr\xE9paration des s\xE9lections")}</h2><p>{i18n.t("V\xE9rification de ton acc\xE8s et chargement des rencontres\u2026")}</p><div className="wp3-skeleton-grid"><div /><div /><div /></div></section> : accessState === "unauthorized" ? <section className="wp3-state"><Lock aria-hidden="true" /><h2>{i18n.t("Ta session doit \xEAtre renouvel\xE9e")}</h2><p>{i18n.t("Reconnecte-toi pour retrouver l\u2019acc\xE8s correspondant \xE0 ton compte.")}</p><Link to="/login" className="wp3-button wp3-button--primary">{i18n.t("Se connecter")}<ArrowRight aria-hidden="true" /></Link></section> : accessState === "locked" ? <section className="wp3-upgrade" data-testid="combos-locked"><div className="wp3-upgrade-icon"><Lock aria-hidden="true" /></div><div><p className="wp3-eyebrow">{i18n.t("Les s\xE9lections compl\xE8tes")}</p><h2>{i18n.t("Explore les trois profils avec Pro.")}</h2><p>{i18n.t("Ton acc\xE8s actuel ne permet pas de consulter ces combin\xE9s. Retrouve les rencontres, les march\xE9s et les cotes en d\xE9couvrant les abonnements disponibles.")}</p><button type="button" onClick={upgrade} className="wp3-button wp3-button--primary" data-testid="upgrade-from-combos-btn"><Sparkles aria-hidden="true" />{i18n.t("D\xE9couvrir les abonnements")}<ArrowRight aria-hidden="true" /></button></div></section> : accessState === "error" ? <section className="wp3-state"><AlertCircle aria-hidden="true" /><h2>{i18n.t("Les combin\xE9s n\u2019ont pas pu \xEAtre charg\xE9s")}</h2><p>{i18n.t("Utilise le bouton R\xE9essayer ci-dessus pour relancer la v\xE9rification.")}</p></section> : <>
-          {i18n.tx(!isPaid && freeTier && <div className="wp3-free-banner" data-testid="free-combo-banner"><Gift aria-hidden="true" /><div><strong>{i18n.t("Un combin\xE9 gratuit \xE0 d\xE9couvrir")}</strong><p>{i18n.rich("Le profil {{v0}} est accessible avec ton compte.", {
-                v0: i18n.tx(combos[freeTier.key].label)
-              })}</p></div><button type="button" onClick={() => chooseTier(freeTier.key)} className="wp3-button wp3-button--light" data-testid="see-free-combo-btn">{i18n.t("Voir le combin\xE9")}<ArrowRight aria-hidden="true" /></button></div>)}
-          {i18n.tx(!activeCombo?.legs.length ? <section className="wp3-state"><Layers aria-hidden="true" /><h2>{i18n.t("Aucune s\xE9lection pour ce profil")}</h2><p>{i18n.rich("Le moteur n\u2019a pas fourni de combin\xE9 {{v0}} pour le moment. Consulte un autre profil ou actualise plus tard.", {
-              v0: i18n.tx(tier.label.toLowerCase())
-            })}</p></section> : <>
-            {i18n.tx((stale || unavailable) && <div role="status" className="wp3-alert"><AlertCircle aria-hidden="true" /><p>{i18n.tx(unavailable ? "Une rencontre a déjà commencé ou s’est terminée. Actualise pour vérifier les sélections disponibles." : "Cette sélection n’a pas été actualisée depuis plus de cinq minutes. Actualise avant de la copier.")}</p></div>)}
-            <div className="wp3-main">
-              <section className={cn("wp3-selections", viewMode === "agenda" && "wp3-agenda")} aria-labelledby="combo-selections-title" data-testid={`combo-legs-${tier.key}`}>
-                <div className="wp3-section-heading"><div><p className="wp3-eyebrow">{i18n.t("02 \xB7 Parcours les rencontres")}</p><h2 id="combo-selections-title">{i18n.tx(viewMode === "agenda" ? "Le programme du combiné" : "Les sélections, une par une")}</h2><p>{i18n.rich("{{v0}} s\xE9lection{{v1}} \xB7 Profil {{v2}}", {
-                      v0: i18n.tx(activeCombo.legs.length),
-                      v1: i18n.tx(activeCombo.legs.length > 1 ? "s" : ""),
-                      v2: i18n.tx(tier.label)
-                    })}</p>{i18n.tx(firstStart && <p className="wp3-first-start">{i18n.rich("Premi\xE8re rencontre : {{v0}}", {
-                      v0: i18n.tx(dateLabel(i18n, firstStart))
-                    })}</p>)}</div>
-                  <div className="wp3-view-switch" aria-label={i18n.t("Présentation des rencontres")}><button type="button" aria-pressed={viewMode === "cards"} onClick={() => setViewMode("cards")}><Layers aria-hidden="true" />{i18n.t("Fiches")}</button><button type="button" aria-pressed={viewMode === "agenda"} onClick={() => setViewMode("agenda")}><CalendarDays aria-hidden="true" />{i18n.t("Horaires")}</button></div>
-                </div>
-                <a href="#combo-summary" className="wp3-mobile-summary"><span>{i18n.rich("Cote totale du moteur{{v0}}", {
-                    v0: <strong>{i18n.tx(fullAccess ? formatNumber(i18n, activeCombo.total_odds) : "Réservée")}</strong>
-                  })}</span><span>{i18n.t("Voir le ticket")}<ChevronDown aria-hidden="true" /></span></a>
-                <div className="wp3-match-list">{i18n.tx(orderedLegs.map(({
-                  leg,
-                  index
-                }) => <SelectionCard key={leg.key} leg={leg} index={index} unlocked={unlocked} now={now} onUpgrade={upgrade} />))}</div>
-              </section>
-
-              <aside id="combo-summary" className="wp3-sidebar" aria-label={i18n.t("Récapitulatif du combiné")}>
-                <section className="wp3-ticket" data-testid={`bet-slip-${tier.key}`}>
-                  <header><p className="wp3-eyebrow">{i18n.t("03 \xB7 Ton ticket")}</p><h2>{i18n.rich("Combin\xE9 {{v0}}", {
-                      v0: i18n.tx(activeCombo.label)
-                    })}</h2><span>{i18n.rich("{{v0}} s\xE9lection{{v1}} r\xE9unies", {
-                      v0: i18n.tx(activeCombo.legs.length),
-                      v1: i18n.tx(activeCombo.legs.length > 1 ? "s" : "")
-                    })}</span></header>
-                  <div className="wp3-ticket-rows">{i18n.tx(activeCombo.legs.map((leg, index) => <div key={leg.key} className="wp3-ticket-row"><b>{i18n.tx(index + 1)}</b><div><p>{i18n.tx(leg.home_team || "Équipe à confirmer")} <span>{i18n.t("contre")}</span> {i18n.tx(leg.away_team || "Équipe à confirmer")}</p><span>{i18n.tx(fullAccess && !leg.locked ? leg.pick || "Sélection non communiquée" : "Pronostic réservé")}</span></div></div>))}</div>
-                  <div className="wp3-ticket-total"><span>{i18n.t("Cote totale du moteur")}</span><strong className={!fullAccess ? "wp3-reserved" : ""}>{i18n.tx(fullAccess ? formatNumber(i18n, activeCombo.total_odds) : "Réservée")}</strong><p>{i18n.tx(fullAccess ? "Cote fournie avec la sélection ; elle peut évoluer chez le bookmaker." : "Disponible avec les sélections complètes.")}</p></div>
-                  <div className="wp3-ticket-bottom"><dl><Metric label={i18n.t("Confiance moyenne du moteur")} value={fullAccess && activeCombo.avg_confidence !== null ? `${formatNumber(i18n, activeCombo.avg_confidence, 1)} %` : "—"} /><Metric label={i18n.t("Probabilité combinée estimée")} value={fullAccess && activeCombo.combined_probability !== null ? `${formatNumber(i18n, activeCombo.combined_probability, 1)} %` : "—"} /></dl>
-                    {i18n.tx(fullAccess ? <button type="button" onClick={copyCombo} disabled={!canCopy} className="wp3-button wp3-button--primary" data-testid="copy-combo-btn"><Copy aria-hidden="true" />{i18n.t("Copier le ticket")}</button> : <button type="button" onClick={upgrade} className="wp3-button wp3-button--primary" data-testid="upgrade-combo-btn"><Lock aria-hidden="true" />{i18n.t("D\xE9bloquer le combin\xE9")}</button>)}
-                    {i18n.tx(fullAccess && !canCopy && <p className="wp3-copy-help">{i18n.tx(stale || unavailable ? "Actualise le combiné avant de copier ses sélections." : "La copie est disponible avec au moins deux sélections complètes, dont les horaires sont à venir.")}</p>)}
-                    {i18n.tx(copyNotice && <p role="status" className="wp3-copy-help">{i18n.tx(copyNotice)}</p>)}
-                  </div>
-                </section>
-                {i18n.tx(manualCopy && canCopy && <section className="wp3-manual-copy"><div><label htmlFor="combo-manual-copy">{i18n.t("Texte du ticket")}</label><button type="button" onClick={() => setManualCopy("")} aria-label={i18n.t("Fermer le texte à copier")}><X aria-hidden="true" /></button></div><textarea id="combo-manual-copy" readOnly value={manualCopy} onFocus={event => event.target.select()} /><p>{i18n.t("Appuie dans le texte pour le s\xE9lectionner.")}</p></section>)}
-                <details className="wp3-reading" open><summary><Info aria-hidden="true" /><span>{i18n.t("Bien lire le combin\xE9")}</span><ChevronDown aria-hidden="true" /></summary><div><p>{i18n.t("La confiance moyenne d\xE9crit les s\xE9lections individuellement. Elle ne correspond pas \xE0 la probabilit\xE9 que tout le combin\xE9 passe.")}</p><p>{i18n.t("La probabilit\xE9 combin\xE9e est une estimation du moteur, li\xE9e \xE0 ses hypoth\xE8ses sur les matchs. Elle ne constitue pas un taux de r\xE9ussite mesur\xE9.")}</p><p>{i18n.t("Un combin\xE9 d\xE9pend de chacune de ses s\xE9lections. Le profil \xAB S\xE9curit\xE9 \xBB reste soumis \xE0 cette incertitude.")}</p></div></details>
-              </aside>
-            </div>
-          </>)}
-        </>)}
-        {i18n.tx(refreshing && !loading && <p role="status" className="wp3-refresh-note"><Loader2 aria-hidden="true" className="wp3-spinning" />{i18n.t("V\xE9rification des s\xE9lections et de ton acc\xE8s\u2026")}</p>)}
+  const leagues=(options?.leagues||[]).filter(l=>(!form.sports.length||form.sports.includes(l.sport))&&String(l.label).toLocaleLowerCase(i18n.locale).includes(search.toLocaleLowerCase(i18n.locale)));
+  const sportLabel=key=>(SPORT_NAMES[lang]||SPORT_NAMES.fr)[key]||key;
+  function ticketView(ticket,principal){
+    return <article className={`pc-ticket ${principal?"main":""}`} data-testid={principal?"personal-main":"personal-alternative"}>
+      <header className="pc-ticket-head"><div><h3>{t(principal?"main":"alternative")}</h3><p>{t("matches",{count:ticket.legs.length})}</p></div><div className="pc-odds"><small>{t("total")}</small><strong>{n(ticket.total_odds)}</strong></div></header>
+      <div className="pc-ticket-body"><p className="pc-book">{t("bookmaker")} : <strong>{ticket.bookmaker}</strong></p>
+        {ticket.shortened&&<p className="pc-inline-note">{t("shortened")}</p>}
+        {ticket.shared_matches?.length>0&&<p className="pc-inline-note">{t("shared")}</p>}
+        <div className="pc-legs">{ticket.legs.map((leg,index)=><section className="pc-leg" key={`${leg.match_id}:${leg.market}:${leg.pick}`}>
+          <div className="pc-leg-top"><span className="pc-index">{index+1}</span><div><h4>{leg.home_team} <span className="text-slate-400">vs</span> {leg.away_team}</h4><small>{i18n.tx(leg.sport_title)} · {date(leg.commence_time)}</small></div></div>
+          <div className="pc-pick"><div><span>{i18n.bet(leg.market_label)}</span><p>{i18n.bet(leg.pick)}</p></div><strong>{n(leg.pick_odds)}</strong></div>
+          <details><summary><Info aria-hidden="true"/>{t("why")}<ChevronDown aria-hidden="true"/></summary><p>{t("consensus")} : {n(leg.confidence)} %</p><p>{t("stability")} : {n(leg.stability_score)} / 100</p><p>{t("sources")} : {n(leg.num_books)}</p><p>{t("quality")} : {n(leg.quality_score)} / 100</p><p>{t("qualityNote")}</p></details>
+          <div className="pc-leg-footer"><Link to={`/app/match/${encodeURIComponent(leg.match_id)}`}>{t("analysis")}<ArrowRight aria-hidden="true"/></Link><button type="button" disabled={busy||form.excluded_match_ids.length>=30} onClick={()=>exclude(leg.match_id)} data-testid={`exclude-${principal?"main":"alt"}-${index}`}><X aria-hidden="true"/>{t("exclude")}</button></div>
+        </section>)}</div>
+        <button className="pc-button pc-copy" type="button" disabled={!canUse(ticket)} onClick={()=>copyTicket(ticket)}><Copy aria-hidden="true"/>{t("copy")}</button>
       </div>
-    </AppLayout>;
-}
-function Metric({
-  label,
-  value
-}) {
-  const i18n = usePageLanguage();
-  return <div className="wp3-metric"><dt>{i18n.tx(label)}</dt><dd>{i18n.tx(value)}</dd></div>;
+    </article>;
+  }
+  return <AppLayout><style>{CSS}</style><div className="pc-page" dir={i18n.direction}>
+    <header className="pc-hero"><div className="pc-eyebrow"><SlidersHorizontal aria-hidden="true"/>WNPULSE · {t("personal")}</div><h1>{t("title")}</h1><p>{t("intro")}</p><nav className="pc-links" aria-label={t("otherTools")}><Link to="/app/aujourdhui"><Sparkles aria-hidden="true"/>{t("todayLink")}</Link><Link to="/app/builder"><Layers aria-hidden="true"/>{t("builderLink")}</Link></nav></header>
+    {access==="locked"||access==="unauthorized"?<section className="pc-empty" style={{marginTop:24}} data-testid="personal-locked"><Lock aria-hidden="true"/><h3>{t(access==="locked"?"proTitle":"sessionTitle")}</h3><p>{t(access==="locked"?"proText":"sessionText")}</p><Link className="pc-button primary pc-wide" to={access==="locked"?"/app/abonnement":"/login"}>{t(access==="locked"?"upgrade":"login")}</Link></section>:
+    <div className="pc-layout"><section className="pc-panel"><h2>{t("preferences")}</h2><p className="pc-sub">{t("preferenceHint")}</p>
+      <form onSubmit={e=>{e.preventDefault();build();}} className="pc-form-grid">
+        <div className="pc-field"><label htmlFor="personal-period">{t("period")}</label><select id="personal-period" value={form.period} onChange={e=>change({period:e.target.value})}>{["today","tomorrow","48h","weekend"].map(p=><option key={p} value={p}>{t(p)}</option>)}</select><p className="pc-note">{t("zone")} : {zone}</p></div>
+        <fieldset className="pc-field"><legend>{t("profile")}</legend><div className="pc-radio">{["safe","balanced","bold"].map(p=><button key={p} type="button" aria-pressed={form.profile===p} onClick={()=>change({profile:p,max_legs:Math.min(form.max_legs,LIMITS[p])})}>{t(p)}</button>)}</div><p className="pc-note">{t("safeNote")}</p></fieldset>
+        <div className="pc-field"><label htmlFor="personal-max">{t("maximum")}</label><select id="personal-max" value={form.max_legs} onChange={e=>change({max_legs:Number(e.target.value)})}>{Array.from({length:LIMITS[form.profile]-1},(_,i)=>i+2).map(v=><option key={v} value={v}>{v}</option>)}</select><p className="pc-note">{t("noPadding")}</p></div>
+        <fieldset className="pc-field"><legend>{t("sports")}</legend><div className="pc-chips"><button type="button" className="pc-chip" aria-pressed={!form.sports.length} onClick={()=>change({sports:[],leagues:[]})}>{t("all")}</button>{options?.sports.map(s=><button key={s.key} type="button" className="pc-chip" aria-pressed={form.sports.includes(s.key)} onClick={()=>change({sports:toggle(form.sports,s.key),leagues:[]})}>{sportLabel(s.key)}</button>)}</div></fieldset>
+        <details className="pc-field"><summary>{t("competitions")} ({form.leagues.length||t("all")})</summary><input className="pc-search" type="search" aria-label={t("search")} placeholder={t("search")} value={search} onChange={e=>setSearch(e.target.value)}/><div className="pc-checks"><label><input type="checkbox" checked={!form.leagues.length} onChange={()=>change({leagues:[]})}/>{t("allCompetitions")}</label>{leagues.slice(0,60).map(l=><label key={l.key}><input type="checkbox" checked={form.leagues.includes(l.key)} onChange={()=>change({leagues:toggle(form.leagues,l.key)})}/>{i18n.tx(l.label)}</label>)}</div>{leagues.length>60&&<p className="pc-note">{t("narrowSearch")}</p>}</details>
+        <div className="pc-field"><label htmlFor="personal-bookmaker">{t("bookmaker")}</label><select id="personal-bookmaker" value={form.bookmaker} onChange={e=>change({bookmaker:e.target.value})}><option value="auto">{t("autoBook")}</option>{options?.bookmakers.map(b=><option key={b.key} value={b.key}>{b.label}</option>)}</select><p className="pc-note">{t("bookHint")}</p></div>
+        <div className="pc-actions">{form.excluded_match_ids.length>0&&<div className="pc-excluded">{t("excludedCount",{count:form.excluded_match_ids.length})}<button type="button" onClick={()=>change({excluded_match_ids:[]})}>{t("resetExcluded")}</button></div>}
+          <button className="pc-button primary pc-wide" type="submit" disabled={access!=="ready"||busy} data-testid="personal-generate">{busy||access==="loading"?<Loader2 className="pc-spin" aria-hidden="true"/>:<Sparkles aria-hidden="true"/>}{t(busy?"building":"generate")}</button><p className="pc-note">{t("rebuildNote")}</p>
+        </div>
+      </form></section>
+      <section className="pc-results" aria-live="polite"><div className="pc-results-head"><div><h2>{t("resultTitle")}</h2><p className="pc-sub">{t("resultHint")}</p></div><span>{t("automatic")}</span></div>
+        {error&&<div className="pc-alert" role="alert">{error}</div>}
+        {access==="error"&&<button className="pc-button" onClick={()=>window.location.reload()}>{t("retry")}</button>}
+        {busy?<div className="pc-empty" role="status"><Loader2 className="pc-spin" aria-hidden="true"/><h3>{t("building")}</h3><p>{t("searchQuality")}</p></div>:!visibleResult?<div className="pc-empty"><SlidersHorizontal aria-hidden="true"/><h3>{t("startTitle")}</h3><p>{t("startText")}</p></div>:<>
+          <div className="pc-result-meta"><p><Clock aria-hidden="true" style={{display:"inline",verticalAlign:"middle"}}/> {date(visibleResult.period_start)} → {date(visibleResult.period_end)}</p><p>{t("available",{count:visibleResult.available_matches})} · {t("updated")} : {date(visibleResult.generated_at)}</p></div>
+          {!fresh&&<div className="pc-alert">{t("stale")} <button className="pc-button" onClick={()=>build()}><RefreshCw aria-hidden="true"/>{t("recalculate")}</button></div>}
+          {validTicket(visibleResult.principal)?<div className="pc-grid">{ticketView(visibleResult.principal,true)}{visibleResult.alternative?ticketView(visibleResult.alternative,false):<div className="pc-empty"><Check aria-hidden="true"/><h3>{t("noAlternative")}</h3><p>{t("noAlternativeText")}</p></div>}</div>:<div className="pc-empty"><Info aria-hidden="true"/><h3>{t("noTicket")}</h3><p>{t("noTicketText")}</p></div>}
+        </>}
+        {notice&&<p className="pc-note" role="status">{notice}</p>}{manual&&<label className="pc-note">{t("manualCopy")}<textarea value={manual} readOnly onFocus={e=>e.target.select()}/></label>}
+        <p className="pc-footer">{t("disclaimer")}</p>
+      </section>
+    </div>}
+  </div></AppLayout>;
 }
