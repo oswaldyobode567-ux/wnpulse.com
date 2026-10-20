@@ -1,61 +1,19 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Link } from "react-router-dom";
-import { ArrowRight, CalendarDays, ChevronDown, Clock, Flame, Info, Layers, Lock, RefreshCw, Rocket, Search, Send, Shield, ShieldCheck, SlidersHorizontal, Sparkles, X, Zap } from "lucide-react";
+import { Link, useNavigate } from "react-router-dom";
+import { ArrowRight, CalendarDays, ChevronDown, Clock, Info, Layers, Lock, RefreshCw, Rocket, Search, Send, Shield, SlidersHorizontal, Sparkles, X, Zap } from "lucide-react";
 import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import PaymentModal from "@/components/payment/PaymentModal";
+
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 const LEVELS = {
-  ultra_safe: {
-    label: "Sélection prudente",
-    icon: ShieldCheck,
-    color: "text-teal-700",
-    tint: "bg-teal-50",
-    border: "border-teal-200",
-    gradient: "from-teal-700 to-cyan-800",
-    description: "Les favoris retenus par le moteur, réunis dans une sélection dédiée."
-  },
-  sure: {
-    label: "Essentiel",
-    icon: Shield,
-    color: "text-emerald-700",
-    tint: "bg-emerald-50",
-    border: "border-emerald-200",
-    gradient: "from-emerald-700 to-teal-800",
-    description: "Un format court pour parcourir les sélections et comprendre chaque rencontre."
-  },
-  booster: {
-    label: "Booster",
-    icon: Zap,
-    color: "text-orange-700",
-    tint: "bg-orange-50",
-    border: "border-orange-200",
-    gradient: "from-orange-700 to-amber-800",
-    description: "Des sélections regroupées autour d’une cible de cote plus élevée."
-  },
-  extra: {
-    label: "Extra",
-    icon: Flame,
-    color: "text-rose-700",
-    tint: "bg-rose-50",
-    border: "border-rose-200",
-    gradient: "from-rose-700 to-pink-800",
-    description: "Un combiné plus fourni : prends le temps de lire chacun de ses marchés."
-  },
-  jackpot: {
-    label: "Jackpot",
-    icon: Rocket,
-    color: "text-violet-700",
-    tint: "bg-violet-50",
-    border: "border-violet-200",
-    gradient: "from-violet-600 to-purple-700",
-    description: "Les cotes cumulées les plus ambitieuses, avec davantage d’incertitude."
-  }
+ sure: { label:"Safe", icon:Shield, color:"text-emerald-700", tint:"bg-emerald-50", border:"border-emerald-200", gradient:"from-emerald-700 to-teal-800", description:"2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat." },
+ booster: { label:"Équilibré", icon:Zap, color:"text-orange-700", tint:"bg-orange-50", border:"border-orange-200", gradient:"from-orange-700 to-amber-800", description:"Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire." },
+ jackpot: { label:"Jackpot", icon:Rocket, color:"text-violet-700", tint:"bg-violet-50", border:"border-violet-200", gradient:"from-violet-600 to-purple-700", description:"Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible." }
 };
 const LEVEL_ORDER = Object.keys(LEVELS);
 const RISK_META = {
@@ -201,10 +159,8 @@ function errorMessage(i18n, error) {
 }
 export default function TodayCombosPage() {
   const i18n = useTodayLanguage();
-  const {
-    user,
-    refresh: refreshAuth
-  } = useAuth();
+  const { user } = useAuth();
+  const navigate = useNavigate();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -214,13 +170,12 @@ export default function TodayCombosPage() {
   const [query, setQuery] = useState("");
   const [now, setNow] = useState(Date.now());
   const [receivedAt, setReceivedAt] = useState(null);
-  const [payOpen, setPayOpen] = useState(false);
+
   const request = useRef(null);
   const lastAttempt = useRef(0);
   const mounted = useRef(false);
   const dataRef = useRef(null);
-  const refreshAuthRef = useRef(refreshAuth);
-  refreshAuthRef.current = refreshAuth;
+
   const clientTier = normalize(user?.subscription_tier || user?.subscription || "free");
   const authKey = `${user?.id || "anonymous"}|${clientTier}|${user?.subscription_expires_at || ""}|${Boolean(user?.is_admin)}`;
   const isFree = typeof data?.access?.is_paid === "boolean" ? !data.access.is_paid : !user?.is_admin && clientTier === "free";
@@ -243,7 +198,10 @@ export default function TodayCombosPage() {
       setReceivedAt(new Date().toISOString());
       setNow(Date.now());
     } catch (cause) {
-      if (!controller.signal.aborted && mounted.current) setError(errorMessage(i18n, cause));
+      if (!controller.signal.aborted && mounted.current) {
+        if ([401,403].includes(cause?.response?.status)) { dataRef.current=null; setData(null); }
+        setError(errorMessage(i18n, cause));
+      }
     } finally {
       if (!controller.signal.aborted && mounted.current) {
         setLoading(false);
@@ -287,12 +245,7 @@ export default function TodayCombosPage() {
   }, [families, sportKey]);
   const family = families.find(f => f.family_key === sportKey);
   const tiers = useMemo(() => {
-    const result = Object.entries(family?.tiers || {}).filter(([, tier]) => tier && typeof tier === "object" && !Array.isArray(tier));
-    if (sportKey === "all" && data?.ultra_safe && typeof data.ultra_safe === "object" && !Array.isArray(data.ultra_safe)) {
-      const index = result.findIndex(([key]) => key === "ultra_safe");
-      if (index >= 0) result.splice(index, 1);
-      result.unshift(["ultra_safe", data.ultra_safe]);
-    }
+    const result = Object.entries(family?.tiers || {}).filter(([key, tier]) => LEVEL_ORDER.includes(key) && tier && typeof tier === "object" && !Array.isArray(tier));
     return result.sort(([a], [b]) => (LEVEL_ORDER.indexOf(a) < 0 ? 99 : LEVEL_ORDER.indexOf(a)) - (LEVEL_ORDER.indexOf(b) < 0 ? 99 : LEVEL_ORDER.indexOf(b)));
   }, [data, family, sportKey]);
   const searchLanguage = i18n.language;
@@ -449,20 +402,14 @@ export default function TodayCombosPage() {
               <p className="mt-1 text-[16px] text-slate-600">{i18n.t("Un format par couleur, puis les rencontres dans l\u2019ordre. Ouvre une explication quand tu veux en savoir plus.")}</p>
             </div>
             <div className="grid items-start gap-7 xl:grid-cols-2">
-              {i18n.tx(filtered.map(([key, tier], index) => <TierCard key={`${sportKey}-${key}`} tier={tier} tierKey={key} isFree={isFree} now={now} query={query} featured={key === "ultra_safe"} index={index} onUpgrade={() => setPayOpen(true)} onShare={() => shareWhatsApp(tier, key)} />))}
+              {i18n.tx(filtered.map(([key, tier], index) => <TierCard key={`${sportKey}-${key}`} tier={tier} tierKey={key} isFree={isFree} now={now} query={query} featured={key === "sure"} index={index} onUpgrade={() => navigate("/app/abonnement")} onShare={() => shareWhatsApp(tier, key)} />))}
             </div>
           </>)}
         {i18n.tx(!loading && isFree && data && <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3"><Sparkles className="mt-1 h-5 w-5 shrink-0 text-orange-600" /><div><p className="font-heading font-bold text-slate-900">{i18n.t("Passe de l\u2019aper\xE7u \xE0 l\u2019analyse compl\xE8te.")}</p><p className="mt-1 text-[16px] text-slate-600">{i18n.t("D\xE9bloque les s\xE9lections de chaque rencontre et les diff\xE9rents formats de combin\xE9s.")}</p></div></div>
-          <Button onClick={() => setPayOpen(true)} className="shrink-0 bg-orange-600 text-white hover:bg-orange-700">{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-4 w-4" /></Button>
+          <Button onClick={() => navigate("/app/abonnement")} className="shrink-0 bg-orange-600 text-white hover:bg-orange-700">{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-4 w-4" /></Button>
         </div>)}
       </div>
-      <PaymentModal isOpen={payOpen} onClose={() => {
-      setPayOpen(false);
-      load(true);
-      // The API response controls access immediately; also refresh global auth.
-      Promise.resolve().then(() => refreshAuthRef.current?.()).catch(() => {});
-    }} targetTier="PRO" />
     </AppLayout>;
 }
 function HeroStat({
@@ -507,7 +454,7 @@ function TierCard({
   const state = availability(tier, now);
   const hidden = legs.filter((p, i) => isLegLocked(p, tier, tierKey, isFree, i)).length + Math.max(0, count - legs.length);
   const odds = number(tier.total_odds);
-  const combined = number(tier.combined_probability);
+  const combined = number(tier.independence_estimate);
   const statsVisible = !locked && state === "ready";
   return <Card className={cn("wn-combo-in overflow-hidden rounded-3xl bg-white shadow-md", featured ? "border-teal-200 ring-2 ring-teal-500/10" : "border-neutral-200")} style={{
     animationDelay: `${Math.min(index, 5) * 45}ms`
@@ -526,17 +473,21 @@ function TierCard({
         <div className="shrink-0 rounded-2xl border border-white/20 bg-black/15 px-4 py-3 text-end"><p className="text-[14px] font-medium text-white/90">{i18n.t("Cote totale")}</p><p className="mt-1 font-mono text-[32px] font-extrabold leading-none sm:text-[36px]">{i18n.tx(locked ? "PRO" : statsVisible && odds > 1 ? formatNumber(i18n, odds, 2) : "—")}</p></div>
       </div>
       <div className="relative mt-5 flex flex-wrap items-center gap-2">
-        {i18n.tx(featured && <span className="rounded-full border border-white/20 bg-white/15 px-3 py-1.5 text-[14px] font-semibold">{i18n.t("Tous sports")}</span>)}
+        {i18n.tx(featured && <span className="rounded-full border border-white/20 bg-white/15 px-3 py-1.5 text-[14px] font-semibold">{i18n.t("Format court")}</span>)}
         <span className="rounded-full border border-white/20 bg-black/15 px-3 py-1.5 text-[14px] font-semibold">{i18n.tx(state === "started" ? "À actualiser · rencontre commencée" : state === "incomplete" ? "En préparation" : locked ? "Aperçu Pro" : "Disponible")}</span>
       </div>
     </div>
     <div className="space-y-5 p-4 sm:p-6">
       <p className="text-[16px] leading-relaxed text-slate-600">{i18n.tx(meta.description)}</p>
+      {count>=2 && tier.shortened && <p className="rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{i18n.t("Format raccourci : aucune rencontre ajoutée pour remplir le ticket.")}</p>}
+      {tier.shared_matches?.length>0 && <p className="rounded-xl bg-slate-50 p-3 text-sm text-slate-600">{i18n.t("Ce ticket partage des rencontres avec un autre format : les résultats sont liés.")}</p>}
+      {!locked && count>=2 && tier.bookmaker && <p className="text-sm text-slate-600">{i18n.t("Cotes observées chez un même bookmaker")} : <strong>{tier.bookmaker}</strong>. {i18n.t("Disponibilité et acceptation à vérifier avant utilisation.")}</p>}
+      {tier.unavailable_reason === "duplicate" && <p className="text-sm text-slate-600">{i18n.t("Aucun ticket distinct suffisamment qualifié : pas de doublon publié.")}</p>}
       {i18n.tx(statsVisible && <div className={cn("rounded-2xl border p-4", meta.border, meta.tint)}>
         <div className="flex flex-wrap items-center justify-between gap-2"><span className="text-[15px] font-semibold text-slate-700">{i18n.t("Confiance moyenne des s\xE9lections")}</span><strong className={cn("font-mono text-[22px]", meta.color)}>{i18n.tx(percent(i18n, tier.avg_confidence))}</strong></div>
-        {i18n.tx(combined !== null && combined >= 0 && combined <= 100 && <details className="mt-2 border-t border-black/5 pt-2"><summary className="cursor-pointer gap-2 text-[14px] font-semibold text-slate-700"><Info className="h-4 w-4" />{i18n.rich("Estimation combin\xE9e du moteur : {{v0}}", {
+        {i18n.tx(combined !== null && combined >= 0 && combined <= 100 && <details className="mt-2 border-t border-black/5 pt-2"><summary className="cursor-pointer gap-2 text-[14px] font-semibold text-slate-700"><Info className="h-4 w-4" />{i18n.rich("Estimation sous indépendance : {{v0}}", {
               v0: i18n.tx(percent(i18n, combined))
-            })}</summary><p className="mt-2 text-[15px] leading-relaxed text-slate-600">{i18n.t("Cette estimation est indicative et diff\xE9rente de la moyenne des confiances. Les hypoth\xE8ses du moteur restent \xE0 valider.")}</p></details>)}
+            })}</summary><p className="mt-2 text-[15px] leading-relaxed text-slate-600">{i18n.t("Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.")}</p></details>)}
       </div>)}
       {i18n.tx(state === "started" && <p role="status" className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-[16px] leading-relaxed text-amber-900">{i18n.t("Une rencontre a commenc\xE9 ou est termin\xE9e. Ce combin\xE9 ne peut plus \xEAtre partag\xE9 ; actualise pour retrouver les s\xE9lections \xE0 venir.")}</p>)}
       {i18n.tx(legs.length > 0 && <div><div className="mb-3 flex items-center gap-2 text-[15px] font-bold text-slate-700"><Layers className="h-4 w-4" />{i18n.t("Les rencontres")}</div><div className="space-y-4">{i18n.tx(legs.map((leg, legIndex) => <LegCard key={`${leg.match_id || leg.id || legIndex}-${legIndex}`} leg={leg} index={legIndex} locked={isLegLocked(leg, tier, tierKey, isFree, legIndex)} allowAnalysis={!isFree} query={query} now={now} />))}</div></div>)}
@@ -588,7 +539,14 @@ function LegCard({
             })}</span>{i18n.tx(risk && <Badge className={cn("px-3 py-2 text-[14px]", risk.className)}>{i18n.rich("Niveau du moteur : {{v0}}", {
               v0: i18n.tx(risk.label)
             })}</Badge>)}</div>
-        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-1"><summary className="cursor-pointer gap-2 text-[15px] font-semibold text-slate-700"><Info className="h-4 w-4 shrink-0 text-orange-700" />{i18n.t("Comprendre cette s\xE9lection")}<ChevronDown className="ms-auto h-4 w-4 shrink-0" /></summary><div className="space-y-3 border-t border-slate-200 pb-3 pt-3 text-[16px] leading-relaxed text-slate-600"><p>{i18n.tx(explainPick(i18n, leg))}</p>{i18n.tx(number(probability) !== null && <p>{i18n.rich("Estimation du moteur pour ce pari : {{v0}}.", {
+        <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-1"><summary className="cursor-pointer gap-2 text-[15px] font-semibold text-slate-700"><Info className="h-4 w-4 shrink-0 text-orange-700" />{i18n.t("Comprendre cette s\xE9lection")}<ChevronDown className="ms-auto h-4 w-4 shrink-0" /></summary><div className="space-y-3 border-t border-slate-200 pb-3 pt-3 text-[16px] leading-relaxed text-slate-600"><p>{i18n.tx(explainPick(i18n, leg))}</p>
+        {leg.selection_reason && <div className="space-y-1 rounded-lg bg-white p-3">
+          <p className="font-semibold text-slate-800">{i18n.t("Pourquoi cette sélection ?")}</p>
+          <p>{i18n.t("Stabilité des probabilités entre sources")} : {percent(i18n,leg.selection_reason.stability)}</p>
+          <p>{i18n.t("Bookmakers analysés")} : {formatNumber(i18n,leg.selection_reason.bookmakers,0)}</p>
+          <p>{i18n.t("Indice de classement")} : {formatNumber(i18n,leg.selection_reason.quality)} / 100</p>
+          <p className="text-xs">{i18n.t("Cet indice sert au tri ; il ne représente pas une chance de gagner.")}</p>
+        </div>}{i18n.tx(number(probability) !== null && <p>{i18n.rich("Estimation du moteur pour ce pari : {{v0}}.", {
                 v0: <strong className="text-slate-800">{i18n.tx(percent(i18n, probability))}</strong>
               })}</p>)}<p>{i18n.t("Cette explication d\xE9crit le march\xE9. Elle ne suppose aucune forme r\xE9cente, blessure ou statistique absente des donn\xE9es.")}</p></div></details>
         {i18n.tx(allowAnalysis && id !== null && id !== undefined && String(id) && <Link to={`/app/match/${encodeURIComponent(String(id))}`} className="mt-4 inline-flex min-h-[44px] items-center gap-2 rounded-lg px-1 text-[16px] font-bold text-orange-800 hover:text-orange-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">{i18n.t("Voir l\u2019analyse du match")}<ArrowRight className="h-4 w-4" /></Link>)}
@@ -746,7 +704,25 @@ const TODAY_MESSAGES = {
     "South Korea": "Corée du Sud",
     "China": "Chine",
     "Pays-Bas": "Pays-Bas",
-    "Netherlands": "Pays-Bas"
+    "Netherlands": "Pays-Bas",
+    "Safe": "Safe",
+    "Équilibré": "Équilibré",
+    "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.": "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.",
+    "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.": "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.",
+    "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.": "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.",
+    "Format court": "Format court",
+    "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.": "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.",
+    "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.": "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.",
+    "Cotes observées chez un même bookmaker": "Cotes observées chez un même bookmaker",
+    "Disponibilité et acceptation à vérifier avant utilisation.": "Disponibilité et acceptation à vérifier avant utilisation.",
+    "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.": "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.",
+    "Estimation sous indépendance : {{v0}}": "Estimation sous indépendance : {{v0}}",
+    "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.": "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.",
+    "Pourquoi cette sélection ?": "Pourquoi cette sélection ?",
+    "Stabilité des probabilités entre sources": "Stabilité des probabilités entre sources",
+    "Bookmakers analysés": "Bookmakers analysés",
+    "Indice de classement": "Indice de classement",
+    "Cet indice sert au tri ; il ne représente pas une chance de gagner.": "Cet indice sert au tri ; il ne représente pas une chance de gagner."
   },
   "en": {
     "/mois": "/month",
@@ -895,7 +871,25 @@ const TODAY_MESSAGES = {
     "South Korea": "South Korea",
     "China": "China",
     "Pays-Bas": "Pays-Bas",
-    "Netherlands": "Pays-Bas"
+    "Netherlands": "Pays-Bas",
+    "Safe": "Safe",
+    "Équilibré": "Balanced",
+    "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.": "2–3 matches maximum. The name Safe guarantees no outcome.",
+    "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.": "Aim: 4 matches, up to 6 when quality permits. Shorter when needed.",
+    "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.": "Aim: 5 matches, up to 8 when quality permits. No additions to reach target odds.",
+    "Format court": "Short format",
+    "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.": "Shorter format: no matches added just to fill the ticket.",
+    "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.": "This ticket shares matches with another format: outcomes overlap.",
+    "Cotes observées chez un même bookmaker": "Odds observed at one bookmaker",
+    "Disponibilité et acceptation à vérifier avant utilisation.": "Check availability and acceptance before use.",
+    "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.": "No qualifying distinct ticket: no duplicate published.",
+    "Estimation sous indépendance : {{v0}}": "Independence estimate: {{v0}}",
+    "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.": "This approximation multiplies individual probabilities. It is not a measured success rate and does not adjust for dependencies.",
+    "Pourquoi cette sélection ?": "Why this selection?",
+    "Stabilité des probabilités entre sources": "Probability stability across sources",
+    "Bookmakers analysés": "Bookmakers analysed",
+    "Indice de classement": "Ranking score",
+    "Cet indice sert au tri ; il ne représente pas une chance de gagner.": "This score is for ranking; it is not a win probability."
   },
   "es": {
     "/mois": "/mes",
@@ -1044,7 +1038,25 @@ const TODAY_MESSAGES = {
     "South Korea": "Corea del Sur",
     "China": "China",
     "Pays-Bas": "Pays-Bas",
-    "Netherlands": "Pays-Bas"
+    "Netherlands": "Pays-Bas",
+    "Safe": "Safe",
+    "Équilibré": "Equilibrado",
+    "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.": "Máximo 2–3 partidos. El nombre Safe no garantiza resultados.",
+    "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.": "Objetivo: 4 partidos, hasta 6 si la calidad lo permite. Menos si es necesario.",
+    "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.": "Objetivo: 5 partidos, hasta 8 si la calidad lo permite. Sin añadir para alcanzar una cuota.",
+    "Format court": "Formato corto",
+    "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.": "Formato reducido: sin partidos añadidos para rellenar.",
+    "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.": "Comparte partidos con otro formato: los resultados están vinculados.",
+    "Cotes observées chez un même bookmaker": "Cuotas observadas en una misma casa",
+    "Disponibilité et acceptation à vérifier avant utilisation.": "Comprueba disponibilidad y aceptación antes de usar.",
+    "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.": "Sin boleto distinto apto: no se publica un duplicado.",
+    "Estimation sous indépendance : {{v0}}": "Estimación bajo independencia: {{v0}}",
+    "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.": "Multiplica probabilidades individuales. No es una tasa de acierto medida ni corrige dependencias.",
+    "Pourquoi cette sélection ?": "¿Por qué esta selección?",
+    "Stabilité des probabilités entre sources": "Estabilidad de probabilidades entre fuentes",
+    "Bookmakers analysés": "Casas analizadas",
+    "Indice de classement": "Índice de clasificación",
+    "Cet indice sert au tri ; il ne représente pas une chance de gagner.": "Este índice ordena; no representa probabilidad de ganar."
   },
   "pt": {
     "/mois": "/mês",
@@ -1193,7 +1205,25 @@ const TODAY_MESSAGES = {
     "South Korea": "Coreia do Sul",
     "China": "China",
     "Pays-Bas": "Pays-Bas",
-    "Netherlands": "Pays-Bas"
+    "Netherlands": "Pays-Bas",
+    "Safe": "Safe",
+    "Équilibré": "Equilibrado",
+    "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.": "Máximo de 2–3 jogos. O nome Safe não garante resultados.",
+    "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.": "Objetivo: 4 jogos, até 6 se a qualidade permitir. Menos se necessário.",
+    "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.": "Objetivo: 5 jogos, até 8 se a qualidade permitir. Sem acrescentar para atingir uma cotação.",
+    "Format court": "Formato curto",
+    "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.": "Formato reduzido: sem jogos acrescentados para preencher.",
+    "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.": "Partilha jogos com outro formato: resultados relacionados.",
+    "Cotes observées chez un même bookmaker": "Cotações observadas numa mesma casa",
+    "Disponibilité et acceptation à vérifier avant utilisation.": "Verifique disponibilidade e aceitação antes de usar.",
+    "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.": "Sem bilhete distinto qualificado: nenhum duplicado publicado.",
+    "Estimation sous indépendance : {{v0}}": "Estimativa sob independência: {{v0}}",
+    "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.": "Multiplica probabilidades individuais. Não é uma taxa de sucesso medida nem ajusta dependências.",
+    "Pourquoi cette sélection ?": "Porquê esta seleção?",
+    "Stabilité des probabilités entre sources": "Estabilidade das probabilidades entre fontes",
+    "Bookmakers analysés": "Casas analisadas",
+    "Indice de classement": "Índice de classificação",
+    "Cet indice sert au tri ; il ne représente pas une chance de gagner.": "Este índice ordena; não representa probabilidade de vitória."
   },
   "de": {
     "/mois": "/Monat",
@@ -1342,7 +1372,25 @@ const TODAY_MESSAGES = {
     "South Korea": "Südkorea",
     "China": "China",
     "Pays-Bas": "Pays-Bas",
-    "Netherlands": "Pays-Bas"
+    "Netherlands": "Pays-Bas",
+    "Safe": "Safe",
+    "Équilibré": "Ausgewogen",
+    "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.": "Höchstens 2–3 Spiele. Der Name Safe garantiert kein Ergebnis.",
+    "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.": "Ziel: 4 Spiele, bei ausreichender Qualität bis zu 6. Bei Bedarf kürzer.",
+    "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.": "Ziel: 5 Spiele, bei ausreichender Qualität bis zu 8. Keine Ergänzung für eine Zielquote.",
+    "Format court": "Kurzes Format",
+    "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.": "Verkürztes Format: keine Spiele nur zum Auffüllen.",
+    "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.": "Gemeinsame Spiele mit einem anderen Format: Ergebnisse hängen zusammen.",
+    "Cotes observées chez un même bookmaker": "Quoten bei demselben Anbieter beobachtet",
+    "Disponibilité et acceptation à vérifier avant utilisation.": "Verfügbarkeit und Annahme vor Nutzung prüfen.",
+    "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.": "Kein ausreichend qualifizierter anderer Schein: kein Duplikat veröffentlicht.",
+    "Estimation sous indépendance : {{v0}}": "Schätzung bei Unabhängigkeit: {{v0}}",
+    "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.": "Multipliziert Einzelwahrscheinlichkeiten. Keine gemessene Erfolgsquote und keine Korrektur von Abhängigkeiten.",
+    "Pourquoi cette sélection ?": "Warum diese Auswahl?",
+    "Stabilité des probabilités entre sources": "Stabilität der Wahrscheinlichkeiten zwischen Quellen",
+    "Bookmakers analysés": "Analysierte Anbieter",
+    "Indice de classement": "Rangwert",
+    "Cet indice sert au tri ; il ne représente pas une chance de gagner.": "Dieser Wert dient der Rangfolge, nicht als Gewinnwahrscheinlichkeit."
   },
   "ar": {
     "/mois": "/شهر",
@@ -1491,7 +1539,25 @@ const TODAY_MESSAGES = {
     "South Korea": "كوريا الجنوبية",
     "China": "الصين",
     "Pays-Bas": "Pays-Bas",
-    "Netherlands": "Pays-Bas"
+    "Netherlands": "Pays-Bas",
+    "Safe": "Safe",
+    "Équilibré": "متوازن",
+    "2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat.": "مباراتان إلى ثلاث كحد أقصى. اسم Safe لا يضمن أي نتيجة.",
+    "Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire.": "الهدف 4 مباريات وحتى 6 إذا سمحت الجودة. أقل عند الحاجة.",
+    "Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible.": "الهدف 5 مباريات وحتى 8 إذا سمحت الجودة. دون إضافة لبلوغ معامل مستهدف.",
+    "Format court": "صيغة قصيرة",
+    "Format raccourci : aucune rencontre ajoutée pour remplir le ticket.": "صيغة مختصرة: لا تُضاف مباريات لمجرد ملء التذكرة.",
+    "Ce ticket partage des rencontres avec un autre format : les résultats sont liés.": "تشترك التذكرة في مباريات مع صيغة أخرى: النتائج مترابطة.",
+    "Cotes observées chez un même bookmaker": "الأسعار مرصودة لدى مقدم واحد",
+    "Disponibilité et acceptation à vérifier avant utilisation.": "تحقق من التوفر والقبول قبل الاستخدام.",
+    "Aucun ticket distinct suffisamment qualifié : pas de doublon publié.": "لا توجد تذكرة مختلفة مؤهلة: لن يُنشر تكرار.",
+    "Estimation sous indépendance : {{v0}}": "تقدير بافتراض الاستقلال: {{v0}}",
+    "Cette approximation multiplie les probabilités individuelles. Elle n’est pas un taux de réussite mesuré et ne corrige pas les dépendances entre matchs.": "يضرب الاحتمالات الفردية. ليس معدل نجاح مقاساً ولا يصحح الترابط بين المباريات.",
+    "Pourquoi cette sélection ?": "لماذا هذا الاختيار؟",
+    "Stabilité des probabilités entre sources": "استقرار الاحتمالات بين المصادر",
+    "Bookmakers analysés": "مقدمو الأسعار المحللون",
+    "Indice de classement": "مؤشر الترتيب",
+    "Cet indice sert au tri ; il ne représente pas une chance de gagner.": "يستخدم المؤشر للترتيب ولا يمثل احتمال الفوز."
   }
 };
 function useTodayLanguage() {
