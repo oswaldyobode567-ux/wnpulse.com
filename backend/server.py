@@ -567,14 +567,12 @@ _PREMIUM_PREDICTION_FIELDS = (
 
 
 def _lock_prediction_for_free(prediction: Dict) -> Dict:
-    """Masque côté serveur les informations permettant de reconstituer un pick premium."""
-    locked = dict(prediction or {})
-    for field in _PREMIUM_PREDICTION_FIELDS:
-        if field in ("markets", "recommendations"):
-            locked[field] = []
-        else:
-            locked[field] = None
-    locked["locked"] = True
+    # An allowlist prevents future analysis/experimental fields from leaking picks.
+    allowed = ("match_id", "sport_key", "sport_title", "home_team", "away_team", "commence_time",
+               "is_live", "is_finished", "score_home", "score_away", "has_prediction")
+    locked = {key:copy.deepcopy(prediction[key]) for key in allowed if key in prediction}
+    locked.update(pick=None,pick_odds=None,confidence=None,label=None,edge=None,
+                  markets=[],recommendations=[],locked=True,free_daily_pick=False)
     return locked
 
 
@@ -8384,6 +8382,7 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
     )
     pred_by_id = {p.get("match_id"): p for p in predictions}
     is_paid = await _has_paid_access(payload)
+    manifest = await _discovery_manifest(snapshot) if not is_paid else {}
     merged = []
     for i, m in enumerate(matches):
         pred = dict(pred_by_id.get(m.get("id"), {}))
@@ -8392,11 +8391,9 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
         pred["has_prediction"] = bool(str(pred.get("pick") or "").strip()) and not (
             pred.get("is_finished") or m.get("is_finished") or m.get("completed")
         )
-        if not is_paid and i > 0:
-            pred = _lock_prediction_for_free(pred)
-        else:
-            pred["locked"] = False
-        merged.append(_merge_match_prediction(m, pred))
+        pred = _discovery_prediction(pred,manifest,paid=is_paid)
+        outer = m if is_paid or not pred.get("locked") else _discovery_metadata(m)
+        merged.append(_merge_match_prediction(outer, pred))
     return merged
 
 
@@ -8412,8 +8409,8 @@ async def get_predictions(payload: Optional[dict] = Depends(get_optional_user_pa
             pred["locked"] = False
         return predictions
 
-    # Offre gratuite : un seul pronostic complet, le reste est réellement masqué côté API.
-    return [pred if i == 0 else _lock_prediction_for_free(pred) for i, pred in enumerate(predictions)]
+    manifest = await _discovery_manifest(snapshot)
+    return [_discovery_prediction(pred,manifest) for pred in predictions]
 
 
 @app.get("/api/predictions/model-status")
@@ -8441,21 +8438,15 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
         snapshot["calibration"],
     )
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
-    preds = preds[:max(1, min(limit, 50))]
-
     is_paid = await _has_paid_access(payload)
-
-    if not is_paid:
-        for i, p in enumerate(preds):
-            if i == 0:
-                p["locked"] = False
-            else:
-                preds[i] = _lock_prediction_for_free(p)
-    else:
-        for p in preds:
-            p["locked"] = False
-
-    return preds
+    size = max(1,min(limit,50))
+    if is_paid:
+        return [_discovery_prediction(pred,{},paid=True) for pred in preds[:size]]
+    manifest = await _discovery_manifest(snapshot)
+    ids = {entry["match_id"] for entry in manifest.get("entries",[])}
+    # Free selections are the same on Top Picks and the dashboard.
+    preds.sort(key=lambda pred: _discovery_match_id(pred) not in ids)
+    return [_discovery_prediction(pred,manifest) for pred in preds[:size]]
 
 
 @app.get("/api/matches/{match_id}/analysis")
@@ -8471,6 +8462,12 @@ async def get_match_analysis(match_id: str, request: Request, response: Response
             None,
         )
 
+    archived_entry = None
+    if not match:
+        manifest = await _discovery_manifest(snapshot)
+        archived_entry = next((entry for entry in manifest.get("entries",[]) if entry["match_id"] == str(match_id)),None)
+        if archived_entry:
+            match = {**archived_entry["match"], "id":archived_entry["match_id"], "archived":True}
     if not match:
         raise HTTPException(
             status_code=404,
@@ -8479,13 +8476,13 @@ async def get_match_analysis(match_id: str, request: Request, response: Response
 
     prediction = next(
         (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
-        {}
+        copy.deepcopy(archived_entry["prediction"]) if archived_entry else {}
     )
 
     is_paid = await _has_paid_access(payload)
-    free_match_id = str(matches[0].get("id") or matches[0].get("match_id")) if matches else None
-    requested_id = str(match.get("id") or match.get("match_id"))
-    if not is_paid and requested_id != free_match_id:
+    manifest = await _discovery_manifest(snapshot) if not is_paid else {}
+    prediction = _discovery_prediction(prediction,manifest,paid=is_paid)
+    if prediction.get("locked") or (not is_paid and not prediction.get("free_daily_pick")):
         raise HTTPException(status_code=403, detail="Analyse complète réservée aux abonnés Pro")
 
     # Sans choix explicite, les anciennes pages conservent leur analyse française.
@@ -10996,17 +10993,19 @@ async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dic
         matches = [m for m in matches if _normalize_sport(m) == wanted_sport]
     real_stats_map = await get_real_stats_map(db, matches)
     is_paid = await _has_paid_access(payload)
-    FREE_UNLOCKED_MATCHES = 2
+    snapshot = await _get_prediction_snapshot()
+    manifest = await _discovery_manifest(snapshot) if not is_paid else {}
+    chosen = {entry["match_id"]:entry for entry in manifest.get("entries",[])}
     result = []
-    unlocked_matches_count = 0
     for m in matches:
         analyzed = analyze_match(m, real_stats_map=real_stats_map)
         raw_picks = analyzed.get("markets", [])
+        frozen = chosen.get(_discovery_match_id(m))
+        if not is_paid and frozen:
+            raw_picks = [frozen["prediction"]]
         if not raw_picks:
             continue
-        this_match_gets_free_pick = (not is_paid) and (unlocked_matches_count < FREE_UNLOCKED_MATCHES)
-        if this_match_gets_free_pick:
-            unlocked_matches_count += 1
+        this_match_gets_free_pick = bool(frozen)
         picks = []
         for i, mk in enumerate(raw_picks):
             if is_paid:
@@ -11129,6 +11128,187 @@ async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_curren
 
 # ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
 
+
+# One persisted selection per Porto-Novo calendar day, shared by every Free surface.
+FREE_DAILY_PICK_LIMIT = 3
+_free_daily_lock = asyncio.Lock()
+
+
+def _discovery_match_id(row):
+    return str(row.get("match_id") or row.get("id") or "")
+
+
+def _discovery_now():
+    return datetime.now(timezone.utc)
+
+
+def _discovery_day(now=None):
+    return (now or _discovery_now()).astimezone(timezone(timedelta(hours=1))).date().isoformat()
+
+
+def _discovery_date(value):
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+    except (ValueError, TypeError):
+        return None
+
+
+def _discovery_metadata(match):
+    fields = ("id", "match_id", "sport_key", "sport_title", "home_team", "away_team", "commence_time",
+              "is_live", "is_finished", "completed", "score_home", "score_away", "scores",
+              "home_logo", "away_logo", "home_team_logo", "away_team_logo", "league", "country")
+    return {key: copy.deepcopy(match[key]) for key in fields if key in match}
+
+
+def _discovery_candidates(snapshot, now):
+    day = _discovery_day(now)
+    predictions = {_discovery_match_id(p):p for p in snapshot.get("predictions", [])}
+    candidates = []
+    for match in snapshot.get("matches", []):
+        identity = _discovery_match_id(match)
+        prediction = predictions.get(identity, {})
+        starts = _discovery_date(match.get("commence_time"))
+        if not identity or not starts or starts <= now or _discovery_day(starts) != day:
+            continue
+        if match.get("completed") or match.get("is_live") or prediction.get("is_live") or prediction.get("is_finished"):
+            continue
+        try:
+            odds = float(prediction.get("pick_odds") or 0)
+            if not math.isfinite(odds) or odds <= 1 or not str(prediction.get("pick") or "").strip():
+                continue
+        except (ValueError, TypeError):
+            continue
+        candidates.append({"match_id": identity, "match": _discovery_metadata(match),
+                           "prediction": copy.deepcopy(prediction)})
+    # Chronological and deterministic, then first pass diversifies sports if possible.
+    candidates.sort(key=lambda item:(_discovery_date(item["match"].get("commence_time")).timestamp(), item["match_id"]))
+    unique = {}; seen_sports = set(); first = []; rest = []
+    for item in candidates:
+        if item["match_id"] in unique:
+            continue
+        unique[item["match_id"]] = True
+        sport = _normalize_sport(item["match"])
+        (rest if sport in seen_sports else first).append(item)
+        seen_sports.add(sport)
+    return first + rest
+
+
+async def _discovery_manifest(snapshot):
+    now = _discovery_now(); day = _discovery_day(now)
+    async with _free_daily_lock:
+        for attempt in range(4):
+            doc = await db.free_daily_picks.find_one({"_id":day})
+            if doc and len(doc.get("entries", [])) >= FREE_DAILY_PICK_LIMIT:
+                return doc
+            previous = (doc or {}).get("entries", [])
+            seen = {item["match_id"] for item in previous}
+            additions = [item for item in _discovery_candidates(snapshot, now) if item["match_id"] not in seen]
+            entries = previous + additions[:max(0, FREE_DAILY_PICK_LIMIT-len(previous))]
+            if not additions or len(entries) == len(previous):
+                return doc or {"_id":day, "entries":[]}
+            if doc is None:
+                try:
+                    await db.free_daily_picks.update_one({"_id":day}, {"$setOnInsert":{
+                        "entries":entries, "created_at":now.isoformat(), "updated_at":now.isoformat(),
+                    }}, upsert=True)
+                except DuplicateKeyError:
+                    continue
+            else:
+                # Compare-and-swap also prevents workers from choosing different extra slots.
+                await db.free_daily_picks.update_one({"_id":day,"entries":previous},
+                    {"$set":{"entries":entries,"updated_at":now.isoformat()}})
+        doc = await db.free_daily_picks.find_one({"_id":day})
+        return doc or {"_id":day,"entries":[]}
+
+
+def _discovery_prediction(prediction, manifest, paid=False):
+    identity = _discovery_match_id(prediction)
+    chosen = next((item for item in manifest.get("entries",[]) if item["match_id"] == identity), None)
+    if paid:
+        result = dict(prediction)
+    elif chosen:
+        result = copy.deepcopy(chosen["prediction"])
+        # Preserve the frozen selection, but refresh only match-status information.
+        for key in ("is_live", "is_finished", "score_home", "score_away"):
+            if key in prediction:
+                result[key] = prediction[key]
+    else:
+        locked = _lock_prediction_for_free(prediction)
+        if not str(prediction.get("pick") or "").strip():
+            locked["locked"] = False
+            locked["analysis_status"] = "unavailable"
+        return locked
+    result["locked"] = False
+    result["free_daily_pick"] = bool(chosen)
+    result["free_selection_date"] = manifest.get("_id") if chosen else None
+    return result
+
+
+@app.get("/api/discovery")
+async def get_free_discovery(payload: Optional[dict] = Depends(get_optional_user_payload)):
+    snapshot = await _get_prediction_snapshot()
+    paid = await _has_paid_access(payload)
+    manifest = await _discovery_manifest(snapshot)
+    items = []
+    for entry in manifest.get("entries",[]):
+        prediction = _discovery_prediction(entry["prediction"],manifest)
+        # Only confirmed outcomes for exactly the frozen pick and market are displayed.
+        row = await db.predictions_history.find_one({
+            "signature":_pick_signature(entry["match_id"], prediction.get("pick", "")),
+            "market":prediction.get("market"), "result":{"$in":["won","lost","void"]}})
+        items.append({**entry["match"], "id":entry["match_id"], "prediction":prediction,
+                      "result":row.get("result") if row else "pending"})
+    free_ids = {item["match_id"] for item in manifest.get("entries",[])}
+    available = [p for p in snapshot.get("predictions",[]) if p.get("pick") and not p.get("is_finished")]
+    preview = []
+    for match in snapshot.get("matches",[]):
+        identity = _discovery_match_id(match)
+        if identity in free_ids or _match_is_finished(match):
+            continue
+        pred = next((p for p in available if _discovery_match_id(p)==identity),None)
+        if pred:
+            preview.append({**_discovery_metadata(match),"id":identity,
+                            "prediction":_lock_prediction_for_free(pred)})
+        if len(preview)==3:
+            break
+    return {"date":manifest["_id"],"timezone":"Africa/Porto-Novo","limit":FREE_DAILY_PICK_LIMIT,
+            "paid":paid,"items":items,"preview":preview,
+            "locked_count":sum(_discovery_match_id(p) not in free_ids for p in available)}
+
+
+class DiscoveryEventRequest(BaseModel):
+    event: str = Field(max_length=30)
+    surface: str = Field(max_length=20)
+
+
+@app.post("/api/discovery/events")
+async def record_discovery_event(body: DiscoveryEventRequest, payload: dict = Depends(get_current_user_payload)):
+    if body.event not in ("view", "analysis_view", "upgrade_click") or body.surface not in ("dashboard", "match_detail"):
+        raise HTTPException(status_code=422,detail="Événement inconnu")
+    user = await _get_user_from_payload(payload)
+    if not user:
+        raise HTTPException(status_code=401,detail="Authentification requise")
+    if await _has_paid_access(payload):
+        return {"ok":True,"recorded":False}
+    day = _discovery_day()
+    digest = hashlib.sha256(f"{day}:{user['id']}:{body.event}:{body.surface}".encode()).hexdigest()
+    await db.discovery_events.update_one({"_id":digest},{"$setOnInsert":{
+        "date":day,"event":body.event,"surface":body.surface,"created_at":_discovery_now().isoformat()
+    }},upsert=True)
+    return {"ok":True,"recorded":True}
+
+
+@app.get("/api/admin/discovery-stats")
+async def get_discovery_stats(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    day = _discovery_day()
+    counts = {event:await db.discovery_events.count_documents({"date":day,"event":event})
+              for event in ("view","analysis_view","upgrade_click")}
+    return {"date":day,"counts":counts,
+            "note":"Comptages dédupliqués par compte, jour, événement et écran ; ce ne sont pas des paiements confirmés."}
+
+
 @app.get("/api/matches/{match_id}")
 async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_optional_user_payload)):
     snapshot = await _get_prediction_snapshot()
@@ -11141,6 +11321,12 @@ async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_
             None,
         )
 
+    archived_entry = None
+    if not match:
+        manifest = await _discovery_manifest(snapshot)
+        archived_entry = next((entry for entry in manifest.get("entries",[]) if entry["match_id"] == str(match_id)),None)
+        if archived_entry:
+            match = {**archived_entry["match"], "id":archived_entry["match_id"], "archived":True}
     if not match:
         raise HTTPException(
             status_code=404,
@@ -11149,19 +11335,14 @@ async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_
 
     prediction = next(
         (dict(p) for p in snapshot["predictions"] if str(p.get("match_id")) == str(match_id)),
-        {}
+        copy.deepcopy(archived_entry["prediction"]) if archived_entry else {}
     )
     prediction = _apply_calibration([prediction], snapshot["calibration"])[0] if prediction else {}
-    if not await _has_paid_access(payload):
-        free_match_id = str(matches[0].get("id") or matches[0].get("match_id")) if matches else None
-        requested_id = str(match.get("id") or match.get("match_id"))
-        if requested_id != free_match_id:
-            prediction = _lock_prediction_for_free(prediction)
-        else:
-            prediction["locked"] = False
-    else:
-        prediction["locked"] = False
-    return _merge_match_prediction(match, prediction)
+    paid = await _has_paid_access(payload)
+    manifest = await _discovery_manifest(snapshot) if not paid else {}
+    prediction = _discovery_prediction(prediction,manifest,paid=paid)
+    outer = match if paid or not prediction.get("locked") else _discovery_metadata(match)
+    return _merge_match_prediction(outer,prediction)
 
 
 # ─── Value bets ───────────────────────────────────────────────────────────
@@ -12813,22 +12994,16 @@ async def follow_prediction(match_id: str, payload: dict = Depends(get_current_u
     visible_matches = [match for match in snapshot["matches"] if not _match_is_finished(match)]
     match = next((match for match in visible_matches if str(match.get("id") or match.get("match_id")) == match_id), None)
     prediction = next((row for row in snapshot["predictions"] if str(row.get("match_id")) == match_id), None)
-    paid = bool(user.get("is_admin") or user.get("subscription", "free") != "free")
-    free_id = str(visible_matches[0].get("id") or visible_matches[0].get("match_id")) if visible_matches else None
+    paid = await _has_paid_access(payload)
+    manifest = await _discovery_manifest(snapshot) if not paid else {}
     if not paid:
-        allowed = {free_id}
-        # Le premier Top Pick est également visible gratuitement et peut
-        # différer du premier match chronologique du dashboard.
-        top = _apply_calibration([dict(row) for row in snapshot["predictions"] if row.get("pick") and not row.get("is_finished")], snapshot.get("calibration", {}))
-        top.sort(key=lambda row: row.get("effective_score", row.get("wp_score", 0)), reverse=True)
-        if top:
-            allowed.add(str(top[0].get("match_id")))
-        if match_id not in allowed:
+        prediction = _discovery_prediction(prediction or {"match_id":match_id},manifest)
+        if prediction.get("locked"):
             raise HTTPException(status_code=403, detail="Le suivi de ce pronostic nécessite un accès Pro")
     if not match or not prediction or not prediction.get("pick"):
         raise HTTPException(status_code=404, detail="Aucun pronostic disponible à suivre")
     starts = _parse_iso(prediction.get("commence_time") or match.get("commence_time"))
-    if not starts or starts <= datetime.now(timezone.utc) or prediction.get("is_live") or prediction.get("is_finished"):
+    if not starts or starts <= _discovery_now() or prediction.get("is_live") or prediction.get("is_finished"):
         raise HTTPException(status_code=409, detail="Le suivi s’active avant le début de la rencontre")
     if prediction.get("market") not in ("h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance"):
         raise HTTPException(status_code=409, detail="Le suivi de ce marché n’est pas encore disponible")
@@ -13293,14 +13468,18 @@ async def _run_daily_health_audit() -> Dict:
                 duration_ms=elapsed,
             ))
 
-            # Free : 1 pronostic maximum complet dans TOP ; le reste doit rester verrouillé.
+            # Free : trois rencontres au maximum, sélectionnées dans le manifeste du jour.
             ok, resp, data, elapsed = await _health_http_check(client, "GET", "/api/predictions/top?limit=5", token=free_token)
             free_top_good = ok and isinstance(data, list)
             free_top_details = {"http_status": resp.status_code, "count": len(data) if isinstance(data, list) else None}
             if free_top_good and len(data) > 1:
                 unlocked = [i for i, item in enumerate(data) if isinstance(item, dict) and not item.get("locked")]
-                locked_after_first = all(isinstance(item, dict) and item.get("locked") is True for item in data[1:])
-                free_top_good = unlocked == [0] and locked_after_first
+                manifest = await _discovery_manifest(await _get_prediction_snapshot())
+                allowed = {entry["match_id"] for entry in manifest.get("entries",[])}
+                free_top_good = len(unlocked) <= FREE_DAILY_PICK_LIMIT and all(
+                    (_discovery_match_id(item) in allowed) if not item.get("locked")
+                    else not item.get("pick") and not item.get("markets")
+                    for item in data if isinstance(item,dict))
                 free_top_details["unlocked_indexes"] = unlocked
             checks.append(_health_result(
                 "free_prediction_lock", "plan_flow", "pass" if free_top_good else "fail",
