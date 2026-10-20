@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
-import AppLayout, { usePageLanguage } from "@/components/AppLayout";
+import AppLayout, { usePageLanguage, FollowPickButton } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -10,6 +10,21 @@ import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio, Tre
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { AdminShareActions } from "@/components/MatchCard";
+
+const DISCOVERY_COPY = {
+  fr: {title:"Découvre WinPulse : jusqu’à 3 picks gratuits par jour",intro:"Les mêmes sélections pour tous, avec leur explication et leur suivi. Disponibilité selon les rencontres du jour.",pro:"À découvrir avec Pro",reserved:"pronostics réservés actuellement",cta:"Débloquer les pronostics et leurs analyses",offer:"Tu viens de découvrir une analyse WinPulse",offerText:"Accède aux autres sélections et aux marchés analysés inclus dans ton abonnement.",empty:"Les sélections du jour ne sont pas encore disponibles. Reviens un peu plus tard.",error:"Impossible de charger la sélection découverte.",retry:"Réessayer",pending:"Résultat non confirmé",won:"Gagné",lost:"Perdu",void:"Remboursé",count:"sélection(s) disponible(s)",note:"Heures affichées dans ton fuseau. Journée découverte : Africa/Porto-Novo.",noGuarantee:"Aucun gain garanti. Les résultats gagnés et perdus restent visibles.",follow:"Suis ces sélections depuis leur carte pour retrouver leurs résultats.",unavailable:"Aucune sélection exploitable pour cette rencontre actuellement."},
+  en: {title:"Discover WinPulse: up to 3 free picks a day",intro:"The same selections for everyone, with explanations and tracking. Subject to today's fixtures.",pro:"Discover with Pro",reserved:"predictions currently reserved",cta:"Unlock predictions and their analysis",offer:"You have explored a WinPulse analysis",offerText:"Access the other selections and analysed markets included in your subscription.",empty:"Today's selections are not available yet. Check back later.",error:"Unable to load the discovery selection.",retry:"Try again",pending:"Result unconfirmed",won:"Won",lost:"Lost",void:"Refunded",count:"selection(s) available",note:"Times shown in your time zone. Discovery day: Africa/Porto-Novo.",noGuarantee:"No guaranteed winnings. Both wins and losses remain visible.",follow:"Follow these selections from their cards to find their results.",unavailable:"No usable selection is currently available for this fixture."},
+  es: {title:"Descubre WinPulse: hasta 3 pronósticos gratis al día",intro:"Las mismas selecciones para todos, con explicación y seguimiento. Según los partidos del día.",pro:"Descubre Pro",reserved:"pronósticos reservados actualmente",cta:"Desbloquear pronósticos y análisis",offer:"Has descubierto un análisis WinPulse",offerText:"Accede a las demás selecciones y mercados analizados incluidos en tu suscripción.",empty:"Las selecciones de hoy aún no están disponibles. Vuelve más tarde.",error:"No se pudo cargar la selección gratuita.",retry:"Reintentar",pending:"Resultado sin confirmar",won:"Ganado",lost:"Perdido",void:"Reembolsado",count:"selección(es) disponible(s)",note:"Horarios en tu zona. Día de selección: Africa/Porto-Novo.",noGuarantee:"Sin ganancias garantizadas. Aciertos y pérdidas siguen visibles.",follow:"Sigue las selecciones desde sus tarjetas para consultar los resultados.",unavailable:"No hay ninguna selección disponible para este partido actualmente."},
+  pt: {title:"Descobre a WinPulse: até 3 palpites grátis por dia",intro:"As mesmas seleções para todos, com explicação e acompanhamento. Conforme os jogos do dia.",pro:"Descobre o Pro",reserved:"palpites reservados atualmente",cta:"Desbloquear palpites e análises",offer:"Acabaste de descobrir uma análise WinPulse",offerText:"Acede às outras seleções e mercados analisados incluídos na tua subscrição.",empty:"As seleções de hoje ainda não estão disponíveis. Volta mais tarde.",error:"Não foi possível carregar a seleção gratuita.",retry:"Tentar novamente",pending:"Resultado não confirmado",won:"Ganho",lost:"Perdido",void:"Reembolsado",count:"seleção(ões) disponível(is)",note:"Horários no teu fuso. Dia de seleção: Africa/Porto-Novo.",noGuarantee:"Sem ganhos garantidos. Ganhos e perdas continuam visíveis.",follow:"Segue as seleções nos cartões para consultar os resultados.",unavailable:"Não existe uma seleção disponível para este jogo neste momento."},
+  de: {title:"WinPulse entdecken: bis zu 3 kostenlose Tipps täglich",intro:"Dieselben Tipps für alle, mit Erklärung und Ergebnisverfolgung. Abhängig von den heutigen Spielen.",pro:"Mit Pro entdecken",reserved:"derzeit reservierte Tipps",cta:"Tipps und Analysen freischalten",offer:"Du hast eine WinPulse-Analyse entdeckt",offerText:"Erhalte die weiteren Tipps und analysierten Märkte deines Abonnements.",empty:"Die heutigen Tipps sind noch nicht verfügbar. Schau später wieder vorbei.",error:"Die kostenlose Auswahl konnte nicht geladen werden.",retry:"Erneut versuchen",pending:"Ergebnis unbestätigt",won:"Gewonnen",lost:"Verloren",void:"Erstattet",count:"verfügbare Tipps",note:"Zeiten in deiner Zeitzone. Auswahltag: Africa/Porto-Novo.",noGuarantee:"Keine garantierten Gewinne. Gewinne und Verluste bleiben sichtbar.",follow:"Verfolge die Tipps über ihre Karten, um Ergebnisse zu sehen.",unavailable:"Für dieses Spiel ist derzeit kein nutzbarer Tipp verfügbar."},
+  ar: {title:"اكتشف WinPulse: حتى 3 توقعات مجانية يوميًا",intro:"اختيارات موحدة للجميع مع الشرح والمتابعة، حسب مباريات اليوم.",pro:"اكتشف اشتراك Pro",reserved:"توقعات متاحة للمشتركين حاليًا",cta:"افتح التوقعات وتحليلاتها",offer:"لقد اكتشفت تحليلًا من WinPulse",offerText:"اطلع على الاختيارات الأخرى والأسواق المحللة ضمن اشتراكك.",empty:"اختيارات اليوم غير متاحة بعد. عد لاحقًا.",error:"تعذر تحميل الاختيارات المجانية.",retry:"إعادة المحاولة",pending:"النتيجة غير مؤكدة",won:"فائز",lost:"خاسر",void:"مسترد",count:"اختيارات متاحة",note:"الأوقات بتوقيتك المحلي. يوم الاختيارات: Africa/Porto-Novo.",noGuarantee:"لا توجد أرباح مضمونة. تبقى النتائج الفائزة والخاسرة ظاهرة.",follow:"تابع الاختيارات من بطاقاتها لعرض نتائجها.",unavailable:"لا يوجد توقع متاح لهذه المباراة حاليًا."}
+};
+function discoveryCopy(language) { return DISCOVERY_COPY[language] || DISCOVERY_COPY.fr; }
+function discoveryEvent(event, surface) {
+  api.post("/discovery/events", { event, surface }).catch(() => {});
+}
+
+
 function analysisPayload(response) {
   const value = response?.ai_analysis ?? response?.analysis;
   if (typeof value === "string" && value.trim()) {
@@ -64,7 +79,9 @@ export default function MatchDetailPage() {
   const {
     user
   } = useAuth();
-  const [data, setData] = useState(null);
+  const [responseState, setResponseState] = useState({ owner: null, data: null });
+  const owner = user?.id || "anonymous";
+  const data = responseState.owner === owner ? responseState.data : null;
   const [analysis, setAnalysis] = useState(null);
   const [loadingMatch, setLoadingMatch] = useState(true);
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
@@ -76,12 +93,16 @@ export default function MatchDetailPage() {
     tier: "PRO"
   });
   const isAdmin = Boolean(user?.is_admin);
+  const freeWords = discoveryCopy(i18n.language);
+  useEffect(() => {
+    if (data?.prediction?.free_daily_pick && !data.prediction.locked && user?.id) discoveryEvent("analysis_view", "match_detail");
+  }, [data, user?.id]);
   useEffect(() => {
     let active = true;
     const controller = new AbortController();
     analysisRequest.current?.abort();
     analysisRequest.current = null;
-    setData(null);
+    setResponseState({ owner: user?.id || "anonymous", data: null });
     setAnalysis(null);
     setAnalysisError("");
     setMatchError("");
@@ -91,7 +112,7 @@ export default function MatchDetailPage() {
       signal: controller.signal,
       timeout: 15_000
     }).then(r => {
-      if (active) setData(r.data);
+      if (active) setResponseState({ owner: user?.id || "anonymous", data: r.data });
     }).catch(error => {
       if (!active || controller.signal.aborted) return;
       setMatchError(error?.response?.status === 404 ? "Cette rencontre n’est plus disponible dans les matchs actuels." : "La rencontre ne peut pas être chargée pour le moment. Réessaie depuis le dashboard.");
@@ -104,7 +125,7 @@ export default function MatchDetailPage() {
       analysisRequest.current?.abort();
       analysisRequest.current = null;
     };
-  }, [matchId]);
+  }, [matchId, user?.id]);
   const fetchAnalysis = async () => {
     if (analysisRequest.current) return;
     const controller = new AbortController();
@@ -116,7 +137,8 @@ export default function MatchDetailPage() {
         data: a
       } = await api.get(`/matches/${encodeURIComponent(matchId)}/analysis`, {
         signal: controller.signal,
-        timeout: 20_000
+        timeout: 20_000,
+        params: { lang: i18n.language || "fr" }
       });
       if (controller.signal.aborted || analysisRequest.current !== controller) return;
       const content = analysisPayload(a);
@@ -162,7 +184,7 @@ export default function MatchDetailPage() {
   }[p.label] || "bg-orange-50 border-orange-200";
   const isPaid = Boolean(user?.is_admin || user && String(user.subscription || user.subscription_tier || "free").toLowerCase() !== "free");
   return <AppLayout>
-      <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+      <div className="min-w-0 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 [overflow-wrap:anywhere]">
         <button onClick={handleBack} className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900 mb-6" data-testid="back-link">
           <ChevronLeft className="h-4 w-4" />{i18n.t("Retour")}</button>
         {/* Match header */}
@@ -175,7 +197,7 @@ export default function MatchDetailPage() {
             </div> {i18n.tx(data.is_live && <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2.5 py-1 text-[11px] font-black uppercase tracking-wider animate-pulse" data-testid="match-live-badge">
                 <Radio className="h-3 w-3" />{i18n.t("LIVE")}</span>)}
           </div>
-          <div className="grid grid-cols-3 items-center gap-4">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4">
             <div className="text-center">
               <div className="font-heading text-xl font-extrabold text-slate-900">{data.home_team}</div>
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Domicile")}</div>
@@ -190,7 +212,7 @@ export default function MatchDetailPage() {
           </div>
         </Card>
         {/* Prediction summary */}
-        {i18n.tx(locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
+        {i18n.tx(!p.pick && !p.locked ? <Card className="mb-6 p-5 text-sm text-slate-600" data-testid="prediction-unavailable">{freeWords.unavailable}</Card> : locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
             <div className="flex items-start justify-between gap-4 mb-4">
               <div className="flex items-start gap-3">
                 <div className="h-10 w-10 rounded-xl wp-gradient-warm grid place-items-center text-white flex-shrink-0">
@@ -199,7 +221,7 @@ export default function MatchDetailPage() {
                 <div>
                   <div className="text-xs uppercase tracking-wider text-orange-700 font-bold mb-1">{i18n.t("Pronostic verrouill\xE9")}</div>
                   <div className="font-heading text-xl font-extrabold text-slate-900">{i18n.t("Passe Pro pour voir le pick complet")}</div>
-                  <div className="text-sm text-slate-700 mt-1">{i18n.t("Inclut la cote optimale, le score de confiance, l'edge value et l'analyse IA experte.")}</div>
+                  <div className="text-sm text-slate-700 mt-1">{freeWords.offerText}</div>
                 </div>
               </div>
             </div>
@@ -249,6 +271,12 @@ export default function MatchDetailPage() {
             {i18n.tx(p.reasoning?.real_data_used ? <p>{i18n.t("Des statistiques externes sont disponibles pour compl\xE9ter cette analyse. Leur d\xE9tail figure plus bas.")}</p> : <p>{i18n.t("Les informations disponibles ne permettent pas ici d\u2019ajouter une analyse v\xE9rifi\xE9e de la forme des \xE9quipes ou des absences.")}</p>)}
           </div>
         </Card>)}
+        {!locked && p.free_daily_pick && <Card className="mb-6 space-y-3 rounded-2xl border-orange-200 bg-gradient-to-br from-slate-950 to-slate-900 p-5 text-white" data-testid="free-analysis-upgrade">
+          <h2 className="font-heading text-lg font-bold">{freeWords.offer}</h2>
+          <p className="text-sm leading-6 text-slate-200">{freeWords.offerText}</p>
+          <FollowPickButton matchId={matchId} pick={p.pick} market={p.market} disabled={p.is_live || p.is_finished} />
+          <Button className="h-auto min-h-11 w-full whitespace-normal bg-orange-600 px-4 py-3 text-white hover:bg-orange-700 sm:w-auto" onClick={()=>{discoveryEvent("upgrade_click", "match_detail");setPayState({isOpen:true,tier:"PRO"});}}>{freeWords.cta}</Button>
+        </Card>}
         {/* All markets analyzed (Pro feature) */}
         {i18n.tx(!locked && p.markets && p.markets.length > 1 && <Card className="bg-white border-neutral-200 p-6 mb-6" data-testid="all-markets-card">
             <div className="flex items-center gap-2 mb-4">
@@ -304,7 +332,7 @@ export default function MatchDetailPage() {
           </Card>)}
         {/* AI Analysis */}
         {i18n.tx(!locked && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
-          <div className="flex items-center justify-between mb-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
             <div className="flex items-center gap-2">
               <Brain className="h-5 w-5 text-orange-600" />
               <h2 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Explication compl\xE9mentaire")}</h2>
