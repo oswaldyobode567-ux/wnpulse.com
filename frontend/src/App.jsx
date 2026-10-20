@@ -32,7 +32,6 @@ import { ArrowRight, CalendarDays, CheckCircle2, Clock, Info, Layers, Lock, Play
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import PaymentModal from "@/components/payment/PaymentModal";
 import { cn } from "@/lib/utils";
 
 // Page Montante intégrée : aucun import de fichier MontantePage séparé.
@@ -145,10 +144,7 @@ function errorLabel(i18n, error) {
 
 function MontantePage() {
   const i18n = usePageLanguage();
-  const {
-    user,
-    refresh: refreshAuth
-  } = useAuth();
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -156,7 +152,6 @@ function MontantePage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [days, setDays] = useState(10);
-  const [payOpen, setPayOpen] = useState(false);
   const [restartConfirmed, setRestartConfirmed] = useState(false);
   const [now, setNow] = useState(Date.now());
   const controller = useRef(null);
@@ -164,8 +159,6 @@ function MontantePage() {
   const mounted = useRef(false);
   const generation = useRef(0);
   const activeData = useRef(null);
-  const refreshAuthRef = useRef(refreshAuth);
-  refreshAuthRef.current = refreshAuth;
   const authKey = `${user?.id || "anonymous"}|${user?.subscription_tier || user?.subscription || "free"}|${Boolean(user?.is_admin)}|${user?.subscription_expires_at || ""}`;
   const isAdmin = Boolean(user?.is_admin) && data?.viewer?.is_admin === true;
   const premium = data?.viewer?.has_premium_access === true && data?.picks_locked !== true;
@@ -330,7 +323,7 @@ function MontantePage() {
           {i18n.tx(data.selection_version === "legacy" && count > 0 && <p className="mb-4 rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">{i18n.t("S\xE9lection publi\xE9e avant cette mise \xE0 jour : elle reste suivie jusqu\u2019\xE0 son r\xE8glement. Les nouvelles \xE9tapes exigent deux matchs.")}</p>)}
           {i18n.tx(count === 0 ? <WaitingCard reason={str(data.waiting_reason, "Deux matchs suffisamment documentés ne sont pas encore disponibles.")} /> : !premium ? <div className="space-y-4"><div className="grid gap-4 md:grid-cols-2">{i18n.tx(Array.from({
                 length: Math.min(count, 10)
-              }, (_, i) => <LockedPick key={i} index={i} status={pickStatus(null, i, data)} />))}</div><div className="flex flex-col justify-between gap-3 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center"><div><p className="font-bold text-slate-900">{i18n.t("Les m\xEAmes s\xE9lections que les abonn\xE9s")}</p><p className="mt-1 text-sm text-slate-600">{i18n.t("D\xE9bloque les rencontres, les march\xE9s et les raisons de chaque choix.")}</p></div><Button onClick={() => setPayOpen(true)} className="shrink-0 bg-orange-600 text-white hover:bg-orange-700">{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-4 w-4" /></Button></div></div> : <div className="grid items-start gap-5 md:grid-cols-2">{i18n.tx(picks.map((pick, i) => <PickCard key={`${pick.history_signature || pick.match_id || i}-${i}`} pick={pick} index={i} status={pickStatus(pick, i, data)} now={now} />))}</div>)}
+              }, (_, i) => <LockedPick key={i} index={i} status={pickStatus(null, i, data)} />))}</div><div className="flex flex-col justify-between gap-3 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center"><div><p className="font-bold text-slate-900">{i18n.t("Les m\xEAmes s\xE9lections que les abonn\xE9s")}</p><p className="mt-1 text-sm text-slate-600">{i18n.t("D\xE9bloque les rencontres, les march\xE9s et les raisons de chaque choix.")}</p></div><Button asChild className="h-auto min-h-11 shrink-0 whitespace-normal bg-orange-600 text-white hover:bg-orange-700"><Link to="/app/abonnement" data-testid="montante-upgrade-link">{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-4 w-4" /></Link></Button></div></div> : <div className="grid items-start gap-5 md:grid-cols-2">{i18n.tx(picks.map((pick, i) => <PickCard key={`${pick.history_signature || pick.match_id || i}-${i}`} pick={pick} index={i} status={pickStatus(pick, i, data)} now={now} />))}</div>)}
           {i18n.tx(premium && estimate !== null && count === 2 && <details className="mt-4 rounded-xl border border-neutral-200 bg-white p-4"><summary className="flex cursor-pointer items-center gap-2 text-xs font-semibold text-slate-600"><Info className="h-4 w-4" />{i18n.t("Lire l\u2019estimation de la paire")}</summary><p className="mt-3 text-sm text-slate-700">{i18n.rich("Approximation th\xE9orique : {{v0}}, sous hypoth\xE8se d\u2019ind\xE9pendance.", {
                 v0: <strong>{i18n.tx(format(i18n, estimate))} %</strong>
               })}</p><p className="mt-2 text-xs leading-relaxed text-slate-500">{i18n.t("Ce chiffre multiplie deux estimations du moteur. Il ne constitue pas un taux de r\xE9ussite constat\xE9. Des \xE9v\xE9nements distincts peuvent encore \xEAtre corr\xE9l\xE9s.")}</p></details>)}
@@ -351,11 +344,6 @@ function MontantePage() {
       </>)}
       <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{i18n.t("Les petites cotes ne re\xE7oivent aucun bonus. Le s\xE9lecteur compare la probabilit\xE9 estim\xE9e, l\u2019accord entre les sources et leur nombre. Ce score de classement n\u2019est pas une probabilit\xE9.")}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
     </div>
-    <PaymentModal isOpen={payOpen} targetTier="PRO" onClose={() => {
-      setPayOpen(false);
-      load(true);
-      Promise.resolve().then(() => refreshAuthRef.current?.()).catch(() => {});
-    }} />
   </AppLayout>;
 }
 
@@ -575,3 +563,4 @@ function LocalizedToaster() {
   } = useLanguage();
   return <Toaster position={direction === "rtl" ? "top-left" : "top-right"} richColors />;
 }
+
