@@ -51,7 +51,7 @@ from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
-    _legacy_build_today_combos_by_sport,
+    _legacy_build_today_combos_by_sport, personal_combo_options, build_personalized_combos,
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
@@ -10869,6 +10869,39 @@ async def _montante_sync_after_track_results() -> Dict:
 
 
 # ─── Combos ─────────────────────────────────────────────────────────────────
+
+
+class PersonalComboRequest(BaseModel):
+    period: str = Field(default="today",max_length=16)
+    timezone: str = Field(default="Africa/Porto-Novo",max_length=80)
+    profile: str = Field(default="balanced",max_length=16)
+    max_legs: StrictInt = Field(default=4,ge=2,le=8)
+    sports: List[str] = Field(default_factory=list,max_length=20)
+    leagues: List[str] = Field(default_factory=list,max_length=80)
+    bookmaker: str = Field(default="auto",max_length=120)
+    excluded_match_ids: List[str] = Field(default_factory=list,max_length=30)
+
+
+@app.get("/api/combos/personalized/options")
+async def get_personal_combo_options(payload:dict=Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
+    matches = await fetch_all_matches(db)
+    return personal_combo_options(matches)
+
+
+@app.post("/api/combos/personalized")
+async def generate_personal_combo(preferences:PersonalComboRequest,payload:dict=Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
+    # Only preferences are accepted. Picks/probabilities always come from the server.
+    if any(len(item)>160 for item in preferences.sports+preferences.leagues+preferences.excluded_match_ids):
+        raise HTTPException(status_code=422,detail="Filtre trop long")
+    values = preferences.model_dump() if hasattr(preferences,"model_dump") else preferences.dict()
+    try:
+        return build_personalized_combos(await fetch_all_matches(db),values)
+    except ValueError as exc:
+        raise HTTPException(status_code=422,detail=str(exc))
+
+
 
 @app.get("/api/combos")
 async def get_combos(payload: dict = Depends(get_current_user_payload)):
