@@ -51,7 +51,7 @@ from stats_service import refresh_real_stats_cache, get_real_stats_map
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
-    _legacy_build_today_combos_by_sport, personal_combo_options, build_personalized_combos,
+    _legacy_build_today_combos_by_sport, personal_combo_options, build_personalized_combos, train_hybrid_models,
     _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
 from ai_service import generate_analysis
@@ -8231,6 +8231,147 @@ async def _compute_calibration_map() -> Dict[int, Dict]:
     return out
 
 
+
+_hybrid_registry_cache = {"loaded":0.,"models":{}}
+_hybrid_training_lock = asyncio.Lock()
+_hybrid_training_task = None
+
+
+async def _get_hybrid_registry():
+    if time.monotonic()-_hybrid_registry_cache["loaded"]<300:
+        return _hybrid_registry_cache["models"]
+    try:
+        rows=await asyncio.wait_for(db.hybrid_model_registry.find({"version":"dc-elo-market-1","status":"shadow_ready"}).to_list(length=None),timeout=2)
+        models={row["sport_key"]:row for row in rows if row.get("model")}
+        _hybrid_registry_cache.update(loaded=time.monotonic(),models=models)
+        return models
+    except Exception as exc:
+        logging.getLogger("winpulse.hybrid").warning("Hybrid registry unavailable (%s)",type(exc).__name__)
+        return _hybrid_registry_cache["models"]
+
+
+async def _refresh_hybrid_registry(force=False):
+    async with _hybrid_training_lock:
+        now=datetime.now(timezone.utc)
+        status=await db.system_meta.find_one({"_id":"hybrid_training"})
+        last=_parse_iso((status or {}).get("finished_at"))
+        if not force and last and (now-last).total_seconds()<86400:
+            return
+        # Read historical outcomes only; no new request to the odds/stat providers.
+        records=await db.predictions_history.find({"sport_key":{"$regex":"^soccer_"},"result":{"$in":["won","lost","void"]}}).to_list(length=None)
+        # CPU work is off the event loop and cannot gate the public prediction feed.
+        reports=await asyncio.to_thread(train_hybrid_models,records,now)
+        operations=[UpdateOne({"_id":league},{"$set":report},upsert=True) for league,report in reports.items()]
+        if operations:
+            await db.hybrid_model_registry.bulk_write(operations,ordered=False)
+            versions=[UpdateOne({"_id":f"dc-elo-market-1:{league}:{report['as_of']}"},
+                      {"$setOnInsert":report},upsert=True) for league,report in reports.items()]
+            await db.hybrid_model_versions.bulk_write(versions,ordered=False)
+        await db.system_meta.update_one({"_id":"hybrid_training"},{"$set":{
+            "finished_at":datetime.now(timezone.utc).isoformat(),"version":"dc-elo-market-1",
+            "confirmed_records_read":len(records),"leagues":len(reports),
+            "ready":sum(r.get("status")=="shadow_ready" for r in reports.values()),
+            "mode":"shadow","automatic_promotion":False}},upsert=True)
+        _hybrid_registry_cache.update(loaded=0.,models={})
+        await _invalidate_prediction_cache()
+
+
+def _queue_hybrid_training(force=False):
+    global _hybrid_training_task
+    if _hybrid_training_task and not _hybrid_training_task.done():
+        return False
+    async def run():
+        try:
+            await _run_with_scheduler_lease("hybrid_training",lambda:_refresh_hybrid_registry(force),lease_seconds=1800)
+        except Exception as exc:
+            logging.getLogger("winpulse.hybrid").warning("Hybrid training unavailable (%s)",type(exc).__name__)
+    _hybrid_training_task=asyncio.create_task(run())
+    return True
+
+
+@app.post("/api/admin/prediction-model/train")
+async def hybrid_prediction_train(payload:dict=Depends(get_current_user_payload)):
+    user=await _get_user_from_payload(payload)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403,detail="Accès administrateur requis")
+    return {"queued":_queue_hybrid_training(force=True),"mode":"shadow","automatic_promotion":False}
+
+
+async def _evaluate_hybrid_history():
+    import math
+    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-1","hybrid_evaluation":{"$exists":False}}).to_list(length=None)
+    ids=list({r["match_id"] for r in rows})
+    if not ids:return
+    confirmed=await db.predictions_history.find({"match_id":{"$in":ids},"result":{"$in":["won","lost","void"]}}).to_list(length=None)
+    by_match={}
+    for result in confirmed:by_match.setdefault(str(result.get("match_id")),[]).append(result)
+    operations=[]
+    for row in rows:
+        kickoff=_parse_iso(row.get("commence_time"));captured=_parse_iso(row.get("captured_at"))
+        if not kickoff or not captured or captured>=kickoff:continue
+        scores=set()
+        for result in by_match.get(str(row["match_id"]),[]):
+            started=_parse_iso(result.get("commence_time"));known=_parse_iso(result.get("reconciled_at"))
+            if not started or not known or abs((started-kickoff).total_seconds())>=60 or known<=kickoff:continue
+            if any(result.get(k)!=row.get(k) for k in ("home_team","away_team")):continue
+            score=re.fullmatch(r"(\d+)\s*-\s*(\d+)",str(result.get("final_score") or ""))
+            if score:scores.add(tuple(map(int,score.groups())))
+        if len(scores)!=1:continue
+        home,away=next(iter(scores));candidates=row.get("shadow",{}).get("candidates") or []
+        if not candidates:continue
+        # Frozen first candidate: never select a winner after seeing the score.
+        candidate=candidates[0];key,name=candidate.get("market"),candidate.get("pick")
+        outcome=None
+        if key=="h2h":outcome=(home>away if name==row.get("home_team") else away>home if name==row.get("away_team") else home==away if name=="Draw" else None)
+        elif key=="totals":
+            point=candidate.get("point")
+            if isinstance(point,(float,int)) and point%1==.5:outcome=(home+away>point if name=="Over" else home+away<point if name=="Under" else None)
+        elif key=="btts":outcome=(home>0 and away>0 if name=="Yes" else home==0 or away==0 if name=="No" else None)
+        elif key=="double_chance":outcome={"1X":home>=away,"X2":away>=home,"12":home!=away}.get(name)
+        elif key=="draw_no_bet":outcome="void" if home==away else home>away if name==row.get("home_team") else away>home if name==row.get("away_team") else None
+        if outcome is None:continue
+        evaluated={"result":"void" if outcome=="void" else "won" if outcome else "lost",
+                   "market":key,"pick":name,"odds":candidate["odds"],"score":f"{home}-{away}",
+                   "settled_at":datetime.now(timezone.utc).isoformat(),
+                   "unit_return":1 if outcome=="void" else candidate["odds"] if outcome else 0}
+        if outcome!="void":
+            for field,probability in (("baseline",candidate["market_probability"]),("hybrid",candidate["experimental_probability"])):
+                probability=max(1e-6,min(1-1e-6,probability/100))
+                evaluated[field+"_log_loss"]=-math.log(probability if outcome else 1-probability)
+                evaluated[field+"_brier"]=(probability-int(outcome))**2
+        operations.append(UpdateOne({"_id":row["_id"],"hybrid_evaluation":{"$exists":False}},{"$set":{"hybrid_evaluation":evaluated}}))
+    if operations:await db.prediction_shadow_history.bulk_write(operations,ordered=False)
+
+
+async def _hybrid_prospective_report():
+    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-1"},{"hybrid_evaluation":1}).to_list(length=None)
+    outcomes=[r["hybrid_evaluation"] for r in rows if r.get("hybrid_evaluation")]
+    evaluated=[r for r in outcomes if r["result"]!="void"]
+    count=len(outcomes)
+    return {"archived_matches":len(rows),"settled_matches":count,"pending_matches":len(rows)-count,
+        "won":sum(r["result"]=="won" for r in outcomes),"lost":sum(r["result"]=="lost" for r in outcomes),
+        "void":sum(r["result"]=="void" for r in outcomes),
+        "baseline_log_loss":statistics.mean(r["baseline_log_loss"] for r in evaluated) if evaluated else None,
+        "hybrid_log_loss":statistics.mean(r["hybrid_log_loss"] for r in evaluated) if evaluated else None,
+        "baseline_brier":statistics.mean(r["baseline_brier"] for r in evaluated) if evaluated else None,
+        "hybrid_brier":statistics.mean(r["hybrid_brier"] for r in evaluated) if evaluated else None,
+        "experimental_unit_roi_percent":round((sum(r["unit_return"] for r in outcomes)/count-1)*100,2) if count else None,
+        "sample_unit":"Premier candidat figé avant le match, une observation par rencontre archivée"}
+
+
+@app.get("/api/admin/prediction-model/status")
+async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload)):
+    user=await _get_user_from_payload(payload)
+    if not user or not user.get("is_admin"):
+        raise HTTPException(status_code=403,detail="Accès administrateur requis")
+    summary=await db.system_meta.find_one({"_id":"hybrid_training"},{"_id":0})
+    reports=await db.hybrid_model_registry.find({"version":"dc-elo-market-1"},{"_id":0,"model":0}).to_list(length=None)
+    return {"mode":"shadow","training_running":bool(_hybrid_training_task and not _hybrid_training_task.done()),"automatic_promotion":False,"summary":summary,"leagues":reports,
+            "prospective":await _hybrid_prospective_report(),
+            "note":"Aucun pronostic public remplacé. Absence de données ou de modèle : moteur actuel conservé."}
+
+
+
 async def _get_prediction_snapshot(force: bool = False) -> Dict:
     now = time.monotonic()
     async with _prediction_cache_lock:
@@ -8248,7 +8389,8 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
             return _prediction_cache
 
         matches = await fetch_all_matches(db)
-        real_stats_map = await get_real_stats_map(db, matches)
+        real_stats_map = dict(await get_real_stats_map(db, matches))
+        real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
         # Freeze first experimental forecast before kickoff in a separate collection.
         # This never touches official history or the settlement/payment paths.
@@ -14115,6 +14257,11 @@ async def _full_refresh_and_track():
     except Exception:
         pass
     await _reconcile_predictions_with_scores(force_score_refresh=True)
+    _queue_hybrid_training()
+    try:
+        await _evaluate_hybrid_history()
+    except Exception as exc:
+        logging.getLogger("winpulse.hybrid").warning("Hybrid evaluation unavailable (%s)",type(exc).__name__)
     try:
         upcoming_for_combos = [m for m in all_matches if _parse_iso(m.get("commence_time")) and _parse_iso(m["commence_time"])>datetime.now(timezone.utc)]
         await _quality_today_data(upcoming_for_combos)
