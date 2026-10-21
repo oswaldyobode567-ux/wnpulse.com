@@ -1568,8 +1568,18 @@ def _today_ticket(legs, profile, candidate_count):
 _legacy_build_today_combos_by_sport = build_today_combos_by_sport
 
 
-def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
-    today_matches = [m for m in matches if _is_today(m.get("commence_time", "")) and _is_upcoming(m.get("commence_time", ""))]
+def build_today_combos_by_sport(matches: List[Dict], _selection_date=None) -> Dict:
+    local_now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=1)))
+    selected_day = _selection_date or local_now.date()
+    def on_selected_day(match):
+        try:
+            start = datetime.fromisoformat(str(match.get("commence_time", "")).replace("Z", "+00:00"))
+            if start.tzinfo is None:
+                start = start.replace(tzinfo=timezone.utc)
+            return start.astimezone(local_now.tzinfo).date() == selected_day
+        except (ValueError, TypeError):
+            return False
+    today_matches = [m for m in matches if on_selected_day(m) and _is_upcoming(m.get("commence_time", ""))]
     picks = _today_pool(today_matches)
     families = {}
     for family_key,family_label in SPORT_FAMILIES:
@@ -1591,7 +1601,16 @@ def build_today_combos_by_sport(matches: List[Dict]) -> Dict:
             tier["shared_matches"] = [p["match_id"] for p in tier["legs"] if sum(any(q["match_id"]==p["match_id"] for q in other["legs"]) for other in tiers.values())>1]
         families[family_key] = {"family_key":family_key,"family_label":family_label,
             "matches_today":sum(family_key=="all" or str(m.get("sport_key") or "").startswith(family_key) for m in today_matches),"tiers":tiers}
-    return {"generated_at":datetime.now(timezone.utc).isoformat(),"total_matches_today":len(today_matches),
+    ready = any(len(t.get("legs", [])) >= 2 for f in families.values() for t in f["tiers"].values())
+    if _selection_date is None and not ready:
+        tomorrow = build_today_combos_by_sport(matches, local_now.date() + timedelta(days=1))
+        if tomorrow["total_matches_today"]:
+            tomorrow["transition_reason"] = "no_qualified_ticket_remaining_today"
+            return tomorrow
+    return {"selection_date":selected_day.isoformat(),
+            "day_offset":(selected_day-local_now.date()).days,
+            "availability_reason":"ready" if ready else "quality_or_common_bookmaker" if picks else "no_eligible_markets" if today_matches else "no_upcoming_fixtures",
+            "generated_at":datetime.now(timezone.utc).isoformat(),"total_matches_today":len(today_matches),
             "selection_version":TODAY_SELECTION_VERSION,"families":families}
 
 # Experimental football model: never replaces the public selection.
@@ -2189,3 +2208,4 @@ def _hybrid_shadow(match,stats_map=None):
 # Resolve the existing wrapper's shadow hook without modifying the public engine.
 _legacy_poisson_shadow_analysis = _shadow_analysis
 _shadow_analysis = _hybrid_shadow
+
