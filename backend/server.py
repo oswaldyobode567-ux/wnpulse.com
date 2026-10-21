@@ -8608,7 +8608,7 @@ async def get_match_analysis(match_id: str, request: Request, response: Response
     archived_entry = None
     if not match:
         manifest = await _discovery_manifest(snapshot)
-        archived_entry = next((entry for entry in manifest.get("entries",[]) if entry["match_id"] == str(match_id)),None)
+        archived_entry = next((entry for entry in _discovery_issued(manifest) if entry["match_id"] == str(match_id)),None)
         if archived_entry:
             match = {**archived_entry["match"], "id":archived_entry["match_id"], "archived":True}
     if not match:
@@ -11104,7 +11104,7 @@ async def _archive_today_combos(data, version):
     """Store every distinct published ticket before kickoff, never rewrite its odds."""
     operations = []
     captured = datetime.now(timezone.utc)
-    day = (captured+timedelta(hours=1)).date().isoformat()
+    day = data.get("selection_date") or (captured+timedelta(hours=1)).date().isoformat()
     for family_key,family in data.get("families",{}).items():
         for tier_key,tier in family.get("tiers",{}).items():
             legs = tier.get("legs") or []
@@ -11123,7 +11123,7 @@ async def _archive_today_combos(data, version):
 async def _quality_today_data(matches):
     async with _today_quality_lock:
         cache_source = await db.odds_cache.find_one({"_id":"all_matches"},{"updated_at":1})
-        source_stamp = (cache_source or {}).get("updated_at")
+        source_stamp = ((cache_source or {}).get("updated_at"), _discovery_day())
         cached = _today_quality_cache["data"]
         if cached and _today_quality_cache["source"]==source_stamp and time.monotonic()-_today_quality_cache["at"]<60:
             # A cached ticket must never contain a newly-started fixture.
@@ -11418,7 +11418,7 @@ async def delete_builder_combo(combo_id: str, payload: dict = Depends(get_curren
 # ─── Route directe /api/matches/{id} (sans /analysis) ────────────────────────
 
 
-# One persisted selection per Porto-Novo calendar day, shared by every Free surface.
+# Stable upcoming Free previews, shared by all users; issued picks remain archived.
 FREE_DAILY_PICK_LIMIT = 3
 _free_daily_lock = asyncio.Lock()
 
@@ -11451,16 +11451,15 @@ def _discovery_metadata(match):
 
 
 def _discovery_candidates(snapshot, now):
-    day = _discovery_day(now)
     predictions = {_discovery_match_id(p):p for p in snapshot.get("predictions", [])}
     candidates = []
     for match in snapshot.get("matches", []):
         identity = _discovery_match_id(match)
         prediction = predictions.get(identity, {})
         starts = _discovery_date(match.get("commence_time"))
-        if not identity or not starts or starts <= now or _discovery_day(starts) != day:
+        if not identity or not starts or starts <= now or starts > now + timedelta(hours=48):
             continue
-        if match.get("completed") or match.get("is_live") or prediction.get("is_live") or prediction.get("is_finished"):
+        if match.get("completed") or match.get("is_finished") or match.get("is_live") or prediction.get("is_live") or prediction.get("is_finished"):
             continue
         try:
             odds = float(prediction.get("pick_odds") or 0)
@@ -11484,36 +11483,52 @@ def _discovery_candidates(snapshot, now):
 
 
 async def _discovery_manifest(snapshot):
+    """Three stable upcoming previews; replace at kickoff, never based on results."""
     now = _discovery_now(); day = _discovery_day(now)
     async with _free_daily_lock:
-        for attempt in range(4):
+        for attempt in range(8):
             doc = await db.free_daily_picks.find_one({"_id":day})
-            if doc and len(doc.get("entries", [])) >= FREE_DAILY_PICK_LIMIT:
-                return doc
             previous = (doc or {}).get("entries", [])
-            seen = {item["match_id"] for item in previous}
+            archived = (doc or {}).get("archive", [])
+            live = {_discovery_match_id(m):m for m in snapshot.get("matches", [])}
+            predictions = {_discovery_match_id(p):p for p in snapshot.get("predictions", [])}
+            entries = []; retired = []
+            for item in previous:
+                identity = item["match_id"]
+                current = live.get(identity, item["match"])
+                pred = predictions.get(identity, {})
+                start = _discovery_date(current.get("commence_time"))
+                if (start and start > now and not any(current.get(k) or pred.get(k)
+                        for k in ("completed", "is_live", "is_finished"))):
+                    entries.append(item)
+                else:
+                    retired.append(item)
+            seen = {item["match_id"] for item in entries + archived + retired}
             additions = [item for item in _discovery_candidates(snapshot, now) if item["match_id"] not in seen]
-            entries = previous + additions[:max(0, FREE_DAILY_PICK_LIMIT-len(previous))]
-            if not additions or len(entries) == len(previous):
-                return doc or {"_id":day, "entries":[]}
+            entries += additions[:max(0, FREE_DAILY_PICK_LIMIT-len(entries))]
+            if doc is not None and entries == previous:
+                return doc
+            values = {"entries":entries, "archive":archived + retired,
+                      "updated_at":now.isoformat(), "mode":"rolling_upcoming"}
             if doc is None:
                 try:
                     await db.free_daily_picks.update_one({"_id":day}, {"$setOnInsert":{
-                        "entries":entries, "created_at":now.isoformat(), "updated_at":now.isoformat(),
-                    }}, upsert=True)
+                        **values, "created_at":now.isoformat()}}, upsert=True)
                 except DuplicateKeyError:
-                    continue
+                    pass
             else:
-                # Compare-and-swap also prevents workers from choosing different extra slots.
-                await db.free_daily_picks.update_one({"_id":day,"entries":previous},
-                    {"$set":{"entries":entries,"updated_at":now.isoformat()}})
+                await db.free_daily_picks.update_one({"_id":day,"entries":previous}, {"$set":values})
         doc = await db.free_daily_picks.find_one({"_id":day})
-        return doc or {"_id":day,"entries":[]}
+        return doc or {"_id":day,"entries":[],"archive":[]}
+
+
+def _discovery_issued(manifest):
+    return manifest.get("entries", []) + manifest.get("archive", [])
 
 
 def _discovery_prediction(prediction, manifest, paid=False):
     identity = _discovery_match_id(prediction)
-    chosen = next((item for item in manifest.get("entries",[]) if item["match_id"] == identity), None)
+    chosen = next((item for item in _discovery_issued(manifest) if item["match_id"] == identity), None)
     if paid:
         result = dict(prediction)
     elif chosen:
@@ -11562,7 +11577,7 @@ async def get_free_discovery(payload: Optional[dict] = Depends(get_optional_user
         if len(preview)==3:
             break
     return {"date":manifest["_id"],"timezone":"Africa/Porto-Novo","limit":FREE_DAILY_PICK_LIMIT,
-            "paid":paid,"items":items,"preview":preview,
+            "mode":"rolling_upcoming","horizon_hours":48,"paid":paid,"items":items,"preview":preview,
             "locked_count":sum(_discovery_match_id(p) not in free_ids for p in available)}
 
 
@@ -11613,7 +11628,7 @@ async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_
     archived_entry = None
     if not match:
         manifest = await _discovery_manifest(snapshot)
-        archived_entry = next((entry for entry in manifest.get("entries",[]) if entry["match_id"] == str(match_id)),None)
+        archived_entry = next((entry for entry in _discovery_issued(manifest) if entry["match_id"] == str(match_id)),None)
         if archived_entry:
             match = {**archived_entry["match"], "id":archived_entry["match_id"], "archived":True}
     if not match:
@@ -14540,3 +14555,4 @@ async def shutdown_event():
             pass
     if scheduler.running:
         scheduler.shutdown(wait=False)
+
