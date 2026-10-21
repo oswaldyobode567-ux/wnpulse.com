@@ -1838,3 +1838,354 @@ def build_personalized_combos(matches, preferences, now=None):
             "available_matches":len(selected_matches),"eligible_selections":count,
             "generated_at":now.isoformat(),"expires_at":expires.isoformat(),
             "selection_version":PERSONAL_COMBO_VERSION}
+
+# Dixon-Coles + Elo + market reference, observational mode only.
+# No external dependency. Training is scheduled, never performed in analyze_match.
+HYBRID_VERSION = "dc-elo-market-1"
+HYBRID_MIN_FIXTURES = 240
+HYBRID_MIN_EVAL = 40
+
+
+def _hybrid_dt(value):
+    try:
+        result = datetime.fromisoformat(str(value).replace("Z","+00:00"))
+        return (result if result.tzinfo else result.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+    except (TypeError,ValueError):
+        return None
+
+
+def _hybrid_team(value):
+    import unicodedata
+    return "".join(c for c in unicodedata.normalize("NFKD",str(value)).casefold() if c.isalnum() and not unicodedata.combining(c))
+
+
+def _hybrid_number(value):
+    import math
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError,ValueError):
+        return None
+
+
+def hybrid_training_rows(records, as_of=None):
+    """One confirmed score per fixture; conflicting scores excluded, never cherry-picked."""
+    import re
+    as_of = as_of or datetime.now(timezone.utc)
+    fixtures,conflicts = {},set()
+    for record in records:
+        league = str(record.get("sport_key") or "")
+        # Cup/continental scores can include extra time; phase isn't available in track.
+        if not league.startswith("soccer_") or any(k in league for k in ("cup","uefa","fifa","international","friendly")):
+            continue
+        kickoff,known = _hybrid_dt(record.get("commence_time")),_hybrid_dt(record.get("reconciled_at"))
+        if not kickoff or not known or not kickoff < known <= as_of or (as_of-kickoff).days>1095:
+            continue
+        if record.get("result") not in ("won","lost","void"):
+            continue
+        score = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*",str(record.get("final_score") or ""))
+        if not score:
+            continue
+        goals = tuple(map(int,score.groups()))
+        home,away = _hybrid_team(record.get("home_team") or ""),_hybrid_team(record.get("away_team") or "")
+        if not home or not away or home==away or max(goals)>20:
+            continue
+        identity = (league,kickoff.isoformat(),home,away)
+        row = fixtures.get(identity)
+        if row and (row["hg"],row["ag"])!=goals:
+            conflicts.add(identity);continue
+        if not row:
+            row = {"league":league,"id":str(record.get("match_id") or ""),"date":kickoff.isoformat(),"known_at":known.isoformat(),
+                   "home":home,"away":away,"hg":goals[0],"ag":goals[1],"observations":[]}
+            fixtures[identity] = row
+        if known < _hybrid_dt(row["known_at"]):
+            row["known_at"] = known.isoformat()
+        # Only a genuinely pre-match, non-combined 1X2 forecast is a benchmark.
+        probability = _hybrid_number(record.get("model_probability"))
+        published = _hybrid_dt(record.get("created_at"))
+        pick = _hybrid_team(record.get("pick") or "")
+        target = "home" if pick==home else "away" if pick==away else "draw" if pick in ("draw","nul","matchnul") else None
+        if record.get("market")=="h2h" and not record.get("is_combo") and target and published and published<kickoff and probability and 0<probability<100:
+            row["observations"].append({"target":target,"probability":probability/100,"published_at":published.isoformat()})
+    rows=[]
+    for identity,row in fixtures.items():
+        if identity in conflicts:
+            continue
+        # One first-published baseline per fixture, not one trial per market/refresh.
+        row["observations"].sort(key=lambda o:o["published_at"])
+        row["observation"] = row.pop("observations")[0] if row["observations"] else None
+        rows.append(row)
+    return sorted(rows,key=lambda r:(r["date"],r["id"],r["home"]))
+
+
+def _hybrid_elo(rows):
+    """Feature is based only on scores confirmed before this kickoff."""
+    import heapq
+    ratings,counts,queue = {},{},[]
+    features=[]
+    for index,row in enumerate(rows):
+        while queue and queue[0][0]<row["date"]:
+            _,_,h,a,hg,ag = heapq.heappop(queue)
+            rh,ra = ratings.get(h,1500.),ratings.get(a,1500.)
+            expectation = 1/(1+10**((ra-rh-50)/400))
+            delta = 20*((1 if hg>ag else 0 if hg<ag else .5)-expectation)
+            ratings[h],ratings[a] = rh+delta,ra-delta
+            counts[h],counts[a] = counts.get(h,0)+1,counts.get(a,0)+1
+        h,a = row["home"],row["away"]
+        features.append(max(-1.5,min(1.5,(ratings.get(h,1500)-ratings.get(a,1500))/400)))
+        heapq.heappush(queue,(row["known_at"],index,h,a,row["hg"],row["ag"]))
+    while queue:
+        _,_,h,a,hg,ag = heapq.heappop(queue)
+        rh,ra = ratings.get(h,1500.),ratings.get(a,1500.)
+        delta = 20*((1 if hg>ag else 0 if hg<ag else .5)-1/(1+10**((ra-rh-50)/400)))
+        ratings[h],ratings[a] = rh+delta,ra-delta
+        counts[h],counts[a] = counts.get(h,0)+1,counts.get(a,0)+1
+    return features,ratings,counts
+
+
+def _hybrid_tau(h,a,lh,la,rho):
+    # tau, derivative wrt lambda_home, lambda_away, rho.
+    if h==0 and a==0:return 1-lh*la*rho,-la*rho,-lh*rho,-lh*la
+    if h==0 and a==1:return 1+lh*rho,rho,0,lh
+    if h==1 and a==0:return 1+la*rho,0,rho,la
+    if h==1 and a==1:return 1-rho,0,0,-1
+    return 1.,0.,0.,0.
+
+
+def _hybrid_fit(rows):
+    """Regularized, recency-weighted Dixon-Coles maximum-likelihood via Adam."""
+    import math
+    teams = sorted({r[k] for r in rows for k in ("home","away")})
+    index = {team:i for i,team in enumerate(teams)};size=len(teams)
+    features,ratings,counts = _hybrid_elo(rows)
+    mean_goals = sum(r["hg"]+r["ag"] for r in rows)/(2*len(rows))
+    # [mu, home advantage, Elo coefficient, rho, attacks..., concessions...]
+    parameters=[math.log(max(.3,mean_goals)),.15,0.,0.]+[0.]*(2*size)
+    first,second=[0.]*len(parameters),[0.]*len(parameters)
+    latest=max(_hybrid_dt(r["known_at"]) for r in rows)
+    weights=[math.exp(-math.log(2)*(latest-_hybrid_dt(r["date"])).total_seconds()/86400/180) for r in rows]
+    total=sum(weights);best_loss=float('inf');best=None;initial=None
+    for step in range(1,161):
+        gradient=[0.]*len(parameters);loss=0.
+        for row,feature,w in zip(rows,features,weights):
+            hi,ai=index[row["home"]],index[row["away"]]
+            lh=math.exp(max(-2.3,min(math.log(5),parameters[0]+parameters[1]+parameters[4+hi]+parameters[4+size+ai]+parameters[2]*feature)))
+            la=math.exp(max(-2.3,min(math.log(5),parameters[0]+parameters[4+ai]+parameters[4+size+hi]-parameters[2]*feature)))
+            tau,dh,da,dr=_hybrid_tau(row["hg"],row["ag"],lh,la,parameters[3])
+            if tau<=0 or not math.isfinite(tau):raise ValueError("Invalid DC mass")
+            loss+=w*(lh-row["hg"]*math.log(lh)+math.lgamma(row["hg"]+1)+la-row["ag"]*math.log(la)+math.lgamma(row["ag"]+1)-math.log(tau))/total
+            gh=w*(lh-row["hg"]-dh*lh/tau)/total;ga=w*(la-row["ag"]-da*la/tau)/total
+            gradient[0]+=gh+ga;gradient[1]+=gh;gradient[2]+=(gh-ga)*feature;gradient[3]-=w*dr/tau/total
+            gradient[4+hi]+=gh;gradient[4+size+ai]+=gh;gradient[4+ai]+=ga;gradient[4+size+hi]+=ga
+        for i in range(2,len(parameters)):
+            strength=.02 if i<4 else .02/max(1,size)
+            loss+=strength*parameters[i]**2;gradient[i]+=2*strength*parameters[i]
+        if initial is None:initial=loss
+        if loss<best_loss:best_loss=loss;best=parameters[:]
+        for i,g in enumerate(gradient):
+            if not math.isfinite(g):raise ValueError("Nonfinite gradient")
+            first[i]=.9*first[i]+.1*g;second[i]=.999*second[i]+.001*g*g
+            parameters[i]-=.025*(first[i]/(1-.9**step))/(math.sqrt(second[i]/(1-.999**step))+1e-8)
+        parameters[0]=max(-1,min(1.2,parameters[0]));parameters[1]=max(-.3,min(.6,parameters[1]));parameters[2]=max(-.5,min(.5,parameters[2]));parameters[3]=max(-.15,min(.035,parameters[3]))
+        for offset in (4,4+size):
+            mean=statistics.mean(parameters[offset:offset+size])
+            for j in range(offset,offset+size):parameters[j]=max(-1.2,min(1.2,parameters[j]-mean))
+            parameters[0]+=mean
+    if best is None:raise ValueError("Training failed")
+    return {"teams":teams,"parameters":best,"ratings":ratings,"counts":counts,
+            "trained_until":latest.isoformat(),"loss_initial":initial,"loss_final":best_loss,
+            "iterations":160,"converged":False,"optimization":"bounded_adam_fixed_budget"}
+
+
+def _hybrid_grid(model, home, away):
+    import math
+    home,away=_hybrid_team(home),_hybrid_team(away)
+    teams=model["teams"]
+    if home not in teams or away not in teams or min(model["counts"].get(home,0),model["counts"].get(away,0))<5:return None
+    hi,ai=teams.index(home),teams.index(away);size=len(teams);p=model["parameters"]
+    feature=max(-1.5,min(1.5,(model["ratings"].get(home,1500)-model["ratings"].get(away,1500))/400))
+    lh=math.exp(max(-2.3,min(math.log(5),p[0]+p[1]+p[4+hi]+p[4+size+ai]+p[2]*feature)))
+    la=math.exp(max(-2.3,min(math.log(5),p[0]+p[4+ai]+p[4+size+hi]-p[2]*feature)))
+    ph=[math.exp(-lh)*lh**g/math.factorial(g) for g in range(25)]
+    pa=[math.exp(-la)*la**g/math.factorial(g) for g in range(25)]
+    grid=[(h,a,ph[h]*pa[a]*_hybrid_tau(h,a,lh,la,p[3])[0]) for h in range(25) for a in range(25)]
+    mass=sum(v for _,_,v in grid)
+    if mass<=0 or any(v<0 for _,_,v in grid):raise ValueError("Invalid grid")
+    return [(h,a,v/mass) for h,a,v in grid],lh,la
+
+
+def _hybrid_result_probability(grid,target):
+    return sum(v for h,a,v in grid if (h>a if target=="home" else a>h if target=="away" else h==a))
+
+
+def _hybrid_adjust(probability,temperature):
+    import math
+    p=max(1e-6,min(1-1e-6,probability))
+    return 1/(1+math.exp(-math.log(p/(1-p))/temperature))
+
+
+def _hybrid_validation(model,history,rows):
+    # Goal parameters stay fixed; Elo receives only earlier confirmed results.
+    import copy
+    observations=[]
+    for row in rows:
+        past=[r for r in history if r["known_at"]<row["date"]]
+        _,ratings,counts=_hybrid_elo(past)
+        current={**model,"ratings":ratings,"counts":counts}
+        predicted=_hybrid_grid(current,row["home"],row["away"])
+        observation=row.get("observation")
+        if predicted and observation:
+            target=observation["target"]
+            truth=1 if (row["hg"]>row["ag"] if target=="home" else row["ag"]>row["hg"] if target=="away" else row["hg"]==row["ag"]) else 0
+            observations.append((observation["probability"],_hybrid_result_probability(predicted[0],target),truth,row["id"]))
+    return observations
+
+
+def _hybrid_metrics(observations,weight=0.,temperature=1.):
+    import math
+    losses,briers=[],[]
+    for market,sport,truth,_ in observations:
+        p=_hybrid_adjust((1-weight)*market+weight*sport,temperature)
+        losses.append(-math.log(p if truth else 1-p));briers.append((p-truth)**2)
+    return {"n":len(losses),"log_loss":statistics.mean(losses) if losses else None,
+            "brier":statistics.mean(briers) if briers else None,"losses":losses}
+
+
+def train_hybrid_models(records,as_of=None):
+    import math, json
+    as_of=as_of or datetime.now(timezone.utc)
+    rows=hybrid_training_rows(records,as_of)
+    grouped={}
+    for row in rows:grouped.setdefault(row["league"],[]).append(row)
+    output={}
+    for league,history in grouped.items():
+        history=history[-3000:]
+        report={"version":HYBRID_VERSION,"sport_key":league,"mode":"shadow","automatic_promotion":False,
+                "as_of":as_of.isoformat(),"fixtures":len(history),"status":"insufficient_history","model":None,
+                "dataset_sha256":hashlib.sha256(json.dumps(history,sort_keys=True).encode()).hexdigest()}
+        output[league]=report
+        if len(history)<HYBRID_MIN_FIXTURES:continue
+        teams={r[k] for r in history for k in ("home","away")}
+        if not 6<=len(teams)<=80:
+            report["status"]="heterogeneous_competition";continue
+        a,b=int(len(history)*.6),int(len(history)*.8)
+        # Keep all simultaneous fixtures on the same side of each boundary.
+        while a>0 and history[a-1]["date"]==history[a]["date"]:a-=1
+        while b>0 and history[b-1]["date"]==history[b]["date"]:b-=1
+        if a<120 or b-a<30 or len(history)-b<30:continue
+        training=[r for r in history[:a] if r["known_at"]<history[a]["date"]]
+        pre_eval=[r for r in history[:b] if r["known_at"]<history[b]["date"]]
+        if len(training)<120:continue
+        try:
+            first=_hybrid_fit(training)
+            calibration=_hybrid_validation(first,history,history[a:b])
+            # Calibration is selected on the middle segment only. Evaluation is untouched.
+            candidates=[(0.,1.)]+[(w,t) for w in (.1,.2,.3) for t in (.9,1.,1.1)]
+            chosen=min(candidates,key=lambda wt:(_hybrid_metrics(calibration,*wt)["log_loss"],wt[0],abs(wt[1]-1))) if len(calibration)>=HYBRID_MIN_EVAL else (0.,1.)
+            evaluation_model=_hybrid_fit(pre_eval)
+            evaluation=_hybrid_validation(evaluation_model,history,history[b:])
+            baseline=_hybrid_metrics(evaluation);challenger=_hybrid_metrics(evaluation,*chosen)
+            differences=[a-b for a,b in zip(baseline["losses"],challenger["losses"])]
+            interval_low=(statistics.mean(differences)-1.96*statistics.stdev(differences)/math.sqrt(len(differences))) if len(differences)>1 else None
+            report.update(status="shadow_ready",model=_hybrid_fit(history),blend_weight=chosen[0],temperature=chosen[1],
+                calibration_matches=len(calibration),evaluation_matches=len(evaluation),
+                baseline={k:v for k,v in baseline.items() if k!="losses"},
+                challenger={k:v for k,v in challenger.items() if k!="losses"},
+                paired_logloss_gain_ci95_low=interval_low,
+                interval_method="normal_approximation_without_temporal_correlation_adjustment",
+                improvement_candidate=bool(len(evaluation)>=HYBRID_MIN_EVAL and len(calibration)>=HYBRID_MIN_EVAL
+                    and chosen[0]>0 and interval_low is not None and interval_low>0
+                    and challenger["brier"]<=baseline["brier"]),
+                split={"training_end":history[a]["date"],"calibration_end":history[b]["date"]})
+        except Exception as exc:
+            report.update(status="training_failed",error=type(exc).__name__)
+    return output
+
+
+def _hybrid_shadow(match,stats_map=None):
+    import math
+    result={"version":HYBRID_VERSION,"mode":"shadow","status":"market_only","calibrated":False,"candidates":[]}
+    league=str(match.get("sport_key") or "")
+    report=(stats_map or {}).get("__hybrid_models__",{}).get(league)
+    if not league.startswith("soccer_"):
+        result["reason"]="sport_model_not_available";return result
+    if not report or not report.get("model"):
+        result["reason"]="insufficient_confirmed_league_history";return result
+    kickoff=_hybrid_dt(match.get("commence_time"));as_of=_hybrid_dt(report.get("as_of"));now=datetime.now(timezone.utc)
+    if not kickoff or not as_of or not as_of<now<kickoff or (now-as_of).days>7:
+        result["reason"]="stale_or_inapplicable_model";return result
+    prediction=_hybrid_grid(report["model"],match.get("home_team"),match.get("away_team"))
+    if not prediction:
+        result["reason"]="team_history_insufficient";return result
+    grid,lh,la=prediction
+    groups={}
+    for book in match.get("bookmakers",[]) or []:
+        book_id=str(book.get("key") or book.get("title") or "")
+        if not book_id:continue
+        h2h_reference={}
+        for raw_market in book.get("markets",[]) or []:
+            if raw_market.get("key")=="h2h":
+                h2h_reference={str(o.get("name")):_hybrid_number(o.get("price")) for o in raw_market.get("outcomes",[]) or []}
+                if set(h2h_reference)=={match.get("home_team"),match.get("away_team"),"Draw"} and all(p and p>1 for p in h2h_reference.values()):
+                    overround=sum(1/p for p in h2h_reference.values())
+                    h2h_reference={k:(1/p)/overround for k,p in h2h_reference.items()}
+                else:h2h_reference={}
+                break
+        for market in book.get("markets",[]) or []:
+            key=market.get("key")
+            if key not in ("h2h","totals","btts","double_chance","draw_no_bet"):continue
+            lines={}
+            for outcome in market.get("outcomes",[]) or []:
+                point=_hybrid_number(outcome.get("point")) if key=="totals" else None
+                price=_hybrid_number(outcome.get("price"));name=str(outcome.get("name") or "")
+                if price and price>1 and name:lines.setdefault(point,{})[name]=price
+            expected={match.get("home_team"),match.get("away_team"),"Draw"} if key=="h2h" else {"Over","Under"} if key=="totals" else {"1X","X2","12"} if key=="double_chance" else {match.get("home_team"),match.get("away_team")} if key=="draw_no_bet" else {"Yes","No"}
+            for point,quotes in lines.items():
+                if set(quotes)!=expected or key=="totals" and (point is None or point%1!=.5):continue
+                margin=sum(1/price for price in quotes.values())
+                for name,price in quotes.items():
+                    push=0.
+                    reference=(1/price)/margin
+                    if key=="double_chance":
+                        # These outcomes overlap: summing inverse odds and normalizing
+                        # to one would be wrong. Use this bookmaker's 1X2 reference.
+                        if not h2h_reference:continue
+                        covered={"1X":[match.get("home_team"),"Draw"],"X2":["Draw",match.get("away_team")],"12":[match.get("home_team"),match.get("away_team")]}[name]
+                        reference=sum(h2h_reference[n] for n in covered)
+                        targets=["home" if n==match.get("home_team") else "away" if n==match.get("away_team") else "draw" for n in covered]
+                        probability=sum(_hybrid_result_probability(grid,t) for t in targets)
+                    elif key=="draw_no_bet":
+                        push=_hybrid_result_probability(grid,"draw")
+                        probability=_hybrid_result_probability(grid,"home" if name==match.get("home_team") else "away")/(1-push)
+                    elif key=="h2h":
+                        target="home" if name==match.get("home_team") else "away" if name==match.get("away_team") else "draw"
+                        probability=_hybrid_result_probability(grid,target)
+                    elif key=="totals":probability=sum(v for h,a,v in grid if (h+a>point if name=="Over" else h+a<point))
+                    else:probability=sum(v for h,a,v in grid if (h>0 and a>0 if name=="Yes" else h==0 or a==0))
+                    entry=groups.setdefault((key,point,name),{"probs":{},"sport":probability,"push":push,"odds":0,"bookmaker":None})
+                    entry["probs"][book_id]=reference
+                    if price>entry["odds"]:entry.update(odds=price,bookmaker=book.get("title") or book_id)
+    for (key,point,name),entry in groups.items():
+        market=statistics.median(entry["probs"].values())
+        # The learned blend/temperature has only been calibrated on 1X2.
+        weight=report.get("blend_weight",0) if key=="h2h" else .2
+        probability=_hybrid_adjust((1-weight)*market+weight*entry["sport"],report.get("temperature",1) if key=="h2h" else 1)
+        result["candidates"].append({"market":key,"point":point,"pick":name,"odds":entry["odds"],"bookmaker":entry["bookmaker"],
+            "num_books":len(entry["probs"]),"market_probability":round(market*100,2),"sport_probability":round(entry["sport"]*100,2),
+            "experimental_probability":round(probability*100,2),
+            "push_probability":round(entry["push"]*100,2),
+            "probability_basis":"conditional_on_no_draw" if key=="draw_no_bet" else "unconditional",
+            "expected_return":round((1-entry["push"])*(probability*entry["odds"]-1),4),
+            "sport_weight":weight,"calibration_available":key=="h2h" and report.get("calibration_matches",0)>=HYBRID_MIN_EVAL})
+    result["candidates"].sort(key=lambda p:p["expected_return"],reverse=True)
+    result.update(status="experimental" if groups else "market_only",reason="trained_dc_elo" if groups else "no_supported_quoted_market",
+        trained_as_of=as_of.isoformat(),generated_at=now.isoformat(),as_of=now.isoformat(),
+        expected_goals={"home":round(lh,3),"away":round(la,3)},
+        training_fixtures=report.get("fixtures"),evaluation=report.get("challenger"),baseline=report.get("baseline"),
+        improvement_candidate=report.get("improvement_candidate",False),automatic_promotion=False)
+    return result
+
+
+# Resolve the existing wrapper's shadow hook without modifying the public engine.
+_legacy_poisson_shadow_analysis = _shadow_analysis
+_shadow_analysis = _hybrid_shadow
