@@ -7,6 +7,8 @@ only, with up to ten observed matches per team, explicitly bounded H2H samples
 and provider crests when available. No xG or injury data is manufactured.
 """
 import os
+import asyncio
+import time
 import math
 import unicodedata
 from urllib.parse import urlparse
@@ -16,6 +18,7 @@ from typing import Dict, List, Optional
 import httpx
 import logging
 logger = logging.getLogger("winpulse.stats_service")
+logger.setLevel(logging.INFO)
 
 FOOTBALL_DATA_TOKEN = os.environ.get("FOOTBALL_DATA_TOKEN", "").strip()
 FOOTBALL_DATA_BASE = "https://api.football-data.org/v4"
@@ -67,29 +70,41 @@ def _normalize_name(name: str) -> str:
     return "".join(c.lower() for c in (name or "") if c.isalnum())
 
 
+# Requests share one process-local gate, including manual refreshes.
+# The refresh worker runs in the background: waiting here never delays /api/matches.
+_FD_MIN_INTERVAL_SECONDS = 7.0
+_fd_lock = asyncio.Lock()
+_fd_next_request = 0.0
+_fd_backoff_until = 0.0
+
+
 async def _fd_get(path: str, params: Optional[Dict] = None) -> Optional[Dict]:
-    """Appel generique a football-data.org. Retourne None en cas d'erreur —
-    ne leve jamais d'exception, pour ne jamais casser le refresh principal."""
+    """Fetch only from the configured provider; log status without secrets."""
+    global _fd_next_request, _fd_backoff_until
     if not FOOTBALL_DATA_TOKEN:
         return None
-    url = f"{FOOTBALL_DATA_BASE}{path}"
-    try:
-        async with httpx.AsyncClient(timeout=15.0) as http:
-            r = await http.get(
-                url,
-                headers={"X-Auth-Token": FOOTBALL_DATA_TOKEN},
-                params=params or {},
-            )
-            if r.status_code == 429:
-                logger.warning(f"football-data.org rate-limited sur {path}")
-                return None
-            if r.status_code != 200:
-                logger.warning(f"football-data.org {path} -> HTTP {r.status_code}")
-                return None
-            return r.json()
-    except Exception as e:
-        logger.warning(f"football-data.org {path} -> exception: {e}")
-        return None
+    async with _fd_lock:
+        now = time.monotonic()
+        if now < _fd_backoff_until:
+            return None
+        delay = max(0.0, _fd_next_request - now)
+        if delay:
+            await asyncio.sleep(delay)
+        _fd_next_request = time.monotonic() + _FD_MIN_INTERVAL_SECONDS
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as http:
+                r = await http.get(f"{FOOTBALL_DATA_BASE}{path}", headers={"X-Auth-Token": FOOTBALL_DATA_TOKEN}, params=params or {})
+                if r.status_code == 429:
+                    _fd_backoff_until = time.monotonic() + 65
+                    logger.warning("football-data.org limite de requetes HTTP 429; nouvelle tentative au prochain cycle")
+                    return None
+                if r.status_code != 200:
+                    logger.warning("football-data.org %s -> HTTP %s", path, r.status_code)
+                    return None
+                return r.json()
+        except Exception as exc:
+            logger.warning("football-data.org %s -> erreur %s", path, type(exc).__name__)
+            return None
 
 
 # ─── Mapping equipes (nom -> id football-data.org), par competition ─────────
@@ -271,8 +286,16 @@ async def refresh_real_stats_cache(db, matches: List[Dict]) -> Dict:
     updated = 0
     team_matches_fetched: Dict[int, List[Dict]] = {}
 
+    # Fetch the competition catalogues first. They supply club crests and are
+    # reused for many matches. Recent match history follows without blocking the
+    # main odds refresh, subject to the worker's time budget.
+    team_maps = {}
+    for code in by_competition:
+        team_maps[code] = await _get_competition_teams(db, code)
+    logger.info("football-data.org catalogues equipes: %s/%s competitions disponibles",
+                sum(bool(m) for m in team_maps.values()), len(by_competition))
     for code, comp_matches in by_competition.items():
-        team_map = await _get_competition_teams(db, code)
+        team_map = team_maps.get(code) or {}
         if not team_map:
             continue
 
@@ -492,3 +515,4 @@ async def get_match_insights(db, match):
     return {**empty,"status":"ready" if home or away else "unavailable","reason":None if home or away else "no_verified_results",
             "home":team(home,"home"),"away":team(away,"away"),"h2h":encounters,
             "updated_at":doc.get("updated_at"),"stale":not stamp or (now-stamp).total_seconds()>86400}
+
