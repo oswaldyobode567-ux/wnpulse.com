@@ -14267,10 +14267,7 @@ ENABLE_INTERNAL_SCHEDULER = os.environ.get("ENABLE_INTERNAL_SCHEDULER", "true").
 async def _full_refresh_and_track():
     matches = await refresh_matches_worker(db)
     all_matches = await fetch_all_matches(db)
-    try:
-        await refresh_real_stats_cache(db, all_matches)
-    except Exception:
-        pass
+    _queue_football_stats_refresh(all_matches)
     await _save_predictions_to_history(all_matches)
     try:
         await _update_closing_odds(all_matches)
@@ -14337,6 +14334,43 @@ async def _run_with_scheduler_lease(job_name: str, job_func, lease_seconds: int 
         # Le lease reste actif jusqu'à son expiration pour éviter qu'un second
         # worker relance immédiatement le même job pendant une défaillance.
         raise
+
+
+# Independent, bounded refresh for real stats and team crests. It never waits
+# in a request or blocks the main odds/settlement refresh.
+_football_stats_task = None
+
+
+async def _football_stats_background(matches):
+    async def run():
+        logging.getLogger("winpulse.stats_service").info("football-data.org rafraichissement demarre: %s matchs", len(matches))
+        try:
+            result = await asyncio.wait_for(refresh_real_stats_cache(db, matches), timeout=180)
+            logging.getLogger("winpulse.stats_service").info("football-data.org rafraichissement termine: %s", result)
+        except asyncio.TimeoutError:
+            logging.getLogger("winpulse.stats_service").warning("football-data.org temps limite atteint; les donnees deja en cache sont conservees")
+        finally:
+            await _invalidate_prediction_cache()
+    try:
+        await _run_with_scheduler_lease("football_data_stats_refresh", run, lease_seconds=240)
+    except Exception as exc:
+        logging.getLogger("winpulse.stats_service").warning("football-data.org rafraichissement echoue: %s", type(exc).__name__)
+
+
+def _queue_football_stats_refresh(matches):
+    global _football_stats_task
+    if _football_stats_task and not _football_stats_task.done():
+        return False
+    _football_stats_task = asyncio.create_task(_football_stats_background(list(matches)))
+    return True
+
+
+async def _scheduled_football_stats_refresh():
+    try:
+        matches = await asyncio.wait_for(fetch_all_matches(db), timeout=8)
+        _queue_football_stats_refresh(matches)
+    except Exception as exc:
+        logging.getLogger("winpulse.stats_service").warning("football-data.org lancement impossible: %s", type(exc).__name__)
 
 
 async def _scheduled_full_refresh():
@@ -14493,6 +14527,8 @@ async def startup_event():
             coalesce=True,
             max_instances=1,
         )
+        scheduler.add_job(_scheduled_football_stats_refresh, "interval", minutes=30,
+                          id="football_stats_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
         # Synchronisation dédiée Montante : uniquement 1–2 picks actifs, donc bien
         # plus légère que la réconciliation générale du Track Record.
@@ -14518,6 +14554,10 @@ async def startup_event():
                 max_instances=1,
             )
         scheduler.start()
+
+    # A fresh odds cache must not prevent a separate stats/crest warmup.
+    if ENABLE_INTERNAL_SCHEDULER:
+        await _scheduled_football_stats_refresh()
 
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
     should_refresh = not existing
@@ -14558,6 +14598,12 @@ async def shutdown_event():
             await asyncio.wait_for(_live_scores_refresh_task, timeout=5)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+    if _football_stats_task and not _football_stats_task.done():
+        _football_stats_task.cancel()
+        try:
+            await asyncio.wait_for(_football_stats_task, timeout=5)
+        except (asyncio.CancelledError, asyncio.TimeoutError):
+            pass
     if scheduler.running:
         scheduler.shutdown(wait=False)
 
@@ -14579,3 +14625,4 @@ async def match_observed_insights(match_id: str, payload: Optional[dict] = Depen
         return await asyncio.wait_for(get_match_insights(db, match),timeout=3)
     except asyncio.TimeoutError:
         return {"version":1,"status":"unavailable","reason":"cache_timeout","home":{},"away":{},"h2h":[]}
+
