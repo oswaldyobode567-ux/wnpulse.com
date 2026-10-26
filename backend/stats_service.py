@@ -1,23 +1,15 @@
 """
-WinPulse Stats Service — football-data.org integration (v1.0)
+WinPulse Stats Service — cached football-data.org observations.
 
-Objectif : fournir de la VRAIE forme recente et un VRAI historique H2H pour
-les 12 grandes competitions couvertes par le plan gratuit football-data.org,
-en complement (jamais en remplacement) des sources de cotes existantes
-(The Odds API, odds-api.io, BSD Sports Addon) qui restent inchangees.
-
-IMPORTANT — perimetre volontairement limite :
-- Plan gratuit football-data.org = 12 competitions majeures uniquement
-  (PL, PD, BL1, SA, FL1, CL, EL, ELC, EC, WC, DED, PPL, CLI, BSA — voir
-  COMPETITION_MAP). Les qualifications africaines, ligues asiatiques,
-  ligues mineures etc. ne sont PAS couvertes : le moteur retombe alors sur
-  l'estimation existante (_deep_reasoning simule), sans aucune erreur.
-- Pas de xG sur le plan gratuit — uniquement forme (V/N/D) et H2H reels.
-- Rate limit strict : 10 requetes/minute. Ce module met TOUT en cache
-  MongoDB et ne fait jamais d'appel direct pendant une requete utilisateur
-  (meme pattern que odds_service.py : refresh planifie -> cache -> lecture).
+The existing competition mapping and account permissions determine coverage.
+The scheduled worker supplies recent results. Public presentation reads cache
+only, with up to ten observed matches per team, explicitly bounded H2H samples
+and provider crests when available. No xG or injury data is manufactured.
 """
 import os
+import math
+import unicodedata
+from urllib.parse import urlparse
 from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 
@@ -116,7 +108,8 @@ async def _get_competition_teams(db, competition_code: str) -> Dict[str, int]:
             try:
                 updated_dt = datetime.fromisoformat(updated)
                 if datetime.now(timezone.utc) - updated_dt < timedelta(hours=24):
-                    return cached.get("data", {})
+                    if cached.get("profiles") is not None:
+                        return cached.get("data", {})
             except Exception:
                 pass
 
@@ -124,20 +117,23 @@ async def _get_competition_teams(db, competition_code: str) -> Dict[str, int]:
     if not data or "teams" not in data:
         return cached.get("data", {}) if cached else {}
 
-    mapping = {
-        _normalize_name(t.get("name", "")): t.get("id")
-        for t in data.get("teams", [])
-        if t.get("id")
-    }
-    # Ajoute aussi le nom court/tla comme cle alternative, pour maximiser les
-    # correspondances avec les noms d'equipes tels que fournis par The Odds API
-    for t in data.get("teams", []):
-        if t.get("shortName"):
-            mapping[_normalize_name(t["shortName"])] = t.get("id")
+    mapping = {}; ambiguous = set()
+    for team in data.get("teams", []):
+        if not team.get("id"):
+            continue
+        for field in ("name", "shortName", "tla"):
+            alias = _normalize_name(team.get(field, ""))
+            if not alias:
+                continue
+            if alias in mapping and mapping[alias] != team["id"]:
+                ambiguous.add(alias)
+            mapping[alias] = team["id"]
+    for alias in ambiguous:
+        mapping.pop(alias, None)
 
     await db.stats_cache.update_one(
         {"_id": cache_key},
-        {"$set": {"data": mapping, "updated_at": datetime.now(timezone.utc).isoformat()}},
+        {"$set": {"data": mapping, "profiles": {str(t["id"]): {"id": t["id"], "name": t.get("name"), "crest": _safe_crest(t.get("crest"))} for t in data.get("teams", []) if t.get("id")}, "updated_at": datetime.now(timezone.utc).isoformat()}},
         upsert=True,
     )
     return mapping
@@ -150,10 +146,17 @@ def _find_team_id(mapping: Dict[str, int], team_name: str) -> Optional[int]:
     norm = _normalize_name(team_name)
     if norm in mapping:
         return mapping[norm]
-    for known_name, team_id in mapping.items():
-        if norm and (norm in known_name or known_name in norm):
-            return team_id
-    return None
+    def folded(value):
+        return "".join(c for c in unicodedata.normalize("NFKD", value) if not unicodedata.combining(c))
+    norm = folded(norm)
+    exact = {team_id for known_name, team_id in mapping.items() if folded(known_name) == norm}
+    if exact:
+        return next(iter(exact)) if len(exact)==1 else None
+    candidates = {team_id for known_name, team_id in mapping.items()
+                  if norm and len(norm) >= 5 and len(folded(known_name)) >= 5
+                  and (norm in folded(known_name) or folded(known_name) in norm)}
+    return next(iter(candidates)) if len(candidates) == 1 else None
+
 
 
 # ─── Forme reelle + H2H reel pour une equipe ─────────────────────────────────
@@ -286,7 +289,7 @@ async def refresh_real_stats_cache(db, matches: List[Dict]) -> Dict:
             if existing:
                 updated_at = existing.get("updated_at")
                 try:
-                    if updated_at and (datetime.now(timezone.utc)
+                    if existing.get("display_version") == 1 and updated_at and (datetime.now(timezone.utc)
                        - datetime.fromisoformat(updated_at)) < timedelta(minutes=STATS_CACHE_TTL_MINUTES):
                         continue  # deja frais, on economise le quota
                 except Exception:
@@ -305,7 +308,7 @@ async def refresh_real_stats_cache(db, matches: List[Dict]) -> Dict:
             h2h = _compute_h2h(home_matches, home_id, away_id)
 
             if not form_home and not form_away and not h2h:
-                continue  # rien de reel trouve, on laisse le fallback simule
+                continue  # no observed data to publish
 
             await db.real_stats_cache.update_one(
                 {"_id": cache_key},
@@ -315,6 +318,9 @@ async def refresh_real_stats_cache(db, matches: List[Dict]) -> Dict:
                     "h2h": h2h,
                     "competition": code,
                     "history_home": _observed_history(home_matches, home_id),
+                    "display_home": _display_history(home_matches, home_id),
+                    "display_away": _display_history(away_matches, away_id),
+                    "display_version": 1,
                     "history_away": _observed_history(away_matches, away_id),
                     "source": "football-data.org",
                     "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -362,3 +368,127 @@ def lookup_real_stats(real_stats_map: Dict[str, Dict], home: str, away: str) -> 
     charge, aucun appel reseau ici."""
     key = f"{_normalize_name(home)}|{_normalize_name(away)}"
     return real_stats_map.get(key)
+
+
+
+# Read-only presentation helpers. These do not change official predictions.
+def _safe_crest(value):
+    if not isinstance(value, str):
+        return None
+    parsed = urlparse(value)
+    return value if parsed.scheme == "https" and parsed.hostname and not parsed.username and not parsed.password else None
+
+
+def _display_date(value):
+    try:
+        stamp = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return stamp.replace(tzinfo=timezone.utc) if stamp.tzinfo is None else stamp
+    except (ValueError, TypeError):
+        return None
+
+
+def _display_history(matches, team_id):
+    rows = []
+    for match in matches:
+        if match.get("status") != "FINISHED":
+            continue
+        home, away = match.get("homeTeam") or {}, match.get("awayTeam") or {}
+        score = match.get("score") or {}
+        # FullTime includes extra time on some feeds. Do not mix 120-minute
+        # scores into statistics normally interpreted as 90-minute totals.
+        regular = score.get("regularTime") if score.get("duration") in ("EXTRA_TIME", "PENALTY_SHOOTOUT") else score.get("fullTime")
+        if not isinstance(regular, dict) or team_id not in (home.get("id"), away.get("id")):
+            continue
+        gh, ga = regular.get("home"), regular.get("away")
+        if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 or v > 30 or int(v) != v for v in (gh,ga)):
+            continue
+        rows.append({"id":str(match.get("id") or ""),"date":match.get("utcDate"),
+                     "home_id":home.get("id"),"away_id":away.get("id"),
+                     "home_team":home.get("name"),"away_team":away.get("name"),
+                     "score_home":int(gh),"score_away":int(ga),
+                     "venue":"home" if home.get("id")==team_id else "away",
+                     "team_id":team_id,"competition":(match.get("competition") or {}).get("name")})
+    return rows
+
+
+def _verified_display_rows(rows, cutoff):
+    unique = {}; conflicts = set()
+    for row in rows or []:
+        if not isinstance(row, dict):
+            continue
+        stamp = _display_date(row.get("date"))
+        if not stamp or stamp >= cutoff or row.get("venue") not in ("home", "away"):
+            continue
+        gh, ga = row.get("score_home"), row.get("score_away")
+        if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or v < 0 or v > 30 or int(v)!=v for v in (gh,ga)):
+            continue
+        if not row.get("home_team") or not row.get("away_team"):
+            continue
+        key = (stamp.isoformat(), row.get("home_id") or row["home_team"], row.get("away_id") or row["away_team"])
+        if key in unique and (unique[key]["score_home"],unique[key]["score_away"]) != (gh,ga):
+            conflicts.add(key)
+        unique[key] = dict(row)
+    return sorted((r for k,r in unique.items() if k not in conflicts),key=lambda r:_display_date(r["date"]),reverse=True)[:10]
+
+
+def _display_summary(rows):
+    n = len(rows)
+    if not n:
+        return {"played":0,"wins":0,"draws":0,"losses":0,"goals_for":None,"goals_against":None,
+                "over25":None,"btts":None,"clean_sheets":None,"scored":None,"form":[]}
+    gf = [r["score_home"] if r["venue"]=="home" else r["score_away"] for r in rows]
+    ga = [r["score_away"] if r["venue"]=="home" else r["score_home"] for r in rows]
+    form = ["W" if f>a else "L" if f<a else "D" for f,a in zip(gf,ga)]
+    return {"played":n,"wins":form.count("W"),"draws":form.count("D"),"losses":form.count("L"),
+            "goals_for":round(sum(gf)/n,2),"goals_against":round(sum(ga)/n,2),
+            "over25":round(100*sum(f+a>2.5 for f,a in zip(gf,ga))/n,1),
+            "btts":round(100*sum(f>0 and a>0 for f,a in zip(gf,ga))/n,1),
+            "clean_sheets":round(100*sum(a==0 for a in ga)/n,1),
+            "scored":round(100*sum(f>0 for f in gf)/n,1),"form":form[:5]}
+
+
+async def enrich_match_badges(db, matches):
+    """One cache query per batch, no network calls per card or per visitor."""
+    codes = list({COMPETITION_MAP[m.get("sport_key")] for m in matches if m.get("sport_key") in COMPETITION_MAP})
+    if not codes:
+        return matches
+    docs = await db.stats_cache.find({"_id":{"$in":["fd_teams_"+code for code in codes]}}).to_list(length=len(codes))
+    mappings = {d["_id"][9:]:d for d in docs}
+    result = []
+    for match in matches:
+        row = dict(match); data = mappings.get(COMPETITION_MAP.get(row.get("sport_key")), {})
+        for side in ("home", "away"):
+            team_id = _find_team_id(data.get("data",{}), row.get(side+"_team", ""))
+            crest = _safe_crest((data.get("profiles",{}).get(str(team_id)) or {}).get("crest"))
+            if crest and not row.get(side+"_logo"):
+                row[side+"_logo"] = crest
+        result.append(row)
+    return result
+
+
+async def get_match_insights(db, match):
+    now = datetime.now(timezone.utc)
+    kickoff = _display_date(match.get("commence_time"))
+    cutoff = min(now,kickoff) if kickoff else now
+    empty = {"version":1,"status":"unavailable","source":"football-data.org","sample_limit":10,
+             "cutoff":cutoff.isoformat(),"home":{},"away":{},"h2h":[],"h2h_scope":"recent_sample_only"}
+    if not str(match.get("sport_key", "")).startswith("soccer"):
+        return {**empty,"reason":"sport_not_covered"}
+    key = f"{_normalize_name(match.get('home_team',''))}|{_normalize_name(match.get('away_team',''))}"
+    doc = await db.real_stats_cache.find_one({"_id":key})
+    if not doc or doc.get("display_version") != 1:
+        return {**empty,"reason":"cache_not_ready"}
+    home = _verified_display_rows(doc.get("display_home"),cutoff)
+    away = _verified_display_rows(doc.get("display_away"),cutoff)
+    def team(rows, venue):
+        return {"recent":rows,"overall":_display_summary(rows),
+                "venue":_display_summary([r for r in rows if r["venue"]==venue])}
+    # Both samples are needed to identify the two provider team IDs reliably.
+    home_id = home[0].get("team_id") if home else None
+    away_id = away[0].get("team_id") if away else None
+    encounters = _verified_display_rows([r for r in home+away if home_id and away_id and
+        {r.get("home_id"),r.get("away_id")}=={home_id,away_id}],cutoff)
+    stamp = _display_date(doc.get("updated_at"))
+    return {**empty,"status":"ready" if home or away else "unavailable","reason":None if home or away else "no_verified_results",
+            "home":team(home,"home"),"away":team(away,"away"),"h2h":encounters,
+            "updated_at":doc.get("updated_at"),"stale":not stamp or (now-stamp).total_seconds()>86400}
