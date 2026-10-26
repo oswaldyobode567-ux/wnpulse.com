@@ -373,6 +373,14 @@ export default function MatchDetailPage() {
     })} targetTier={payState.tier} />
     </AppLayout>;
 }
+function Stat({ label, value, mono }) {
+  const i18n = usePageLanguage();
+  return <div className="min-w-0">
+    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">{i18n.tx(label)}</div>
+    <div className={`break-words font-bold text-slate-900 ${mono ? "font-mono" : ""}`}>{value == null || value === "" ? "—" : i18n.tx(value)}</div>
+  </div>;
+}
+
 function ConfidenceBadge({
   label,
   confidence
@@ -386,4 +394,5 @@ function ConfidenceBadge({
         maximumFractionDigits: 0
       })}</bdi>)}</span>;
 }
+
 
