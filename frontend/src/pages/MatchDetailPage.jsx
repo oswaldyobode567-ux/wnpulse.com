@@ -1,3 +1,4 @@
+import { MatchInsights, TeamBadge, badgeUrl, InsightsLink, MarketQuotes } from "@/components/MatchCard";
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
@@ -6,7 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio, TrendingUp } from "lucide-react";
+import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { AdminShareActions } from "@/components/MatchCard";
@@ -199,18 +200,19 @@ export default function MatchDetailPage() {
           </div>
           <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4">
             <div className="text-center">
-              <div className="font-heading text-xl font-extrabold text-slate-900">{data.home_team}</div>
+              <div className="mb-3 flex justify-center"><TeamBadge name={data.home_team} src={badgeUrl(data,"home")} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.home_team}</div>
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Domicile")}</div>
             </div>
             <div className="text-center">
               <div className="text-3xl font-extrabold text-slate-300">{i18n.t("VS")}</div>
             </div>
             <div className="text-center">
-              <div className="font-heading text-xl font-extrabold text-slate-900">{data.away_team}</div>
+              <div className="mb-3 flex justify-center"><TeamBadge name={data.away_team} src={badgeUrl(data,"away")} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.away_team}</div>
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Ext\xE9rieur")}</div>
             </div>
           </div>
         </Card>
+        <div className="mb-5"><InsightsLink /></div>
         {/* Prediction summary */}
         {i18n.tx(!p.pick && !p.locked ? <Card className="mb-6 p-5 text-sm text-slate-600" data-testid="prediction-unavailable">{freeWords.unavailable}</Card> : locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -308,28 +310,7 @@ export default function MatchDetailPage() {
           }))}
             </div>
           </Card>)}
-        {/* Deep reasoning — H2H / xG / forme / absences / arbitre / météo */}
-        {i18n.tx(!locked && p.reasoning && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="deep-reasoning-card">
-            <div className="flex items-center gap-2 mb-4">
-              <TrendingUp className="h-5 w-5 text-emerald-600" />
-              <h2 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Analyse d\xE9taill\xE9e")}</h2>
-              <Badge className="bg-slate-100 text-slate-700 border-slate-200 text-[10px] ms-1">{i18n.t("Donn\xE9es du moteur")}</Badge>
-            </div>
-            <p className="text-sm text-slate-700 leading-relaxed mb-4">{i18n.tx(p.reasoning.summary)}</p>
-            {i18n.tx(p.reasoning.real_data_used ? <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 mb-4" data-testid="reasoning-grid">
-                {i18n.tx(p.reasoning.h2h_last_10 && <ReasonBox label={i18n.t("H2H (10 derniers)")} value={`${p.reasoning.h2h_last_10.home_wins}V-${p.reasoning.h2h_last_10.draws}N-${p.reasoning.h2h_last_10.away_wins}D`} sub={i18n.tx(`${data.home_team}`)} />)}
-                {i18n.tx((p.reasoning.form_last_5?.home || p.reasoning.form_last_5?.away) && <ReasonBox label={i18n.t("Forme récente")} value={`${p.reasoning.form_last_5?.home ?? "N/D"} / ${p.reasoning.form_last_5?.away ?? "N/D"}`} mono />)}
-                {i18n.tx(p.reasoning.xg && <ReasonBox label={i18n.t("xG moyens")} value={`${p.reasoning.xg.home} vs ${p.reasoning.xg.away}`} mono />)}
-                {i18n.tx(p.reasoning.home_record && <ReasonBox label={i18n.t("Domicile")} value={p.reasoning.home_record} />)}
-                {i18n.tx(p.reasoning.away_record && <ReasonBox label={i18n.t("Extérieur")} value={p.reasoning.away_record} />)}
-                {i18n.tx(p.reasoning.key_absences && <ReasonBox label={i18n.t("Absences clés")} value={`${String(data.home_team || "Domicile").split(" ")[0]}: ${p.reasoning.key_absences.home} · ${String(data.away_team || "Extérieur").split(" ")[0]}: ${p.reasoning.key_absences.away}`} />)}
-                {i18n.tx(p.reasoning.referee_yellows_avg != null && <ReasonBox label={i18n.t("Cartons arbitre")} value={`${p.reasoning.referee_yellows_avg}/match`} />)}
-                {i18n.tx(p.reasoning.weather && <ReasonBox label={i18n.t("Conditions")} value={p.reasoning.weather} />)}
-              </div> : <div className="text-sm text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-3 mb-4">{i18n.t("Aucune statistique externe v\xE9rifi\xE9e disponible pour ce match \u2014 le moteur s'appuie uniquement sur le consensus des cotes bookmakers, sans donn\xE9e invent\xE9e.")}</div>)}
-            <div className="text-[10px] text-slate-400 italic pt-3 border-t border-slate-100">
-              {i18n.tx(p.reasoning.real_data_used ? "Forme et historique H2H réels (football-data.org) quand disponibles. Autres champs : analyse basée sur le consensus des cotes bookmakers." : "Analyse basée uniquement sur le consensus des cotes bookmakers agrégées — aucune statistique externe fabriquée.")}
-            </div>
-          </Card>)}
+        <MatchInsights key={`${owner}:${matchId}`} match={data} />
         {/* AI Analysis */}
         {i18n.tx(!locked && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -384,149 +365,13 @@ export default function MatchDetailPage() {
               </div>
             </div>)}
         </Card>)}
-        {/* Bookmakers */}
-        <Card className="bg-white border-slate-200 p-6 mb-6">
-          <h2 className="font-heading text-lg font-bold text-slate-900 mb-4">{i18n.t("Cotes par bookmaker")}</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="text-start text-xs uppercase tracking-wider text-slate-500 border-b border-slate-200">
-                  <th className="py-2 pe-4">{i18n.t("Bookmaker")}</th>
-                  {i18n.tx(data.bookmakers?.[0]?.markets?.[0]?.outcomes?.map(o => <th key={o.name} className="py-2 px-2 text-center">{i18n.tx(o.name)}</th>))}
-                </tr>
-              </thead>
-              <tbody>
-                {i18n.tx(data.bookmakers?.map(bm => <tr key={bm.key} className="border-b border-slate-100">
-                    <td className="py-2.5 pe-4 font-medium text-slate-700">{i18n.tx(bm.title)}</td>
-                    {i18n.tx(bm.markets?.[0]?.outcomes?.map(o => <td key={o.name} className="py-2.5 px-2 text-center font-mono font-semibold">
-                        {i18n.tx(o.price)}
-                      </td>))}
-                  </tr>))}
-              </tbody>
-            </table>
-          </div>
-        </Card>
-        {/* Stats panel — real data only */}
-        {i18n.tx(!locked && <MatchStatsPanel reasoning={p.reasoning} home={data.home_team} away={data.away_team} />)}
+        {!locked && <MarketQuotes match={data} />}
       </div>
       <PaymentModal isOpen={payState.isOpen} onClose={() => setPayState({
       isOpen: false,
       tier: payState.tier
     })} targetTier={payState.tier} />
     </AppLayout>;
-}
-function MatchStatsPanel({
-  reasoning,
-  home,
-  away
-}) {
-  const i18n = usePageLanguage();
-  // Le panneau n'affiche QUE des donnees reellement observees (forme reelle
-  // et H2H reel via football-data.org, disponibles sur 12 grandes ligues
-  // europeennes). Avant, ce composant fabriquait entierement ses chiffres
-  // (xG, corners, cartons, possession, blessures, tableau H2H date par
-  // date) via un generateur pseudo-aleatoire base sur l'id du match, et les
-  // presentait comme des statistiques du match — ce n'etait jamais le cas.
-  // Si aucune vraie donnee n'existe pour ce match, rien ne s'affiche plutot
-  // que d'inventer un contenu.
-  if (!reasoning || !reasoning.real_data_used) {
-    return null;
-  }
-  const h2h = reasoning.h2h_last_10;
-  const formHome = reasoning.form_last_5?.home;
-  const formAway = reasoning.form_last_5?.away;
-  const hasH2H = h2h && h2h.home_wins + h2h.draws + h2h.away_wins > 0;
-  const hasForm = Boolean(formHome || formAway);
-  if (!hasH2H && !hasForm) {
-    return null;
-  }
-  const formColor = x => x === "W" ? "bg-emerald-500" : x === "D" ? "bg-amber-500" : "bg-rose-500";
-  const formLetter = x => x === "W" ? "V" : x === "D" ? "N" : "D";
-  return <div className="space-y-5" data-testid="stats-panel">
-      <div className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-lg p-3">{i18n.t("Donn\xE9es r\xE9elles (football-data.org) \u2014 forme r\xE9cente et historique des confrontations directes, disponibles pour les grandes comp\xE9titions europ\xE9ennes suivies.")}</div>
-
-      {/* === Forme réelle sur les 5 derniers matchs === */}
-      {i18n.tx(hasForm && <div className="grid sm:grid-cols-2 gap-4">
-          {i18n.tx([["Domicile", home, formHome], ["Extérieur", away, formAway]].map(([lbl, team, form], k) => {
-        const letters = (form || "").split("");
-        const wins = letters.filter(x => x === "W").length;
-        const draws = letters.filter(x => x === "D").length;
-        const losses = letters.filter(x => x === "L").length;
-        return <div key={k} className="bg-white border border-neutral-200 rounded-xl p-4">
-                <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{i18n.tx(lbl)}</div>
-                <div className="font-heading font-bold text-slate-900 mb-3">{i18n.tx(team)}</div>
-                {i18n.tx(letters.length > 0 ? <>
-                    <div className="text-xs text-slate-500 mb-2">{i18n.rich("{{v0}} derniers matchs (r\xE9el)", {
-                v0: i18n.tx(letters.length)
-              })}</div>
-                    <div className="flex flex-wrap gap-1.5 mb-3">
-                      {i18n.tx(letters.map((x, i) => <span key={i} className={`h-7 w-7 rounded-full grid place-items-center text-[11px] font-bold text-white ${formColor(x)}`} title={i18n.tx(formLetter(x))}>
-                          {i18n.tx(formLetter(x))}
-                        </span>))}
-                    </div>
-                    <div className="flex gap-3 text-xs">
-                      <span className="flex items-center gap-1">{i18n.rich("{{v0}} {{v1}} V", {
-                  v0: <span className="h-2 w-2 rounded-full bg-emerald-500" />,
-                  v1: i18n.tx(wins)
-                })}</span>
-                      <span className="flex items-center gap-1">{i18n.rich("{{v0}} {{v1}} N", {
-                  v0: <span className="h-2 w-2 rounded-full bg-amber-500" />,
-                  v1: i18n.tx(draws)
-                })}</span>
-                      <span className="flex items-center gap-1">{i18n.rich("{{v0}} {{v1}} D", {
-                  v0: <span className="h-2 w-2 rounded-full bg-rose-500" />,
-                  v1: i18n.tx(losses)
-                })}</span>
-                    </div>
-                  </> : <div className="text-xs text-slate-400 italic">{i18n.t("Forme r\xE9cente non disponible")}</div>)}
-              </div>;
-      }))}
-        </div>)}
-
-      {/* === H2H réel (agrégé) === */}
-      {i18n.tx(hasH2H && <div className="bg-white border border-neutral-200 rounded-xl p-5">
-          <h3 className="font-heading font-bold text-slate-900 mb-3">{i18n.t("\uD83D\uDCC5 Confrontations directes (historique r\xE9el)")}</h3>
-          <div className="grid grid-cols-3 gap-3">
-            <div className="text-center p-3 rounded-lg bg-orange-50 border border-orange-200">
-              <div className="text-xs text-slate-600">{i18n.tx(home)}</div>
-              <div className="font-heading text-2xl font-black text-orange-700">{i18n.tx(h2h.home_wins)}</div>
-            </div>
-            <div className="text-center p-3 rounded-lg bg-slate-50 border border-slate-200">
-              <div className="text-xs text-slate-600">{i18n.t("Nuls")}</div>
-              <div className="font-heading text-2xl font-black text-slate-700">{i18n.tx(h2h.draws)}</div>
-            </div>
-            <div className="text-center p-3 rounded-lg bg-rose-50 border border-rose-200">
-              <div className="text-xs text-slate-600">{i18n.tx(away)}</div>
-              <div className="font-heading text-2xl font-black text-rose-700">{i18n.tx(h2h.away_wins)}</div>
-            </div>
-          </div>
-          <div className="text-[10px] text-slate-400 italic mt-3">{i18n.t("Bilan agr\xE9g\xE9 des confrontations directes r\xE9centes. D\xE9tail match par match non disponible sur la source actuelle.")}</div>
-        </div>)}
-    </div>;
-}
-function Stat({
-  label,
-  value,
-  mono
-}) {
-  const i18n = usePageLanguage();
-  return <div>
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold mb-0.5">{i18n.tx(label)}</div>
-      <div className={`font-bold text-slate-900 ${mono ? "font-mono" : ""}`}>{i18n.tx(value)}</div>
-    </div>;
-}
-function ReasonBox({
-  label,
-  value,
-  sub,
-  mono
-}) {
-  const i18n = usePageLanguage();
-  return <div className="p-3 rounded-lg bg-slate-50 border border-slate-200">
-      <div className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1">{i18n.tx(label)}</div>
-      <div className={`text-sm font-bold text-slate-900 ${mono ? "font-mono" : ""}`}>{i18n.tx(value)}</div>
-      {i18n.tx(sub && <div className="text-[10px] text-slate-400 mt-0.5">{i18n.tx(sub)}</div>)}
-    </div>;
 }
 function ConfidenceBadge({
   label,
@@ -541,3 +386,4 @@ function ConfidenceBadge({
         maximumFractionDigits: 0
       })}</bdi>)}</span>;
 }
+
