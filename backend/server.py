@@ -47,7 +47,7 @@ from odds_service import (
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
 )
-from stats_service import refresh_real_stats_cache, get_real_stats_map
+from stats_service import refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
@@ -8419,6 +8419,10 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
                 await asyncio.wait_for(db.prediction_shadow_history.bulk_write(operations, ordered=False), timeout=2.0)
             except Exception as exc:
                 logging.getLogger("winpulse.shadow").warning("Experimental archive unavailable (%s)", type(exc).__name__)
+        try:
+            matches = await asyncio.wait_for(enrich_match_badges(db, matches), timeout=2)
+        except Exception as exc:
+            logging.getLogger("winpulse.stats").warning("Badge cache unavailable (%s)", type(exc).__name__)
         calibration = await _compute_calibration_map()
         # Le cache des prédictions doit suivre immédiatement le cache Mongo des
         # matchs. Sans ce contrôle, un refresh du flux pouvait laisser l'API
@@ -8583,13 +8587,14 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
     is_paid = await _has_paid_access(payload)
     size = max(1,min(limit,50))
+    logos = {_discovery_match_id(m):{k:m[k] for k in ("home_logo","away_logo","home_team_logo","away_team_logo") if m.get(k)} for m in snapshot["matches"]}
     if is_paid:
-        return [_discovery_prediction(pred,{},paid=True) for pred in preds[:size]]
+        return [{**_discovery_prediction(pred,{},paid=True), **logos.get(_discovery_match_id(pred),{})} for pred in preds[:size]]
     manifest = await _discovery_manifest(snapshot)
     ids = {entry["match_id"] for entry in manifest.get("entries",[])}
     # Free selections are the same on Top Picks and the dashboard.
     preds.sort(key=lambda pred: _discovery_match_id(pred) not in ids)
-    return [_discovery_prediction(pred,manifest) for pred in preds[:size]]
+    return [{**_discovery_prediction(pred,manifest), **logos.get(_discovery_match_id(pred),{})} for pred in preds[:size]]
 
 
 @app.get("/api/matches/{match_id}/analysis")
@@ -14556,3 +14561,21 @@ async def shutdown_event():
     if scheduler.running:
         scheduler.shutdown(wait=False)
 
+
+
+
+@app.get("/api/matches/{match_id}/insights")
+async def match_observed_insights(match_id: str, payload: Optional[dict] = Depends(get_optional_user_payload)):
+    # Separate public historical facts from protected betting recommendations.
+    snapshot = await _get_prediction_snapshot()
+    match = next((m for m in snapshot.get("matches", []) if _discovery_match_id(m)==str(match_id)),None)
+    if not match:
+        manifest = await _discovery_manifest(snapshot)
+        entry = next((e for e in manifest.get("entries",[])+manifest.get("archive",[]) if e["match_id"]==str(match_id)),None)
+        match = entry.get("match") if entry else None
+    if not match:
+        raise HTTPException(status_code=404,detail="Match introuvable")
+    try:
+        return await asyncio.wait_for(get_match_insights(db, match),timeout=3)
+    except asyncio.TimeoutError:
+        return {"version":1,"status":"unavailable","reason":"cache_timeout","home":{},"away":{},"h2h":[]}
