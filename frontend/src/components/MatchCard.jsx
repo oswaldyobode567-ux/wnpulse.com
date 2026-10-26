@@ -1,9 +1,10 @@
+import api from "@/lib/api";
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
 import { Link } from "react-router-dom";
 import { Card } from "@/components/ui/card";
 import { Radio, Lock, Clock, CheckCircle2, XCircle, ArrowRight } from "lucide-react";
-import { useLanguage, FollowPickButton } from "@/components/AppLayout";
+import { useLanguage, usePageLanguage, FollowPickButton } from "@/components/AppLayout";
 
 const MATCH_MESSAGES = {
   "fr": {
@@ -487,9 +488,9 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
           </div>
 
           <div className="min-w-0">
-            <div className="font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{event.home_team}</bdi></div>
+            <div className="flex min-w-0 items-center gap-3"><TeamBadge name={event.home_team} src={badgeUrl(event,"home")} /><div className="min-w-0 font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{event.home_team}</bdi></div></div>
             <div className="my-1 text-xs text-slate-400" aria-hidden="true">vs</div>
-            <div className="font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{event.away_team}</bdi></div>
+            <div className="flex min-w-0 items-center gap-3"><TeamBadge name={event.away_team} src={badgeUrl(event,"away")} /><div className="min-w-0 font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{event.away_team}</bdi></div></div>
           </div>
 
           {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && (
@@ -695,4 +696,116 @@ export function AdminShareActions({item,isAdmin,kind="picks"}) {
     </div>
     {preview && <ShareComposer items={[item]} kind={kind} onClose={()=>setPreview(false)} />}
   </div>;
+}
+
+
+
+// Match insights and shared team badges are embedded here.
+const LABELS = {
+ fr: ["Le match en chiffres", "Résultats observés, avant cette rencontre", "Comparaison", "Derniers matchs", "Confrontations", "Toutes rencontres", "Domicile / extérieur", "Matchs observés", "Victoires", "Nuls", "Défaites", "Buts marqués / match", "Buts encaissés / match", "Plus de 2,5 buts", "Les deux équipes marquent", "Sans encaisser", "Avec au moins un but marqué", "Indicateur", "Date", "Rencontre", "Score", "Compétition", "Actualiser", "Chargement des statistiques…", "Historique indisponible pour cette rencontre.", "Ces données dépendent de la couverture et du cache du fournisseur. Aucun résultat n’est inventé.", "Pas de confrontation dans les échantillons disponibles. Cela ne signifie pas que ces équipes ne se sont jamais rencontrées.", "Les fréquences décrivent ces matchs passés ; elles ne sont pas des probabilités pour le prochain match.", "Source", "Dernière collecte", "Données anciennes : à interpréter avec prudence.", "Plus récent en premier", "Retour au pronostic", "Échantillon limité à 10 matchs par équipe, selon les données accessibles. Les adversaires et périodes peuvent différer.", "Impossible de charger les statistiques. Le pronostic reste accessible.", "Pas de résultat vérifié disponible.", "Non communiqué", "Confrontations retrouvées dans les derniers matchs disponibles, pas un historique exhaustif.", "V", "N", "D"],
+ en: ["The match in numbers", "Observed results before this fixture", "Comparison", "Recent matches", "Head-to-head", "All fixtures", "Home / away", "Matches observed", "Wins", "Draws", "Losses", "Goals scored / match", "Goals conceded / match", "Over 2.5 goals", "Both teams score", "Clean sheets", "Scored at least once", "Metric", "Date", "Fixture", "Score", "Competition", "Refresh", "Loading statistics…", "History unavailable for this fixture.", "Data depends on provider coverage and cache. No results are invented.", "No head-to-head in the available samples. This does not mean the teams have never met.", "Frequencies describe past matches; they are not probabilities for the next fixture.", "Source", "Last collected", "Old data: interpret with caution.", "Most recent first", "Back to prediction", "Up to 10 matches per team, depending on available data. Opponents and periods may differ.", "Unable to load statistics. The prediction remains accessible.", "No verified results available.", "Not provided", "Meetings found in the available recent matches, not a complete history.", "W", "D", "L"],
+ es: ["El partido en cifras", "Resultados observados antes del encuentro", "Comparación", "Últimos partidos", "Enfrentamientos", "Todos los partidos", "Local / visitante", "Partidos observados", "Victorias", "Empates", "Derrotas", "Goles marcados / partido", "Goles recibidos / partido", "Más de 2,5 goles", "Ambos marcan", "Portería a cero", "Marcó al menos una vez", "Indicador", "Fecha", "Partido", "Resultado", "Competición", "Actualizar", "Cargando estadísticas…", "Historial no disponible para este partido.", "Los datos dependen de la cobertura y caché del proveedor. No se inventan resultados.", "Sin enfrentamientos en las muestras disponibles. No significa que nunca se hayan enfrentado.", "Las frecuencias describen partidos pasados, no probabilidades del próximo partido.", "Fuente", "Última recopilación", "Datos antiguos: interpreta con cautela.", "Más reciente primero", "Volver al pronóstico", "Hasta 10 partidos por equipo según los datos disponibles. Rivales y períodos pueden variar.", "No se pudieron cargar las estadísticas. El pronóstico sigue disponible.", "Sin resultados verificados.", "No disponible", "Enfrentamientos encontrados en los partidos recientes disponibles, no un historial completo.", "V", "E", "D"],
+ pt: ["O jogo em números", "Resultados observados antes deste jogo", "Comparação", "Últimos jogos", "Confrontos", "Todos os jogos", "Casa / fora", "Jogos observados", "Vitórias", "Empates", "Derrotas", "Golos marcados / jogo", "Golos sofridos / jogo", "Mais de 2,5 golos", "Ambas marcam", "Sem sofrer golos", "Marcou pelo menos uma vez", "Indicador", "Data", "Jogo", "Resultado", "Competição", "Atualizar", "A carregar estatísticas…", "Histórico indisponível para este jogo.", "Os dados dependem da cobertura e cache do fornecedor. Nenhum resultado é inventado.", "Sem confrontos nas amostras disponíveis. Não significa que nunca se tenham defrontado.", "As frequências descrevem jogos passados, não probabilidades para o próximo jogo.", "Fonte", "Última recolha", "Dados antigos: interpretar com prudência.", "Mais recente primeiro", "Voltar ao palpite", "Até 10 jogos por equipa conforme os dados disponíveis. Adversários e períodos podem variar.", "Não foi possível carregar as estatísticas. O palpite continua disponível.", "Sem resultados verificados.", "Não disponível", "Confrontos encontrados nos jogos recentes disponíveis, não um histórico completo.", "V", "E", "D"],
+ de: ["Das Spiel in Zahlen", "Beobachtete Ergebnisse vor dieser Partie", "Vergleich", "Letzte Spiele", "Direkte Duelle", "Alle Spiele", "Heim / auswärts", "Beobachtete Spiele", "Siege", "Unentschieden", "Niederlagen", "Erzielte Tore / Spiel", "Gegentore / Spiel", "Über 2,5 Tore", "Beide Teams treffen", "Ohne Gegentor", "Mindestens ein Tor erzielt", "Kennzahl", "Datum", "Partie", "Ergebnis", "Wettbewerb", "Aktualisieren", "Statistiken werden geladen…", "Keine Historie für diese Partie verfügbar.", "Daten hängen von Anbieterabdeckung und Cache ab. Keine erfundenen Ergebnisse.", "Keine direkten Duelle in den verfügbaren Stichproben. Frühere Begegnungen sind damit nicht ausgeschlossen.", "Häufigkeiten beschreiben vergangene Spiele, keine Wahrscheinlichkeiten für das nächste Spiel.", "Quelle", "Zuletzt erfasst", "Alte Daten: vorsichtig interpretieren.", "Neueste zuerst", "Zurück zum Tipp", "Bis zu 10 Spiele je Team, je nach Datenlage. Gegner und Zeiträume können abweichen.", "Statistiken konnten nicht geladen werden. Der Tipp bleibt verfügbar.", "Keine bestätigten Ergebnisse verfügbar.", "Nicht angegeben", "Duelle aus den verfügbaren jüngsten Spielen, keine vollständige Historie.", "S", "U", "N"],
+ ar: ["المباراة بالأرقام", "نتائج مرصودة قبل هذه المباراة", "مقارنة", "آخر المباريات", "المواجهات المباشرة", "جميع المباريات", "داخل / خارج الأرض", "المباريات المرصودة", "انتصارات", "تعادلات", "هزائم", "أهداف مسجلة / مباراة", "أهداف مستقبلة / مباراة", "أكثر من 2.5 هدف", "يسجل الفريقان", "شباك نظيفة", "سجل هدفاً على الأقل", "المؤشر", "التاريخ", "المباراة", "النتيجة", "البطولة", "تحديث", "جارٍ تحميل الإحصاءات…", "السجل غير متاح لهذه المباراة.", "تعتمد البيانات على تغطية المزود وذاكرته المؤقتة. لا تُختلق نتائج.", "لا توجد مواجهة في العينات المتاحة. هذا لا يعني أن الفريقين لم يلتقيا من قبل.", "التكرارات تصف مباريات سابقة وليست احتمالات للمباراة القادمة.", "المصدر", "آخر جمع للبيانات", "بيانات قديمة: تُفسر بحذر.", "الأحدث أولاً", "العودة إلى التوقع", "حتى 10 مباريات لكل فريق حسب البيانات المتاحة. قد يختلف الخصوم والفترات.", "تعذر تحميل الإحصاءات. يبقى التوقع متاحاً.", "لا توجد نتائج موثقة متاحة.", "غير متاح", "مواجهات عُثر عليها ضمن المباريات الأخيرة المتاحة وليست سجلاً كاملاً.", "ف", "ت", "خ"]
+};
+
+export function badgeUrl(match, side) {
+  const candidates = [match?.[`${side}_logo`], match?.[`${side}_team_logo`], match?.[`${side}_crest`], match?.[`${side}Team`]?.crest];
+  return candidates.find(value => {
+    if (typeof value !== "string") return false;
+    try { const parsed = new URL(value); return parsed.protocol === "https:" && !parsed.username && !parsed.password; } catch { return false; }
+  }) || null;
+}
+
+function teamInitials(name) {
+  return String(name || "").trim().split(/\s+/).filter(word => /[\p{L}\p{N}]/u.test(word)).slice(0,2).map(word => Array.from(word)[0]).join("").toLocaleUpperCase() || "•";
+}
+
+export function TeamBadge({ name = "", src, size = "small" }) {
+  const [failed, setFailed] = useState(null);
+  let url = null;
+  try { const parsed = new URL(src); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = src; } catch {}
+  const initials = teamInitials(name);
+  return <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white font-black text-slate-500 shadow-sm ${size === "large" ? "h-16 w-16 rounded-2xl text-xl sm:h-20 sm:w-20" : "h-10 w-10 rounded-xl text-xs"}`}>
+    {url && failed !== url ? <img src={url} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(url)} className="h-full w-full object-contain p-1.5" /> : initials}
+  </span>;
+}
+
+const METRICS = [["played",7],["wins",8],["draws",9],["losses",10],["goals_for",11],["goals_against",12],["over25",13,"%"],["btts",14,"%"],["clean_sheets",15,"%"],["scored",16,"%"]];
+export function MatchInsights({ match }) {
+  const i18n = usePageLanguage();
+  const words = LABELS[i18n.language] || LABELS.fr;
+  const id = String(match?.id || match?.match_id || "");
+  const [state,setState] = useState({ id:null,data:null,error:false });
+  const [retry,setRetry] = useState(0);
+  const [tab,setTab] = useState("compare");
+  const [venue,setVenue] = useState(false);
+  const data = state.id === id ? state.data : null;
+  const error = state.id === id && state.error;
+  useEffect(() => {
+    if (!id) return undefined;
+    const controller = new AbortController();
+    setState({id,data:null,error:false}); setTab("compare"); setVenue(false);
+    api.get(`/matches/${encodeURIComponent(id)}/insights`, { signal:controller.signal,timeout:12000 }).then(response => {
+      if (controller.signal.aborted) return;
+      if (!response.data || response.data.version !== 1) throw new Error("Invalid insights response");
+      setState({id,data:response.data,error:false});
+    }).catch(() => { if (!controller.signal.aborted) setState({id,data:null,error:true}); });
+    return () => controller.abort();
+  },[id,retry]);
+  const number = (value,suffix="") => value == null || !Number.isFinite(Number(value)) ? "—" : `${new Intl.NumberFormat(i18n.locale,{maximumFractionDigits:2}).format(Number(value))}${suffix}`;
+  const date = value => { const stamp = new Date(value); return !value || !Number.isFinite(stamp.getTime()) ? words[36] : new Intl.DateTimeFormat(i18n.locale,{day:"2-digit",month:"short",year:"numeric"}).format(stamp); };
+  const home = data?.home?.[venue ? "venue":"overall"] || {};
+  const away = data?.away?.[venue ? "venue":"overall"] || {};
+  const form = rows => <div className="flex flex-wrap gap-1.5">{(rows || []).map((v,index) => <span key={index} className={`inline-flex h-8 w-8 items-center justify-center rounded-lg text-xs font-extrabold ${v==="W" ? "bg-emerald-100 text-emerald-800" : v==="D" ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`} title={words[v==="W" ? 8 : v==="D" ? 9 : 10]}>{words[v==="W" ? 38 : v==="D" ? 39 : 40]}</span>)}</div>;
+  const history = rows => !rows?.length ? <p className="p-4 text-sm text-slate-500">{words[35]}</p> : <div className="divide-y divide-slate-100">{rows.map((r,index) => <article key={`${r.id}-${index}`} className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 py-3 text-sm">
+    <div className="min-w-0"><p className="mb-1 text-xs leading-5 text-slate-500"><time dateTime={r.date}>{date(r.date)}</time> · {r.competition || words[36]}</p><p className="break-words font-semibold leading-6 text-slate-800"><bdi>{r.home_team}</bdi><span className="mx-1 text-xs text-slate-400">vs</span><bdi>{r.away_team}</bdi></p></div>
+    <bdi aria-label={words[20]} className="rounded-xl bg-slate-100 px-3 py-2 font-mono font-extrabold tabular-nums text-slate-800">{number(r.score_home)}–{number(r.score_away)}</bdi>
+  </article>)}</div>;
+  return <section id="match-insights" dir={i18n.direction} className="mb-6 min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" data-testid="match-insights">
+    <header className="border-b border-slate-100 bg-gradient-to-r from-orange-50 to-white p-4 sm:p-6"><p className="text-xs font-bold uppercase tracking-wider text-orange-700">WinPulse · Stats</p><h2 className="mt-1 font-heading text-xl font-extrabold text-slate-900 sm:text-2xl">{words[0]}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{words[1]}</p></header>
+    {error ? <div role="alert" className="p-5 text-sm leading-6 text-slate-600">{words[34]}<button type="button" onClick={()=>setRetry(v=>v+1)} className="mt-3 block min-h-11 rounded-xl border px-4 font-bold text-orange-700">{words[22]}</button></div> : !data ? <p role="status" className="p-6 text-sm text-slate-500">{words[23]}</p> : data.status !== "ready" ? <div className="p-5"><p className="font-semibold text-slate-800">{words[24]}</p><p className="mt-2 text-sm leading-6 text-slate-500">{words[25]}</p></div> : <>
+      <nav aria-label={words[0]} className="grid grid-cols-3 gap-1 border-b border-slate-100 p-2">{[["compare",2],["recent",3],["h2h",4]].map(([key,index])=><button key={key} type="button" aria-pressed={tab===key} onClick={()=>setTab(key)} className={`min-h-12 rounded-xl px-1 py-2 text-xs font-bold leading-5 sm:text-sm ${tab===key ? "bg-slate-900 text-white":"text-slate-600 hover:bg-slate-50"}`}>{words[index]}</button>)}</nav>
+      <div className="p-4 sm:p-6">
+        {data.stale && <p role="status" className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{words[30]}</p>}
+        {tab === "compare" && <>
+          <div className="mb-4 flex flex-wrap gap-2">{[false,true].map(v=><button key={String(v)} type="button" onClick={()=>setVenue(v)} aria-pressed={venue===v} className={`min-h-11 rounded-xl border px-3 text-xs font-semibold ${venue===v ? "border-orange-300 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{words[v?6:5]}</button>)}</div>
+          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played || 0)}</p></div>)}</div>
+          <p className="my-3 text-xs text-slate-500">{words[31]}</p>
+          <table className="w-full table-fixed text-sm" data-testid="match-comparison-table"><caption className="sr-only">{words[2]}: {match.home_team} / {match.away_team}</caption><thead><tr className="border-b border-slate-200"><th scope="col" className="w-[46%] py-3 text-start text-xs font-semibold text-slate-500">{words[17]}</th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.home_team} className="no-underline sm:hidden">{teamInitials(match.home_team)}</abbr><span className="hidden sm:inline">{match.home_team}</span></th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.away_team} className="no-underline sm:hidden">{teamInitials(match.away_team)}</abbr><span className="hidden sm:inline">{match.away_team}</span></th></tr></thead><tbody>{METRICS.map(([key,index,suffix])=><tr key={key} className="border-b border-slate-100 last:border-0"><th scope="row" className="break-words py-3 pe-2 text-start text-xs font-medium leading-5 text-slate-600 sm:text-sm">{words[index]}</th><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(home[key],suffix)}</td><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(away[key],suffix)}</td></tr>)}</tbody></table>
+        </>}
+        {tab === "recent" && <div className="grid min-w-0 gap-6 lg:grid-cols-2">{[[match.home_team,data.home?.recent],[match.away_team,data.away?.recent]].map(([name,rows],index)=><div key={index} className="min-w-0"><h3 className="mb-2 break-words text-base font-extrabold text-slate-900">{name}</h3>{history(rows)}</div>)}</div>}
+        {tab === "h2h" && <><p className="mb-3 text-sm leading-6 text-slate-500">{words[37]}</p>{data.h2h?.length ? history(data.h2h) : <p className="rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">{words[26]}</p>}</>}
+        <p className="mt-4 rounded-xl bg-orange-50 p-3 text-xs leading-5 text-orange-900">{words[27]}</p><p className="mt-3 text-xs leading-5 text-slate-500">{words[33]}</p>
+        <footer className="mt-4 flex flex-wrap gap-x-4 gap-y-1 border-t border-slate-100 pt-3 text-xs leading-5 text-slate-500"><span>{words[28]} : {data.source}</span><span>{words[29]} : {date(data.updated_at)}</span></footer>
+      </div>
+    </>}
+  </section>;
+}
+
+export function InsightsLink() {
+  const { language } = usePageLanguage();
+  return <a href="#match-insights" className="inline-flex min-h-11 items-center rounded-xl border border-slate-200 bg-white px-4 text-sm font-bold text-orange-700 hover:bg-orange-50">{(LABELS[language] || LABELS.fr)[0]} ↓</a>;
+}
+
+export function MarketQuotes({ match }) {
+  const i18n = usePageLanguage();
+  const labels = {
+    fr:["Cotes du marché sélectionné","Bookmaker","Sélection","Cote","Aucune cote comparable transmise pour ce marché.","Cotes observées : disponibilité et règles à vérifier chez le bookmaker."],
+    en:["Selected market odds","Bookmaker","Selection","Odds","No comparable quotes provided for this market.","Observed odds: check availability and rules with the bookmaker."],
+    es:["Cuotas del mercado elegido","Casa de apuestas","Selección","Cuota","Sin cuotas comparables para este mercado.","Cuotas observadas: verifica disponibilidad y reglas con el operador."],
+    pt:["Cotas do mercado escolhido","Operador","Seleção","Cota","Sem cotas comparáveis para este mercado.","Cotas observadas: confirma disponibilidade e regras no operador."],
+    de:["Quoten des gewählten Marktes","Anbieter","Auswahl","Quote","Keine vergleichbaren Quoten für diesen Markt.","Beobachtete Quoten: Verfügbarkeit und Regeln beim Anbieter prüfen."],
+    ar:["معاملات السوق المختار","المزود","الاختيار","المعامل","لا توجد أسعار قابلة للمقارنة لهذا السوق.","أسعار مرصودة: تحقق من التوفر والقواعد لدى المزود."]
+  }[i18n.language] || ["Cotes du marché sélectionné","Bookmaker","Sélection","Cote","Aucune cote comparable transmise pour ce marché.","Vérifie les règles et la disponibilité."];
+  const prediction = match.prediction || {};
+  const key = prediction.market || prediction.market_key;
+  const rows = (match.bookmakers || []).flatMap(book => (book.markets || []).filter(market => market.key === key).flatMap(market => (market.outcomes || []).filter(outcome => {
+    const valid = typeof outcome.price === "number" && Number.isFinite(outcome.price) && outcome.price > 1;
+    // Compare the exact quoted line, not different totals or handicaps.
+    const point = prediction.pick_point;
+    return valid && (point == null || Number(outcome.point) === Number(point));
+  }).map(outcome => ({book:book.title || book.key,name:outcome.name,point:outcome.point,price:outcome.price}))));
+  return <section className="mb-6 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6" data-testid="selected-market-quotes"><h2 className="text-lg font-extrabold text-slate-900">{labels[0]}</h2><p className="mt-1 text-sm text-slate-500">{i18n.bet(prediction.market_label || key || "")}</p>{rows.length ? <div className="mt-4 overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-200 text-start text-xs text-slate-500">{labels.slice(1,4).map(text=><th key={text} scope="col" className="px-2 py-3 text-start">{text}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index} className="border-b border-slate-100"><th scope="row" className="px-2 py-3 text-start font-semibold text-slate-700">{row.book}</th><td className="px-2 py-3 text-slate-600">{i18n.bet(row.name)}{row.point != null ? ` ${row.point}` : ""}</td><td className="px-2 py-3 font-mono font-bold text-slate-900">{new Intl.NumberFormat(i18n.locale,{maximumFractionDigits:3}).format(row.price)}</td></tr>)}</tbody></table></div> : <p className="mt-4 text-sm text-slate-500">{labels[4]}</p>}<p className="mt-3 text-xs leading-5 text-slate-500">{labels[5]}</p></section>;
 }
