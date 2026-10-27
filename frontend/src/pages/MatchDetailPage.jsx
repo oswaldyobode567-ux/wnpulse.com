@@ -1,4 +1,4 @@
-import { MatchInsights, TeamBadge, badgeUrl, InsightsLink, MarketQuotes } from "@/components/MatchCard";
+import { MatchInsights, TeamBadge, badgeUrl, MarketQuotes } from "@/components/MatchCard";
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
@@ -21,6 +21,15 @@ const DISCOVERY_COPY = {
   ar: {title:"اكتشف WinPulse: حتى 3 توقعات مجانية يوميًا",intro:"اختيارات موحدة للجميع مع الشرح والمتابعة، حسب مباريات اليوم.",pro:"اكتشف اشتراك Pro",reserved:"توقعات متاحة للمشتركين حاليًا",cta:"افتح التوقعات وتحليلاتها",offer:"لقد اكتشفت تحليلًا من WinPulse",offerText:"اطلع على الاختيارات الأخرى والأسواق المحللة ضمن اشتراكك.",empty:"اختيارات اليوم غير متاحة بعد. عد لاحقًا.",error:"تعذر تحميل الاختيارات المجانية.",retry:"إعادة المحاولة",pending:"النتيجة غير مؤكدة",won:"فائز",lost:"خاسر",void:"مسترد",count:"اختيارات متاحة",note:"الأوقات بتوقيتك المحلي. يوم الاختيارات: Africa/Porto-Novo.",noGuarantee:"لا توجد أرباح مضمونة. تبقى النتائج الفائزة والخاسرة ظاهرة.",follow:"تابع الاختيارات من بطاقاتها لعرض نتائجها.",unavailable:"لا يوجد توقع متاح لهذه المباراة حاليًا."}
 };
 function discoveryCopy(language) { return DISCOVERY_COPY[language] || DISCOVERY_COPY.fr; }
+const DETAIL_VISUAL_COPY = {
+  fr: {riskTitle:"Point de vigilance", risk:"Les cotes et les estimations peuvent évoluer. Vérifie la période et les règles de règlement du marché ; aucun résultat n’est garanti.", source:"Les statistiques ci-dessous sont affichées uniquement lorsqu’elles sont disponibles."},
+  en: {riskTitle:"What to watch", risk:"Odds and estimates can change. Check the market period and settlement rules; no outcome is guaranteed.", source:"The statistics below are shown only when available."},
+  es: {riskTitle:"Punto de atención", risk:"Las cuotas y estimaciones pueden cambiar. Comprueba el periodo y las reglas del mercado; ningún resultado está garantizado.", source:"Las estadísticas siguientes solo se muestran cuando están disponibles."},
+  pt: {riskTitle:"Ponto de atenção", risk:"As cotas e estimativas podem mudar. Confirma o período e as regras do mercado; nenhum resultado é garantido.", source:"As estatísticas abaixo só são apresentadas quando disponíveis."},
+  de: {riskTitle:"Worauf du achten solltest", risk:"Quoten und Schätzungen können sich ändern. Prüfe Zeitraum und Marktregeln; kein Ergebnis ist garantiert.", source:"Die folgenden Statistiken werden nur angezeigt, wenn sie verfügbar sind."},
+  ar: {riskTitle:"نقطة انتباه", risk:"قد تتغير المعاملات والتقديرات. تحقق من فترة السوق وقواعد التسوية؛ لا توجد نتيجة مضمونة.", source:"تُعرض الإحصاءات أدناه فقط عند توفرها."}
+};
+
 function discoveryEvent(event, surface) {
   api.post("/discovery/events", { event, surface }).catch(() => {});
 }
@@ -95,6 +104,7 @@ export default function MatchDetailPage() {
   });
   const isAdmin = Boolean(user?.is_admin);
   const freeWords = discoveryCopy(i18n.language);
+  const detailWords = DETAIL_VISUAL_COPY[i18n.language] || DETAIL_VISUAL_COPY.fr;
   useEffect(() => {
     if (data?.prediction?.free_daily_pick && !data.prediction.locked && user?.id) discoveryEvent("analysis_view", "match_detail");
   }, [data, user?.id]);
@@ -185,26 +195,26 @@ export default function MatchDetailPage() {
   }[p.label] || "bg-orange-50 border-orange-200";
   const isPaid = Boolean(user?.is_admin || user && String(user.subscription || user.subscription_tier || "free").toLowerCase() !== "free");
   return <AppLayout>
-      <div className="min-w-0 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8 [overflow-wrap:anywhere]">
-        <button onClick={handleBack} className="inline-flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900 mb-6" data-testid="back-link">
+      <div className="min-w-0 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 [overflow-wrap:anywhere]">
+        <button onClick={handleBack} className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-xl px-2 text-sm font-semibold text-slate-600 hover:bg-white hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500" data-testid="back-link">
           <ChevronLeft className="h-4 w-4" />{i18n.t("Retour")}</button>
         {/* Match header */}
-        <Card className={`bg-white border-slate-200 p-6 mb-6 ${data.is_live ? "ring-2 ring-rose-500/40" : ""}`} data-testid="match-header">
-          <div className="flex items-center justify-between gap-2 mb-4 flex-wrap">
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <Badge variant="outline" className="font-mono">{i18n.tx(data.sport_title)}</Badge>
+        <Card className={`relative mb-5 overflow-hidden rounded-3xl border-slate-200 bg-gradient-to-br from-white via-white to-orange-50 p-4 shadow-sm sm:p-7 ${data.is_live ? "ring-2 ring-rose-500/40" : ""}`} data-testid="match-header">
+          <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
+            <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-600">
+              <Badge variant="outline" className="max-w-full whitespace-normal break-words bg-white font-semibold">{i18n.tx(data.sport_title)}</Badge>
               <span>·</span>
               <span>{i18n.formatPattern(data.commence_time, "dddd D MMM · HH:mm")}</span>
             </div> {i18n.tx(data.is_live && <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 text-white px-2.5 py-1 text-[11px] font-black uppercase tracking-wider animate-pulse" data-testid="match-live-badge">
                 <Radio className="h-3 w-3" />{i18n.t("LIVE")}</span>)}
           </div>
-          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 sm:gap-4">
+          <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 text-center sm:items-center sm:gap-5">
             <div className="text-center">
               <div className="mb-3 flex justify-center"><TeamBadge name={data.home_team} src={badgeUrl(data,"home")} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.home_team}</div>
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Domicile")}</div>
             </div>
             <div className="text-center">
-              <div className="text-3xl font-extrabold text-slate-300">{i18n.t("VS")}</div>
+              <div className="mt-5 grid h-10 w-10 place-items-center rounded-full border border-orange-100 bg-white text-xs font-extrabold text-slate-400 sm:mt-0 sm:h-12 sm:w-12">{i18n.t("VS")}</div>
             </div>
             <div className="text-center">
               <div className="mb-3 flex justify-center"><TeamBadge name={data.away_team} src={badgeUrl(data,"away")} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.away_team}</div>
@@ -212,7 +222,7 @@ export default function MatchDetailPage() {
             </div>
           </div>
         </Card>
-        <div className="mb-5"><InsightsLink /></div>
+        
         {/* Prediction summary */}
         {i18n.tx(!p.pick && !p.locked ? <Card className="mb-6 p-5 text-sm text-slate-600" data-testid="prediction-unavailable">{freeWords.unavailable}</Card> : locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -232,8 +242,8 @@ export default function MatchDetailPage() {
           tier: "PRO"
         })}>{i18n.t("D\xE9couvrir l\u2019offre Pro")}<ChevronLeft className="h-4 w-4 ms-2 rotate-180" />
             </Button>
-          </Card> : <Card className={`border ${labelColor} p-6 mb-6`} data-testid="prediction-summary">
-          <div className="flex items-start justify-between gap-4 mb-4">
+          </Card> : <Card className={`mb-5 rounded-3xl border ${labelColor} p-4 shadow-sm sm:p-6`} data-testid="prediction-summary">
+          <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="text-xs uppercase tracking-wider text-slate-600 font-semibold mb-1 flex items-center gap-2">
                 <span>{i18n.t("Pronostic principal")}</span>
@@ -241,7 +251,7 @@ export default function MatchDetailPage() {
                     {i18n.bet(p.market_label)}
                   </span>)}
               </div>
-              <div className="font-heading text-3xl font-extrabold text-slate-900">
+              <div className="font-heading text-2xl font-extrabold leading-tight text-slate-900 [overflow-wrap:anywhere] sm:text-3xl">
                 {i18n.bet(p.pick)}
                 <span className="text-slate-500 text-xl font-mono font-semibold ms-2">@ {i18n.tx(p.pick_odds)}</span>
               </div>
@@ -261,7 +271,7 @@ export default function MatchDetailPage() {
               <AdminShareActions isAdmin={isAdmin} item={{ ...data, prediction: p }} />
             </div>)}
         </Card>)}
-        {i18n.tx(!locked && <Card className="mb-6 border-orange-200 bg-orange-50/40 p-6" data-testid="pick-explanation">
+        {i18n.tx(!locked && <Card className="mb-5 rounded-3xl border-orange-200 bg-orange-50/40 p-4 sm:p-6" data-testid="pick-explanation">
           <h2 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Comprendre ce pronostic")}</h2>
           <div className="mt-3 space-y-3 text-sm leading-relaxed text-slate-700">
             <p>{i18n.tx(pickExplanation(i18n, p))}</p>
@@ -273,6 +283,12 @@ export default function MatchDetailPage() {
             {i18n.tx(p.reasoning?.real_data_used ? <p>{i18n.t("Des statistiques externes sont disponibles pour compl\xE9ter cette analyse. Leur d\xE9tail figure plus bas.")}</p> : <p>{i18n.t("Les informations disponibles ne permettent pas ici d\u2019ajouter une analyse v\xE9rifi\xE9e de la forme des \xE9quipes ou des absences.")}</p>)}
           </div>
         </Card>)}
+        {!locked && <div className="mb-5 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4" data-testid="match-risk-note">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden="true" />
+          <div><h2 className="text-sm font-extrabold text-amber-950">{detailWords.riskTitle}</h2><p className="mt-1 text-sm leading-6 text-amber-900">{detailWords.risk}</p></div>
+        </div>}
+        <div className="mb-2 text-sm leading-6 text-slate-500">{detailWords.source}</div>
+        <MatchInsights key={`${owner}:${matchId}`} match={data} />
         {!locked && p.free_daily_pick && <Card className="mb-6 space-y-3 rounded-2xl border-orange-200 bg-gradient-to-br from-slate-950 to-slate-900 p-5 text-white" data-testid="free-analysis-upgrade">
           <h2 className="font-heading text-lg font-bold">{freeWords.offer}</h2>
           <p className="text-sm leading-6 text-slate-200">{freeWords.offerText}</p>
@@ -300,7 +316,7 @@ export default function MatchDetailPage() {
                       v0: i18n.tx(m.edge)
                     })}</span>)}
                       </div>
-                      <div className="font-semibold text-slate-900 truncate">
+                      <div className="font-semibold leading-6 text-slate-900 [overflow-wrap:anywhere]">
                         {i18n.bet(m.pick)} <span className="text-slate-400 font-normal font-mono text-sm ms-1">@ {i18n.tx(m.pick_odds)}</span>
                       </div>
                     </div>   <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold border ${labelCls}`}>
@@ -310,7 +326,6 @@ export default function MatchDetailPage() {
           }))}
             </div>
           </Card>)}
-        <MatchInsights key={`${owner}:${matchId}`} match={data} />
         {/* AI Analysis */}
         {i18n.tx(!locked && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -388,11 +403,12 @@ function ConfidenceBadge({
   const i18n = usePageLanguage();
   const key = String(label || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
   const color = /sur|safe/.test(key) ? "bg-green-100 text-green-700 border-green-200" : /modere|value/.test(key) ? "bg-orange-100 text-orange-700 border-orange-200" : "bg-red-100 text-red-700 border-red-200";
-  const text = /sur|safe/.test(key) ? "🟢 SÛR" : /modere|value/.test(key) ? "🟡 MODÉRÉ" : "🔴 RISQUÉ";
+  const labels = { fr: ["🟢 PRUDENT", "🟡 MODÉRÉ", "🔴 RISQUÉ"], en: ["🟢 LOWER RISK", "🟡 MODERATE", "🔴 HIGHER RISK"], es: ["🟢 PRUDENTE", "🟡 MODERADO", "🔴 ARRIESGADO"], pt: ["🟢 PRUDENTE", "🟡 MODERADO", "🔴 ARRISCADO"], de: ["🟢 VORSICHTIG", "🟡 MITTEL", "🔴 RISKANT"], ar: ["🟢 حذر", "🟡 متوسط", "🔴 مرتفع المخاطرة"] };
+  const words = labels[i18n.language] || labels.fr;
+  const text = /sur|safe/.test(key) ? words[0] : /modere|value/.test(key) ? words[1] : words[2];
   return <span className={`inline-flex flex-wrap items-center gap-1 rounded-full border px-2 py-1 text-xs font-bold ${color}`}>{i18n.tx(text)}{i18n.tx(confidence != null && Number.isFinite(Number(confidence)) && <bdi>{i18n.formatNumber(Number(confidence) / 100, {
         style: "percent",
         maximumFractionDigits: 0
       })}</bdi>)}</span>;
 }
-
 
