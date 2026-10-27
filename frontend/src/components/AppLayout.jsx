@@ -6952,6 +6952,11 @@ const NAV = [{
   end: true,
   testId: "nav-dashboard"
 }, {
+  to: "/app/suivi",
+  label: "Pronostics suivis",
+  icon: Bell,
+  testId: "nav-followed"
+}, {
   to: "/app/live",
   label: "Live",
   icon: Radio,
@@ -7024,7 +7029,7 @@ function AppLayoutContent({
   children
 }) {
   const {
-    t
+    t, language
   } = useLanguage();
   const {
     user,
@@ -7152,8 +7157,8 @@ function AppLayoutContent({
   };
   const navItems = NAV.map(item => ({
     ...item,
-    label: t(item.label),
-    shortLabel: t(mobileLabels[item.to] || item.label),
+    label: item.to === "/app/suivi" ? (NOTIFICATION_MESSAGES[language]?.[item.label] || item.label) : t(item.label),
+    shortLabel: item.to === "/app/suivi" ? (NOTIFICATION_MESSAGES[language]?.[item.label] || item.label) : t(mobileLabels[item.to] || item.label),
     badge: item.badge ? t(item.badge) : null
   }));
   if (user?.is_admin) {
@@ -7751,17 +7756,20 @@ export function FollowPickButton({ matchId, pick, market, disabled = false }) {
 
 function ResultNotificationBell() {
   const state = useContext(ResultNotificationsContext);
-  const { t, formatNumber } = useNotificationLanguage();
+  const { t, formatNumber, language } = useNotificationLanguage();
   if (!state?.uid) return null;
-  return <button type="button" data-testid="notification-bell" onClick={() => { state.setOpen(true); state.refresh(); }} aria-haspopup="dialog" aria-expanded={state.open} aria-label={t("Notifications : {{count}} non lues", { count: formatNumber(state.unread_count) })} className="relative grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-orange-100 bg-orange-50 text-orange-600 hover:bg-orange-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">
+  const activeAlerts = state.follows.flatMap(row => Array.isArray(row.alerts) ? row.alerts : []);
+  const alertText = activeAlerts.length ? ` · ${(FOLLOW_PAGE_TEXT[language] || FOLLOW_PAGE_TEXT.fr)[activeAlerts[0].type === "kickoff_soon" ? 8 : 9]}` : "";
+  return <button type="button" data-testid="notification-bell" onClick={() => { state.setOpen(true); state.refresh(); }} aria-haspopup="dialog" aria-expanded={state.open} aria-label={t("Notifications : {{count}} non lues", { count: formatNumber(state.unread_count) }) + alertText} className="relative grid h-11 w-11 shrink-0 place-items-center rounded-xl border border-orange-100 bg-orange-50 text-orange-600 hover:bg-orange-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">
     <Bell className="h-5 w-5" aria-hidden="true" />
     {state.unread_count > 0 && <span className="absolute -end-1 -top-1 min-w-5 rounded-full bg-rose-600 px-1 text-center text-[10px] font-bold leading-5 text-white" aria-hidden="true">{state.unread_count > 99 ? "99+" : formatNumber(state.unread_count)}</span>}
+    {state.unread_count === 0 && activeAlerts.length > 0 && <span className="absolute -end-1 -top-1 grid h-5 w-5 place-items-center rounded-full bg-amber-500 text-xs font-black text-white" aria-hidden="true">!</span>}
   </button>;
 }
 
 function ResultNotificationsDialog() {
   const state = useContext(ResultNotificationsContext);
-  const { t, bet, formatDate, formatNumber, direction } = useNotificationLanguage();
+  const { t, bet, formatDate, formatNumber, direction, language } = useNotificationLanguage();
   const navigate = useNavigate();
   const dialog = useRef(null);
   const titleId = useId();
@@ -7785,6 +7793,7 @@ function ResultNotificationsDialog() {
         {[["results", "Résultats"], ["follows", "Pronostics suivis"]].map(([key, label]) => <button key={key} type="button" aria-pressed={tab === key} onClick={() => setTab(key)} className={`min-h-11 rounded-xl px-3 py-2 text-sm font-bold ${tab === key ? "bg-slate-900 text-white" : "bg-slate-50 text-slate-600"}`}>{t(label)}{key === "follows" && <span className="ms-2 rounded-full bg-white/15 px-1.5 text-xs">{formatNumber(following.length)}</span>}</button>)}
       </nav>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4">
+        {state.follows.flatMap(row => (Array.isArray(row.alerts) ? row.alerts : []).map((alert,index) => <Link key={`${row.id}-${index}`} to="/app/suivi" onClick={() => state.setOpen(false)} className="mb-3 block rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900" role="status">{(FOLLOW_PAGE_TEXT[language] || FOLLOW_PAGE_TEXT.fr)[alert.type === "kickoff_soon" ? 8 : 9]} · <bdi>{row.home_team} vs {row.away_team}</bdi> →</Link>))}
         {state.failed && <div role="status" className="mb-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6"><p>{t("Notifications temporairement indisponibles.")}</p><button type="button" className="mt-1 min-h-11 font-bold text-orange-700" onClick={() => state.refresh(true)}>{t("Réessayer")}</button></div>}
         {state.loading && state.items.length === 0 && <p className="py-4 text-sm text-slate-500" role="status">{t("Chargement…")}</p>}
         {tab === "results" ? <>
@@ -7805,6 +7814,7 @@ function ResultNotificationsDialog() {
           {following.length === 0 && <p className="py-6 text-center text-sm leading-6 text-slate-500">{t("Aucun pronostic suivi en attente de résultat.")}</p>}
           {following.map(row => <article key={row.id} className="rounded-2xl border border-slate-200 p-4"><h3 className="break-words text-sm font-bold leading-6"><bdi>{row.home_team} vs {row.away_team}</bdi></h3><p className="mt-1 break-words text-sm leading-6 text-slate-500"><bdi>{bet(row.pick)}</bdi></p><button type="button" disabled={state.busy.has(`unfollow:${row.id}`)} onClick={() => state.unfollow(row.id)} className="mt-2 min-h-11 text-sm font-semibold text-slate-600 underline underline-offset-4">{t("Arrêter le suivi")}</button></article>)}
         </div>}
+        <Link to="/app/suivi" onClick={() => state.setOpen(false)} className="mt-3 inline-flex min-h-11 items-center font-bold text-orange-700">{t("Pronostics suivis")} →</Link>
       </div>
       <p className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-xs leading-5 text-slate-500">{t("Mise à jour lorsque le site est ouvert. Gagnés, perdus et remboursés sont tous signalés.")}</p>
     </div>
@@ -7814,3 +7824,36 @@ function ResultNotificationsDialog() {
 export default function AppLayout({ children }) {
   return <ResultNotificationsProvider><AppLayoutContent>{children}</AppLayoutContent></ResultNotificationsProvider>;
 }
+
+
+
+const FOLLOW_PAGE_TEXT = {
+ fr:["Mes pronostics suivis","Tes sélections et leurs résultats confirmés au même endroit.","Cote initiale","Début","En attente","Gagné","Perdu","Remboursé","Début dans moins de 30 minutes","Cote modifiée","Ancienne cote","Cote actuelle","Mise à jour lorsque le site est ouvert. Les cotes peuvent changer.","Aucune sélection suivie pour le moment.","Suivre des pronostics","Historique limité aux 200 suivis actifs et 50 suivis récents.","Actualiser","Indisponible","Arrêter le suivi","Sélection","Marché","Notifications indisponibles. Réessaie."],
+ en:["My followed picks","Your selections and confirmed results in one place.","Original odds","Starts","Pending","Won","Lost","Refunded","Starts within 30 minutes","Odds changed","Original odds","Current odds","Updated while the site is open. Odds may change.","No followed selections yet.","Explore predictions","Showing up to 200 active and 50 recent follows.","Refresh","Unavailable","Unfollow","Selection","Market","Notifications unavailable. Try again."],
+ es:["Mis pronósticos seguidos","Tus selecciones y resultados confirmados en un solo lugar.","Cuota inicial","Inicio","Pendiente","Ganado","Perdido","Reembolsado","Comienza en menos de 30 minutos","Cuota modificada","Cuota inicial","Cuota actual","Actualizado con el sitio abierto. Las cuotas pueden variar.","Aún no sigues selecciones.","Ver pronósticos","Hasta 200 seguimientos activos y 50 recientes.","Actualizar","No disponible","Dejar de seguir","Selección","Mercado","Notificaciones no disponibles. Inténtalo de nuevo."],
+ pt:["Os meus palpites seguidos","As tuas seleções e resultados confirmados num só lugar.","Cota inicial","Início","Pendente","Ganho","Perdido","Reembolsado","Começa dentro de 30 minutos","Cota alterada","Cota inicial","Cota atual","Atualizado com o site aberto. As cotas podem mudar.","Ainda não segues seleções.","Ver palpites","Até 200 acompanhamentos ativos e 50 recentes.","Atualizar","Indisponível","Deixar de seguir","Seleção","Mercado","Notificações indisponíveis. Tenta novamente."],
+ de:["Meine verfolgten Tipps","Deine Tipps und bestätigten Ergebnisse an einem Ort.","Ursprüngliche Quote","Beginn","Ausstehend","Gewonnen","Verloren","Erstattet","Beginn innerhalb von 30 Minuten","Quote geändert","Ursprüngliche Quote","Aktuelle Quote","Aktualisierung bei geöffneter Seite. Quoten können sich ändern.","Noch keine verfolgten Tipps.","Tipps ansehen","Bis zu 200 aktive und 50 jüngste verfolgte Tipps.","Aktualisieren","Nicht verfügbar","Nicht mehr verfolgen","Auswahl","Markt","Benachrichtigungen nicht verfügbar. Erneut versuchen."],
+ ar:["توقعاتي المتابَعة","اختياراتك ونتائجها المؤكدة في مكان واحد.","المعامل الأصلي","البداية","قيد الانتظار","فائز","خاسر","مسترد","تبدأ خلال 30 دقيقة","تغير المعامل","المعامل الأصلي","المعامل الحالي","التحديث عند فتح الموقع. قد تتغير المعاملات.","لا توجد اختيارات متابَعة بعد.","استعرض التوقعات","حتى 200 متابعة نشطة و50 متابعة حديثة.","تحديث","غير متاح","إيقاف المتابعة","الاختيار","السوق","الإشعارات غير متاحة. حاول مجدداً."]
+};
+function FollowedPicksContent() {
+  const state = useContext(ResultNotificationsContext);
+  const { language, locale, direction, bet, formatDate, t } = usePageLanguage();
+  const w = FOLLOW_PAGE_TEXT[language] || FOLLOW_PAGE_TEXT.fr;
+  const rows = Array.isArray(state?.follows) ? state.follows : [];
+  const date = value => value && Number.isFinite(new Date(value).getTime()) ? formatDate(value,{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
+  const odds = value => value != null && Number.isFinite(Number(value)) && Number(value)>1 ? new Intl.NumberFormat(locale,{minimumFractionDigits:2,maximumFractionDigits:3}).format(Number(value)) : "—";
+  return <main dir={direction} className="mx-auto max-w-5xl min-w-0 px-4 py-7 pb-24" data-testid="follow-centre">
+    <header className="mb-6 rounded-3xl bg-slate-950 p-5 text-white sm:p-8"><p className="text-xs font-bold uppercase tracking-wider text-orange-300">WinPulse</p><h1 className="mt-2 text-2xl font-extrabold sm:text-4xl">{w[0]}</h1><p className="mt-2 text-sm leading-6 text-slate-300">{w[1]}</p><p className="mt-2 text-xs text-slate-400">{w[12]}</p></header>
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-500">{w[15]}</p><button type="button" onClick={()=>state?.refresh(true)} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm font-bold text-orange-700">{w[16]}</button></div>
+    {state?.failed && <p role="alert" className="mb-4 rounded-xl bg-amber-50 p-4 text-sm">{w[21]}</p>}
+    {state?.loading && !rows.length ? <p role="status" className="p-5">…</p> : !rows.length ? <div className="rounded-2xl border border-dashed p-6 text-center"><p>{w[13]}</p><Link to="/app" className="mt-4 inline-flex min-h-11 items-center font-bold text-orange-700">{w[14]} →</Link></div> : <div className="grid min-w-0 gap-3 md:grid-cols-2">{rows.map(row=>{
+      const outcome = row.state !== "resolved" ? w[4] : row.result === "won" ? w[5] : row.result === "lost" ? w[6] : row.result === "void" ? w[7] : w[4];
+      const confirmed = state.items.find(item => item.id === row.id);
+      return <article key={row.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap justify-between gap-2"><span className={`rounded-full px-3 py-1 text-xs font-bold ${row.result === "won" ? "bg-emerald-100 text-emerald-800" : row.result === "lost" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>{outcome}</span><span className="text-xs text-slate-500">{w[3]} : {date(row.commence_time)}</span></div><h2 className="mt-3 break-words font-bold text-slate-900"><bdi>{row.home_team} vs {row.away_team}</bdi></h2><p className="mt-2 break-words text-sm font-semibold text-orange-700">{w[19]} : <bdi>{bet(row.pick)}</bdi></p><p className="mt-1 text-sm text-slate-600">{w[20]} : {bet(row.market_label || row.market || "—")}</p><p className="mt-2 text-sm text-slate-600">{w[2]} : <bdi className="font-mono font-bold">{odds(row.pick_odds)}</bdi>{row.best_bookmaker && <> · {row.best_bookmaker}</>}</p>
+      {confirmed?.final_score && <p className="mt-2 text-sm text-slate-600">{t("Score final")} : <bdi className="font-mono font-bold">{confirmed.final_score}</bdi></p>}
+      {(Array.isArray(row.alerts) ? row.alerts : []).map((alert,index)=><p key={index} className="mt-2 rounded-lg bg-amber-50 p-2 text-sm font-semibold text-amber-900">{alert.type === "kickoff_soon" ? w[8] : alert.type === "odds_changed" ? `${w[9]} : ${odds(alert.initial_odds)} → ${odds(alert.current_odds)}` : ""}</p>)}
+      {row.state === "following" && <button type="button" disabled={state.busy.has(`unfollow:${row.id}`)} onClick={()=>state.unfollow(row.id)} className="mt-3 min-h-11 text-sm font-semibold text-slate-500 underline">{w[18]}</button>}</article>;
+    })}</div>}
+  </main>;
+}
+export function FollowedPicksPage() { return <AppLayout><FollowedPicksContent /></AppLayout>; }
