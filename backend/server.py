@@ -47,7 +47,7 @@ from odds_service import (
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
 )
-from stats_service import refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights
+from stats_service import refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
@@ -14459,6 +14459,32 @@ async def _scheduled_football_stats_refresh():
         logging.getLogger("winpulse.stats_service").warning("football-data.org lancement impossible: %s", type(exc).__name__)
 
 
+_apisports_task = None
+
+
+async def _apisports_background(matches):
+    async def run():
+        try:
+            result = await asyncio.wait_for(refresh_apisports_cache(db, matches), timeout=210)
+            logging.getLogger("winpulse.stats_service").info("API-Sports rafraichissement: %s", result)
+        finally:
+            await _invalidate_prediction_cache()
+    try:
+        await _run_with_scheduler_lease("apisports_refresh", run, lease_seconds=240)
+    except Exception as exc:
+        logging.getLogger("winpulse.stats_service").warning("API-Sports rafraichissement echoue: %s", type(exc).__name__)
+
+
+async def _scheduled_apisports_refresh():
+    global _apisports_task
+    if not os.environ.get("API_SPORTS_KEY", "").strip() or (_apisports_task and not _apisports_task.done()): return
+    try:
+        matches = await asyncio.wait_for(fetch_all_matches(db), timeout=8)
+        _apisports_task = asyncio.create_task(_apisports_background(list(matches)))
+    except Exception as exc:
+        logging.getLogger("winpulse.stats_service").warning("API-Sports lancement impossible: %s", type(exc).__name__)
+
+
 async def _scheduled_full_refresh():
     return await _run_with_scheduler_lease("odds_full_refresh", _full_refresh_and_track, lease_seconds=3500)
 
@@ -14613,6 +14639,7 @@ async def startup_event():
             coalesce=True,
             max_instances=1,
         )
+        scheduler.add_job(_scheduled_apisports_refresh, "interval", minutes=30, id="apisports_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_football_stats_refresh, "interval", minutes=30,
                           id="football_stats_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
@@ -14644,6 +14671,7 @@ async def startup_event():
     # A fresh odds cache must not prevent a separate stats/crest warmup.
     if ENABLE_INTERNAL_SCHEDULER:
         await _scheduled_football_stats_refresh()
+        await _scheduled_apisports_refresh()
 
     existing = await db.odds_cache.find_one({"_id": "all_matches"})
     should_refresh = not existing
@@ -14690,6 +14718,12 @@ async def shutdown_event():
             await asyncio.wait_for(_football_stats_task, timeout=5)
         except (asyncio.CancelledError, asyncio.TimeoutError):
             pass
+    if _apisports_task and not _apisports_task.done():
+        _apisports_task.cancel()
+        try:
+            await _apisports_task
+        except asyncio.CancelledError:
+            pass
     if scheduler.running:
         scheduler.shutdown(wait=False)
 
@@ -14711,5 +14745,4 @@ async def match_observed_insights(match_id: str, payload: Optional[dict] = Depen
         return await asyncio.wait_for(get_match_insights(db, match),timeout=3)
     except asyncio.TimeoutError:
         return {"version":1,"status":"unavailable","reason":"cache_timeout","home":{},"away":{},"h2h":[]}
-
 
