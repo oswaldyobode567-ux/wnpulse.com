@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, Fragment, useRef } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { Globe2, LayoutDashboard, Trophy, Layers, History, CreditCard, LogOut, Zap, Crown, ShieldCheck, Target, TrendingUp, User, Gift, Sparkles, Radio, Menu, X, Bell, BellPlus, Check, CheckCheck, Loader2, CheckCircle2, XCircle, MinusCircle } from "lucide-react";
+import { LayoutDashboard, Trophy, Layers, History, CreditCard, LogOut, Zap, Crown, ShieldCheck, Target, TrendingUp, User, Gift, Sparkles, Radio, Menu, X, Bell, BellPlus, Check, CheckCheck, Loader2, CheckCircle2, XCircle, MinusCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -6937,11 +6937,12 @@ export function LanguageSwitcher({
     t
   } = useLanguage();
   const selectId = useId();
+  const flags = { fr: "🇫🇷", en: "🇬🇧", es: "🇪🇸", pt: "🇵🇹", de: "🇩🇪", ar: "🌐" };
   return <div dir="ltr" className={`flex min-w-0 items-center gap-2 ${compact ? "max-w-[150px]" : "w-full"}`}>
     <label htmlFor={selectId} className="sr-only">{t("Choisir la langue")}</label>
-    <span aria-hidden="true" className={dark ? "text-orange-300" : "text-orange-600"}><Globe2 className="h-5 w-5 shrink-0" /></span>
+    <span aria-hidden="true" className={dark ? "text-orange-300" : "text-orange-600"}><span className="text-xl leading-none">{flags[language] || "🌐"}</span></span>
     <select id={selectId} value={language} onChange={event => setLanguage(event.target.value)} aria-label={t("Choisir la langue")} data-testid="language-selector" className={`min-h-11 min-w-0 flex-1 rounded-xl border px-2 py-2 text-base font-medium focus:outline-none focus:ring-2 focus:ring-orange-400 ${dark ? "border-slate-700 bg-slate-900 text-white" : "border-neutral-200 bg-white text-slate-800"}`}>
-      {SUPPORTED_LANGUAGES.map(item => <option key={item.code} value={item.code} lang={item.code} dir={item.dir}>{item.name}</option>)}
+      {SUPPORTED_LANGUAGES.map(item => <option key={item.code} value={item.code} lang={item.code} dir={item.dir}>{flags[item.code]} {item.name}</option>)}
     </select>
   </div>;
 }
