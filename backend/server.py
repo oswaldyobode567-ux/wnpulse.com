@@ -12007,6 +12007,58 @@ async def get_track_record_highlights(date: Optional[str] = None, time_zone: str
     return _build_track_record_highlights(rows, selected, zone, max(1, min(limit, 3)), now)
 
 
+_track_analytics_cache = {}
+
+
+@app.get("/api/track-record/analytics")
+async def track_record_analytics(days: int = 30, sport: str = "all"):
+    """Resolved official history, grouped without truncating to the current page."""
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="Période invalide")
+    now = datetime.now(timezone.utc); cutoff = now - timedelta(days=days)
+    requested = (sport or "all").strip().lower()
+    if requested not in {"all","football","basketball","tennis","hockey","baseball","mma"}:
+        raise HTTPException(status_code=422, detail="Sport invalide")
+    cache_key = (days,requested)
+    cached = _track_analytics_cache.get(cache_key)
+    if cached and time.monotonic() - cached["at"] < 120:
+        return copy.deepcopy(cached["data"])
+    projection = {"result":1,"sport_key":1,"sport_title":1,"market":1,"pick_odds":1,"model_version":1,"commence_time":1}
+    date_expr = {"$convert":{"input":"$commence_time","to":"date","onError":None,"onNull":None}}
+    created_expr = {"$convert":{"input":"$created_at","to":"date","onError":None,"onNull":None}}
+    query = {"result":{"$in":["won","lost","void"]},"$expr":{"$and":[
+        {"$ne":[date_expr,None]},{"$ne":[created_expr,None]},
+        {"$gte":[date_expr,cutoff]},{"$lte":[date_expr,now]},{"$lt":[created_expr,date_expr]}]}}
+    groups = {"sport":{},"market":{},"odds":{},"model":{}}
+    overall = {"won":0,"lost":0,"void":0}
+    async for row in db.predictions_history.find(query, projection).max_time_ms(10000):
+        kind = _normalize_sport(row)
+        if requested != "all" and kind != requested:
+            continue
+        result = row.get("result")
+        if result not in overall:
+            continue
+        overall[result] += 1
+        try:
+            odds = float(row.get("pick_odds"))
+            if not math.isfinite(odds) or odds <= 1: raise ValueError()
+            odds_key = "1.01–1.49" if odds < 1.5 else "1.50–1.99" if odds < 2 else "2.00–2.99" if odds < 3 else "3.00+"
+        except (ValueError, TypeError):
+            odds_key = "unknown"
+        values = {"sport":kind or "unknown","market":str(row.get("market") or "unknown"),"odds":odds_key,"model":str(row.get("model_version") or "unknown")}
+        for dimension,key in values.items():
+            bucket = groups[dimension].setdefault(key,{"key":key,"won":0,"lost":0,"void":0})
+            bucket[result] += 1
+    def finish(bucket):
+        resolved = bucket["won"] + bucket["lost"]
+        return {**bucket,"evaluated":resolved,"total":resolved+bucket["void"],"win_rate":round(bucket["won"]*100/resolved,1) if resolved else None}
+    payload = {"days":days,"sport":requested,"from":cutoff.isoformat(),"to":now.isoformat(),"basis":"commence_time",
+            "summary":finish(overall),"groups":{key:[finish(v) for _,v in sorted(rows.items())] for key,rows in groups.items()},
+            "note":"Historique confirmé et archivé avant le début du match ; remboursements séparés, dates et versions manquantes non inventées. Les modèles expérimentaux ne sont pas des prédictions officielles."}
+    _track_analytics_cache[cache_key] = {"at":time.monotonic(),"data":copy.deepcopy(payload)}
+    return payload
+
+
 @app.get("/api/track-record")
 async def get_track_record_public(
     page: int = 1,
@@ -13411,6 +13463,14 @@ def _notification_public(row: Dict) -> Dict:
     )}}
 
 
+def _safe_follow_odds(value):
+    try:
+        n = float(value)
+        return n if math.isfinite(n) and n > 1 else None
+    except (ValueError,TypeError):
+        return None
+
+
 @app.get("/api/notifications")
 async def get_result_notifications(payload: dict = Depends(get_current_user_payload)):
     user = await _notification_user(payload)
@@ -13420,9 +13480,35 @@ async def get_result_notifications(payload: dict = Depends(get_current_user_payl
     unread = await db.result_notifications.count_documents({"user_id": uid, "read_at": None})
     pending = await db.followed_predictions.find({"user_id": uid, "state": "following"}).to_list(length=200)
     recent = await db.followed_predictions.find({"user_id": uid, "state": "resolved"}).sort("followed_at", -1).to_list(length=50)
-    follows = [{"id": row["_id"], "match_id": row["match_id"], "pick": row["prediction"]["pick"],
-                "home_team": row["prediction"].get("home_team"), "away_team": row["prediction"].get("away_team"),
-                "state": row["state"]} for row in pending + recent]
+    current_by_id = {}; current_matches = {}
+    try:
+        snapshot = await asyncio.wait_for(_get_prediction_snapshot(), timeout=3)
+        current_by_id = {str(p.get("match_id")):p for p in snapshot.get("predictions",[]) if p.get("match_id")}
+        current_matches = {_discovery_match_id(m):m for m in snapshot.get("matches",[]) if _discovery_match_id(m)}
+    except Exception:
+        pass
+    now = datetime.now(timezone.utc)
+    follows = []
+    for row in pending + recent:
+        pred = row.get("prediction") or {}; current = current_by_id.get(str(row.get("match_id"))) or {}
+        starts = _parse_iso(pred.get("commence_time")); alerts = []
+        observed_match = current_matches.get(str(row.get("match_id"))) or {}
+        observed_start = _parse_iso(observed_match.get("commence_time"))
+        same_time = bool(starts and observed_start and abs((observed_start-starts).total_seconds()) < 60)
+        upcoming = same_time and not any(observed_match.get(k) for k in ("is_live","is_finished","completed"))
+        if row.get("state") == "following" and upcoming and starts and 0 < (starts-now).total_seconds() <= 1800:
+            alerts.append({"type":"kickoff_soon","commence_time":pred.get("commence_time")})
+        initial = _safe_follow_odds(pred.get("pick_odds")); live = _safe_follow_odds(current.get("pick_odds"))
+        same_line = pred.get("pick") == current.get("pick") and pred.get("market") == current.get("market") and pred.get("pick_point") == current.get("pick_point")
+        same_book = bool(pred.get("best_bookmaker")) and pred.get("best_bookmaker") == current.get("best_bookmaker")
+        if row.get("state") == "following" and upcoming and starts and starts > now and same_line and same_book and initial and live and abs(live-initial) + 1e-9 >= initial*0.05:
+            alerts.append({"type":"odds_changed","initial_odds":initial,"current_odds":live,"bookmaker":pred.get("best_bookmaker")})
+        follows.append({"id":row["_id"],"match_id":row["match_id"],"pick":pred.get("pick"),
+                        "home_team":pred.get("home_team"),"away_team":pred.get("away_team"),"sport_title":pred.get("sport_title"),
+                        "market":pred.get("market"),"market_label":pred.get("market_label"),"pick_odds":pred.get("pick_odds"),
+                        "commence_time":pred.get("commence_time"),"best_bookmaker":pred.get("best_bookmaker"),
+                        "followed_at":row.get("followed_at"),"state":row.get("state"),"result":row.get("result"),
+                        "confirmed_at":row.get("confirmed_at"),"alerts":alerts})
     return {"items": [_notification_public(row) for row in items], "unread_count": unread, "follows": follows}
 
 
@@ -13468,7 +13554,7 @@ async def follow_prediction(match_id: str, payload: dict = Depends(get_current_u
         raise HTTPException(status_code=409, detail="Le résultat de cette sélection est déjà confirmé")
     if await db.followed_predictions.count_documents({"user_id": user["id"], "state": "following"}) >= 200:
         raise HTTPException(status_code=409, detail="Tu peux suivre jusqu’à 200 pronostics à la fois")
-    saved = {key: prediction.get(key) for key in ("pick", "pick_odds", "market", "market_label", "home_team", "away_team", "sport_title", "commence_time")}
+    saved = {key: prediction.get(key) for key in ("pick", "pick_odds", "pick_point", "pick_raw", "best_bookmaker", "market", "market_label", "home_team", "away_team", "sport_title", "commence_time")}
     saved["home_team"] = saved.get("home_team") or match.get("home_team")
     saved["away_team"] = saved.get("away_team") or match.get("away_team")
     await db.followed_predictions.update_one(
@@ -14625,4 +14711,5 @@ async def match_observed_insights(match_id: str, payload: Optional[dict] = Depen
         return await asyncio.wait_for(get_match_insights(db, match),timeout=3)
     except asyncio.TimeoutError:
         return {"version":1,"status":"unavailable","reason":"cache_timeout","home":{},"away":{},"h2h":[]}
+
 
