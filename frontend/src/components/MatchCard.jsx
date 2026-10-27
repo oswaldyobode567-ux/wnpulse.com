@@ -8,7 +8,7 @@ import { useLanguage, usePageLanguage, FollowPickButton } from "@/components/App
 
 const MATCH_MESSAGES = {
   "fr": {
-    "🟢 SÛR": "🟢 SÛR",
+    "🟢 SÛR": "🟢 PRUDENT",
     "🟡 MODÉRÉ": "🟡 MODÉRÉ",
     "🔴 RISQUÉ": "🔴 RISQUÉ",
     "LIVE": "LIVE",
@@ -426,7 +426,7 @@ function SecondaryMarkets({ markets, primaryPick, primaryMarket, teams }) {
   }).slice(0, 2);
   if (!secondary.length) return null;
   return (
-    <div className="mt-3 space-y-2 border-t border-slate-100 pt-3" data-testid="secondary-markets">
+    <div className="mt-3 space-y-2 border-t border-orange-100 pt-3" data-testid="secondary-markets">
       <div className="text-xs font-bold uppercase leading-5 tracking-wide text-slate-500">{t("Autres marchés analysés")}</div>
       {secondary.map((market, index) => (
         <div key={JSON.stringify([market.market_key || market.market_label, market.pick, index])}
@@ -468,9 +468,9 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
 
 
   return (
-    <Card className={`flex h-full min-w-0 flex-col border bg-white p-4 transition-shadow hover:shadow-md sm:p-5 ${borderClass}`} data-testid="match-card">
+    <Card className={`group flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border bg-white p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg motion-reduce:transform-none sm:p-5 ${borderClass}`} data-testid="match-card">
       <Link to={`/app/match/${event.id}`} className="block min-w-0 flex-1 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-4" data-testid="match-card-link">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="mb-3 flex min-h-7 flex-wrap items-center justify-between gap-2">
           <div className="flex min-w-0 flex-wrap items-center gap-1.5">
             {isLive && <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 px-2.5 py-1 text-xs font-black leading-5 text-white">
               <Radio className="h-3.5 w-3.5 motion-safe:animate-pulse" aria-hidden="true" />{t("LIVE")}
@@ -482,15 +482,16 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
         </div>
 
         <div className="space-y-4">
-          <div className="flex min-w-0 flex-wrap items-start justify-between gap-x-3 gap-y-1 text-xs font-medium leading-5 text-slate-500">
+          <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold leading-5 text-slate-600">
             <span className="min-w-0 flex-1 basis-32 [overflow-wrap:anywhere]"><bdi>{event.sport_title}</bdi></span>
-            <time dateTime={event.commence_time || undefined} className="font-mono tabular-nums"><bdi>{formatDate(event.commence_time, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</bdi></time>
+            <time dateTime={event.commence_time || undefined} className="shrink-0 font-mono text-slate-700 tabular-nums"><bdi>{formatDate(event.commence_time, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</bdi></time>
           </div>
 
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-3"><TeamBadge name={event.home_team} src={badgeUrl(event,"home")} /><div className="min-w-0 font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{event.home_team}</bdi></div></div>
-            <div className="my-1 text-xs text-slate-400" aria-hidden="true">vs</div>
-            <div className="flex min-w-0 items-center gap-3"><TeamBadge name={event.away_team} src={badgeUrl(event,"away")} /><div className="min-w-0 font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{event.away_team}</bdi></div></div>
+          <div className="space-y-2 rounded-2xl border border-slate-100 bg-gradient-to-br from-white to-slate-50 p-3 sm:p-4">
+            {[['home', event.home_team], ['away', event.away_team]].map(([side, name]) => <div key={side} className="flex min-w-0 items-center gap-3">
+              <TeamBadge name={name} src={badgeUrl(event, side)} />
+              <div className="min-w-0 flex-1 font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name || '—'}</bdi></div>
+            </div>)}
           </div>
 
           {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && (
@@ -501,15 +502,15 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
           )}
 
           {!locked && (pred.pick ? (
-            <div className="space-y-3 border-t border-slate-100 pt-3">
+            <div className="space-y-3 rounded-2xl border border-orange-100 bg-orange-50/40 p-3 sm:p-4">
               {pred.market_label && <div className="break-words text-xs font-medium uppercase leading-5 tracking-wide text-slate-500">{translateBetText(pred.market_label, t, formatNumber)}</div>}
               <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
                 <div className="min-w-0">
                   <div className="mb-1 text-xs font-medium text-slate-500">{t("Pronostic")}</div>
-                  <div className="text-base font-bold leading-6 text-orange-600 [overflow-wrap:anywhere]"><bdi>{translateBetText(pred.pick, t, formatNumber, teams)}</bdi></div>
+                  <div className="text-base font-extrabold leading-6 text-orange-700 [overflow-wrap:anywhere]"><bdi>{translateBetText(pred.pick, t, formatNumber, teams)}</bdi></div>
                   {pred.best_bookmaker && <div className="mt-1 break-words text-xs leading-5 text-slate-500">{t("chez {{bookmaker}}", { bookmaker: pred.best_bookmaker })}</div>}
                 </div>
-                <div className="text-end">
+                <div className="rounded-xl bg-white px-3 py-2 text-end shadow-sm">
                   <div className="text-xs font-medium text-slate-500">{t("Cote")}</div>
                   <bdi className="font-mono text-2xl font-black tabular-nums text-slate-900">{formatOdds(pred.pick_odds, formatNumber)}</bdi>
                 </div>
@@ -771,7 +772,7 @@ export function MatchInsights({ match }) {
         {data.stale && <p role="status" className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{words[30]}</p>}
         {tab === "compare" && <>
           <div className="mb-4 flex flex-wrap gap-2">{[false,true].map(v=><button key={String(v)} type="button" onClick={()=>setVenue(v)} aria-pressed={venue===v} className={`min-h-11 rounded-xl border px-3 text-xs font-semibold ${venue===v ? "border-orange-300 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{words[v?6:5]}</button>)}</div>
-          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played || 0)}</p></div>)}</div>
+          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played)}</p></div>)}</div>
           <p className="my-3 text-xs text-slate-500">{words[31]}</p>
           <table className="w-full table-fixed text-sm" data-testid="match-comparison-table"><caption className="sr-only">{words[2]}: {match.home_team} / {match.away_team}</caption><thead><tr className="border-b border-slate-200"><th scope="col" className="w-[46%] py-3 text-start text-xs font-semibold text-slate-500">{words[17]}</th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.home_team} className="no-underline sm:hidden">{teamInitials(match.home_team)}</abbr><span className="hidden sm:inline">{match.home_team}</span></th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.away_team} className="no-underline sm:hidden">{teamInitials(match.away_team)}</abbr><span className="hidden sm:inline">{match.away_team}</span></th></tr></thead><tbody>{METRICS.map(([key,index,suffix])=><tr key={key} className="border-b border-slate-100 last:border-0"><th scope="row" className="break-words py-3 pe-2 text-start text-xs font-medium leading-5 text-slate-600 sm:text-sm">{words[index]}</th><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(home[key],suffix)}</td><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(away[key],suffix)}</td></tr>)}</tbody></table>
         </>}
