@@ -65,6 +65,35 @@ function displayPercent(i18n, value) {
 function displayDate(i18n, value) {
   return i18n.formatPattern(value, "DD/MM/YYYY") || "—";
 }
+const ANALYTICS_COPY = {
+ fr:["Analyse des performances","Période glissante selon la date du match","7 jours","30 jours","90 jours","Pronostics départagés","Gagnés","Perdus","Remboursés","Taux de réussite","Comparer par","Sport","Marché","Tranche de cote","Version du moteur","Aucune donnée confirmée sur cette période.","Données indisponibles. Réessaie.","Actualiser","Non renseigné","Échantillon","Seuls les pronostics archivés avant le match sont comptés. Les remboursements sont exclus du taux. Les dates absentes sont exclues ; les versions manquantes restent non renseignées. Les anciens et nouveaux moteurs ne sont pas mélangés dans la comparaison par version.","Ces résultats passés ne garantissent pas les résultats futurs.","Chargement…"],
+ en:["Performance analysis","Rolling period by match date","7 days","30 days","90 days","Decided picks","Won","Lost","Refunded","Win rate","Compare by","Sport","Market","Odds range","Model version","No confirmed results in this period.","Data unavailable. Try again.","Refresh","Not recorded","Sample","Only picks archived before kickoff are counted. Refunds are excluded from win rate. Missing dates are excluded; missing versions remain unspecified. Versions are compared separately.","Past results do not guarantee future results.","Loading…"],
+ es:["Análisis de resultados","Período móvil según la fecha del partido","7 días","30 días","90 días","Pronósticos resueltos","Ganados","Perdidos","Reembolsados","Tasa de acierto","Comparar por","Deporte","Mercado","Rango de cuota","Versión del motor","Sin resultados confirmados en este período.","Datos no disponibles. Reinténtalo.","Actualizar","No registrado","Muestra","Solo cuentan pronósticos archivados antes del partido. Los reembolsos no cuentan para la tasa. Se excluyen fechas ausentes y las versiones desconocidas no se inventan.","Los resultados pasados no garantizan resultados futuros.","Cargando…"],
+ pt:["Análise de resultados","Período móvel pela data do jogo","7 dias","30 dias","90 dias","Palpites decididos","Ganhos","Perdidos","Reembolsados","Taxa de acerto","Comparar por","Desporto","Mercado","Intervalo de cota","Versão do motor","Sem resultados confirmados neste período.","Dados indisponíveis. Tenta novamente.","Atualizar","Não registado","Amostra","Só contam palpites arquivados antes do jogo. Reembolsos excluídos da taxa. Datas em falta são excluídas e versões desconhecidas não são inventadas.","Resultados passados não garantem resultados futuros.","A carregar…"],
+ de:["Leistungsanalyse","Rollierender Zeitraum nach Spieldatum","7 Tage","30 Tage","90 Tage","Entschiedene Tipps","Gewonnen","Verloren","Erstattet","Trefferquote","Vergleichen nach","Sport","Markt","Quotenbereich","Modellversion","Keine bestätigten Ergebnisse in diesem Zeitraum.","Daten nicht verfügbar. Erneut versuchen.","Aktualisieren","Nicht erfasst","Stichprobe","Nur vor Spielbeginn archivierte Tipps zählen. Erstattungen zählen nicht zur Quote. Fehlende Daten werden ausgeschlossen und Modellversionen nicht erfunden.","Vergangene Ergebnisse garantieren keine zukünftigen Ergebnisse.","Laden…"],
+ ar:["تحليل النتائج","فترة متحركة حسب تاريخ المباراة","7 أيام","30 يوماً","90 يوماً","التوقعات المحسومة","فائز","خاسر","مسترد","نسبة النجاح","المقارنة حسب","الرياضة","السوق","نطاق المعامل","إصدار المحرك","لا توجد نتائج مؤكدة في هذه الفترة.","البيانات غير متاحة. حاول مجدداً.","تحديث","غير مسجل","العينة","تُحسب التوقعات المؤرشفة قبل المباراة فقط. المستردات مستبعدة من النسبة، والتواريخ المفقودة مستبعدة، ولا تُختلق إصدارات.","النتائج السابقة لا تضمن النتائج المستقبلية.","جار التحميل…"]
+};
+function TrackPerformance({ sport }) {
+  const i18n = usePageLanguage(); const w = ANALYTICS_COPY[i18n.language] || ANALYTICS_COPY.fr;
+  const [days,setDays] = useState(30); const [dimension,setDimension] = useState("sport");
+  const [state,setState] = useState({ data:null, loading:true, error:false }); const [retry,setRetry] = useState(0);
+  useEffect(()=>{let active=true;const controller=new AbortController();setState({data:null,loading:true,error:false});
+    api.get("/track-record/analytics",{params:{days,sport},signal:controller.signal,timeout:20000}).then(r=>{
+      if(active){if(!r.data || !r.data.summary || !r.data.groups)throw Error("Invalid analytics");setState({data:r.data,loading:false,error:false});}
+    }).catch(()=>{if(active && !controller.signal.aborted)setState({data:null,loading:false,error:true});});
+    return ()=>{active=false;controller.abort();};
+  },[days,sport,retry]);
+  const groups=Array.isArray(state.data?.groups?.[dimension]) ? state.data.groups[dimension] : [];
+  const summary=state.data?.summary || {}; const count=v=>i18n.formatNumber(Number(v)||0); const rate=v=>v == null ? "—" : `${new Intl.NumberFormat(i18n.locale,{maximumFractionDigits:1}).format(v)} %`;
+  return <section className="my-5 rounded-2xl border border-orange-200 bg-white p-4 sm:p-6" data-testid="track-performance">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-extrabold text-slate-900">{w[0]}</h2><p className="mt-1 text-sm text-slate-500">{w[1]}</p></div><div className="flex flex-wrap gap-2">{[7,30,90].map((v,i)=><button type="button" key={v} aria-pressed={days===v} onClick={()=>setDays(v)} className={`min-h-11 rounded-xl border px-3 text-sm font-bold ${days===v?"border-orange-500 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{w[i+2]}</button>)}</div></div>
+    {state.error ? <div role="alert" className="mt-4 rounded-xl bg-amber-50 p-4 text-sm">{w[16]} <button className="min-h-11 font-bold text-orange-700" onClick={()=>setRetry(v=>v+1)}>{w[17]}</button></div> : state.loading ? <p role="status" className="mt-4 text-sm text-slate-500">{w[22]}</p> : <><div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">{[[w[5],count(summary.evaluated)],[w[6],count(summary.won)],[w[7],count(summary.lost)],[w[8],count(summary.void)],[w[9],rate(summary.win_rate)]].map(([label,value])=><div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 font-mono text-lg font-bold text-slate-900">{value}</p></div>)}</div>
+    <label className="mt-5 block text-sm font-bold text-slate-700" htmlFor="track-analytics-dimension">{w[10]}</label><select id="track-analytics-dimension" value={dimension} onChange={e=>setDimension(e.target.value)} className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 px-3 sm:w-auto">{[["sport",11],["market",12],["odds",13],["model",14]].map(([key,i])=><option key={key} value={key}>{w[i]}</option>)}</select>
+    {!groups.length ? <p className="mt-4 text-sm text-slate-500">{w[15]}</p> : <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{groups.map(row=><article key={row.key} className="min-w-0 rounded-xl border border-slate-200 p-3"><h3 className="break-words font-bold text-slate-900">{row.key === "unknown" ? w[18] : dimension === "sport" ? i18n.t(sportName(row.key)) : dimension === "market" ? i18n.bet(row.key) : row.key}</h3><p className="mt-2 text-sm text-slate-600">{w[19]} : <strong>{count(row.evaluated)}</strong> · {w[9]} : <strong>{rate(row.win_rate)}</strong></p><p className="mt-1 text-xs text-slate-500">{w[6]} {count(row.won)} · {w[7]} {count(row.lost)} · {w[8]} {count(row.void)}</p></article>)}</div>}
+    <p className="mt-4 text-xs leading-5 text-slate-500">{w[20]} {w[21]}</p></>}
+  </section>;
+}
+
 export default function TrackRecordPage() {
   const i18n = useResultsLanguage();
   const {
@@ -160,6 +189,7 @@ export default function TrackRecordPage() {
       <Metric icon={Flame} label={i18n.t("Série en cours")} value={metric(stats.current_streak)} sub={i18n.t("Victoires consécutives")} />
     </div>
     {data?.transition_mode && data.note && <div className="mb-5 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-900" data-testid="transition-mode-banner"><Info className="mt-1 h-5 w-5 shrink-0" /><p>{i18n.t(data.note)}</p></div>}
+    <TrackPerformance sport={sport} />
     <section id="track-journal" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white shadow-sm" aria-labelledby="track-journal-heading">
       <header className="border-b border-slate-100 p-3 sm:p-5">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h2 id="track-journal-heading" className="font-heading text-lg sm:text-2xl font-extrabold text-slate-900">{i18n.t("Le journal des résultats")}</h2><p className="mt-1 text-sm leading-6 text-slate-500">{i18n.t("Les derniers résultats en premier.")}</p></div><button type="button" disabled={loading} onClick={() => setRefresh(value => value + 1)} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-4 py-2 text-sm font-bold text-slate-700 hover:bg-slate-50 disabled:opacity-50" data-testid="track-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />{i18n.t("Actualiser")}</button></div>
@@ -987,3 +1017,4 @@ function useResultsLanguage() {
     };
   }, []);
 }
+
