@@ -25,7 +25,7 @@ import BlogPostPage from "@/pages/BlogPostPage";
 import LegalPage from "@/pages/LegalPage";
 import WhatsAppWidget from "@/components/WhatsAppWidget";
 import PageTracker from "@/components/PageTracker";
-import AppLayout, { LanguageProvider, LanguageSwitcher, useLanguage, usePageLanguage } from "@/components/AppLayout";
+import AppLayout, { LanguageProvider, LanguageSwitcher, useLanguage, usePageLanguage, FollowedPicksPage } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CalendarDays, CheckCircle2, Clock, Info, Layers, Lock, Play, Radar, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Target, XCircle } from "lucide-react";
@@ -476,6 +476,8 @@ export default function App() {
                 <DashboardPage />
               </RequireAuth>} />
 
+          <Route path="/app/suivi" element={<RequireAuth><FollowedPicksPage /></RequireAuth>} />
+
           <Route path="/app/top" element={<RequireAuth>
                 <TopPicksPage />
               </RequireAuth>} />
@@ -563,4 +565,5 @@ function LocalizedToaster() {
   } = useLanguage();
   return <Toaster position={direction === "rtl" ? "top-left" : "top-right"} richColors />;
 }
+
 
