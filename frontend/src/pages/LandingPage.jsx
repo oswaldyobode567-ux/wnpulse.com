@@ -122,6 +122,17 @@ function isAvailablePick(row) {
   return unlocked && typeof row.pick === "string" && Boolean(row.pick.trim());
 }
 
+const LANDING_EXTRA = {
+ fr:["Pourquoi cette sélection ?","Estimation du moteur","Sources de cotes","bookmaker(s)","Données de sources non communiquées.","Point de vigilance","Une estimation reste incertaine et la cote peut évoluer.","Date à confirmer","Découvre une fiche WinPulse","Un exemple réel actuellement disponible","Match","Marché","Sélection","Cote","Avec Pro : autres sélections, combinés et outils d’analyse.","Aucune sélection publique disponible pour le moment.","Comparer les accès","Free : sélections gratuites et historique public.","Pro : sélections et outils réservés aux abonnés.","Estimation non communiquée.","Rencontres visibles ; détails réservés selon l’accès."],
+ en:["Why this selection?","Model estimate","Odds sources","bookmaker(s)","Source details unavailable.","Risk to consider","An estimate is uncertain and odds can change.","Time to be confirmed","Explore a WinPulse match card","A real selection currently available","Match","Market","Selection","Odds","With Pro: more selections, accumulators and analysis tools.","No public selection available currently.","Compare access","Free: available picks and public history.","Pro: subscriber selections and tools.","Estimate unavailable.","Fixtures visible; details depend on access."],
+ es:["¿Por qué esta selección?","Estimación del motor","Fuentes de cuotas","casa(s) de apuestas","Fuentes no disponibles.","Riesgo a considerar","Una estimación es incierta y la cuota puede cambiar.","Hora por confirmar","Descubre una ficha WinPulse","Una selección real disponible","Partido","Mercado","Selección","Cuota","Con Pro: más selecciones, combinadas y herramientas de análisis.","No hay una selección pública disponible.","Comparar accesos","Free: selecciones gratis e historial público.","Pro: selecciones y herramientas para abonados.","Estimación no disponible.","Partidos visibles; detalles según el acceso."],
+ pt:["Porquê esta seleção?","Estimativa do motor","Fontes de cotas","operador(es)","Fontes não disponíveis.","Risco a considerar","Uma estimativa é incerta e a cota pode mudar.","Hora por confirmar","Descobre uma ficha WinPulse","Uma seleção real disponível","Jogo","Mercado","Seleção","Cota","Com Pro: mais seleções, combinados e ferramentas de análise.","Nenhuma seleção pública disponível.","Comparar acessos","Free: seleções grátis e histórico público.","Pro: seleções e ferramentas para subscritores.","Estimativa indisponível.","Jogos visíveis; detalhes conforme o acesso."],
+ de:["Warum diese Auswahl?","Modellschätzung","Quotenquellen","Anbieter","Quellen nicht angegeben.","Risiko","Eine Schätzung ist unsicher und Quoten können sich ändern.","Uhrzeit offen","Eine WinPulse-Partie entdecken","Eine aktuell verfügbare echte Auswahl","Spiel","Markt","Auswahl","Quote","Mit Pro: weitere Tipps, Kombis und Analysewerkzeuge.","Derzeit keine öffentliche Auswahl verfügbar.","Zugang vergleichen","Free: kostenlose Tipps und öffentliche Ergebnisse.","Pro: Tipps und Werkzeuge für Abonnenten.","Schätzung nicht verfügbar.","Spiele sichtbar; Details je nach Zugang."],
+ ar:["لماذا هذا الاختيار؟","تقدير المحرك","مصادر المعاملات","مزود","تفاصيل المصادر غير متاحة.","نقطة انتباه","التقدير غير مؤكد وقد يتغير المعامل.","الموعد غير مؤكد","اكتشف بطاقة WinPulse","اختيار حقيقي متاح حالياً","المباراة","السوق","الاختيار","المعامل","مع Pro: اختيارات ورهانات مجمعة وأدوات تحليل إضافية.","لا يوجد اختيار عام متاح حالياً.","قارن الاشتراكات","Free: اختيارات مجانية وسجل عام.","Pro: اختيارات وأدوات للمشتركين.","التقدير غير متاح.","المباريات ظاهرة والتفاصيل حسب الاشتراك."]
+};
+function landingTime(value,locale,fallback) {
+  const d = new Date(value); return value && Number.isFinite(d.getTime()) ? new Intl.DateTimeFormat(locale,{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}).format(d) : fallback;
+}
 function homepagePicks(data) {
   if (!Array.isArray(data)) {
     const error = new Error("Unexpected predictions response");
@@ -191,6 +202,7 @@ export default function LandingPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
+  const extra = LANDING_EXTRA[language] || LANDING_EXTRA.fr;
   const [picksStatus, setPicksStatus] = useState("loading");
   const [reloadKey, setReloadKey] = useState(0);
   const [resultsDate, setResultsDate] = useState(yesterdayDate);
@@ -432,12 +444,14 @@ export default function LandingPage() {
                       return (
                         <div key={row.id || i} className="wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
                           <div className="space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} /><bdi className="min-w-0 break-words text-sm font-bold leading-5 text-slate-800">{row[`${side}_team`]}</bdi></div>)}{row.sport_title && <p className="text-xs text-slate-500">{row.sport_title}</p>}</div>
+                          <p className="mt-2 text-xs text-slate-500"><time dateTime={row.commence_time || undefined}>{landingTime(row.commence_time,locale,extra[7])}</time>{row.market_label && <> · {row.market_label}</>}</p>
                           <div className="mt-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
                             <p className="min-w-0 break-words text-sm font-semibold text-slate-900">
                               {locked ? <span className="inline-flex items-center gap-1 text-slate-500"><Lock className="h-3 w-3 shrink-0" />{t("Analyse réservée Pro")}</span> : <>{row.pick}{row.pick_odds != null && <span className="ms-1 font-normal text-slate-500">@ {row.pick_odds}</span>}</>}
                             </p>
                             {showConfidence && <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-700">{t("Indice : {{value}} %", { value: formatNumber(Math.round(confidence)) })}</span>}
                           </div>
+                          {!locked && <div className="mt-3 rounded-lg border border-orange-100 bg-white p-3 text-xs leading-5 text-slate-600"><p className="font-bold text-slate-800">{extra[0]}</p><p className="mt-1">• {row.model_probability != null && Number.isFinite(Number(row.model_probability)) && Number(row.model_probability)>=0 && Number(row.model_probability)<=100 ? `${extra[1]} : ${formatNumber(Number(row.model_probability))} %` : extra[19]}</p><p>• {row.num_books != null && Number.isFinite(Number(row.num_books)) && Number(row.num_books)>0 ? `${extra[2]} : ${formatNumber(Number(row.num_books))} ${extra[3]}` : extra[4]}</p><p className="mt-2 text-amber-800"><strong>{extra[5]} :</strong> {extra[6]}</p></div>}
                         </div>
                       );
                     })}
@@ -589,6 +603,7 @@ export default function LandingPage() {
             </h2>
             <p className="mt-3 text-slate-400">{t("Découvre WinPulse gratuitement. Passe à Pro pour retrouver les pronostics, les combinés et les outils réservés aux abonnés.")}</p>
           </div>
+          <div className="mx-auto mb-6 max-w-4xl rounded-2xl border border-white/15 bg-white/5 p-5" data-testid="pricing-example"><h3 className="text-xl font-bold">{extra[8]}</h3><p className="mt-1 text-sm text-slate-300">{extra[9]}</p>{livePicks.find(isAvailablePick) ? (()=>{const example = livePicks.find(isAvailablePick);return <div className="mt-4 grid min-w-0 gap-2 rounded-xl bg-white/10 p-4 text-sm sm:grid-cols-2"><p className="break-words"><span className="text-slate-400">{extra[10]} :</span> {example.home_team} vs {example.away_team}</p><p><span className="text-slate-400">{extra[11]} :</span> {example.market_label || "—"}</p><p><span className="text-slate-400">{extra[12]} :</span> {example.pick}</p><p><span className="text-slate-400">{extra[13]} :</span> {example.pick_odds ?? "—"}</p></div>;})() : <p className="mt-3 text-sm text-slate-300">{extra[15]}</p>}<p className="mt-3 text-sm leading-6 text-slate-300">{extra[14]}</p><p className="mt-3 text-xs text-slate-400">{extra[17]}<br />{extra[18]}</p></div>
           <div className="mx-auto grid max-w-4xl gap-5 md:grid-cols-2">
             {[
               {
@@ -598,7 +613,7 @@ export default function LandingPage() {
                 desc: t("Pour découvrir"),
                 features: [
                   t("Sélections gratuites disponibles"),
-                  t("Tous les matchs (cotes visibles)"),
+                  extra[20],
                   t("Track record public"),
                 ],
                 cta: t("Démarrer gratuit"),
@@ -686,4 +701,5 @@ export default function LandingPage() {
     </div>
   );
 }
+
 
