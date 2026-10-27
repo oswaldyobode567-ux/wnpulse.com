@@ -473,9 +473,7 @@ def _display_summary(rows):
 async def enrich_match_badges(db, matches):
     """One cache query per batch, no network calls per card or per visitor."""
     codes = list({COMPETITION_MAP[m.get("sport_key")] for m in matches if m.get("sport_key") in COMPETITION_MAP})
-    if not codes:
-        return matches
-    docs = await db.stats_cache.find({"_id":{"$in":["fd_teams_"+code for code in codes]}}).to_list(length=len(codes))
+    docs = await db.stats_cache.find({"_id":{"$in":["fd_teams_"+code for code in codes]}}).to_list(length=len(codes)) if codes else []
     mappings = {d["_id"][9:]:d for d in docs}
     result = []
     for match in matches:
@@ -486,7 +484,7 @@ async def enrich_match_badges(db, matches):
             if crest and not row.get(side+"_logo"):
                 row[side+"_logo"] = crest
         result.append(row)
-    return result
+    return await _apisports_enrich_badges(db, result)
 
 
 async def get_match_insights(db, match):
@@ -500,7 +498,8 @@ async def get_match_insights(db, match):
     key = f"{_normalize_name(match.get('home_team',''))}|{_normalize_name(match.get('away_team',''))}"
     doc = await db.real_stats_cache.find_one({"_id":key})
     if not doc or doc.get("display_version") != 1:
-        return {**empty,"reason":"cache_not_ready"}
+        alternative = await _apisports_football_insights(db, match, cutoff)
+        return alternative or {**empty,"reason":"cache_not_ready"}
     home = _verified_display_rows(doc.get("display_home"),cutoff)
     away = _verified_display_rows(doc.get("display_away"),cutoff)
     def team(rows, venue):
@@ -516,3 +515,132 @@ async def get_match_insights(db, match):
             "home":team(home,"home"),"away":team(away,"away"),"h2h":encounters,
             "updated_at":doc.get("updated_at"),"stale":not stamp or (now-stamp).total_seconds()>86400}
 
+
+# API-Sports is an optional, read-only enrichment; no prediction is changed.
+# The scheduler owns a distributed lease, and requests are never made by page views.
+API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "").strip()
+_APISPORTS_BASE = {"football": "https://v3.football.api-sports.io", "basketball": "https://v1.basketball.api-sports.io"}
+_APISPORTS_DAILY_LIMIT = 80  # per API; leaves space for other account activity
+_APISPORTS_RUN_LIMIT = 12   # across both APIs, per scheduler run
+
+
+def _as_sport(match):
+    key = str(match.get("sport_key") or "").lower()
+    if key.startswith("soccer_"): return "football"
+    if key.startswith("basketball_"): return "basketball"
+    return None
+
+
+def _as_normalize(name):
+    return "".join(c for c in unicodedata.normalize("NFKD", str(name or "")).casefold() if c.isalnum() and not unicodedata.combining(c))
+
+
+def _as_key(sport, name):
+    return "as_team:" + sport + ":" + _as_normalize(name)
+
+
+async def _as_request(db, sport, path, params):
+    if not API_SPORTS_KEY or sport not in _APISPORTS_BASE: return None
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # The scheduled worker runs under a cross-process lease. Separate documents
+    # ensure that the football and basketball free quotas remain independent.
+    quota_id = "apisports:" + sport + ":" + day
+    quota = await db.stats_cache.find_one({"_id": quota_id}) or {}
+    if quota.get("calls", 0) >= _APISPORTS_DAILY_LIMIT: return None
+    await db.stats_cache.update_one({"_id": quota_id}, {"$inc": {"calls": 1}}, upsert=True)
+    try:
+        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
+            response = await client.get(_APISPORTS_BASE[sport] + path, params=params, headers={"x-apisports-key": API_SPORTS_KEY})
+        if response.status_code != 200:
+            logger.warning("API-Sports %s: HTTP %s", sport, response.status_code)
+            return None
+        data = response.json()
+        if not isinstance(data, dict) or data.get("errors") or not isinstance(data.get("response"), list):
+            logger.warning("API-Sports %s: reponse indisponible ou quota atteint", sport)
+            return None
+        return data["response"]
+    except (httpx.HTTPError, ValueError):
+        logger.warning("API-Sports %s: requete indisponible", sport)
+        return None
+
+
+async def refresh_apisports_cache(db, matches):
+    if not API_SPORTS_KEY: return {"skipped": "key_missing"}
+    now = datetime.now(timezone.utc)
+    used = 0
+    for match in matches:
+        sport = _as_sport(match)
+        if not sport: continue
+        kickoff = _display_date(match.get("commence_time"))
+        if not kickoff or kickoff < now or kickoff > now + timedelta(days=7): continue
+        for side in ("home", "away"):
+            name = str(match.get(side + "_team") or "").strip()
+            if len(name) < 3: continue
+            cache_id = _as_key(sport, name)
+            doc = await db.stats_cache.find_one({"_id": cache_id}) or {}
+            updated = _display_date(doc.get("updated_at"))
+            if updated and now - updated < timedelta(hours=24): continue
+            if used >= _APISPORTS_RUN_LIMIT: return {"requests": used}
+            rows = await _as_request(db, sport, "/teams", {"search": name})
+            used += 1
+            if rows is None: return {"requests": used, "stopped": "provider_unavailable"}  # retry on a later cycle
+            candidates = []
+            for item in rows:
+                team = item.get("team", {}) if sport == "football" else item
+                if _as_normalize(team.get("name")) == _as_normalize(name) and team.get("id"):
+                    candidates.append(team)
+            unique = {str(t["id"]): t for t in candidates}
+            if len(unique) != 1:
+                await db.stats_cache.update_one({"_id": cache_id}, {"$set": {"updated_at": now.isoformat(), "matched": False}}, upsert=True)
+                continue
+            team = next(iter(unique.values()))
+            fields = {"updated_at": now.isoformat(), "matched": True, "team_id": team["id"], "name": team.get("name"), "logo": _safe_crest(team.get("logo"))}
+            await db.stats_cache.update_one({"_id": cache_id}, {"$set": fields}, upsert=True)
+            # Detailed comparable statistics below are football-only: the UI's
+            # goal metrics must never be applied to basketball points.
+            if sport == "football" and used < _APISPORTS_RUN_LIMIT:
+                games = await _as_request(db, sport, "/fixtures", {"team": team["id"], "last": 10, "status": "FT"})
+                used += 1
+                if games is not None:
+                    recent = []
+                    for game in games:
+                        fixture, teams, goals = game.get("fixture") or {}, game.get("teams") or {}, game.get("goals") or {}
+                        home, away = teams.get("home") or {}, teams.get("away") or {}
+                        if (fixture.get("status") or {}).get("short") != "FT" or team["id"] not in (home.get("id"), away.get("id")): continue
+                        recent.append({"id": str(fixture.get("id") or ""), "date": fixture.get("date"), "home_id": home.get("id"), "away_id": away.get("id"), "home_team": home.get("name"), "away_team": away.get("name"), "score_home": goals.get("home"), "score_away": goals.get("away"), "venue": "home" if home.get("id") == team["id"] else "away", "team_id": team["id"], "competition": (game.get("league") or {}).get("name")})
+                    await db.stats_cache.update_one({"_id": cache_id}, {"$set": {"recent": recent, "recent_updated_at": now.isoformat()}})
+    return {"requests": used}
+
+
+async def _apisports_enrich_badges(db, matches):
+    keys = list({_as_key(_as_sport(m), m.get(side + "_team")) for m in matches for side in ("home", "away") if _as_sport(m) and m.get(side + "_team")})
+    if not keys: return matches
+    docs = await db.stats_cache.find({"_id": {"$in": keys}}).to_list(length=len(keys))
+    lookup = {doc["_id"]: doc for doc in docs}
+    result = []
+    for match in matches:
+        row = dict(match); sport = _as_sport(row)
+        for side in ("home", "away"):
+            doc = lookup.get(_as_key(sport, row.get(side + "_team")), {}) if sport else {}
+            logo = _safe_crest(doc.get("logo")) if doc.get("matched") else None
+            if logo and not row.get(side + "_logo"): row[side + "_logo"] = logo
+        result.append(row)
+    return result
+
+
+async def _apisports_football_insights(db, match, cutoff):
+    ids = [_as_key("football", match.get(side + "_team")) for side in ("home", "away")]
+    docs = await db.stats_cache.find({"_id": {"$in": ids}}).to_list(length=2)
+    by_id = {d["_id"]: d for d in docs}
+    home_doc, away_doc = (by_id.get(key, {}) for key in ids)
+    home = _verified_display_rows(home_doc.get("recent"), cutoff)
+    away = _verified_display_rows(away_doc.get("recent"), cutoff)
+    if not home and not away: return None
+    def team(rows, venue):
+        return {"recent": rows, "overall": _display_summary(rows), "venue": _display_summary([r for r in rows if r["venue"] == venue])}
+    home_id, away_id = home_doc.get("team_id"), away_doc.get("team_id")
+    h2h = _verified_display_rows([r for r in home + away if home_id and away_id and {r.get("home_id"),r.get("away_id")} == {home_id,away_id}], cutoff)
+    stamps = [_display_date(d.get("recent_updated_at")) for d in (home_doc,away_doc) if d.get("recent")]
+    stamps = [v for v in stamps if v]
+    stamp = min(stamps) if stamps else None
+    return {"version": 1, "status": "ready", "source": "API-Sports", "sample_limit": 10, "cutoff": cutoff.isoformat(), "home": team(home,"home"), "away": team(away,"away"), "h2h": h2h, "h2h_scope": "recent_sample_only", "updated_at": stamp.isoformat() if stamp else None, "stale": not stamp or (datetime.now(timezone.utc)-stamp).total_seconds() > 86400}
