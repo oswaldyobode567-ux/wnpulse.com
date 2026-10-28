@@ -18,7 +18,7 @@ import {
   Gift,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLanguage } from "@/components/AppLayout";
+import { useLanguage, useExperienceCopy } from "@/components/AppLayout";
 import api from "@/lib/api";
 
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
@@ -196,6 +196,7 @@ function readDailyResults(data, date, now = new Date()) {
 }
 
 export default function LandingPage() {
+  const experienceWords = useExperienceCopy();
   const { t, locale, formatNumber, language } = useLanguage();
   const telegramLabel = ({fr: "Rejoindre notre canal Telegram", en: "Join our Telegram channel", es: "Únete a nuestro canal de Telegram", pt: "Junta-te ao nosso canal Telegram", de: "Unserem Telegram-Kanal beitreten", ar: "انضم إلى قناتنا على تيليغرام"})[language] || "Rejoindre notre canal Telegram";
   const motionRoot = useLandingMotion();
@@ -372,11 +373,11 @@ export default function LandingPage() {
                 {t("Pronostics · Analyses · Résultats publics")}
               </div>
               <h1 className="wp-enter wp-mobile-hero-title font-heading text-4xl font-black leading-tight tracking-tighter text-slate-900 sm:text-5xl lg:text-6xl" style={{ "--wp-delay": "80ms" }}>
-                {t("Vise la victoire avec nos pronostics.")}{" "}
-                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">{t("Garde une longueur d’avance.")}</span>
+                {experienceWords.heroOne}{" "}
+                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">{experienceWords.heroTwo}</span>
               </h1>
               <p className="wp-enter mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg" style={{ "--wp-delay": "160ms" }}>
-                {t("Découvre les pronostics du jour et nos analyses de matchs. Commence gratuitement, puis passe à Pro pour explorer les sélections et combinés réservés aux abonnés.")}
+                {experienceWords.heroIntro}
               </p>
               <div className="wp-enter mt-8 flex flex-col sm:flex-row gap-3" style={{ "--wp-delay": "240ms" }}>
                 <Button
@@ -526,7 +527,7 @@ export default function LandingPage() {
                           <div className="min-w-0"><dt className="text-xs text-slate-500">{t("Cote publiée")}</dt><dd className="mt-1 font-bold text-slate-900">{row.pick_odds.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</dd></div>
                           <div className="min-w-0"><dt className="text-xs text-slate-500">{t("Score final")}</dt><dd className="mt-1 break-words font-bold text-slate-900">{row.final_score}</dd></div>
                         </dl>
-                        <p className="mt-4 text-xs leading-relaxed text-slate-500">{t("Pronostic publié avant le match · résultat confirmé.")}</p>
+                        <p className="mt-4 text-xs leading-relaxed text-slate-500">{t("Résultat confirmé")}</p>
                       </Card>
                     ))}
                   </div>
@@ -626,12 +627,12 @@ export default function LandingPage() {
                 per: t("pour 30 jours"),
                 desc: t("Accès complet"),
                 features: [
-                  t("Tous les pronostics débloqués"),
-                  t("Tous les combinés du jour"),
-                  t("Explications des pronostics"),
-                  t("Value bets et Combo Builder"),
-                  t("Montante premium"),
-                  t("Support WhatsApp prioritaire"),
+                  experienceWords.paidSelections,
+                  experienceWords.combos,
+                  experienceWords.availableData,
+                  experienceWords.savedSearches + " · 8",
+                  experienceWords.follow,
+                  experienceWords.history,
                 ],
                 cta: t("Passer à Pro"),
                 highlight: true,
