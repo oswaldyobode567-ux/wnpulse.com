@@ -13512,6 +13512,16 @@ async def get_result_notifications(payload: dict = Depends(get_current_user_payl
     return {"items": [_notification_public(row) for row in items], "unread_count": unread, "follows": follows}
 
 
+@app.post("/api/notifications/follows/clear-resolved")
+async def clear_resolved_follows(payload: dict = Depends(get_current_user_payload)):
+    """Retirer tous les suivis confirmés de ce compte uniquement."""
+    user = await _notification_user(payload)
+    deleted = await db.followed_predictions.delete_many({
+        "user_id": user["id"], "state": "resolved",
+    })
+    return {"ok": True, "removed_count": deleted.deleted_count}
+
+
 @app.post("/api/notifications/read")
 async def read_result_notifications(body: NotificationReadRequest, payload: dict = Depends(get_current_user_payload)):
     user = await _notification_user(payload)
