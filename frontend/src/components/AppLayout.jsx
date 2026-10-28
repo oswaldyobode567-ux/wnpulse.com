@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import api from "@/lib/api";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { toast } from "sonner";
 
 // Six langues, sans service de traduction externe ni dépendance supplémentaire.
@@ -6927,96 +6928,34 @@ export function useLanguage() {
   if (!context) throw new Error("useLanguage doit être utilisé dans LanguageProvider.");
   return context;
 }
-export function LanguageSwitcher({
-  compact = false,
-  dark = false
-}) {
-  const {
-    language,
-    setLanguage,
-    t
-  } = useLanguage();
-  const selectId = useId();
-  const flags = { fr: "🇫🇷", en: "🇬🇧", es: "🇪🇸", pt: "🇵🇹", de: "🇩🇪", ar: "🌐" };
-  return <div dir="ltr" className={`flex min-w-0 items-center gap-2 ${compact ? "max-w-[150px]" : "w-full"}`}>
-    <label htmlFor={selectId} className="sr-only">{t("Choisir la langue")}</label>
-    <span aria-hidden="true" className={dark ? "text-orange-300" : "text-orange-600"}><span className="text-xl leading-none">{flags[language] || "🌐"}</span></span>
-    <select id={selectId} value={language} onChange={event => setLanguage(event.target.value)} aria-label={t("Choisir la langue")} data-testid="language-selector" className={`min-h-11 min-w-0 flex-1 rounded-xl border px-2 py-2 text-base font-medium focus:outline-none focus:ring-2 focus:ring-orange-400 ${dark ? "border-slate-700 bg-slate-900 text-white" : "border-neutral-200 bg-white text-slate-800"}`}>
-      {SUPPORTED_LANGUAGES.map(item => <option key={item.code} value={item.code} lang={item.code} dir={item.dir}>{flags[item.code]} {item.name}</option>)}
-    </select>
-  </div>;
+function LanguageFlag({code}){
+ const common={viewBox:"0 0 30 20",className:"h-4 w-6 shrink-0 overflow-hidden rounded-sm",'aria-hidden':true};
+ if(code==='fr')return <svg {...common}><path fill="#fff" d="M0 0h30v20H0z"/><path fill="#002395" d="M0 0h10v20H0z"/><path fill="#ed2939" d="M20 0h10v20H20z"/></svg>;
+ if(code==='de')return <svg {...common}><path fill="#ffce00" d="M0 0h30v20H0z"/><path fill="#000" d="M0 0h30v6.7H0z"/><path fill="#d00" d="M0 6.7h30v6.6H0z"/></svg>;
+ if(code==='es')return <svg {...common}><path fill="#aa151b" d="M0 0h30v20H0z"/><path fill="#f1bf00" d="M0 5h30v10H0z"/></svg>;
+ if(code==='pt')return <svg {...common}><path fill="#f00" d="M0 0h30v20H0z"/><path fill="#060" d="M0 0h12v20H0z"/><circle cx="12" cy="10" r="4" fill="#ffde00"/><path fill="#fff" d="M10 7h4v5l-2 1-2-1z"/><path fill="#c00" d="M10.5 7.5h3v4l-1.5 1-1.5-1z"/></svg>;
+ if(code==='en')return <svg {...common}><path fill="#012169" d="M0 0h30v20H0z"/><path stroke="#fff" strokeWidth="5" d="m0 0 30 20M30 0 0 20"/><path stroke="#c8102e" strokeWidth="2" d="m0 0 30 20M30 0 0 20"/><path stroke="#fff" strokeWidth="7" d="M15 0v20M0 10h30"/><path stroke="#c8102e" strokeWidth="4" d="M15 0v20M0 10h30"/></svg>;
+ return <svg {...common} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><path d="M3 12h18M5 6h14M5 18h14"/></svg>;
 }
-const NAV = [{
-  to: "/app",
-  label: "Dashboard",
-  icon: LayoutDashboard,
-  end: true,
-  testId: "nav-dashboard"
-}, {
-  to: "/app/suivi",
-  label: "Pronostics suivis",
-  icon: Bell,
-  testId: "nav-followed"
-}, {
-  to: "/app/live",
-  label: "Live",
-  icon: Radio,
-  testId: "nav-live",
-  badge: "Live"
-}, {
-  to: "/app/aujourdhui",
-  label: "Aujourd'hui",
-  icon: Zap,
-  testId: "nav-today",
-  badge: "New"
-}, {
-  to: "/app/top",
-  label: "À la une",
-  icon: Trophy,
-  testId: "nav-top"
-}, {
-  to: "/app/combines",
-  label: "Combinés",
-  icon: Layers,
-  testId: "nav-combos"
-}, {
-  to: "/app/builder",
-  label: "Combo Builder",
-  icon: Sparkles,
-  testId: "nav-builder",
-  badge: "New"
-}, {
-  to: "/app/value-bets",
-  label: "Value bets",
-  icon: Target,
-  testId: "nav-value-bets"
-}, {
-  to: "/app/montante",
-  label: "Montante",
-  icon: TrendingUp,
-  testId: "nav-montante",
-  badge: "10J"
-}, {
-  to: "/resultats",
-  label: "Track record",
-  icon: History,
-  testId: "nav-history"
-}, {
-  to: "/app/profil",
-  label: "Profil",
-  icon: User,
-  testId: "nav-profile"
-}, {
-  to: "/app/parrainage",
-  label: "Parrainage",
-  icon: Gift,
-  testId: "nav-referral"
-}, {
-  to: "/app/abonnement",
-  label: "Abonnement",
-  icon: CreditCard,
-  testId: "nav-subscription"
-}];
+export function LanguageSwitcher({compact=false,dark=false}){
+ const {language,setLanguage,t}=useLanguage();const selectId=useId();
+ return <div dir="ltr" className={`flex min-w-0 items-center ${compact?'max-w-[145px]':'w-full'}`}>
+  <Select value={language} onValueChange={setLanguage}>
+   <SelectTrigger id={selectId} aria-label={t('Choisir la langue')} data-testid="language-selector" className={`min-h-11 min-w-0 gap-2 rounded-xl px-2 text-sm font-semibold focus:ring-orange-400 ${dark?'border-slate-700 bg-slate-900 text-white':'border-slate-200 bg-white text-slate-800'}`}><SelectValue/></SelectTrigger>
+   <SelectContent position="popper" className="z-[120] min-w-[170px]">{SUPPORTED_LANGUAGES.map(item=><SelectItem key={item.code} value={item.code} lang={item.code}><span className="flex items-center gap-2"><LanguageFlag code={item.code}/><span dir={item.dir}>{item.name}</span></span></SelectItem>)}</SelectContent>
+  </Select>
+ </div>;
+}
+const NAV = [
+ {to:"/app",label:"home",icon:LayoutDashboard,end:true,testId:"nav-dashboard"},
+ {to:"/app/aujourdhui",label:"today",icon:Zap,testId:"nav-today"},
+ {to:"/app/explorer",label:"explore",icon:Target,testId:"nav-explore"},
+ {to:"/app/suivi",label:"follow",icon:Bell,testId:"nav-followed"},
+ {to:"/resultats",label:"results",icon:History,testId:"nav-history"},
+ {to:"/app/abonnement",label:"Abonnement",icon:CreditCard,testId:"nav-subscription"},
+ {to:"/app/profil",label:"Profil",icon:User,testId:"nav-profile"},
+ {to:"/app/parrainage",label:"Parrainage",icon:Gift,testId:"nav-referral"}
+];
 const WINPULSE_MONTHLY_PRICE_LABEL = "10 500 FCFA";
 function normalizeLegacyPriceText(text) {
   return String(text || "").replace(/4[\s.\u00A0\u202F]?500\s*FCFA/gi, WINPULSE_MONTHLY_PRICE_LABEL).replace(/6[\s.\u00A0\u202F]?500\s*FCFA/gi, WINPULSE_MONTHLY_PRICE_LABEL);
@@ -7025,12 +6964,13 @@ function normalizeLegacyPriceText(text) {
 // Sur mobile : 4 onglets essentiels + "Plus".
 // Cela évite que les 11+ entrées de navigation agrandissent la barre fixe
 // sur plusieurs lignes et recouvrent le contenu.
-const MOBILE_PRIMARY_KEYS = ["/app", "/app/live", "/app/aujourdhui", "/app/builder"];
+const MOBILE_PRIMARY_KEYS = ["/app", "/app/aujourdhui", "/app/explorer", "/app/suivi", "/resultats"];
 function AppLayoutContent({
   children
 }) {
+  const experienceWords = useExperienceCopy();
   const {
-    t, language
+    t
   } = useLanguage();
   const {
     user,
@@ -7158,8 +7098,8 @@ function AppLayoutContent({
   };
   const navItems = NAV.map(item => ({
     ...item,
-    label: item.to === "/app/suivi" ? (NOTIFICATION_MESSAGES[language]?.[item.label] || item.label) : t(item.label),
-    shortLabel: item.to === "/app/suivi" ? (NOTIFICATION_MESSAGES[language]?.[item.label] || item.label) : t(mobileLabels[item.to] || item.label),
+    label: experienceWords[item.label] || t(item.label),
+    shortLabel: experienceWords[item.label] || t(mobileLabels[item.to] || item.label),
     badge: item.badge ? t(item.badge) : null
   }));
   if (user?.is_admin) {
@@ -7170,7 +7110,10 @@ function AppLayoutContent({
       testId: "nav-admin"
     });
   }
-  const isActive = item => item.end ? location.pathname === item.to : location.pathname.startsWith(item.to);
+  const isActive = item => item.end ? location.pathname === item.to : item.to === "/app/explorer"
+    ? ["/app/explorer","/app/combines","/app/builder","/app/value-bets","/app/top","/app/montante"].some(path=>location.pathname.startsWith(path))
+    : item.to === "/app/aujourdhui" ? ["/app/aujourdhui","/app/live","/app/match/"].some(path=>location.pathname.startsWith(path))
+    : location.pathname.startsWith(item.to);
   const primaryMobileItems = navItems.filter(i => MOBILE_PRIMARY_KEYS.includes(i.to));
   const moreMobileItems = navItems.filter(i => !MOBILE_PRIMARY_KEYS.includes(i.to));
   return <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-neutral-50">
@@ -7187,7 +7130,7 @@ function AppLayoutContent({
             </div>
 
             <div className="text-[10px] uppercase tracking-[0.18em] text-orange-400/70 mt-1">
-              {t("Ton pouls de gagnant")}
+              {experienceWords.heroTwo}
             </div>
           </div>
         </div>
@@ -7254,15 +7197,16 @@ function AppLayoutContent({
             <Zap className="h-4 w-4" strokeWidth={2.5} fill="white" />
           </div>
 
-          <span className="font-heading font-extrabold truncate hidden min-[380px]:inline">
+          <span className="font-heading font-extrabold truncate hidden sm:inline">
             WinPulse
           </span>
         </div>
 
         <div className="flex min-w-0 items-center gap-1 shrink-0">
+          <button type="button" onClick={()=>setMoreOpen(v=>!v)} aria-label={experienceWords.account} aria-expanded={moreOpen} data-testid="mobile-more-toggle" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-600 hover:bg-slate-100"><Menu className="h-5 w-5" /></button>
           <ResultNotificationBell />
           <LanguageSwitcher compact />
-          <Badge className={cn("text-[10px] font-bold", tierLabel.cls)}>
+          <Badge className={cn("hidden min-[400px]:inline-flex text-[10px] font-bold", tierLabel.cls)}>
             {tierLabel.label}
           </Badge>
 
@@ -7322,13 +7266,6 @@ function AppLayoutContent({
             </Link>;
       })}
 
-        <button type="button" onClick={() => setMoreOpen(v => !v)} data-testid="mobile-more-toggle" aria-expanded={moreOpen} className={cn("min-w-0 flex flex-col items-center justify-center py-2 text-xs", moreOpen ? "text-orange-600" : "text-slate-500")}>
-          <Menu className="h-5 w-5 mb-1 shrink-0" />
-
-          <span className="leading-none">
-            {t("Plus")}
-          </span>
-        </button>
       </nav>
 
       {/* Contenu principal */}
@@ -7858,3 +7795,626 @@ function FollowedPicksContent() {
   </main>;
 }
 export function FollowedPicksPage() { return <AppLayout><FollowedPicksContent /></AppLayout>; }
+
+const EXPERIENCE_TEXT = {
+  "fr": {
+    "home": "Accueil",
+    "today": "Aujourd’hui",
+    "explore": "Explorer",
+    "follow": "Mon suivi",
+    "results": "Résultats",
+    "account": "Mon compte",
+    "hello": "Ton sport, à ta façon.",
+    "homeIntro": "Retrouve tes compétitions, les prochains matchs et les sélections que tu suis.",
+    "preferences": "Personnaliser mon accueil",
+    "sports": "Mes sports",
+    "leagues": "Mes compétitions",
+    "preferenceHint": "Sans préférence, tous les sports restent proposés. Ces choix ne suppriment aucun match du catalogue.",
+    "save": "Enregistrer",
+    "saving": "Enregistrement…",
+    "saved": "Préférences enregistrées.",
+    "error": "Impossible de charger ou enregistrer les données. Réessaie.",
+    "next": "À suivre prochainement",
+    "emptyFollow": "Enregistre une sélection avant le début du match pour retrouver son résultat ici.",
+    "forYou": "Dans tes compétitions",
+    "upcoming": "Prochaines rencontres",
+    "allMatches": "Toutes les rencontres",
+    "emptyMatches": "Aucune rencontre à venir dans cette vue. Le catalogue complet reste accessible.",
+    "lastResults": "Derniers résultats de ton suivi",
+    "pending": "En attente de confirmation",
+    "won": "Gagné",
+    "lost": "Perdu",
+    "void": "Remboursé",
+    "noResults": "Les résultats confirmés, gagnants et perdants, apparaîtront ici.",
+    "free": "Découverte gratuite",
+    "pro": "WinPulse Pro",
+    "proTitle": "Plus de profondeur. Moins de recherche.",
+    "proIntro": "Explore les sélections accessibles avec Pro, organise tes recherches et compare les données disponibles.",
+    "upgrade": "Découvrir Pro",
+    "exploreIntro": "Un outil pour chaque besoin. Choisis ton parcours.",
+    "combos": "Combinés",
+    "comboIntro": "Consulte les propositions, personnalise un ticket ou choisis toi-même les rencontres.",
+    "recommendations": "Propositions WinPulse",
+    "recommendationsText": "Prudent, Équilibré et Jackpot : selon les sélections disponibles, sans remplir les tickets artificiellement.",
+    "personal": "Selon mes préférences",
+    "personalText": "Période, sports et bookmaker : le moteur recherche un regroupement compatible.",
+    "builder": "Mon combiné",
+    "builderText": "Tu choisis chaque rencontre et chaque marché. Retrouve ensuite tes tickets enregistrés.",
+    "montante": "Montante",
+    "montanteText": "Un parcours par étapes, avec résultats confirmés et historique des réussites comme des échecs.",
+    "live": "En direct",
+    "liveText": "Consulte les scores transmis par les fournisseurs.",
+    "value": "Value bets",
+    "valueText": "Compare estimation et cote. Un écart estimé ne garantit pas un résultat.",
+    "open": "Ouvrir",
+    "note": "18+ · Aucun gain garanti. Les résultats passés ne garantissent pas les résultats futurs.",
+    "initialOdds": "Cote initiale",
+    "savedSearches": "Mes recherches enregistrées",
+    "saveSearch": "Enregistrer cette recherche",
+    "searchName": "Nom de la recherche",
+    "delete": "Supprimer",
+    "apply": "Appliquer",
+    "searchLimit": "3 recherches avec Free, 8 avec Pro.",
+    "pause": "Mettre mon suivi de la série en pause",
+    "resume": "Reprendre mon suivi",
+    "pauseHint": "Préférence personnelle : la série publique et ses résultats continuent. Aucune mise ni opération chez un bookmaker n’est effectuée.",
+    "paused": "Ton suivi personnel est en pause.",
+    "compare": "Free ou Pro : compare concrètement",
+    "feature": "Fonction",
+    "selections": "Sélections",
+    "freeSelections": "Aperçus selon disponibilité",
+    "paidSelections": "Toutes celles incluses dans Pro",
+    "history": "Historique public complet",
+    "availableData": "Statistiques selon couverture",
+    "included": "Inclus",
+    "preview": "Aperçu",
+    "period": "Accès pendant 30 jours, sans reconduction automatique actuellement.",
+    "payment": "Les moyens disponibles sont présentés lors du paiement.",
+    "coverage": "La couverture varie selon les sports et compétitions. Les informations manquantes ne sont pas inventées.",
+    "previewExample": "Avant de choisir, ouvre une vraie fiche découverte.",
+    "soccer": "Football",
+    "basketball": "Basketball",
+    "tennis": "Tennis",
+    "icehockey": "Hockey",
+    "americanfootball": "Football américain",
+    "baseball": "Baseball",
+    "other": "Autres sports",
+    "usage": "Navigation des 30 derniers jours",
+    "usageNote": "Compteurs de navigation, pas des visiteurs uniques ni des paiements confirmés.",
+    "heroOne": "Tes matchs. Tes analyses.",
+    "heroTwo": "Une vision plus claire.",
+    "heroIntro": "Explore les pronostics, compare les données disponibles et suis chaque sélection jusqu’au résultat.",
+    "modelAudit": "Moteur : observation progressive",
+    "modelNote": "Le modèle expérimental est comparé au moteur actuel. Aucune promotion automatique ni suppression de matchs. Un petit échantillon ne permet pas de conclure.",
+    "modelSamples": "Matchs réglés observés",
+    "modelBase": "Moteur actuel · Brier",
+    "modelTest": "Modèle expérimental · Brier",
+    "modelMetric": "Le score de Brier mesure l’erreur des probabilités ; plus bas est préférable. Ce n’est ni un taux de gain ni une garantie de rentabilité.",
+    "mma": "MMA"
+  },
+  "en": {
+    "home": "Home",
+    "today": "Today",
+    "explore": "Explore",
+    "follow": "My follows",
+    "results": "Results",
+    "account": "My account",
+    "hello": "Your sports, your way.",
+    "homeIntro": "Your competitions, upcoming matches and followed selections in one place.",
+    "preferences": "Personalize my home",
+    "sports": "My sports",
+    "leagues": "My competitions",
+    "preferenceHint": "With no preferences, all sports are suggested. These choices never remove catalogue matches.",
+    "save": "Save",
+    "saving": "Saving…",
+    "saved": "Preferences saved.",
+    "error": "Unable to load or save data. Try again.",
+    "next": "Coming up in your follows",
+    "emptyFollow": "Follow a selection before kickoff to find its result here.",
+    "forYou": "Your competitions",
+    "upcoming": "Upcoming matches",
+    "allMatches": "All matches",
+    "emptyMatches": "No upcoming matches in this view. The full catalogue remains available.",
+    "lastResults": "Latest results from your follows",
+    "pending": "Awaiting confirmation",
+    "won": "Won",
+    "lost": "Lost",
+    "void": "Refunded",
+    "noResults": "Confirmed wins and losses will appear here.",
+    "free": "Free discovery",
+    "pro": "WinPulse Pro",
+    "proTitle": "More depth. Less searching.",
+    "proIntro": "Explore Pro selections, organize your searches and compare available data.",
+    "upgrade": "Explore Pro",
+    "exploreIntro": "A tool for each need. Choose your path.",
+    "combos": "Combinations",
+    "comboIntro": "Browse proposals, personalize a ticket or choose matches yourself.",
+    "recommendations": "WinPulse proposals",
+    "recommendationsText": "Cautious, Balanced and Jackpot: based on available selections, without padding tickets.",
+    "personal": "Based on my preferences",
+    "personalText": "Period, sports and bookmaker: the engine looks for compatible selections.",
+    "builder": "My combination",
+    "builderText": "Choose every match and market, then find your saved tickets.",
+    "montante": "Step-by-step series",
+    "montanteText": "A series of stages with confirmed results, including wins and losses.",
+    "live": "Live",
+    "liveText": "View scores reported by providers.",
+    "value": "Value bets",
+    "valueText": "Compare estimates and odds. An estimated edge does not guarantee an outcome.",
+    "open": "Open",
+    "note": "18+ · No guaranteed winnings. Past results do not guarantee future results.",
+    "initialOdds": "Original odds",
+    "savedSearches": "My saved searches",
+    "saveSearch": "Save this search",
+    "searchName": "Search name",
+    "delete": "Delete",
+    "apply": "Apply",
+    "searchLimit": "3 searches with Free, 8 with Pro.",
+    "pause": "Pause my series follow",
+    "resume": "Resume my follow",
+    "pauseHint": "Personal preference: the public series and results continue. No stake or bookmaker operation is made.",
+    "paused": "Your personal follow is paused.",
+    "compare": "Free or Pro: compare the difference",
+    "feature": "Feature",
+    "selections": "Selections",
+    "freeSelections": "Previews subject to availability",
+    "paidSelections": "All selections included in Pro",
+    "history": "Full public history",
+    "availableData": "Statistics subject to coverage",
+    "included": "Included",
+    "preview": "Preview",
+    "period": "30-day access, currently without automatic renewal.",
+    "payment": "Available methods are shown at checkout.",
+    "coverage": "Coverage varies by sport and competition. Missing information is never invented.",
+    "previewExample": "Before choosing, open a real discovery preview.",
+    "soccer": "Football",
+    "basketball": "Basketball",
+    "tennis": "Tennis",
+    "icehockey": "Hockey",
+    "americanfootball": "American football",
+    "baseball": "Baseball",
+    "other": "Other sports",
+    "usage": "Navigation over the last 30 days",
+    "usageNote": "Navigation counts, not unique visitors or confirmed payments.",
+    "heroOne": "Your matches. Your analysis.",
+    "heroTwo": "A clearer picture.",
+    "heroIntro": "Explore predictions, compare available data and follow each selection through to its result.",
+    "modelAudit": "Engine: progressive observation",
+    "modelNote": "The experimental model is compared with the current engine. No automatic promotion or match removal. Small samples do not support conclusions.",
+    "modelSamples": "Settled matches observed",
+    "modelBase": "Current engine · Brier",
+    "modelTest": "Experimental model · Brier",
+    "modelMetric": "Brier score measures probability error; lower is better. It is neither a win rate nor a profitability guarantee.",
+    "mma": "MMA"
+  },
+  "es": {
+    "home": "Inicio",
+    "today": "Hoy",
+    "explore": "Explorar",
+    "follow": "Mi seguimiento",
+    "results": "Resultados",
+    "account": "Mi cuenta",
+    "hello": "Tu deporte, a tu manera.",
+    "homeIntro": "Tus competiciones, próximos partidos y selecciones seguidas en un solo lugar.",
+    "preferences": "Personalizar inicio",
+    "sports": "Mis deportes",
+    "leagues": "Mis competiciones",
+    "preferenceHint": "Sin preferencias, se muestran todos los deportes. No se eliminan partidos del catálogo.",
+    "save": "Guardar",
+    "saving": "Guardando…",
+    "saved": "Preferencias guardadas.",
+    "error": "No se pudieron cargar o guardar los datos. Reintenta.",
+    "next": "Próximos en tu seguimiento",
+    "emptyFollow": "Sigue una selección antes del inicio para ver aquí su resultado.",
+    "forYou": "Tus competiciones",
+    "upcoming": "Próximos partidos",
+    "allMatches": "Todos los partidos",
+    "emptyMatches": "No hay próximos partidos en esta vista. El catálogo completo sigue disponible.",
+    "lastResults": "Últimos resultados seguidos",
+    "pending": "Pendiente de confirmación",
+    "won": "Ganado",
+    "lost": "Perdido",
+    "void": "Reembolsado",
+    "noResults": "Los aciertos y pérdidas confirmados aparecerán aquí.",
+    "free": "Descubrimiento gratuito",
+    "pro": "WinPulse Pro",
+    "proTitle": "Más profundidad. Menos búsqueda.",
+    "proIntro": "Explora selecciones Pro, organiza búsquedas y compara los datos disponibles.",
+    "upgrade": "Descubrir Pro",
+    "exploreIntro": "Una herramienta para cada necesidad. Elige tu camino.",
+    "combos": "Combinadas",
+    "comboIntro": "Consulta propuestas, personaliza un boleto o elige tus partidos.",
+    "recommendations": "Propuestas WinPulse",
+    "recommendationsText": "Prudente, Equilibrada y Jackpot: según selecciones disponibles, sin rellenar boletos.",
+    "personal": "Según mis preferencias",
+    "personalText": "Periodo, deportes y operador: el motor busca selecciones compatibles.",
+    "builder": "Mi combinada",
+    "builderText": "Elige cada partido y mercado y recupera tus boletos guardados.",
+    "montante": "Serie por etapas",
+    "montanteText": "Un recorrido por etapas con resultados confirmados, incluidos aciertos y fallos.",
+    "live": "En directo",
+    "liveText": "Consulta marcadores de los proveedores.",
+    "value": "Value bets",
+    "valueText": "Compara estimaciones y cuotas. Una ventaja estimada no garantiza un resultado.",
+    "open": "Abrir",
+    "note": "18+ · Sin ganancias garantizadas. Los resultados pasados no garantizan resultados futuros.",
+    "initialOdds": "Cuota inicial",
+    "savedSearches": "Mis búsquedas guardadas",
+    "saveSearch": "Guardar esta búsqueda",
+    "searchName": "Nombre de búsqueda",
+    "delete": "Eliminar",
+    "apply": "Aplicar",
+    "searchLimit": "3 búsquedas con Free, 8 con Pro.",
+    "pause": "Pausar mi seguimiento de la serie",
+    "resume": "Reanudar mi seguimiento",
+    "pauseHint": "Preferencia personal: la serie pública y sus resultados continúan. No se realizan apuestas ni operaciones.",
+    "paused": "Tu seguimiento personal está en pausa.",
+    "compare": "Free o Pro: compara las diferencias",
+    "feature": "Función",
+    "selections": "Selecciones",
+    "freeSelections": "Vistas previas según disponibilidad",
+    "paidSelections": "Todas las incluidas en Pro",
+    "history": "Historial público completo",
+    "availableData": "Estadísticas según cobertura",
+    "included": "Incluido",
+    "preview": "Vista previa",
+    "period": "Acceso de 30 días, actualmente sin renovación automática.",
+    "payment": "Los métodos disponibles se muestran al pagar.",
+    "coverage": "La cobertura varía según deporte y competición. No se inventan datos ausentes.",
+    "previewExample": "Antes de elegir, abre una ficha gratuita real.",
+    "soccer": "Fútbol",
+    "basketball": "Baloncesto",
+    "tennis": "Tenis",
+    "icehockey": "Hockey",
+    "americanfootball": "Fútbol americano",
+    "baseball": "Béisbol",
+    "other": "Otros deportes",
+    "usage": "Navegación de los últimos 30 días",
+    "usageNote": "Contadores de navegación, no visitantes únicos ni pagos confirmados.",
+    "heroOne": "Tus partidos. Tus análisis.",
+    "heroTwo": "Una visión más clara.",
+    "heroIntro": "Explora pronósticos, compara datos disponibles y sigue cada selección hasta el resultado.",
+    "modelAudit": "Motor: observación progresiva",
+    "modelNote": "El modelo experimental se compara con el actual. Sin promoción automática ni eliminación de partidos. Una muestra pequeña no permite concluir.",
+    "modelSamples": "Partidos resueltos observados",
+    "modelBase": "Motor actual · Brier",
+    "modelTest": "Modelo experimental · Brier",
+    "modelMetric": "Brier mide el error de probabilidades; menor es mejor. No es una tasa de acierto ni una garantía de rentabilidad.",
+    "mma": "MMA"
+  },
+  "pt": {
+    "home": "Início",
+    "today": "Hoje",
+    "explore": "Explorar",
+    "follow": "O meu acompanhamento",
+    "results": "Resultados",
+    "account": "A minha conta",
+    "hello": "O teu desporto, à tua maneira.",
+    "homeIntro": "As tuas competições, próximos jogos e seleções seguidas num só lugar.",
+    "preferences": "Personalizar início",
+    "sports": "Os meus desportos",
+    "leagues": "As minhas competições",
+    "preferenceHint": "Sem preferências, todos os desportos são apresentados. Nenhum jogo é removido do catálogo.",
+    "save": "Guardar",
+    "saving": "A guardar…",
+    "saved": "Preferências guardadas.",
+    "error": "Não foi possível carregar ou guardar. Tenta novamente.",
+    "next": "A seguir em breve",
+    "emptyFollow": "Segue uma seleção antes do início para veres aqui o resultado.",
+    "forYou": "Nas tuas competições",
+    "upcoming": "Próximos jogos",
+    "allMatches": "Todos os jogos",
+    "emptyMatches": "Não há próximos jogos nesta vista. O catálogo completo continua disponível.",
+    "lastResults": "Últimos resultados seguidos",
+    "pending": "Aguarda confirmação",
+    "won": "Ganho",
+    "lost": "Perdido",
+    "void": "Reembolsado",
+    "noResults": "Os ganhos e perdas confirmados aparecem aqui.",
+    "free": "Descoberta gratuita",
+    "pro": "WinPulse Pro",
+    "proTitle": "Mais profundidade. Menos pesquisa.",
+    "proIntro": "Explora seleções Pro, organiza pesquisas e compara os dados disponíveis.",
+    "upgrade": "Descobrir Pro",
+    "exploreIntro": "Uma ferramenta para cada necessidade. Escolhe o teu caminho.",
+    "combos": "Combinadas",
+    "comboIntro": "Consulta propostas, personaliza um bilhete ou escolhe os teus jogos.",
+    "recommendations": "Propostas WinPulse",
+    "recommendationsText": "Prudente, Equilibrado e Jackpot: conforme seleções disponíveis, sem preencher artificialmente.",
+    "personal": "Segundo as minhas preferências",
+    "personalText": "Período, desportos e operador: o motor procura seleções compatíveis.",
+    "builder": "A minha combinada",
+    "builderText": "Escolhe cada jogo e mercado e consulta os bilhetes guardados.",
+    "montante": "Série por etapas",
+    "montanteText": "Um percurso por etapas com resultados confirmados, incluindo ganhos e perdas.",
+    "live": "Em direto",
+    "liveText": "Consulta os resultados dos fornecedores.",
+    "value": "Value bets",
+    "valueText": "Compara estimativas e cotas. Uma vantagem estimada não garante um resultado.",
+    "open": "Abrir",
+    "note": "18+ · Sem ganhos garantidos. Os resultados passados não garantem resultados futuros.",
+    "initialOdds": "Cota inicial",
+    "savedSearches": "As minhas pesquisas guardadas",
+    "saveSearch": "Guardar esta pesquisa",
+    "searchName": "Nome da pesquisa",
+    "delete": "Eliminar",
+    "apply": "Aplicar",
+    "searchLimit": "3 pesquisas com Free, 8 com Pro.",
+    "pause": "Pausar o meu acompanhamento da série",
+    "resume": "Retomar o meu acompanhamento",
+    "pauseHint": "Preferência pessoal: a série pública e os resultados continuam. Não são feitas apostas nem operações.",
+    "paused": "O teu acompanhamento pessoal está em pausa.",
+    "compare": "Free ou Pro: compara as diferenças",
+    "feature": "Funcionalidade",
+    "selections": "Seleções",
+    "freeSelections": "Prévias conforme disponibilidade",
+    "paidSelections": "Todas as incluídas no Pro",
+    "history": "Histórico público completo",
+    "availableData": "Estatísticas conforme cobertura",
+    "included": "Incluído",
+    "preview": "Prévia",
+    "period": "Acesso por 30 dias, atualmente sem renovação automática.",
+    "payment": "Os métodos disponíveis são apresentados no pagamento.",
+    "coverage": "A cobertura varia por desporto e competição. Não se inventam dados em falta.",
+    "previewExample": "Antes de escolher, abre uma ficha gratuita real.",
+    "soccer": "Futebol",
+    "basketball": "Basquetebol",
+    "tennis": "Ténis",
+    "icehockey": "Hóquei",
+    "americanfootball": "Futebol americano",
+    "baseball": "Basebol",
+    "other": "Outros desportos",
+    "usage": "Navegação dos últimos 30 dias",
+    "usageNote": "Contagens de navegação, não visitantes únicos nem pagamentos confirmados.",
+    "heroOne": "Os teus jogos. As tuas análises.",
+    "heroTwo": "Uma visão mais clara.",
+    "heroIntro": "Explora palpites, compara os dados disponíveis e segue cada seleção até ao resultado.",
+    "modelAudit": "Motor: observação progressiva",
+    "modelNote": "O modelo experimental é comparado com o atual. Sem promoção automática nem remoção de jogos. Uma amostra pequena não permite concluir.",
+    "modelSamples": "Jogos resolvidos observados",
+    "modelBase": "Motor atual · Brier",
+    "modelTest": "Modelo experimental · Brier",
+    "modelMetric": "Brier mede o erro das probabilidades; mais baixo é melhor. Não é uma taxa de acerto nem uma garantia de rentabilidade.",
+    "mma": "MMA"
+  },
+  "de": {
+    "home": "Start",
+    "today": "Heute",
+    "explore": "Entdecken",
+    "follow": "Meine Tipps",
+    "results": "Ergebnisse",
+    "account": "Mein Konto",
+    "hello": "Dein Sport. Dein Überblick.",
+    "homeIntro": "Deine Wettbewerbe, kommenden Spiele und verfolgten Tipps an einem Ort.",
+    "preferences": "Startseite anpassen",
+    "sports": "Meine Sportarten",
+    "leagues": "Meine Wettbewerbe",
+    "preferenceHint": "Ohne Auswahl werden alle Sportarten vorgeschlagen. Kein Spiel wird aus dem Katalog entfernt.",
+    "save": "Speichern",
+    "saving": "Speichern…",
+    "saved": "Einstellungen gespeichert.",
+    "error": "Daten konnten nicht geladen oder gespeichert werden. Erneut versuchen.",
+    "next": "Demnächst in deinen Tipps",
+    "emptyFollow": "Verfolge einen Tipp vor Spielbeginn, um hier das Ergebnis zu sehen.",
+    "forYou": "Deine Wettbewerbe",
+    "upcoming": "Kommende Spiele",
+    "allMatches": "Alle Spiele",
+    "emptyMatches": "Keine kommenden Spiele in dieser Ansicht. Der vollständige Katalog bleibt verfügbar.",
+    "lastResults": "Neueste Ergebnisse deiner Tipps",
+    "pending": "Bestätigung ausstehend",
+    "won": "Gewonnen",
+    "lost": "Verloren",
+    "void": "Erstattet",
+    "noResults": "Bestätigte Gewinne und Verluste erscheinen hier.",
+    "free": "Kostenlos entdecken",
+    "pro": "WinPulse Pro",
+    "proTitle": "Mehr Tiefe. Weniger Suchen.",
+    "proIntro": "Entdecke Pro-Tipps, organisiere Suchen und vergleiche verfügbare Daten.",
+    "upgrade": "Pro entdecken",
+    "exploreIntro": "Für jeden Bedarf ein Werkzeug. Wähle deinen Weg.",
+    "combos": "Kombis",
+    "comboIntro": "Vorschläge ansehen, einen Schein anpassen oder Spiele selbst wählen.",
+    "recommendations": "WinPulse-Vorschläge",
+    "recommendationsText": "Vorsichtig, Ausgewogen und Jackpot: nach verfügbaren Tipps, ohne künstlich aufzufüllen.",
+    "personal": "Nach meinen Einstellungen",
+    "personalText": "Zeitraum, Sportarten und Anbieter: die Suche berücksichtigt die Kompatibilität.",
+    "builder": "Meine Kombi",
+    "builderText": "Wähle Spiele und Märkte selbst und finde gespeicherte Scheine wieder.",
+    "montante": "Etappenserie",
+    "montanteText": "Eine Etappenserie mit bestätigten Gewinnen und Verlusten.",
+    "live": "Live",
+    "liveText": "Sieh die von Anbietern gemeldeten Spielstände.",
+    "value": "Value Bets",
+    "valueText": "Vergleiche Schätzungen und Quoten. Ein geschätzter Vorteil garantiert kein Ergebnis.",
+    "open": "Öffnen",
+    "note": "18+ · Keine garantierten Gewinne. Vergangene Ergebnisse garantieren keine künftigen Ergebnisse.",
+    "initialOdds": "Ursprüngliche Quote",
+    "savedSearches": "Meine gespeicherten Suchen",
+    "saveSearch": "Diese Suche speichern",
+    "searchName": "Name der Suche",
+    "delete": "Löschen",
+    "apply": "Anwenden",
+    "searchLimit": "3 Suchen mit Free, 8 mit Pro.",
+    "pause": "Meine Serienverfolgung pausieren",
+    "resume": "Meine Verfolgung fortsetzen",
+    "pauseHint": "Persönliche Einstellung: die öffentliche Serie läuft weiter. Es werden keine Einsätze oder Buchmacheraktionen ausgeführt.",
+    "paused": "Deine persönliche Verfolgung ist pausiert.",
+    "compare": "Free oder Pro: konkret vergleichen",
+    "feature": "Funktion",
+    "selections": "Tipps",
+    "freeSelections": "Vorschauen nach Verfügbarkeit",
+    "paidSelections": "Alle in Pro enthaltenen Tipps",
+    "history": "Vollständiger öffentlicher Verlauf",
+    "availableData": "Statistiken nach Abdeckung",
+    "included": "Enthalten",
+    "preview": "Vorschau",
+    "period": "30 Tage Zugang, derzeit ohne automatische Verlängerung.",
+    "payment": "Verfügbare Zahlungsarten werden beim Bezahlen angezeigt.",
+    "coverage": "Die Abdeckung variiert nach Sport und Wettbewerb. Fehlende Daten werden nicht erfunden.",
+    "previewExample": "Öffne vor deiner Entscheidung eine echte kostenlose Vorschau.",
+    "soccer": "Fußball",
+    "basketball": "Basketball",
+    "tennis": "Tennis",
+    "icehockey": "Eishockey",
+    "americanfootball": "American Football",
+    "baseball": "Baseball",
+    "other": "Weitere Sportarten",
+    "usage": "Navigation der letzten 30 Tage",
+    "usageNote": "Navigationszähler, keine eindeutigen Besucher oder bestätigten Zahlungen.",
+    "heroOne": "Deine Spiele. Deine Analysen.",
+    "heroTwo": "Ein klarerer Überblick.",
+    "heroIntro": "Entdecke Tipps, vergleiche verfügbare Daten und verfolge jede Auswahl bis zum Ergebnis.",
+    "modelAudit": "Modell: schrittweise Beobachtung",
+    "modelNote": "Das experimentelle Modell wird mit dem aktuellen verglichen. Keine automatische Aktivierung oder Spielentfernung. Kleine Stichproben erlauben keine Schlussfolgerung.",
+    "modelSamples": "Beobachtete abgerechnete Spiele",
+    "modelBase": "Aktuelles Modell · Brier",
+    "modelTest": "Experimentelles Modell · Brier",
+    "modelMetric": "Der Brier-Wert misst den Wahrscheinlichkeitsfehler; niedriger ist besser. Keine Gewinnquote oder Rentabilitätsgarantie.",
+    "mma": "MMA"
+  },
+  "ar": {
+    "home": "الرئيسية",
+    "today": "اليوم",
+    "explore": "استكشاف",
+    "follow": "متابعتي",
+    "results": "النتائج",
+    "account": "حسابي",
+    "hello": "رياضتك على طريقتك.",
+    "homeIntro": "بطولاتك ومبارياتك القادمة واختياراتك المتابعة في مكان واحد.",
+    "preferences": "تخصيص الرئيسية",
+    "sports": "رياضاتي",
+    "leagues": "بطولاتي",
+    "preferenceHint": "دون تفضيلات تُقترح كل الرياضات. لا تُحذف أي مباراة من القائمة.",
+    "save": "حفظ",
+    "saving": "جارٍ الحفظ…",
+    "saved": "تم حفظ التفضيلات.",
+    "error": "تعذر تحميل البيانات أو حفظها. حاول مجدداً.",
+    "next": "قريباً في متابعتك",
+    "emptyFollow": "تابع اختياراً قبل بداية المباراة لتجد نتيجته هنا.",
+    "forYou": "ضمن بطولاتك",
+    "upcoming": "المباريات القادمة",
+    "allMatches": "كل المباريات",
+    "emptyMatches": "لا توجد مباريات قادمة في هذا العرض. تبقى القائمة الكاملة متاحة.",
+    "lastResults": "آخر نتائج متابعتك",
+    "pending": "بانتظار التأكيد",
+    "won": "فائز",
+    "lost": "خاسر",
+    "void": "مسترد",
+    "noResults": "ستظهر هنا النتائج المؤكدة الفائزة والخاسرة.",
+    "free": "اكتشاف مجاني",
+    "pro": "WinPulse Pro",
+    "proTitle": "تفاصيل أكثر. بحث أقل.",
+    "proIntro": "استعرض اختيارات Pro ونظّم بحثك وقارن البيانات المتاحة.",
+    "upgrade": "اكتشف Pro",
+    "exploreIntro": "أداة لكل حاجة. اختر مسارك.",
+    "combos": "الرهانات المركبة",
+    "comboIntro": "استعرض المقترحات أو خصّص بطاقة أو اختر المباريات بنفسك.",
+    "recommendations": "مقترحات WinPulse",
+    "recommendationsText": "حذر ومتوازن وجاكبوت حسب الاختيارات المتاحة دون إضافة مباريات لمجرد ملء البطاقة.",
+    "personal": "حسب تفضيلاتي",
+    "personalText": "الفترة والرياضات والمزود: يبحث المحرك عن اختيارات متوافقة.",
+    "builder": "رهاني المركب",
+    "builderText": "اختر كل مباراة وسوق ثم اعثر على بطاقاتك المحفوظة.",
+    "montante": "سلسلة المراحل",
+    "montanteText": "مسار بمراحل ونتائج مؤكدة يشمل النجاحات والإخفاقات.",
+    "live": "مباشر",
+    "liveText": "اطلع على النتائج التي يرسلها المزودون.",
+    "value": "اختيارات القيمة",
+    "valueText": "قارن التقدير بالمعامل. الفارق التقديري لا يضمن النتيجة.",
+    "open": "فتح",
+    "note": "للبالغين 18+ · لا أرباح مضمونة. النتائج السابقة لا تضمن النتائج المستقبلية.",
+    "initialOdds": "المعامل الأصلي",
+    "savedSearches": "عمليات بحثي المحفوظة",
+    "saveSearch": "حفظ هذا البحث",
+    "searchName": "اسم البحث",
+    "delete": "حذف",
+    "apply": "تطبيق",
+    "searchLimit": "3 عمليات بحث مع Free و8 مع Pro.",
+    "pause": "إيقاف متابعتي للسلسلة مؤقتاً",
+    "resume": "استئناف متابعتي",
+    "pauseHint": "تفضيل شخصي: تستمر السلسلة العامة ونتائجها. لا تُنفذ أي رهانات أو عمليات لدى مزود.",
+    "paused": "متابعتك الشخصية متوقفة مؤقتاً.",
+    "compare": "قارن عملياً بين Free وPro",
+    "feature": "الميزة",
+    "selections": "الاختيارات",
+    "freeSelections": "معاينات حسب التوفر",
+    "paidSelections": "كل الاختيارات المشمولة في Pro",
+    "history": "السجل العام الكامل",
+    "availableData": "إحصاءات حسب التغطية",
+    "included": "مشمول",
+    "preview": "معاينة",
+    "period": "وصول لمدة 30 يوماً دون تجديد تلقائي حالياً.",
+    "payment": "تظهر وسائل الدفع المتاحة عند الدفع.",
+    "coverage": "تختلف التغطية حسب الرياضة والبطولة ولا تُختلق المعلومات الناقصة.",
+    "previewExample": "قبل الاختيار افتح معاينة مجانية حقيقية.",
+    "soccer": "كرة القدم",
+    "basketball": "كرة السلة",
+    "tennis": "التنس",
+    "icehockey": "الهوكي",
+    "americanfootball": "كرة القدم الأمريكية",
+    "baseball": "البيسبول",
+    "other": "رياضات أخرى",
+    "usage": "التصفح خلال آخر 30 يوماً",
+    "usageNote": "عدادات تصفح وليست زواراً فريدين أو مدفوعات مؤكدة.",
+    "heroOne": "مبارياتك. تحليلاتك.",
+    "heroTwo": "رؤية أوضح.",
+    "heroIntro": "استعرض التوقعات وقارن البيانات المتاحة وتابع كل اختيار حتى النتيجة.",
+    "modelAudit": "المحرك: متابعة تدريجية",
+    "modelNote": "يُقارن النموذج التجريبي بالمحرك الحالي دون تفعيل تلقائي أو حذف مباريات. العينات الصغيرة لا تكفي للاستنتاج.",
+    "modelSamples": "المباريات المرصودة التي سُويت نتائجها",
+    "modelBase": "المحرك الحالي · Brier",
+    "modelTest": "النموذج التجريبي · Brier",
+    "modelMetric": "يقيس Brier خطأ الاحتمالات والأقل أفضل. ليس نسبة فوز ولا ضماناً للربحية.",
+    "mma": "MMA"
+  }
+};
+export function useExperienceCopy() { const { language } = useLanguage(); return EXPERIENCE_TEXT[language] || EXPERIENCE_TEXT.fr; }
+
+const ExperienceContext = createContext(null);
+const EXPERIENCE_EMPTY = { sports: [], leagues: [], saved_filters: [], montante_paused: false };
+export function ExperienceProvider({ children }) {
+  const { user } = useAuth();
+  const uid = user?.id || null;
+  const owner = useRef(uid); owner.current = uid;
+  const [state, setState] = useState({owner:null,value:EXPERIENCE_EMPTY});
+  const [loading,setLoading]=useState(false), [busy,setBusy]=useState(false), [failed,setFailed]=useState(false), [attempt,setAttempt]=useState(0);
+  const saveFlight=useRef(null);
+  useEffect(()=>{
+    const controller=new AbortController();
+    setState({owner:uid,value:EXPERIENCE_EMPTY});setFailed(false);setBusy(false);
+    if (!uid) {setLoading(false);return ()=>controller.abort();}
+    setLoading(true);
+    api.get('/experience/preferences',{signal:controller.signal,timeout:12000}).then(({data})=>{
+      if(!controller.signal.aborted && owner.current===uid) setState({owner:uid,value:{...EXPERIENCE_EMPTY,...data}});
+    }).catch(()=>{if(!controller.signal.aborted && owner.current===uid)setFailed(true);}).finally(()=>{if(!controller.signal.aborted && owner.current===uid)setLoading(false);});
+    return ()=>{controller.abort();saveFlight.current?.abort();saveFlight.current=null;};
+  },[uid,attempt]);
+  const value=state.owner===uid ? state.value : EXPERIENCE_EMPTY;
+  const save=async patch=>{
+    if(!uid || loading || failed || saveFlight.current) return false;
+    const controller=new AbortController();saveFlight.current=controller;setBusy(true);
+    try {
+      const {data}=await api.put('/experience/preferences',{...value,...patch},{signal:controller.signal,timeout:12000});
+      if(controller.signal.aborted || owner.current!==uid)return false;
+      setState({owner:uid,value:{...EXPERIENCE_EMPTY,...data}});setFailed(false);return true;
+    }catch{if(!controller.signal.aborted && owner.current===uid)setFailed(true);return false;}
+    finally{if(saveFlight.current===controller){saveFlight.current=null;if(owner.current===uid)setBusy(false);}}
+  };
+  return <ExperienceContext.Provider value={{preferences:value,loading,busy,failed,save,retry:()=>setAttempt(v=>v+1)}}>{children}</ExperienceContext.Provider>;
+}
+export function useExperiencePreferences(){
+ const state=useContext(ExperienceContext);
+ if(!state)throw new Error('ExperienceProvider missing');
+ return state;
+}
+export function useFollowedPicks(){return useContext(ResultNotificationsContext);}
+export function useExperienceEvent(event){
+ const {user}=useAuth();
+ useEffect(()=>{if(user?.id && event)api.post('/experience/events',{event}).catch(()=>{});},[user?.id,event]);
+}
+
+export function ExperienceToolNav(){
+ const w=useExperienceCopy();const {pathname}=useLocation();
+ const tabs=[['/app/combines',w.combos],['/app/combines/recommandations',w.recommendations],['/app/combines/personnaliser',w.personal],['/app/builder',w.builder]];
+ return <nav aria-label={w.combos} className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2" data-testid="combination-tools-nav">{tabs.map(([to,label])=><Link key={to} to={to} aria-current={pathname===to?'page':undefined} className={`inline-flex min-h-11 items-center rounded-xl px-3 py-2 text-sm font-semibold ${pathname===to?'bg-slate-950 text-white':'text-slate-600 hover:bg-orange-50'}`}>{label}</Link>)}</nav>;
+}
