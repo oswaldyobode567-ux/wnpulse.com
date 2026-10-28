@@ -1,7 +1,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { ArrowRight, CalendarDays, ChevronDown, Clock, Info, Layers, Lock, RefreshCw, Rocket, Search, Send, Shield, SlidersHorizontal, Sparkles, X, Zap } from "lucide-react";
-import AppLayout, { usePageLanguage } from "@/components/AppLayout";
+import AppLayout, { usePageLanguage, ExperienceToolNav } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import api from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 const LEVELS = {
- sure: { label:"Safe", icon:Shield, color:"text-emerald-700", tint:"bg-emerald-50", border:"border-emerald-200", gradient:"from-emerald-700 to-teal-800", description:"2 à 3 rencontres au maximum. Le nom Safe ne garantit aucun résultat." },
+ sure: { label:"Prudent", icon:Shield, color:"text-emerald-700", tint:"bg-emerald-50", border:"border-emerald-200", gradient:"from-emerald-700 to-teal-800", description:"2 à 3 rencontres au maximum. Aucun résultat garanti." },
  booster: { label:"Équilibré", icon:Zap, color:"text-orange-700", tint:"bg-orange-50", border:"border-orange-200", gradient:"from-orange-700 to-amber-800", description:"Objectif de 4 rencontres, jusqu’à 6 si la qualité le permet. Plus court si nécessaire." },
  jackpot: { label:"Jackpot", icon:Rocket, color:"text-violet-700", tint:"bg-violet-50", border:"border-violet-200", gradient:"from-violet-600 to-purple-700", description:"Objectif de 5 rencontres, jusqu’à 8 si la qualité le permet. Aucun ajout pour atteindre une cote cible." }
 };
@@ -293,6 +293,7 @@ export default function TodayCombosPage() {
     window.open(`https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`, "_blank", "noopener,noreferrer");
   };
   return <AppLayout>
+      <div className="mx-auto max-w-7xl px-4 pt-5 sm:px-6"><ExperienceToolNav /></div>
       <style>{i18n.tx(`
         .wn-combo-in { animation: wn-combo-in .35s ease-out both; }
         .wn-today-readable { font-size: 16px; line-height: 1.6; }
