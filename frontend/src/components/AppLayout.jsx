@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useId, useMemo, useState, Fragment, useRef } from "react";
 import { Link, useNavigate, useLocation } from "react-router-dom";
 import { useAuth } from "@/contexts/AuthContext";
-import { LayoutDashboard, Trophy, Layers, History, CreditCard, LogOut, Zap, Crown, ShieldCheck, Target, TrendingUp, User, Gift, Sparkles, Radio, Menu, X, Bell, BellPlus, Check, CheckCheck, Loader2, CheckCircle2, XCircle, MinusCircle } from "lucide-react";
+import { LayoutDashboard, Trophy, Layers, History, CreditCard, LogOut, Zap, Crown, ShieldCheck, Target, TrendingUp, User, Gift, Sparkles, Radio, Menu, X, Bell, BellPlus, Check, CheckCheck, Loader2, CheckCircle2, XCircle, MinusCircle, Search, ArrowUpRight } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -6979,6 +6979,7 @@ function AppLayoutContent({
   const navigate = useNavigate();
   const location = useLocation();
   const [moreOpen, setMoreOpen] = useState(false);
+  const [headerSearch, setHeaderSearch] = useState("");
   useEffect(() => {
     setMoreOpen(false);
   }, [location.pathname]);
@@ -7116,9 +7117,9 @@ function AppLayoutContent({
     : location.pathname.startsWith(item.to);
   const primaryMobileItems = navItems.filter(i => MOBILE_PRIMARY_KEYS.includes(i.to));
   const moreMobileItems = navItems.filter(i => !MOBILE_PRIMARY_KEYS.includes(i.to));
-  return <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-neutral-50">
+  return <div className="wp-premium min-h-screen w-full max-w-full bg-neutral-50" data-testid="premium-shell">
       {/* Sidebar desktop */}
-      <aside className="hidden lg:flex fixed inset-y-0 ltr:left-0 rtl:right-0 w-64 bg-slate-950 text-slate-100 flex-col" data-testid="app-sidebar">
+      <aside className="wp-sidebar hidden lg:flex fixed inset-y-0 ltr:left-0 rtl:right-0 w-64 bg-slate-950 text-slate-100 flex-col" data-testid="app-sidebar">
         <div className="px-6 py-6 border-b border-slate-800/80 flex items-center gap-2.5">
           <div className="h-9 w-9 rounded-xl wp-gradient-warm grid place-items-center shadow-lg shadow-orange-600/30">
             <Zap className="h-5 w-5 text-white" strokeWidth={2.5} fill="white" />
@@ -7135,12 +7136,11 @@ function AppLayoutContent({
           </div>
         </div>
 
-        <div className="px-4 pt-4"><LanguageSwitcher dark /></div>
         <nav className="flex-1 px-3 py-6 space-y-1 overflow-y-auto">
           {navItems.map(item => {
           const Icon = item.icon;
           const active = isActive(item);
-          return <Link key={item.to} to={item.to} data-testid={item.testId} className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all", active ? "bg-gradient-to-r from-orange-600/20 to-rose-600/10 text-white border border-orange-500/30" : "text-slate-400 hover:bg-slate-800/60 hover:text-white")}>
+          return <Link key={item.to} to={item.to} aria-current={active ? "page" : undefined} data-testid={item.testId} className={cn("flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all", active ? "bg-gradient-to-r from-orange-600/20 to-rose-600/10 text-white border border-orange-500/30" : "text-slate-400 hover:bg-slate-800/60 hover:text-white")}>
                 <Icon className={cn("h-4 w-4", active && "text-orange-400")} strokeWidth={2} />
 
                 <span className="flex-1">{item.label}</span>
@@ -7191,7 +7191,7 @@ function AppLayoutContent({
       </aside>
 
       {/* Header mobile */}
-      <header className="lg:hidden sticky top-0 z-40 w-full bg-white/95 backdrop-blur-xl border-b border-neutral-200 px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2">
+      <header className="wp-mobile-header lg:hidden sticky top-0 z-40 w-full bg-white/95 backdrop-blur-xl border-b border-neutral-200 px-3 sm:px-4 py-2.5 sm:py-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
           <div className="h-8 w-8 shrink-0 rounded-lg wp-gradient-warm grid place-items-center text-white">
             <Zap className="h-4 w-4" strokeWidth={2.5} fill="white" />
@@ -7251,13 +7251,13 @@ function AppLayoutContent({
         </>}
 
       {/* Navigation mobile : une seule ligne + zone tactile compatible iPhone */}
-      <nav className="lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/98 backdrop-blur border-t border-neutral-200 grid grid-cols-5 min-h-16 shadow-[0_-8px_24px_rgba(15,23,42,0.06)]" style={{
+      <nav className="wp-bottom-nav lg:hidden fixed bottom-0 inset-x-0 z-40 bg-white/98 backdrop-blur border-t border-neutral-200 grid grid-cols-5 min-h-16 shadow-[0_-8px_24px_rgba(15,23,42,0.06)]" style={{
       paddingBottom: "env(safe-area-inset-bottom)"
     }} data-testid="mobile-bottom-nav">
         {primaryMobileItems.map(item => {
         const Icon = item.icon;
         const active = isActive(item);
-        return <Link key={item.to} to={item.to} data-testid={`${item.testId}-mobile`} className={cn("min-w-0 flex flex-col items-center justify-center py-2 text-xs", active ? "text-orange-600" : "text-slate-500")}>
+        return <Link key={item.to} to={item.to} aria-current={active ? "page" : undefined} data-testid={`${item.testId}-mobile`} className={cn("min-w-0 flex flex-col items-center justify-center py-2 text-xs", active ? "text-orange-600" : "text-slate-500")}>
               <Icon className="h-5 w-5 mb-1 shrink-0" />
 
               <span className="leading-snug text-center break-words px-1 w-full">
@@ -7270,7 +7270,15 @@ function AppLayoutContent({
 
       {/* Contenu principal */}
       <main className="ltr:lg:pl-64 rtl:lg:pr-64 pb-[calc(5rem+env(safe-area-inset-bottom))] lg:pb-0 min-h-screen w-full min-w-0 max-w-full flex flex-col">
-        <div className="hidden lg:flex items-center justify-end border-b border-slate-200 bg-white px-6 py-2" data-testid="desktop-notification-header"><ResultNotificationBell /></div>
+        <div className="wp-topbar hidden lg:flex items-center gap-6 border-b border-slate-200 bg-white px-8 py-4" data-testid="desktop-notification-header">
+          <div className="min-w-0"><p className="wp-eyebrow">WinPulse</p><p className="text-sm font-semibold text-slate-300">{navItems.find(isActive)?.label || experienceWords.home}</p></div>
+          <form className="wp-header-search" onSubmit={event => { event.preventDefault(); const query = headerSearch.trim(); navigate(`/app/aujourdhui${query ? `?q=${encodeURIComponent(query.slice(0, 200))}` : ""}`); }} role="search">
+            <Search className="h-4 w-4 shrink-0" aria-hidden="true" /><label htmlFor="wp-header-search" className="sr-only">{experienceWords.allMatches}</label>
+            <input id="wp-header-search" type="search" value={headerSearch} maxLength={200} onChange={event=>setHeaderSearch(event.target.value)} placeholder={experienceWords.allMatches} />
+            <button type="submit" aria-label={experienceWords.open}><ArrowUpRight className="h-4 w-4" aria-hidden="true" /></button>
+          </form>
+          <div className="ms-auto flex items-center gap-3"><LanguageSwitcher dark compact /><ResultNotificationBell /><Link to="/app/profil" className="wp-avatar" aria-label={experienceWords.account}>{Array.from(user?.full_name || "W")[0]}</Link></div>
+        </div>
         <div className="flex-1 min-w-0 max-w-full overflow-x-hidden">
           {children}
         </div>
@@ -8437,4 +8445,30 @@ export function ExperienceToolNav(){
  const w=useExperienceCopy();const {pathname}=useLocation();
  const tabs=[['/app/combines',w.combos],['/app/combines/recommandations',w.recommendations],['/app/combines/personnaliser',w.personal],['/app/builder',w.builder]];
  return <nav aria-label={w.combos} className="flex flex-wrap gap-2 rounded-2xl border border-slate-200 bg-white p-2" data-testid="combination-tools-nav">{tabs.map(([to,label])=><Link key={to} to={to} aria-current={pathname===to?'page':undefined} className={`inline-flex min-h-11 items-center rounded-xl px-3 py-2 text-sm font-semibold ${pathname===to?'bg-slate-950 text-white':'text-slate-600 hover:bg-orange-50'}`}>{label}</Link>)}</nav>;
+}
+
+
+// Décor vectoriel original : aucun appel externe ni image de joueur sans licence.
+export function StadiumBackdrop({ className = "" }) {
+  const id = useId().replace(/:/g, "");
+  return <svg className={`wp-stadium ${className}`} viewBox="0 0 1000 620" preserveAspectRatio="xMidYMid slice" aria-hidden="true" focusable="false">
+    <defs>
+      <radialGradient id={`${id}-sky`} cx="66%" cy="22%" r="80%"><stop stopColor="#25466a"/><stop offset=".55" stopColor="#101d32"/><stop offset="1" stopColor="#080f1b"/></radialGradient>
+      <linearGradient id={`${id}-turf`} x2="0" y2="1"><stop stopColor="#174b43"/><stop offset="1" stopColor="#0a2727"/></linearGradient>
+      <linearGradient id={`${id}-beam`} x2="0" y2="1"><stop stopColor="#d9efff" stopOpacity=".17"/><stop offset="1" stopColor="#d9efff" stopOpacity="0"/></linearGradient>
+      <pattern id={`${id}-seats`} width="14" height="11" patternUnits="userSpaceOnUse"><circle cx="3" cy="4" r="1.4" fill="#7898b6" opacity=".45"/><circle cx="10" cy="8" r="1" fill="#f5b877" opacity=".35"/></pattern>
+    </defs>
+    <rect width="1000" height="620" fill={`url(#${id}-sky)`}/>
+    <path d="M-50 295 Q500 140 1050 295 L1050 430 Q500 235 -50 430Z" fill="#14253a"/>
+    <path d="M-50 310 Q500 155 1050 310 L1050 420 Q500 255 -50 420Z" fill={`url(#${id}-seats)`}/>
+    {[280,305,332,362].map(y=><path key={y} d={`M-30 ${y+35} Q500 ${y-95} 1030 ${y+35}`} stroke="#638098" strokeWidth="2" fill="none" opacity=".35"/>)}
+    <path d="M-60 275 Q500 95 1060 275" stroke="#5d7e98" strokeWidth="7" fill="none" opacity=".45"/>
+    <path d="M-60 280 Q500 100 1060 280" stroke="#d4ecff" strokeWidth="2" fill="none" opacity=".7"/>
+    {[130,365,635,870].map((x,i)=><g key={x}><path d={`M${x} 195 L${x-180} 540 L${x+180} 540Z`} fill={`url(#${id}-beam)`}/><rect x={x-26} y={i===1||i===2?164:195} width="52" height="5" rx="2" fill="#e7f5ff" opacity=".9"/></g>)}
+    <path d="M145 400 L855 400 L1120 660 L-120 660Z" fill={`url(#${id}-turf)`}/>
+    {[0,1,2,3,4,5].map(i=><path key={i} d={`M${145+i*118} 400 L${204+i*118} 400 L${-17+i*207} 660 L${-120+i*207} 660Z`} fill="#6aaba0" opacity=".045"/>)}
+    <path d="M185 416 L815 416 L970 595 L30 595Z M500 416 L500 595 M185 416 L245 486 L365 486 L340 416 M815 416 L755 486 L635 486 L660 416" stroke="#bfdad1" strokeWidth="2" opacity=".3" fill="none"/>
+    <ellipse cx="500" cy="484" rx="75" ry="27" stroke="#bfdad1" strokeWidth="2" fill="none" opacity=".3"/>
+    <circle cx="500" cy="484" r="2.5" fill="#bfdad1" opacity=".5"/>
+  </svg>;
 }
