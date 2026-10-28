@@ -8,6 +8,7 @@ import { useLanguage, usePageLanguage, FollowPickButton } from "@/components/App
 
 const MATCH_MESSAGES = {
   "fr": {
+    "Voir l’analyse": "Voir l’analyse",
     "🟢 SÛR": "🟢 PRUDENT",
     "🟡 MODÉRÉ": "🟡 MODÉRÉ",
     "🔴 RISQUÉ": "🔴 RISQUÉ",
@@ -58,6 +59,7 @@ const MATCH_MESSAGES = {
     "Les deux équipes marquent : Non": "Les deux équipes marquent : Non"
   },
   "en": {
+    "Voir l’analyse": "View analysis",
     "🟢 SÛR": "🟢 LOWER RISK",
     "🟡 MODÉRÉ": "🟡 MODERATE",
     "🔴 RISQUÉ": "🔴 HIGHER RISK",
@@ -108,6 +110,7 @@ const MATCH_MESSAGES = {
     "Les deux équipes marquent : Non": "Both teams to score: No"
   },
   "es": {
+    "Voir l’analyse": "Ver análisis",
     "🟢 SÛR": "🟢 MENOR RIESGO",
     "🟡 MODÉRÉ": "🟡 MODERADO",
     "🔴 RISQUÉ": "🔴 ARRIESGADO",
@@ -158,6 +161,7 @@ const MATCH_MESSAGES = {
     "Les deux équipes marquent : Non": "Ambos equipos marcan: No"
   },
   "pt": {
+    "Voir l’analyse": "Ver análise",
     "🟢 SÛR": "🟢 MENOR RISCO",
     "🟡 MODÉRÉ": "🟡 MODERADO",
     "🔴 RISQUÉ": "🔴 ARRISCADO",
@@ -208,6 +212,7 @@ const MATCH_MESSAGES = {
     "Les deux équipes marquent : Non": "Ambas marcam: Não"
   },
   "de": {
+    "Voir l’analyse": "Analyse ansehen",
     "🟢 SÛR": "🟢 GERINGERES RISIKO",
     "🟡 MODÉRÉ": "🟡 MODERAT",
     "🔴 RISQUÉ": "🔴 HÖHERES RISIKO",
@@ -258,6 +263,7 @@ const MATCH_MESSAGES = {
     "Les deux équipes marquent : Non": "Beide Teams treffen: Nein"
   },
   "ar": {
+    "Voir l’analyse": "عرض التحليل",
     "🟢 SÛR": "🟢 مخاطر أقل",
     "🟡 MODÉRÉ": "🟡 متوسط",
     "🔴 RISQUÉ": "🔴 مرتفع المخاطر",
@@ -396,65 +402,10 @@ function RiskBadge({ label }) {
   return <span className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-xs font-bold leading-5 ${entry[1]}`}>{t(entry[0])}</span>;
 }
 
-function MiniRiskDot({ label }) {
-  const { t } = useMatchLanguage();
-  const presentations = {
-    safe: ["bg-green-500", "Pronostic à risque réduit"],
-    value: ["bg-orange-400", "Pronostic à risque modéré"],
-    risky: ["bg-red-400", "Pronostic risqué"],
-  };
-  const entry = Object.prototype.hasOwnProperty.call(presentations, label) ? presentations[label] : null;
-  if (!entry) return null;
-  return <span className="inline-flex shrink-0 items-center" title={t(entry[1])}>
-    <span className={`inline-block h-2 w-2 rounded-full ${entry[0]}`} aria-hidden="true" />
-    <span className="sr-only">{t(entry[1])}</span>
-  </span>;
-}
-
-function SecondaryMarkets({ markets, primaryPick, primaryMarket, teams }) {
-  const { t, formatNumber } = useMatchLanguage();
-  if (!Array.isArray(markets)) return null;
-  const seen = new Set();
-  const secondary = markets.filter(market => {
-    if (!market || typeof market.pick !== "string" || !market.pick.trim() || market.locked) return false;
-    const isPrimary = market.pick === primaryPick && (!primaryMarket || !market.market_label || market.market_label === primaryMarket);
-    if (isPrimary) return false;
-    const key = JSON.stringify([market.market_key || market.market_label || "", market.pick]);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  }).slice(0, 2);
-  if (!secondary.length) return null;
-  return (
-    <div className="mt-3 space-y-2 border-t border-orange-100 pt-3" data-testid="secondary-markets">
-      <div className="text-xs font-bold uppercase leading-5 tracking-wide text-slate-500">{t("Autres marchés analysés")}</div>
-      {secondary.map((market, index) => (
-        <div key={JSON.stringify([market.market_key || market.market_label, market.pick, index])}
-          className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-3 rounded-lg bg-slate-50 p-2.5 text-sm">
-          <div className="min-w-0 space-y-1">
-            {market.market_label && <div className="break-words text-xs leading-5 text-slate-500">{translateBetText(market.market_label, t, formatNumber)}</div>}
-            <div className="flex min-w-0 items-start gap-1.5">
-              <span className="pt-1"><MiniRiskDot label={market.label} /></span>
-              <span className="min-w-0 font-semibold leading-5 text-slate-700 [overflow-wrap:anywhere]">
-                <bdi>{translateBetText(market.pick, t, formatNumber, teams)}</bdi>
-              </span>
-            </div>
-          </div>
-          <span className="font-mono font-bold tabular-nums text-slate-800" aria-label={t("Cote")}>
-            <bdi>{formatOdds(market.pick_odds, formatNumber)}</bdi>
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
 export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const { t, formatDate, formatNumber } = useMatchLanguage();
   const event = match || {};
   const pred = event.prediction || {};
-  // Le statut provient de la source. Le temps écoulé seul ne suffit pas à
-  // déduire un direct ou une fin de match, selon le sport et les reports.
   const isFinished = Boolean(pred.is_finished || event.is_finished || event.completed);
   const isLive = !isFinished && Boolean(pred.is_live || event.is_live);
   const unavailable = pred.analysis_status === "unavailable" || pred.has_prediction === false || (!pred.pick && !pred.locked);
@@ -463,99 +414,28 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const confidence = finiteNumber(pred.confidence);
   const hasConfidence = confidence !== null && confidence >= 0 && confidence <= 100;
   const edge = finiteNumber(pred.edge);
-  const borderClass = isLive ? "border-rose-300 ring-1 ring-rose-200"
-    : isFinished ? "border-slate-200" : "border-orange-200/60";
-
-
-  return (
-    <Card className={`group flex h-full min-w-0 flex-col overflow-hidden rounded-2xl border bg-white p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:shadow-lg motion-reduce:transform-none sm:p-5 ${borderClass}`} data-testid="match-card">
-      <Link to={`/app/match/${event.id}`} className="block min-w-0 flex-1 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 focus-visible:ring-offset-4" data-testid="match-card-link">
-        <div className="mb-3 flex min-h-7 flex-wrap items-center justify-between gap-2">
-          <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-            {isLive && <span className="inline-flex items-center gap-1 rounded-full bg-rose-500 px-2.5 py-1 text-xs font-black leading-5 text-white">
-              <Radio className="h-3.5 w-3.5 motion-safe:animate-pulse" aria-hidden="true" />{t("LIVE")}
-            </span>}
-            {isFinished && <span className="inline-flex items-center rounded-full border border-slate-200 bg-slate-100 px-2.5 py-1 text-xs font-bold leading-5 text-slate-500">{t("TERMINÉ")}</span>}
-          </div>
-          {locked ? <span className="inline-flex items-center gap-1 rounded-full border border-orange-200 bg-orange-100 px-2.5 py-1 text-xs font-bold leading-5 text-orange-700"><Lock className="h-3.5 w-3.5" aria-hidden="true" />PRO</span>
-            : pred.label ? <RiskBadge label={pred.label} /> : null}
-        </div>
-
-        <div className="space-y-4">
-          <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold leading-5 text-slate-600">
-            <span className="min-w-0 flex-1 basis-32 [overflow-wrap:anywhere]"><bdi>{event.sport_title}</bdi></span>
-            <time dateTime={event.commence_time || undefined} className="shrink-0 font-mono text-slate-700 tabular-nums"><bdi>{formatDate(event.commence_time, { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" })}</bdi></time>
-          </div>
-
-          <div className="space-y-2 rounded-2xl border border-slate-100 bg-gradient-to-br from-white to-slate-50 p-3 sm:p-4">
-            {[['home', event.home_team], ['away', event.away_team]].map(([side, name]) => <div key={side} className="flex min-w-0 items-center gap-3">
-              <TeamBadge name={name} src={badgeUrl(event, side)} />
-              <div className="min-w-0 flex-1 font-heading text-base font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name || '—'}</bdi></div>
-            </div>)}
-          </div>
-
-          {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && (
-            <div className="flex flex-wrap items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-center" data-testid="match-score">
-              <bdi className="font-mono text-xl font-bold tabular-nums text-slate-800">{formatScore(pred.score_home, formatNumber)} - {formatScore(pred.score_away, formatNumber)}</bdi>
-              {isLive && <span className="text-xs font-bold text-rose-500">{t("EN DIRECT")}</span>}
-            </div>
-          )}
-
-          {!locked && (pred.pick ? (
-            <div className="space-y-3 rounded-2xl border border-orange-100 bg-orange-50/40 p-3 sm:p-4">
-              {pred.market_label && <div className="break-words text-xs font-medium uppercase leading-5 tracking-wide text-slate-500">{translateBetText(pred.market_label, t, formatNumber)}</div>}
-              <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-end gap-3">
-                <div className="min-w-0">
-                  <div className="mb-1 text-xs font-medium text-slate-500">{t("Pronostic")}</div>
-                  <div className="text-base font-extrabold leading-6 text-orange-700 [overflow-wrap:anywhere]"><bdi>{translateBetText(pred.pick, t, formatNumber, teams)}</bdi></div>
-                  {pred.best_bookmaker && <div className="mt-1 break-words text-xs leading-5 text-slate-500">{t("chez {{bookmaker}}", { bookmaker: pred.best_bookmaker })}</div>}
-                </div>
-                <div className="rounded-xl bg-white px-3 py-2 text-end shadow-sm">
-                  <div className="text-xs font-medium text-slate-500">{t("Cote")}</div>
-                  <bdi className="font-mono text-2xl font-black tabular-nums text-slate-900">{formatOdds(pred.pick_odds, formatNumber)}</bdi>
-                </div>
-              </div>
-
-              {hasConfidence && <div className="space-y-1.5" data-testid="match-confidence">
-                <ConfidenceBar value={confidence} label={t("Confiance du moteur")} />
-                <div className="flex flex-wrap justify-between gap-2 text-xs leading-5 text-slate-500">
-                  <span>{t("Confiance du moteur")}</span>
-                  <bdi className="font-bold text-slate-700">{formatNumber(confidence / 100, { style: "percent", maximumFractionDigits: 0 })}</bdi>
-                </div>
-              </div>}
-
-              {edge !== null && edge > 0 && <div className="text-xs font-semibold leading-5 text-emerald-600" data-testid="match-edge">
-                {t("Avantage estimé : {{edge}}", { edge: formatNumber(edge / 100, { style: "percent", signDisplay: "always", maximumFractionDigits: 1 }) })}
-              </div>}
-
-              {isFinished && <div className={`flex flex-wrap items-center gap-1.5 rounded-lg border px-2.5 py-2 text-sm font-bold ${pred.won === true ? "border-emerald-200 bg-emerald-50 text-emerald-700" : pred.won === false ? "border-rose-200 bg-rose-50 text-rose-700" : "border-amber-200 bg-amber-50 text-amber-700"}`} data-testid="match-result">
-                {pred.won === true ? <><CheckCircle2 className="h-4 w-4 shrink-0" aria-hidden="true" />{t("GAGNÉ")}</>
-                  : pred.won === false ? <><XCircle className="h-4 w-4 shrink-0" aria-hidden="true" />{t("PERDU")}</>
-                    : <><Clock className="h-4 w-4 shrink-0" aria-hidden="true" />{t("En attente")}</>}
-              </div>}
-
-              <SecondaryMarkets markets={pred.markets} primaryPick={pred.pick} primaryMarket={pred.market_label} teams={teams} />
-            </div>
-          ) : <div className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" data-testid="match-selection-unavailable"><p className="font-semibold text-slate-700">{t("Sélection indisponible")}</p><p className="mt-1 text-slate-500">{t("Aucune sélection exploitable dans les données reçues pour cette rencontre.")}</p></div>)}
-        </div>
-      </Link>
-
-      {!locked && <FollowPickButton matchId={event.id} pick={pred.pick} market={pred.market} disabled={isFinished || isLive} />}
-
-      {locked && <div className="mt-4 rounded-xl border border-dashed border-orange-200 bg-orange-50 p-3">
-        <div className="mb-1 text-sm font-bold text-orange-700">{t("Pick verrouillé")}</div>
-        {typeof onUpgrade === "function" ? <button type="button" onClick={eventClick => { eventClick.stopPropagation(); onUpgrade(); }}
-          className="flex min-h-11 w-full items-center justify-between gap-2 rounded-lg py-2 text-start text-sm font-semibold leading-5 text-orange-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500" data-testid="match-upgrade">
-          {t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 shrink-0 rtl:rotate-180" aria-hidden="true" />
-        </button> : <Link to="/app/abonnement" className="flex min-h-11 items-center justify-between gap-2 rounded-lg py-2 text-sm font-semibold leading-5 text-orange-700" data-testid="match-upgrade-link">
-          {t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 shrink-0 rtl:rotate-180" aria-hidden="true" />
-        </Link>}
-      </div>}
-
-      {isAdmin && !locked && !unavailable && <AdminShareActions isAdmin={isAdmin} item={{ ...event, prediction: pred }} />}
-
-    </Card>
-  );
+  return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card">
+    <Link to={`/app/match/${event.id}`} className="wp-match-link" data-testid="match-card-link">
+      <div className="wp-match-meta"><span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
+        {isLive ? <span className="wp-live-label"><Radio className="h-3 w-3" aria-hidden="true" />{t("LIVE")}</span> : <time dateTime={event.commence_time || undefined}>{formatDate(event.commence_time, {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>}
+      </div>
+      <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
+      {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && <div className="wp-match-score" data-testid="match-score"><bdi>{formatScore(pred.score_home,formatNumber)} — {formatScore(pred.score_away,formatNumber)}</bdi>{isFinished && <span>{t("TERMINÉ")}</span>}</div>}
+      {!locked && (pred.pick ? <div className="wp-pick-panel">
+        <div className="wp-pick-heading"><span>{pred.market_label ? translateBetText(pred.market_label,t,formatNumber) : t("Pronostic")}</span><span>{t("Cote")}</span></div>
+        <div className="wp-pick-main"><strong><bdi>{translateBetText(pred.pick,t,formatNumber,teams)}</bdi></strong><bdi className="wp-odds">{formatOdds(pred.pick_odds,formatNumber)}</bdi></div>
+        {pred.best_bookmaker && <p className="wp-bookmaker">{t("chez {{bookmaker}}",{bookmaker:pred.best_bookmaker})}</p>}
+      </div> : <div className="wp-pick-panel" data-testid="match-selection-unavailable"><p className="font-semibold text-slate-700">{t("Sélection indisponible")}</p><p className="mt-1 text-sm text-slate-500">{t("Aucune sélection exploitable dans les données reçues pour cette rencontre.")}</p></div>)}
+      {locked && <div className="wp-pick-panel wp-pick-locked"><Lock className="h-4 w-4" aria-hidden="true"/><span>{t("Pick verrouillé")}</span><span className="wp-pro-chip">PRO</span></div>}
+      <div className="wp-match-bottom">{!locked && pred.label && <RiskBadge label={pred.label}/>}{hasConfidence && !locked && <span className="wp-confidence" data-testid="match-confidence"><span>{t("Confiance du moteur")}</span><bdi>{formatNumber(confidence/100,{style:'percent',maximumFractionDigits:0})}</bdi></span>}</div>
+      {hasConfidence && !locked && <ConfidenceBar value={confidence} label={t("Confiance du moteur")}/>}
+      {edge !== null && edge > 0 && !locked && <p className="wp-edge" data-testid="match-edge">{t("Avantage estimé : {{edge}}",{edge:formatNumber(edge/100,{style:'percent',signDisplay:'always',maximumFractionDigits:1})})}</p>}
+      {isFinished && !locked && pred.pick && <div className={`wp-result ${pred.won===true?'wp-result-won':pred.won===false?'wp-result-lost':''}`} data-testid="match-result">{pred.won===true?<><CheckCircle2 className="h-4 w-4"/>{t("GAGNÉ")}</>:pred.won===false?<><XCircle className="h-4 w-4"/>{t("PERDU")}</>:<><Clock className="h-4 w-4"/>{t("En attente")}</>}</div>}
+    </Link>
+    <div className="wp-match-actions"><Link to={`/app/match/${event.id}`} className="wp-analysis-link">{t("Voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true"/></Link>{!locked && <FollowPickButton matchId={event.id} pick={pred.pick} market={pred.market} disabled={isFinished||isLive}/>}</div>
+    {locked && <div className="wp-upgrade-action">{typeof onUpgrade==='function'?<button type="button" onClick={eventClick=>{eventClick.stopPropagation();onUpgrade();}} data-testid="match-upgrade">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></button>:<Link to="/app/abonnement" data-testid="match-upgrade-link">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link>}</div>}
+    {isAdmin && !locked && !unavailable && <AdminShareActions isAdmin={isAdmin} item={{...event,prediction:pred}}/>}
+  </Card>;
 }
 
 // Admin-only composition. This module never sends messages automatically.
