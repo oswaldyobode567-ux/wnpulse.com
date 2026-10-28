@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import api from "@/lib/api";
-import AppLayout, { useLanguage } from "@/components/AppLayout";
+import AppLayout, { useLanguage, usePageLanguage, useExperienceCopy, useExperiencePreferences, useFollowedPicks, useExperienceEvent } from "@/components/AppLayout";
 import MatchCard, { AdminShareProvider, AdminShareToolbar } from "@/components/MatchCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -9,7 +9,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import {
   Trophy,  ChevronRight, Activity, 
   Sparkles, Radio,  CheckCircle2, XCircle,
-  Clock, TrendingUp, RefreshCw, Filter, ShieldCheck, Search, X
+  Clock, TrendingUp, RefreshCw, Filter, ShieldCheck, Search, X, ArrowRight, Layers, SlidersHorizontal, Bookmark, CalendarDays
 } from "lucide-react";
 import dayjs from "dayjs";
 import { useAuth } from "@/contexts/AuthContext";
@@ -31,7 +31,7 @@ function discoveryEvent(event, surface) {
 }
 
 
-function FreeDiscoveryPanel({ user, lastUpdate, onUpgrade }) {
+function FreeDiscoveryPanel({ user, lastUpdate, onUpgrade, compact = false }) {
   const { language } = useLanguage();
   const words = discoveryCopy(language);
   const owner = user?.id || "anonymous";
@@ -66,7 +66,7 @@ function FreeDiscoveryPanel({ user, lastUpdate, onUpgrade }) {
       <p className="text-xs font-semibold text-slate-600" role="status">{data.date} · {items.length}/3 {words.count}</p>
       {items.length ? <div className="grid min-w-0 gap-3 md:grid-cols-3">{items.map(match=><div key={match.id} className="min-w-0"><div className="min-w-0"><MatchCard match={match} isFree={true} isAdmin={false} onUpgrade={upgrade} /></div></div>)}</div> : <p className="rounded-xl bg-white p-4 text-sm leading-6 text-slate-600">{words.empty}</p>}
       <p className="text-xs leading-5 text-slate-500">{words.note} {words.follow}</p>
-      {Number(data.locked_count)>0 && <div className="space-y-3 border-t border-orange-100 pt-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-heading text-base font-bold text-slate-900">{words.pro}</h3><span className="text-sm text-slate-600">{data.locked_count} {words.reserved}</span></div><div className="grid min-w-0 gap-3 md:grid-cols-3">{(data.preview || []).slice(0,3).map(match=><MatchCard key={match.id} match={match} isFree={true} isAdmin={false} onUpgrade={upgrade} />)}</div><Button onClick={upgrade} className="h-auto min-h-11 w-full whitespace-normal bg-orange-600 px-4 py-3 text-sm font-bold text-white hover:bg-orange-700 sm:w-auto">{words.cta}</Button></div>}
+      {Number(data.locked_count)>0 && <div className="space-y-3 border-t border-orange-100 pt-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-heading text-base font-bold text-slate-900">{words.pro}</h3><span className="text-sm text-slate-600">{data.locked_count} {words.reserved}</span></div>{!compact && <div className="grid min-w-0 gap-3 md:grid-cols-3">{(data.preview || []).slice(0,3).map(match=><MatchCard key={match.id} match={match} isFree={true} isAdmin={false} onUpgrade={upgrade} />)}</div>}<Button onClick={upgrade} className="h-auto min-h-11 w-full whitespace-normal bg-orange-600 px-4 py-3 text-sm font-bold text-white hover:bg-orange-700 sm:w-auto">{words.cta}</Button></div>}
     </>}
     <p className="text-xs leading-5 text-slate-500">18+ · {words.noGuarantee}</p>
   </section>;
@@ -1219,7 +1219,9 @@ function useCalendarDay() {
   return today;
 }
 
-export default function DashboardPage() {
+export function MatchCataloguePage() {
+  const experienceWords = useExperienceCopy();
+  useExperienceEvent("catalogue");
   const { user } = useAuth();
   const { t, formatDate, formatNumber } = useDashboardLanguage();
   const translationRef = useRef(t);
@@ -1372,7 +1374,7 @@ export default function DashboardPage() {
             <div className="flex items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <p className="mb-2 text-xs font-semibold leading-5 text-orange-200">{formatDate(new Date(), { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · WinPulse</p>
-                <h1 className="font-heading text-xl font-extrabold leading-tight tracking-tight sm:text-3xl">{t("Tes pronostics, en un coup d’œil 🎯")}</h1>
+                <h1 className="font-heading text-xl font-extrabold leading-tight tracking-tight sm:text-3xl">{experienceWords.allMatches}</h1>
                 <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300 sm:mt-2 sm:text-sm sm:leading-6">
                   {isFree ? picksLoading ? t("Chargement des pronostics…") : pickCounts.total === 0 ? t("Aucun pick disponible actuellement") : t("Accès gratuit · Passe Pro pour débloquer les picks réservés")
                     : t("{{plan}} actif · Tous les picks disponibles", { plan: (isAdmin ? "admin" : subscriptionTier).toUpperCase() })}
@@ -1402,6 +1404,7 @@ export default function DashboardPage() {
           </div>
         </Card>
 
+        <SavedSearches />
         <FreeDiscoveryPanel user={user} lastUpdate={lastUpdate} onUpgrade={() => navigate("/app/abonnement")} />
 
         <Card className="min-w-0 rounded-2xl border-orange-100 bg-white p-4 shadow-sm sm:p-5" data-testid="dashboard-search">
@@ -1642,3 +1645,74 @@ function ValidatedBlock({ title, picks, stats }) {
   );
 }
 
+
+
+const HOME_SPORTS = ["soccer","basketball","tennis","icehockey","americanfootball","baseball","mma"];
+function experiencePaid(user){
+  return Boolean(user?.is_admin || (user && String(user.subscription_tier || user.subscription || "free").toLowerCase() !== "free"));
+}
+function upcomingHomeMatch(match,now){
+  return Number.isFinite(new Date(match.commence_time).getTime()) && new Date(match.commence_time).getTime()>now && !match.is_finished && !match.completed && !match.prediction?.is_finished && !match.is_live && !match.prediction?.is_live;
+}
+function sportFamily(match){ return String(match.sport_key || "").split('_')[0]; }
+function PreferenceEditor({matches}){
+  const w=useExperienceCopy(); const {preferences,loading,busy,failed,save,retry}=useExperiencePreferences();
+  const [sports,setSports]=useState(preferences.sports),[leagues,setLeagues]=useState(preferences.leagues),[notice,setNotice]=useState(""),[leagueQuery,setLeagueQuery]=useState("");
+  useEffect(()=>{setSports(preferences.sports);setLeagues(preferences.leagues);},[preferences]);
+  const options=[...new Set([...preferences.leagues,...matches.filter(m=>!sports.length||sports.includes(sportFamily(m))).map(m=>m.sport_title).filter(Boolean)])].sort((a,b)=>a.localeCompare(b));
+  return <details className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5" data-testid="home-preferences"><summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-bold text-slate-800"><SlidersHorizontal className="h-5 w-5 text-orange-600" />{w.preferences}</summary>
+    <p className="mt-3 text-sm leading-6 text-slate-500">{w.preferenceHint}</p>
+    {failed&&<p role="alert" className="mt-3 text-sm text-amber-800">{w.error}<button type="button" onClick={retry} className="ms-3 min-h-11 px-3 font-bold">↻</button></p>}
+    <fieldset disabled={busy||loading||failed} className="mt-4"><legend className="text-sm font-bold">{w.sports}</legend><div className="mt-2 flex flex-wrap gap-2">{HOME_SPORTS.map(key=><label key={key} className={`flex min-h-11 cursor-pointer items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold ${sports.includes(key)?'border-orange-300 bg-orange-50 text-orange-800':'border-slate-200 text-slate-600'}`}><input type="checkbox" checked={sports.includes(key)} onChange={()=>{setNotice("");setSports(old=>old.includes(key)?old.filter(x=>x!==key):[...old,key]);}} className="accent-orange-600" />{w[key]}</label>)}</div></fieldset>
+    <label className="mt-5 block text-sm font-bold" htmlFor="home-leagues">{w.leagues}</label><input id="home-leagues" type="search" value={leagueQuery} onChange={event=>setLeagueQuery(event.target.value)} placeholder={w.leagues} className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-base"/><fieldset disabled={busy||loading||failed} className="mt-2 max-h-52 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-2"><legend className="sr-only">{w.leagues}</legend>{options.filter(name=>name.toLocaleLowerCase().includes(leagueQuery.toLocaleLowerCase())).slice(0,80).map(name=><label key={name} className="flex min-h-11 cursor-pointer items-center gap-2 rounded-lg px-2 py-2 text-sm text-slate-700 hover:bg-white"><input type="checkbox" checked={leagues.includes(name)} disabled={!leagues.includes(name)&&leagues.length>=20} onChange={()=>{setNotice("");setLeagues(old=>old.includes(name)?old.filter(x=>x!==name):[...old,name]);}} className="shrink-0 accent-orange-600"/><span className="break-words">{name}</span></label>)}</fieldset>
+    <div className="mt-4 flex flex-wrap items-center gap-3"><button type="button" disabled={busy||loading||failed} onClick={async()=>{const ok=await save({sports,leagues});setNotice(ok?w.saved:w.error);}} className="min-h-11 rounded-xl bg-orange-600 px-5 py-2 text-sm font-bold text-white hover:bg-orange-700 disabled:opacity-50">{busy?w.saving:w.save}</button><p role="status" className="text-sm text-slate-600">{notice}</p></div>
+  </details>;
+}
+function SavedSearches(){
+ const w=useExperienceCopy();const {user}=useAuth();const {preferences,loading,busy,failed,save,retry}=useExperiencePreferences();const [params,setParams]=useSearchParams();const [name,setName]=useState("");const [notice,setNotice]=useState("");
+ const filters=Array.isArray(preferences.saved_filters)?preferences.saved_filters:[];const limit=experiencePaid(user)?8:3;
+ return <details className="rounded-2xl border border-slate-200 bg-white p-4" data-testid="saved-searches"><summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-bold text-slate-800"><Bookmark className="h-4 w-4 text-orange-600" />{w.savedSearches}<span className="text-slate-400">{filters.length}/{limit}</span></summary><p className="mt-2 text-xs leading-5 text-slate-500">{w.searchLimit}</p>
+ {failed&&<p className="mt-2 text-sm text-amber-800" role="alert">{w.error}<button type="button" onClick={retry} className="ms-3 min-h-11 px-3 font-bold">↻</button></p>}
+ <div className="mt-3 space-y-2">{filters.map((item,index)=><div key={index} className="flex min-w-0 items-center gap-2 rounded-xl bg-slate-50 p-2"><button type="button" className="min-h-11 min-w-0 flex-1 break-words text-start text-sm font-semibold text-slate-700" onClick={()=>{const next=new URLSearchParams();Object.entries(item.query||{}).forEach(([key,value])=>next.set(key,value));setParams(next);}}>{item.name}<span className="ms-2 text-orange-700">→</span></button><button type="button" disabled={busy||loading||failed} aria-label={`${w.delete}: ${item.name}`} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-rose-50 hover:text-rose-700" onClick={async()=>{const ok=await save({saved_filters:filters.filter((_,i)=>i!==index)});setNotice(ok?w.saved:w.error);}}><X className="h-4 w-4" /></button></div>)}</div>
+ <form className="mt-3 flex flex-col gap-2 sm:flex-row" onSubmit={async event=>{event.preventDefault();if(filters.length>=limit||!name.trim())return;const query={};['q','sport','risk','bet','sort'].forEach(key=>{if(params.has(key))query[key]=params.get(key);});const ok=await save({saved_filters:[...filters,{name:name.trim(),query}]});setNotice(ok?w.saved:w.error);if(ok)setName("");}}><label className="sr-only" htmlFor="saved-search-name">{w.searchName}</label><input id="saved-search-name" value={name} maxLength={50} onChange={event=>setName(event.target.value)} required placeholder={w.searchName} disabled={busy||loading||failed||filters.length>=limit} className="min-h-11 min-w-0 flex-1 rounded-xl border px-3 text-base"/><button disabled={busy||loading||failed||filters.length>=limit} className="min-h-11 rounded-xl bg-slate-900 px-4 text-sm font-bold text-white disabled:opacity-40">{w.saveSearch}</button></form><p role="status" className="mt-2 text-sm text-slate-500">{notice}</p>
+ </details>;
+}
+function HomeFollowRows({rows}){
+ const w=useExperienceCopy();const i18n=usePageLanguage();
+ return <div className="grid gap-3 sm:grid-cols-2">{rows.map((row,index)=><Link key={row.id||index} to={`/app/match/${encodeURIComponent(row.match_id||row.id)}`} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 transition-colors hover:border-orange-300" data-testid="home-follow-row"><p className="text-xs text-slate-500">{i18n.formatDate(row.commence_time,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</p><h3 className="mt-2 break-words text-sm font-extrabold leading-6 text-slate-900"><bdi>{row.home_team} · {row.away_team}</bdi></h3><p className="mt-2 break-words text-sm font-semibold text-orange-700"><bdi>{i18n.bet(row.pick)}</bdi></p><div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs"><span className="text-slate-500">{w.initialOdds} <bdi className="font-mono font-bold">{row.pick_odds??'—'}</bdi></span><span className={`rounded-full px-2 py-1 font-bold ${row.result==='won'?'bg-emerald-50 text-emerald-700':row.result==='lost'?'bg-rose-50 text-rose-700':'bg-slate-100 text-slate-600'}`}>{row.result==='won'?w.won:row.result==='lost'?w.lost:row.result==='void'?w.void:w.pending}</span></div></Link>)}</div>;
+}
+function ExperienceHome(){
+ const {user}=useAuth();const w=useExperienceCopy();const i18n=usePageLanguage();const navigate=useNavigate();const {matches,loading,error,lastUpdate,refresh}=useRealtimeMatches();const {preferences}=useExperiencePreferences();const follows=useFollowedPicks();const [now,setNow]=useState(Date.now());
+ useExperienceEvent('home');
+ useEffect(()=>{const timer=window.setInterval(()=>setNow(Date.now()),60000);return()=>window.clearInterval(timer);},[]);
+ const upcoming=useMemo(()=>matches.filter(m=>upcomingHomeMatch(m,now)),[matches,now]);
+ const preferred=useMemo(()=>upcoming.filter(m=>(!preferences.sports.length||preferences.sports.includes(sportFamily(m)))&&(!preferences.leagues.length||preferences.leagues.includes(m.sport_title))).slice(0,experiencePaid(user)?6:3),[upcoming,preferences,user]);
+ const rows=follows?.follows||[];const active=rows.filter(row=>row.state!=='resolved').sort((a,b)=>new Date(a.commence_time)-new Date(b.commence_time)).slice(0,4);const resolved=rows.filter(row=>row.state==='resolved').slice(0,4);
+ const counts=getAvailablePickCounts(matches);const paid=experiencePaid(user);
+ return <div className="mx-auto min-w-0 max-w-7xl space-y-6 px-4 py-6 sm:px-6 sm:py-8" data-testid="experience-home">
+   <section className="relative overflow-hidden rounded-3xl bg-slate-950 p-5 text-white sm:p-8"><div className="pointer-events-none absolute -end-10 -top-20 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true"/><div className="relative"><p className="text-xs font-bold uppercase tracking-widest text-orange-300">WinPulse · {i18n.formatDate(new Date(now),{day:'numeric',month:'long'})}</p><h1 className="mt-3 text-3xl font-extrabold leading-tight tracking-tight sm:text-4xl">{w.hello}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300 sm:text-base">{w.homeIntro}</p><div className="mt-6 flex flex-wrap gap-3"><Link to="/app/aujourdhui" className="inline-flex min-h-12 items-center gap-2 rounded-xl bg-orange-600 px-5 py-3 text-sm font-bold text-white hover:bg-orange-700">{w.allMatches}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link><Link to="/app/suivi" className="inline-flex min-h-12 items-center gap-2 rounded-xl border border-white/20 px-5 py-3 text-sm font-bold text-white hover:bg-white/10">{w.follow}<Bookmark className="h-4 w-4"/></Link></div><div className="mt-6 grid grid-cols-3 gap-2 border-t border-white/10 pt-5">{[[loading?'—':counts.total,w.selections],[loading?'—':upcoming.length,w.upcoming],[follows?.loading?'—':rows.filter(r=>r.state!=='resolved').length,w.follow]].map(([value,label],i)=><div key={i} className="min-w-0"><p className="font-mono text-2xl font-extrabold text-white sm:text-3xl">{value}</p><p className="mt-1 break-words text-xs leading-5 text-slate-400">{label}</p></div>)}</div></div></section>
+   {error&&<div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl bg-amber-50 p-4 text-sm text-amber-900"><span>{w.error}</span><button type="button" onClick={()=>refresh().catch(()=>{})} className="min-h-11 px-3 font-bold"><RefreshCw className="h-4 w-4"/></button></div>}
+   <PreferenceEditor matches={matches}/>
+   <section><HomeSectionTitle title={w.next} to="/app/suivi"/><div className="mt-3">{follows?.failed?<p className="rounded-2xl bg-amber-50 p-5 text-sm">{w.error}</p>:active.length?<HomeFollowRows rows={active}/>:<p className="rounded-2xl border border-dashed border-slate-200 bg-white p-5 text-sm leading-6 text-slate-500">{w.emptyFollow}</p>}</div></section>
+   {!paid&&<FreeDiscoveryPanel compact user={user} lastUpdate={lastUpdate} onUpgrade={()=>navigate('/app/abonnement')}/>}
+   {(paid||preferences.sports.length>0||preferences.leagues.length>0)&&<section><HomeSectionTitle title={preferences.sports.length||preferences.leagues.length?w.forYou:w.upcoming} to="/app/aujourdhui"/><div className="mt-3">{loading&&!matches.length?<div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(i=><Skeleton key={i} className="h-80 rounded-2xl"/>)}</div>:preferred.length?<div className="grid items-stretch gap-4 sm:grid-cols-2 xl:grid-cols-3">{preferred.map(match=><MatchCard key={match.id} match={match} isFree={!paid} isAdmin={Boolean(user?.is_admin)} onUpgrade={()=>navigate('/app/abonnement')}/>)}</div>:<p className="rounded-2xl bg-white p-5 text-sm leading-6 text-slate-500">{w.emptyMatches}</p>}</div></section>}
+   <section><HomeSectionTitle title={w.lastResults} to="/app/suivi"/><div className="mt-3">{resolved.length?<HomeFollowRows rows={resolved}/>:<p className="rounded-2xl border border-slate-200 bg-white p-5 text-sm leading-6 text-slate-500">{w.noResults}</p>}</div></section>
+   <div className="grid gap-4 md:grid-cols-2"><ExperienceTool to="/app/combines" title={w.combos} text={w.comboIntro} icon={Layers}/><ExperienceTool to="/app/explorer" title={w.explore} text={w.exploreIntro} icon={SlidersHorizontal}/></div>
+   {!paid&&<section className="flex flex-col gap-5 rounded-3xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center sm:justify-between sm:p-7"><div><p className="text-xs font-extrabold uppercase tracking-widest text-orange-700">WinPulse Pro</p><h2 className="mt-2 text-xl font-extrabold text-slate-900">{w.proTitle}</h2><p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">{w.proIntro}</p></div><Link to="/app/abonnement" className="inline-flex min-h-12 shrink-0 items-center justify-center rounded-xl bg-slate-950 px-6 text-sm font-bold text-white">{w.upgrade}</Link></section>}
+   <p className="text-xs leading-6 text-slate-500">{w.note}</p>
+ </div>;
+}
+function HomeSectionTitle({title,to}){const w=useExperienceCopy();return <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-xl font-extrabold tracking-tight text-slate-900">{title}</h2><Link to={to} className="inline-flex min-h-11 items-center gap-1 text-sm font-bold text-orange-700">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link></div>;}
+function ExperienceTool({to,title,text,icon:Icon}){const w=useExperienceCopy();return <Link to={to} className="group flex min-w-0 flex-col rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:border-orange-300 hover:shadow-md sm:p-6"><span className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-orange-50 text-orange-600"><Icon className="h-6 w-6"/></span><h2 className="text-lg font-extrabold text-slate-900">{title}</h2><p className="mt-2 flex-1 text-sm leading-6 text-slate-500">{text}</p><span className="mt-5 inline-flex min-h-11 items-center gap-2 text-sm font-bold text-orange-700">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></span></Link>;}
+export default function DashboardPage(){return <AppLayout><ExperienceHome/></AppLayout>;}
+export function ExplorePage(){const w=useExperienceCopy();useExperienceEvent('explore');return <AppLayout><div className="mx-auto max-w-6xl space-y-6 px-4 py-7 sm:px-6"><header className="rounded-3xl bg-slate-950 p-6 text-white sm:p-9"><p className="text-xs font-bold uppercase tracking-widest text-orange-300">WinPulse</p><h1 className="mt-3 text-3xl font-extrabold">{w.explore}</h1><p className="mt-3 text-sm leading-6 text-slate-300">{w.exploreIntro}</p></header><div className="grid gap-4 sm:grid-cols-2"><ExperienceTool to="/app/combines" title={w.combos} text={w.comboIntro} icon={Layers}/><ExperienceTool to="/app/montante" title={w.montante} text={w.montanteText} icon={TrendingUp}/><ExperienceTool to="/app/value-bets" title={w.value} text={w.valueText} icon={Activity}/><ExperienceTool to="/app/live" title={w.live} text={w.liveText} icon={Radio}/></div><p className="text-xs leading-6 text-slate-500">{w.note}</p><ExperienceAdminSummary/><EngineObservationPanel/></div></AppLayout>;}
+export function CombinationsHubPage(){const w=useExperienceCopy();useExperienceEvent('combos');return <AppLayout><div className="mx-auto max-w-6xl space-y-6 px-4 py-7 sm:px-6"><header className="rounded-3xl bg-slate-950 p-6 text-white sm:p-9"><Link to="/app/explorer" className="inline-flex min-h-11 items-center text-sm text-orange-300">← {w.explore}</Link><h1 className="mt-3 text-3xl font-extrabold sm:text-4xl">{w.combos}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">{w.comboIntro}</p></header><div className="grid gap-4 md:grid-cols-3"><ExperienceTool to="/app/combines/recommandations" title={w.recommendations} text={w.recommendationsText} icon={Layers}/><ExperienceTool to="/app/combines/personnaliser" title={w.personal} text={w.personalText} icon={SlidersHorizontal}/><ExperienceTool to="/app/builder" title={w.builder} text={w.builderText} icon={Bookmark}/></div><p className="rounded-2xl bg-orange-50 p-4 text-sm leading-6 text-orange-900">{w.note}</p></div></AppLayout>;}
+function ExperienceAdminSummary(){const {user}=useAuth();const w=useExperienceCopy();const [data,setData]=useState(null);useEffect(()=>{if(!user?.is_admin)return;let active=true;api.get('/experience/admin/summary',{timeout:10000}).then(r=>{if(active)setData(r.data);}).catch(()=>{});return()=>{active=false;};},[user?.id,user?.is_admin]);if(!user?.is_admin||!data)return null;return <section className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="experience-admin-summary"><h2 className="font-bold">{w.usage}</h2><div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3">{[['home',w.home],['catalogue',w.allMatches],['pro_view',w.pro],['pro_checkout',w.payment],['combos',w.combos],['explore',w.explore]].map(([key,label])=><div key={key} className="rounded-xl bg-slate-50 p-3"><p className="font-mono text-xl font-bold">{data.events?.[key]||0}</p><p className="text-xs leading-5 text-slate-500">{label}</p></div>)}</div><p className="mt-3 text-xs leading-5 text-slate-500">{w.usageNote}</p></section>;}
+
+function EngineObservationPanel(){
+ const {user}=useAuth();const w=useExperienceCopy();const i18n=usePageLanguage();const [report,setReport]=useState(null);
+ useEffect(()=>{if(!user?.is_admin)return;const controller=new AbortController();api.get('/admin/prediction-model/status',{signal:controller.signal,timeout:15000}).then(({data})=>{if(!controller.signal.aborted)setReport(data);}).catch(()=>{});return()=>controller.abort();},[user?.id,user?.is_admin]);
+ if(!user?.is_admin)return null;
+ const r=report?.prospective||{};const number=v=>v!==null&&v!==undefined&&Number.isFinite(Number(v))?i18n.formatNumber(Number(v),{maximumFractionDigits:4}):'—';
+ return <details className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="engine-observation"><summary className="flex min-h-11 cursor-pointer items-center gap-2 font-bold text-slate-900"><Activity className="h-4 w-4 text-orange-600"/>{w.modelAudit}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{w.modelNote}</p><div className="mt-4 grid gap-3 sm:grid-cols-3">{[[w.modelSamples,r.settled_matches],[w.modelBase,r.baseline_brier],[w.modelTest,r.hybrid_brier]].map(([label,value],index)=><div key={index} className="rounded-xl bg-slate-50 p-3"><p className="font-mono text-xl font-bold text-slate-900">{number(value)}</p><p className="mt-1 text-xs leading-5 text-slate-500">{label}</p></div>)}</div><p className="mt-3 text-xs leading-6 text-slate-500">{w.modelMetric}</p></details>;
+}
