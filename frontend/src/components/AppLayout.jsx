@@ -7596,6 +7596,7 @@ function ResultNotificationsProvider({ children }) {
   const [data, setData] = useState({ owner: null, items: [], follows: [], unread_count: 0 });
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [busy, setBusy] = useState(new Set());
   const [open, setOpen] = useState(false);
   const flight = useRef(null);
@@ -7605,23 +7606,32 @@ function ResultNotificationsProvider({ children }) {
   const translation = useRef(t);
   translation.current = t;
   const refresh = useCallback(async (force = false) => {
-    if (!uid || !mounted.current || document.hidden) return;
+    if (!uid || !mounted.current || (!force && document.hidden)) return false;
     if (flight.current) {
-      if (!force) return;
+      if (!force) return false;
       flight.current.abort();
     }
     const controller = new AbortController();
     flight.current = controller;
     setLoading(true);
     try {
-      const response = await api.get("/notifications", { signal: controller.signal });
+      const response = await api.get("/notifications", {
+        signal: controller.signal,
+        timeout: 20000,
+        // Un clic explicite doit obtenir une réponse fraîche, même derrière un cache HTTP.
+        params: force ? { _refresh: Date.now() } : undefined,
+      });
       if (mounted.current && uidRef.current === uid && !controller.signal.aborted) {
         const value = response.data || {};
         setData({ owner: uid, items: Array.isArray(value.items) ? value.items : [], follows: Array.isArray(value.follows) ? value.follows : [], unread_count: Math.max(0, Number(value.unread_count) || 0) });
         setFailed(false);
+        setLastUpdated(new Date().toISOString());
+        return true;
       }
+      return false;
     } catch {
       if (mounted.current && uidRef.current === uid && !controller.signal.aborted) setFailed(true);
+      return false;
     } finally {
       if (flight.current === controller) {
         flight.current = null;
@@ -7632,6 +7642,8 @@ function ResultNotificationsProvider({ children }) {
   useEffect(() => {
     mounted.current = true;
     setData({ owner: uid, items: [], follows: [], unread_count: 0 });
+    setLastUpdated(null);
+    setLoading(false);
     setBusy(new Set());
     setOpen(false);
     setFailed(false);
@@ -7672,7 +7684,7 @@ function ResultNotificationsProvider({ children }) {
   const follow = useCallback(matchId => perform(`follow:${matchId}`, () => api.post(`/predictions/${encodeURIComponent(matchId)}/follow`)), [perform]);
   const unfollow = useCallback(id => perform(`unfollow:${id}`, () => api.delete(`/notifications/follows/${encodeURIComponent(id)}`)), [perform]);
   const markRead = useCallback(ids => perform("read", () => api.post("/notifications/read", { ids: ids.slice(0, 50) })), [perform]);
-  const value = useMemo(() => ({ ...(data.owner === uid ? data : { items: [], follows: [], unread_count: 0 }), uid, loading, failed, busy, open, setOpen, refresh, follow, unfollow, markRead }), [data, uid, loading, failed, busy, open, refresh, follow, unfollow, markRead]);
+  const value = useMemo(() => ({ ...(data.owner === uid ? data : { items: [], follows: [], unread_count: 0 }), uid, loading, failed, lastUpdated, busy, open, setOpen, refresh, follow, unfollow, markRead }), [data, uid, loading, failed, lastUpdated, busy, open, refresh, follow, unfollow, markRead]);
   return <ResultNotificationsContext.Provider value={value}>{children}{uid && <ResultNotificationsDialog />}</ResultNotificationsContext.Provider>;
 }
 
@@ -7766,12 +7778,12 @@ export default function AppLayout({ children }) {
 
 
 const FOLLOW_PAGE_TEXT = {
- fr:["Mes pronostics suivis","Tes sélections et leurs résultats confirmés au même endroit.","Cote initiale","Début","En attente","Gagné","Perdu","Remboursé","Début dans moins de 30 minutes","Cote modifiée","Ancienne cote","Cote actuelle","Mise à jour lorsque le site est ouvert. Les cotes peuvent changer.","Aucune sélection suivie pour le moment.","Suivre des pronostics","Historique limité aux 200 suivis actifs et 50 suivis récents.","Actualiser","Indisponible","Arrêter le suivi","Sélection","Marché","Notifications indisponibles. Réessaie."],
- en:["My followed picks","Your selections and confirmed results in one place.","Original odds","Starts","Pending","Won","Lost","Refunded","Starts within 30 minutes","Odds changed","Original odds","Current odds","Updated while the site is open. Odds may change.","No followed selections yet.","Explore predictions","Showing up to 200 active and 50 recent follows.","Refresh","Unavailable","Unfollow","Selection","Market","Notifications unavailable. Try again."],
- es:["Mis pronósticos seguidos","Tus selecciones y resultados confirmados en un solo lugar.","Cuota inicial","Inicio","Pendiente","Ganado","Perdido","Reembolsado","Comienza en menos de 30 minutos","Cuota modificada","Cuota inicial","Cuota actual","Actualizado con el sitio abierto. Las cuotas pueden variar.","Aún no sigues selecciones.","Ver pronósticos","Hasta 200 seguimientos activos y 50 recientes.","Actualizar","No disponible","Dejar de seguir","Selección","Mercado","Notificaciones no disponibles. Inténtalo de nuevo."],
- pt:["Os meus palpites seguidos","As tuas seleções e resultados confirmados num só lugar.","Cota inicial","Início","Pendente","Ganho","Perdido","Reembolsado","Começa dentro de 30 minutos","Cota alterada","Cota inicial","Cota atual","Atualizado com o site aberto. As cotas podem mudar.","Ainda não segues seleções.","Ver palpites","Até 200 acompanhamentos ativos e 50 recentes.","Atualizar","Indisponível","Deixar de seguir","Seleção","Mercado","Notificações indisponíveis. Tenta novamente."],
- de:["Meine verfolgten Tipps","Deine Tipps und bestätigten Ergebnisse an einem Ort.","Ursprüngliche Quote","Beginn","Ausstehend","Gewonnen","Verloren","Erstattet","Beginn innerhalb von 30 Minuten","Quote geändert","Ursprüngliche Quote","Aktuelle Quote","Aktualisierung bei geöffneter Seite. Quoten können sich ändern.","Noch keine verfolgten Tipps.","Tipps ansehen","Bis zu 200 aktive und 50 jüngste verfolgte Tipps.","Aktualisieren","Nicht verfügbar","Nicht mehr verfolgen","Auswahl","Markt","Benachrichtigungen nicht verfügbar. Erneut versuchen."],
- ar:["توقعاتي المتابَعة","اختياراتك ونتائجها المؤكدة في مكان واحد.","المعامل الأصلي","البداية","قيد الانتظار","فائز","خاسر","مسترد","تبدأ خلال 30 دقيقة","تغير المعامل","المعامل الأصلي","المعامل الحالي","التحديث عند فتح الموقع. قد تتغير المعاملات.","لا توجد اختيارات متابَعة بعد.","استعرض التوقعات","حتى 200 متابعة نشطة و50 متابعة حديثة.","تحديث","غير متاح","إيقاف المتابعة","الاختيار","السوق","الإشعارات غير متاحة. حاول مجدداً."]
+ fr:["Mes pronostics suivis","Tes sélections et leurs résultats confirmés au même endroit.","Cote initiale","Début","En attente","Gagné","Perdu","Remboursé","Début dans moins de 30 minutes","Cote modifiée","Ancienne cote","Cote actuelle","Mise à jour lorsque le site est ouvert. Les cotes peuvent changer.","Aucune sélection suivie pour le moment.","Suivre des pronostics","Historique limité aux 200 suivis actifs et 50 suivis récents.","Actualiser","Indisponible","Arrêter le suivi","Sélection","Marché","Notifications indisponibles. Réessaie.","Actualisation…","Dernière actualisation"],
+ en:["My followed picks","Your selections and confirmed results in one place.","Original odds","Starts","Pending","Won","Lost","Refunded","Starts within 30 minutes","Odds changed","Original odds","Current odds","Updated while the site is open. Odds may change.","No followed selections yet.","Explore predictions","Showing up to 200 active and 50 recent follows.","Refresh","Unavailable","Unfollow","Selection","Market","Notifications unavailable. Try again.","Refreshing…","Last refreshed"],
+ es:["Mis pronósticos seguidos","Tus selecciones y resultados confirmados en un solo lugar.","Cuota inicial","Inicio","Pendiente","Ganado","Perdido","Reembolsado","Comienza en menos de 30 minutos","Cuota modificada","Cuota inicial","Cuota actual","Actualizado con el sitio abierto. Las cuotas pueden variar.","Aún no sigues selecciones.","Ver pronósticos","Hasta 200 seguimientos activos y 50 recientes.","Actualizar","No disponible","Dejar de seguir","Selección","Mercado","Notificaciones no disponibles. Inténtalo de nuevo.","Actualizando…","Última actualización"],
+ pt:["Os meus palpites seguidos","As tuas seleções e resultados confirmados num só lugar.","Cota inicial","Início","Pendente","Ganho","Perdido","Reembolsado","Começa dentro de 30 minutos","Cota alterada","Cota inicial","Cota atual","Atualizado com o site aberto. As cotas podem mudar.","Ainda não segues seleções.","Ver palpites","Até 200 acompanhamentos ativos e 50 recentes.","Atualizar","Indisponível","Deixar de seguir","Seleção","Mercado","Notificações indisponíveis. Tenta novamente.","A atualizar…","Última atualização"],
+ de:["Meine verfolgten Tipps","Deine Tipps und bestätigten Ergebnisse an einem Ort.","Ursprüngliche Quote","Beginn","Ausstehend","Gewonnen","Verloren","Erstattet","Beginn innerhalb von 30 Minuten","Quote geändert","Ursprüngliche Quote","Aktuelle Quote","Aktualisierung bei geöffneter Seite. Quoten können sich ändern.","Noch keine verfolgten Tipps.","Tipps ansehen","Bis zu 200 aktive und 50 jüngste verfolgte Tipps.","Aktualisieren","Nicht verfügbar","Nicht mehr verfolgen","Auswahl","Markt","Benachrichtigungen nicht verfügbar. Erneut versuchen.","Wird aktualisiert…","Zuletzt aktualisiert"],
+ ar:["توقعاتي المتابَعة","اختياراتك ونتائجها المؤكدة في مكان واحد.","المعامل الأصلي","البداية","قيد الانتظار","فائز","خاسر","مسترد","تبدأ خلال 30 دقيقة","تغير المعامل","المعامل الأصلي","المعامل الحالي","التحديث عند فتح الموقع. قد تتغير المعاملات.","لا توجد اختيارات متابَعة بعد.","استعرض التوقعات","حتى 200 متابعة نشطة و50 متابعة حديثة.","تحديث","غير متاح","إيقاف المتابعة","الاختيار","السوق","الإشعارات غير متاحة. حاول مجدداً.","جارٍ التحديث…","آخر تحديث"]
 };
 function FollowedPicksContent() {
   const state = useContext(ResultNotificationsContext);
@@ -7782,7 +7794,8 @@ function FollowedPicksContent() {
   const odds = value => value != null && Number.isFinite(Number(value)) && Number(value)>1 ? new Intl.NumberFormat(locale,{minimumFractionDigits:2,maximumFractionDigits:3}).format(Number(value)) : "—";
   return <main dir={direction} className="mx-auto max-w-5xl min-w-0 px-4 py-7 pb-24" data-testid="follow-centre">
     <header className="mb-6 rounded-3xl bg-slate-950 p-5 text-white sm:p-8"><p className="text-xs font-bold uppercase tracking-wider text-orange-300">WinPulse</p><h1 className="mt-2 text-2xl font-extrabold sm:text-4xl">{w[0]}</h1><p className="mt-2 text-sm leading-6 text-slate-300">{w[1]}</p><p className="mt-2 text-xs text-slate-400">{w[12]}</p></header>
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-500">{w[15]}</p><button type="button" onClick={()=>state?.refresh(true)} className="min-h-11 rounded-xl border border-slate-200 px-4 text-sm font-bold text-orange-700">{w[16]}</button></div>
+    <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-500">{w[15]}</p><button type="button" data-testid="follow-refresh" disabled={Boolean(state?.loading)} aria-busy={Boolean(state?.loading)} onClick={()=>state?.refresh(true)} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-bold text-orange-700 disabled:opacity-60">{state?.loading && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{state?.loading ? w[22] : w[16]}</button></div>
+    {state?.lastUpdated && <p role="status" aria-live="polite" className="mb-3 text-xs text-slate-500">{w[23]} : {date(state.lastUpdated)}</p>}
     {state?.failed && <p role="alert" className="mb-4 rounded-xl bg-amber-50 p-4 text-sm">{w[21]}</p>}
     {state?.loading && !rows.length ? <p role="status" className="p-5">…</p> : !rows.length ? <div className="rounded-2xl border border-dashed p-6 text-center"><p>{w[13]}</p><Link to="/app" className="mt-4 inline-flex min-h-11 items-center font-bold text-orange-700">{w[14]} →</Link></div> : <div className="grid min-w-0 gap-3 md:grid-cols-2">{rows.map(row=>{
       const outcome = row.state !== "resolved" ? w[4] : row.result === "won" ? w[5] : row.result === "lost" ? w[6] : row.result === "void" ? w[7] : w[4];
