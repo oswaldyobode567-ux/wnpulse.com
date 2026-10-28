@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
-import AppLayout, { usePageLanguage } from "@/components/AppLayout";
+import { Link } from "react-router-dom";
+import MatchCard from "@/components/MatchCard";
+import AppLayout, { usePageLanguage, useExperienceCopy, useExperienceEvent } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { CheckCircle2, Crown, Zap, X, Copy, MessageCircle, Loader2 } from "lucide-react";
@@ -27,6 +29,8 @@ function formatXof(i18n, value) {
 }
 export default function SubscriptionPage() {
   const i18n = usePageLanguage();
+  const w = useExperienceCopy();
+  useExperienceEvent("pro_view");
   const {
     user
   } = useAuth();
@@ -94,7 +98,7 @@ export default function SubscriptionPage() {
   }, [paymentOpen]);
   const plan = plans[0] || FALLBACK_PLAN;
   const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
-  const isCurrent = subscriptionTier === String(plan?.id || "pro").toLowerCase();
+  const isCurrent = Boolean(user?.is_admin || subscriptionTier !== "free");
   const amount = WINPULSE_MONTHLY_PRICE_XOF;
   const openPayment = () => {
     setPayerName(user?.full_name || user?.name || "");
@@ -102,6 +106,7 @@ export default function SubscriptionPage() {
     setReference("");
     setPaymentError("");
     setPaymentStep(1);
+    api.post("/experience/events",{event:"pro_checkout"}).catch(()=>{});
     setPaymentOpen(true);
   };
   const closePayment = () => {
@@ -189,69 +194,14 @@ export default function SubscriptionPage() {
     window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
   };
   return <AppLayout>
-      <div className="h-[calc(100dvh-3.5rem)] lg:h-auto w-full overflow-y-auto lg:overflow-visible overscroll-y-contain [-webkit-overflow-scrolling:touch]" data-testid="subscription-page-scroll">
-        <div className={`w-full max-w-2xl mx-auto px-3 sm:px-6 lg:px-8 pt-5 sm:pt-8 ${subscriptionTier === "free" && !isCurrent ? "pb-[calc(11rem+env(safe-area-inset-bottom))] lg:pb-8" : "pb-[calc(7rem+env(safe-area-inset-bottom))] lg:pb-8"}`}>
-        <div className="mb-8 text-center">
-          <h1 className="font-heading text-3xl sm:text-4xl font-extrabold tracking-tight text-slate-900">{i18n.t("Un seul acc\xE8s. Tout WinPulse.")}</h1>
-
-          <p className="mt-3 text-sm text-slate-600">
-            {i18n.tx(paymentConfig?.fedapay_enabled ? "Paiement sécurisé via FedaPay · choisis ton moyen de paiement sur la page FedaPay · annulable à tout moment" : "Paiement sécurisé · MTN Mobile Money disponible en solution de secours · annulable à tout moment")}
-          </p>
-
-          {i18n.tx(subscriptionTier !== "free" && <div className="mt-4 inline-flex items-center gap-2 rounded-full bg-amber-50 border border-amber-200 px-3 py-1 text-xs font-semibold text-amber-800">
-                <Crown className="h-3.5 w-3.5" />{i18n.rich("Plan actif :{{v0}}{{v1}}", {
-              v0: i18n.tx(" "),
-              v1: i18n.tx(subscriptionTier.toUpperCase())
-            })}
-              </div>)}
+      <div className="mx-auto min-w-0 max-w-6xl space-y-6 px-4 py-7 pb-36 sm:px-6 lg:pb-10" data-testid="subscription-page-scroll">
+        <header className="relative overflow-hidden rounded-3xl bg-slate-950 p-6 text-white sm:p-10"><div className="pointer-events-none absolute -end-20 -top-24 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl" aria-hidden="true"/><p className="relative text-xs font-bold uppercase tracking-widest text-orange-300">WinPulse Pro</p><h1 className="relative mt-3 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight sm:text-5xl">{w.proTitle}</h1><p className="relative mt-4 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">{w.proIntro}</p></header>
+        <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,.8fr)]">
+          <section className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 sm:p-6" data-testid="pro-comparison"><h2 className="text-xl font-extrabold text-slate-900">{w.compare}</h2><div className="mt-5 grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 border-b pb-3 text-xs font-bold text-slate-500"><span>{w.feature}</span><span>Free</span><span className="text-orange-700">Pro</span></div>{[[w.selections,w.freeSelections,w.paidSelections],[w.availableData,w.preview,w.included],[w.savedSearches,'3','8'],[w.follow,w.included,w.included],[w.history,w.included,w.included],[w.combos,w.preview,w.included]].map(([label,free,pro],index)=><div key={index} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 border-b border-slate-100 py-4 text-xs leading-5 sm:text-sm"><span className="break-words font-semibold text-slate-800">{label}</span><span className="break-words text-slate-500">{free}</span><span className="break-words font-bold text-orange-700">{pro}</span></div>)}<p className="mt-4 text-xs leading-6 text-slate-500">{w.coverage}</p></section>
+          <section className="rounded-3xl border-2 border-orange-400 bg-white p-6 shadow-lg shadow-orange-100/50 sm:p-8" data-testid={`plan-${plan.id}`}><span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">WinPulse Pro</span><div className="mt-5 flex flex-wrap items-baseline gap-2"><strong className="font-heading text-4xl font-black tracking-tight text-slate-900">{formatXof(i18n,amount)}</strong><span className="text-sm text-slate-500">FCFA / 30 {i18n.language==='fr'?'jours':i18n.language==='en'?'days':i18n.language==='es'?'días':i18n.language==='pt'?'dias':i18n.language==='de'?'Tage':'يوماً'}</span></div><p className="mt-4 text-sm leading-6 text-slate-500">{w.period}</p><ul className="mt-6 space-y-3">{[w.paidSelections,w.availableData,w.combos,w.builder,w.follow,w.savedSearches+' · 8'].map((label,index)=><li key={index} className="flex gap-2 text-sm leading-6 text-slate-700"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-orange-600"/><span>{label}</span></li>)}</ul><Button disabled={isCurrent} onClick={openPayment} data-testid="choose-pro-primary-btn" className="mt-7 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base font-bold text-white hover:bg-orange-700">{isCurrent?i18n.t('Plan actuel'):w.upgrade}</Button><p className="mt-4 text-xs leading-6 text-slate-500">{w.payment}</p></section>
         </div>
-
-        {i18n.tx(plan ? <Card data-testid={`plan-${plan.id}`} className="bg-white p-5 sm:p-8 relative w-full max-w-md mx-auto border-orange-500 ring-2 ring-orange-500 shadow-xl">
-            <div className="absolute -top-3 start-1/2 -translate-x-1/2 wp-gradient-warm text-white text-[10px] font-bold uppercase tracking-wider px-3 py-1 rounded-full flex items-center gap-1">
-              <Zap className="h-3 w-3" fill="white" />{i18n.t("Acc\xE8s complet")}</div>
-
-            <div className="text-center mb-2">
-              <div className="font-heading text-2xl font-extrabold text-slate-900">
-                {i18n.tx(plan.name)}
-              </div>
-
-              {i18n.tx(plan.tagline && <p className="text-sm text-orange-600 font-medium mt-1">
-                  {i18n.tx(plan.tagline)}
-                </p>)}
-            </div>
-
-            <div className="flex items-baseline justify-center gap-1 my-6">
-              <span className="font-heading text-4xl sm:text-5xl font-black tracking-tighter text-slate-900">
-                {i18n.tx(formatXof(i18n, amount))}
-              </span>
-
-              <span className="text-base text-slate-500">{i18n.rich("FCFA{{v0}}", {
-                v0: i18n.tx(plan.duration_days > 0 && "/mois")
-              })}
-              </span>
-            </div>
-
-            {i18n.tx(!isCurrent && <Button type="button" data-testid="choose-pro-primary-btn" className="mb-6 w-full min-h-12 text-base wp-gradient-warm text-white border-0 hover:opacity-90" onClick={openPayment}>{i18n.t("D\xE9bloquer WinPulse Pro")}</Button>)}
-
-            <ul className="space-y-3 mb-8">
-              {i18n.tx(Array.isArray(plan.features) && plan.features.map((feature, index) => <li key={index} className="flex items-start gap-2.5 text-sm text-slate-700">
-                      <CheckCircle2 className="h-4 w-4 text-emerald-500 mt-0.5 flex-shrink-0" />
-
-                      <span>
-                        {i18n.tx(feature)}
-                      </span>
-                    </li>))}
-            </ul>
-
-            <Button data-testid={`choose-${plan.id}-btn`} className="w-full h-12 text-base wp-gradient-warm text-white border-0 hover:opacity-90" onClick={openPayment} disabled={isCurrent}>
-              {i18n.tx(isCurrent ? "Plan actuel" : i18n.t("D\xE9bloquer {{v0}}", {
-              v0: plan.name
-            }))}
-            </Button>
-
-            <p className="text-center text-xs text-slate-400 mt-4">{i18n.t("Sans engagement \xB7 r\xE9siliable \xE0 tout moment \xB7 support WhatsApp inclus")}</p>
-          </Card> : <p className="text-center text-slate-500 text-sm">{i18n.t("Aucun plan disponible pour le moment.")}</p>)}
-        </div>
+        <ProDiscoveryExample />
+        <p className="rounded-2xl bg-slate-100 p-4 text-xs leading-6 text-slate-600">{w.note}</p>
       </div>
 
       {i18n.tx(subscriptionTier === "free" && !isCurrent && !paymentOpen && <div className="lg:hidden fixed inset-x-0 z-[90] px-3 pointer-events-none" style={{
@@ -374,4 +324,10 @@ export default function SubscriptionPage() {
           </div>
         </div>)}
     </AppLayout>;
+}
+
+function ProDiscoveryExample(){
+ const w=useExperienceCopy();const {user}=useAuth();const [example,setExample]=useState(null);
+ useEffect(()=>{const controller=new AbortController();setExample(null);api.get('/discovery',{signal:controller.signal,timeout:12000}).then(({data})=>{if(!controller.signal.aborted)setExample((data.items||[]).find(m=>m?.prediction?.pick&&!m.prediction.locked)||null);}).catch(()=>{});return()=>controller.abort();},[user?.id,user?.subscription,user?.subscription_tier]);
+ return <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="pro-real-example"><h2 className="text-lg font-extrabold text-slate-900">{w.previewExample}</h2>{example?<div className="mt-4 max-w-xl"><MatchCard match={example} isFree={!user?.is_admin&&String(user?.subscription_tier||user?.subscription||'free').toLowerCase()==='free'}/></div>:<Link to="/app/aujourdhui" className="mt-4 inline-flex min-h-11 items-center text-sm font-bold text-orange-700">{w.allMatches} →</Link>}</section>;
 }
