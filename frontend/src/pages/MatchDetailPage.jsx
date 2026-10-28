@@ -2,7 +2,7 @@ import { MatchInsights, TeamBadge, badgeUrl, MarketQuotes } from "@/components/M
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
-import AppLayout, { usePageLanguage, FollowPickButton } from "@/components/AppLayout";
+import AppLayout, { StadiumBackdrop, usePageLanguage, FollowPickButton } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -195,11 +195,11 @@ export default function MatchDetailPage() {
   }[p.label] || "bg-orange-50 border-orange-200";
   const isPaid = Boolean(user?.is_admin || user && String(user.subscription || user.subscription_tier || "free").toLowerCase() !== "free");
   return <AppLayout>
-      <div className="min-w-0 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 [overflow-wrap:anywhere]">
+      <div className="wp-match-detail min-w-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 [overflow-wrap:anywhere]">
         <button onClick={handleBack} className="mb-4 inline-flex min-h-11 items-center gap-1 rounded-xl px-2 text-sm font-semibold text-slate-600 hover:bg-white hover:text-slate-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500" data-testid="back-link">
           <ChevronLeft className="h-4 w-4" />{i18n.t("Retour")}</button>
         {/* Match header */}
-        <Card className={`relative mb-5 overflow-hidden rounded-3xl border-slate-200 bg-gradient-to-br from-white via-white to-orange-50 p-4 shadow-sm sm:p-7 ${data.is_live ? "ring-2 ring-rose-500/40" : ""}`} data-testid="match-header">
+        <Card className={`wp-detail-header relative mb-5 overflow-hidden rounded-3xl border-slate-200 bg-gradient-to-br from-white via-white to-orange-50 p-5 shadow-sm sm:p-9 ${data.is_live ? "ring-2 ring-rose-500/40" : ""}`} data-testid="match-header"><StadiumBackdrop/><div className="wp-detail-header-content">
           <div className="mb-5 flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 pb-4">
             <div className="flex min-w-0 flex-wrap items-center gap-2 text-sm text-slate-600">
               <Badge variant="outline" className="max-w-full whitespace-normal break-words bg-white font-semibold">{i18n.tx(data.sport_title)}</Badge>
@@ -221,8 +221,9 @@ export default function MatchDetailPage() {
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Ext\xE9rieur")}</div>
             </div>
           </div>
+          </div>
         </Card>
-        
+        <div className="wp-detail-grid"><aside className="wp-detail-pick" id="match-prediction">
         {/* Prediction summary */}
         {i18n.tx(!p.pick && !p.locked ? <Card className="mb-6 p-5 text-sm text-slate-600" data-testid="prediction-unavailable">{freeWords.unavailable}</Card> : locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -288,6 +289,7 @@ export default function MatchDetailPage() {
           <div><h2 className="text-sm font-extrabold text-amber-950">{detailWords.riskTitle}</h2><p className="mt-1 text-sm leading-6 text-amber-900">{detailWords.risk}</p></div>
         </div>}
         <div className="mb-2 text-sm leading-6 text-slate-500">{detailWords.source}</div>
+        </aside><section className="wp-detail-analysis" id="match-statistics">
         <MatchInsights key={`${owner}:${matchId}`} match={data} />
         {!locked && p.free_daily_pick && <Card className="mb-6 space-y-3 rounded-2xl border-orange-200 bg-gradient-to-br from-slate-950 to-slate-900 p-5 text-white" data-testid="free-analysis-upgrade">
           <h2 className="font-heading text-lg font-bold">{freeWords.offer}</h2>
@@ -381,6 +383,7 @@ export default function MatchDetailPage() {
             </div>)}
         </Card>)}
         {!locked && <MarketQuotes match={data} />}
+        </section></div>
       </div>
       <PaymentModal isOpen={payState.isOpen} onClose={() => setPayState({
       isOpen: false,
