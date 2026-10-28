@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, BarChart3, CalendarDays, Check, ChevronDown, Clock, Copy, Info, Loader2, Lock, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, Sparkles, Trash2, Trophy, X } from "lucide-react";
-import AppLayout, { usePageLanguage } from "@/components/AppLayout";
+import AppLayout, { usePageLanguage, ExperienceToolNav } from "@/components/AppLayout";
 import api from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 const FRESH_MS = 5 * 60 * 1000;
@@ -1022,7 +1022,7 @@ export default function ComboBuilderPage() {
       if (active(token)) setDeleting(previous => previous.filter(value => value !== id));
     }
   }
-  return <AppLayout>
+  return <AppLayout><div className="mx-auto max-w-7xl px-4 pt-5 sm:px-6"><ExperienceToolNav /></div>
     <style>{i18n.tx(BUILDER_CSS)}</style>
     <div className="cb-page" data-testid="builder-page">
       <header className="cb-hero"><div><p className="cb-eyebrow"><Sparkles aria-hidden="true" />{i18n.t("WNPULSE \xB7 COMBO BUILDER")}</p><h1>{i18n.rich("Ton combin\xE9.{{v0}}{{v1}}", {
