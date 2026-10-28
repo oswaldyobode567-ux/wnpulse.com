@@ -14746,3 +14746,103 @@ async def match_observed_insights(match_id: str, payload: Optional[dict] = Depen
     except asyncio.TimeoutError:
         return {"version":1,"status":"unavailable","reason":"cache_timeout","home":{},"away":{},"h2h":[]}
 
+
+# Experience v1 — preferences and usage counts only. This layer never writes to
+# odds_cache, prediction history, model settings or selection thresholds.
+class ExperiencePreferencesInput(BaseModel):
+    sports: List[str] = Field(default_factory=list, max_length=12)
+    leagues: List[str] = Field(default_factory=list, max_length=20)
+    saved_filters: List[Dict] = Field(default_factory=list, max_length=8)
+    montante_paused: StrictBool = False
+
+
+def _experience_preferences(value: Dict) -> Dict:
+    allowed_sports = {"soccer", "basketball", "tennis", "icehockey", "americanfootball", "baseball", "cricket", "rugby", "mma", "volleyball", "handball"}
+    sports = list(dict.fromkeys(str(x) for x in value.get("sports", []) if str(x) in allowed_sports))[:12]
+    leagues = list(dict.fromkeys(str(x).strip()[:160] for x in value.get("leagues", []) if isinstance(x, str) and x.strip()))[:20]
+    filters = []
+    for entry in value.get("saved_filters", [])[:8]:
+        if not isinstance(entry, dict):
+            continue
+        name = str(entry.get("name", "")).strip()[:50]
+        raw = entry.get("query")
+        if not name or not isinstance(raw, dict):
+            continue
+        query = {key: str(raw[key])[:200] for key in ("q", "sport", "risk", "bet", "sort") if key in raw and isinstance(raw[key], str)}
+        filters.append({"name": name, "query": query})
+    return {"sports": sports, "leagues": leagues, "saved_filters": filters, "montante_paused": value.get("montante_paused") is True}
+
+
+async def _experience_user(payload: dict) -> dict:
+    user = await _get_user_from_payload(payload)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentification requise")
+    return user
+
+
+@app.get("/api/experience/preferences")
+async def experience_get_preferences(payload: dict = Depends(get_current_user_payload)):
+    user = await _experience_user(payload)
+    doc = await db.experience_preferences.find_one({"_id": str(user["id"])}) or {}
+    return {**_experience_preferences(doc), "updated_at": doc.get("updated_at")}
+
+
+@app.put("/api/experience/preferences")
+async def experience_save_preferences(data: ExperiencePreferencesInput, payload: dict = Depends(get_current_user_payload)):
+    user = await _experience_user(payload)
+    await _consume_security_limit("experience_save", str(user["id"]), limit=60, window_seconds=60)
+    clean = _experience_preferences(data.dict())
+    paid = bool(user.get("is_admin") or str(user.get("subscription", "free")).lower() != "free")
+    if len(clean["saved_filters"]) > (8 if paid else 3):
+        existing = await db.experience_preferences.find_one({"_id": str(user["id"])}) or {}
+        previous = _experience_preferences(existing)["saved_filters"]
+        # Preserve saved work after expiry: a downgraded account can keep or
+        # remove existing searches, but cannot add or replace searches over its cap.
+        if len(clean["saved_filters"]) > len(previous) or any(item not in previous for item in clean["saved_filters"]):
+            raise HTTPException(status_code=403, detail="Limite de recherches enregistrées atteinte")
+    clean["updated_at"] = datetime.now(timezone.utc).isoformat()
+    await db.experience_preferences.update_one({"_id": str(user["id"])}, {"$set": clean}, upsert=True)
+    return clean
+
+
+class ExperienceEventInput(BaseModel):
+    event: str = Field(max_length=40)
+
+
+@app.post("/api/experience/events")
+async def experience_event(data: ExperienceEventInput, payload: dict = Depends(get_current_user_payload)):
+    user = await _experience_user(payload)
+    if data.event not in {"home", "catalogue", "pro_view", "pro_checkout", "combos", "explore"}:
+        raise HTTPException(status_code=422, detail="Événement inconnu")
+    await _consume_security_limit("experience_event", str(user["id"]), limit=60, window_seconds=60)
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # One aggregate document per day. No user identifier, search text, team or pick.
+    await db.experience_daily.update_one({"_id": day},
+        {"$setOnInsert": {"day": day, "expires_at": datetime.now(timezone.utc) + timedelta(days=100)}, "$inc": {"counts." + data.event: 1}}, upsert=True)
+    return {"ok": True}
+
+
+@app.get("/api/experience/admin/summary")
+async def experience_summary(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=29)).strftime("%Y-%m-%d")
+    pipeline = [{"$match": {"day": {"$gte": cutoff}}}, {"$group": {"_id": None,
+        **{key: {"$sum": {"$ifNull": ["$counts." + key, 0]}} for key in ("home", "catalogue", "pro_view", "pro_checkout", "combos", "explore")}}}]
+    totals = await db.experience_daily.aggregate(pipeline, maxTimeMS=5000).to_list(length=1)
+    if totals: totals[0].pop("_id", None)
+    return {"days": 30, "events": totals[0] if totals else {}, "note": "Navigation counts only. These are neither unique visitors nor confirmed payments."}
+
+@app.get("/api/montante/archives")
+async def montante_archived_series(payload: dict = Depends(get_current_user_payload)):
+    await _experience_user(payload)
+    docs = await db.montante_archives.find({}).sort("archived_at", -1).limit(10).to_list(length=10)
+    # Reuse the existing access policy: Free never receives archived Pro picks.
+    return {"items": [await _montante_view_for_payload(doc, payload) for doc in docs], "limit": 10}
+
+
+@app.on_event("startup")
+async def _experience_indexes():
+    try:
+        await db.experience_daily.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        logging.getLogger("winpulse.experience").warning("Experience retention index unavailable")
