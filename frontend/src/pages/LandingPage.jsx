@@ -18,7 +18,7 @@ import {
   Gift,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLanguage, useExperienceCopy } from "@/components/AppLayout";
+import { useLanguage, useExperienceCopy, StadiumBackdrop } from "@/components/AppLayout";
 import api from "@/lib/api";
 
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
@@ -286,7 +286,7 @@ export default function LandingPage() {
   }, [resultsDate, resultsReloadKey]);
 
   return (
-    <div ref={motionRoot} className="wp-landing min-h-screen w-full min-w-0 bg-neutral-50">
+    <div ref={motionRoot} className="wp-premium wp-premium-landing wp-landing min-h-screen w-full min-w-0 bg-neutral-50">
       <style>{LANDING_MOTION_CSS}</style>
       <header className="sticky top-0 z-50 w-full max-w-full border-b border-neutral-200 bg-white/90 backdrop-blur-xl">
         <div className="mx-auto flex min-h-16 flex-wrap py-2 w-full max-w-7xl items-center gap-2 px-3 sm:px-6 lg:px-8">
@@ -359,7 +359,7 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <section className="relative overflow-hidden wp-gradient-hero">
+      <section className="wp-public-hero relative overflow-hidden wp-gradient-hero"><StadiumBackdrop/>
         {/* Lumières décoratives : une entrée douce, puis un fond stable. */}
         <div aria-hidden="true" className="wp-hero-glow absolute -top-32 -right-32 h-96 w-96 rounded-full bg-orange-300/40 blur-3xl pointer-events-none" />
         <div aria-hidden="true" className="wp-hero-glow absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-rose-300/40 blur-3xl pointer-events-none" />
@@ -443,7 +443,7 @@ export default function LandingPage() {
                       const confidence = row.confidence == null || row.confidence === "" ? NaN : Number(row.confidence);
                       const showConfidence = !locked && Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
                       return (
-                        <div key={row.id || i} className="wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
+                        <div key={row.id || i} className="wp-public-pick wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
                           <div className="space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} /><bdi className="min-w-0 break-words text-sm font-bold leading-5 text-slate-800">{row[`${side}_team`]}</bdi></div>)}{row.sport_title && <p className="text-xs text-slate-500">{row.sport_title}</p>}</div>
                           <p className="mt-2 text-xs text-slate-500"><time dateTime={row.commence_time || undefined}>{landingTime(row.commence_time,locale,extra[7])}</time>{row.market_label && <> · {row.market_label}</>}</p>
                           <div className="mt-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
@@ -452,7 +452,7 @@ export default function LandingPage() {
                             </p>
                             {showConfidence && <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-700">{t("Indice : {{value}} %", { value: formatNumber(Math.round(confidence)) })}</span>}
                           </div>
-                          {!locked && <div className="mt-3 rounded-lg border border-orange-100 bg-white p-3 text-xs leading-5 text-slate-600"><p className="font-bold text-slate-800">{extra[0]}</p><p className="mt-1">• {row.model_probability != null && Number.isFinite(Number(row.model_probability)) && Number(row.model_probability)>=0 && Number(row.model_probability)<=100 ? `${extra[1]} : ${formatNumber(Number(row.model_probability))} %` : extra[19]}</p><p>• {row.num_books != null && Number.isFinite(Number(row.num_books)) && Number(row.num_books)>0 ? `${extra[2]} : ${formatNumber(Number(row.num_books))} ${extra[3]}` : extra[4]}</p><p className="mt-2 text-amber-800"><strong>{extra[5]} :</strong> {extra[6]}</p></div>}
+                          {!locked && <details className="wp-public-reasons mt-3 rounded-lg border border-orange-100 bg-white px-3 text-xs leading-5 text-slate-600"><summary className="min-h-11 cursor-pointer py-3 font-bold text-slate-800">{extra[0]}</summary><p className="mt-1">• {row.model_probability != null && Number.isFinite(Number(row.model_probability)) && Number(row.model_probability)>=0 && Number(row.model_probability)<=100 ? `${extra[1]} : ${formatNumber(Number(row.model_probability))} %` : extra[19]}</p><p>• {row.num_books != null && Number.isFinite(Number(row.num_books)) && Number(row.num_books)>0 ? `${extra[2]} : ${formatNumber(Number(row.num_books))} ${extra[3]}` : extra[4]}</p><p className="mt-2 text-amber-800"><strong>{extra[5]} :</strong> {extra[6]}</p></details>}
                         </div>
                       );
                     })}
