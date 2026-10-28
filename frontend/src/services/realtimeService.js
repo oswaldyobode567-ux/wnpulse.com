@@ -1,108 +1,63 @@
-/**
- * WinPulse Realtime Service v7.1
- * CORRECTIONS :
- * - Matchs LIVE toujours visibles (ne disparaissent plus jamais)
- * - Matchs terminés visibles 24h avec score final
- * - Tri : LIVE → À venir → Terminés
- * - Cache local 5 minutes (évite les appels inutiles)
- * - Statut calculé côté client pour fiabilité maximale
- */
+/** Match catalogue refresh: retain every provider row and source status. */
 import { useEffect, useState, useRef, useCallback } from "react";
 import api from "@/lib/api";
+import { useAuth } from "@/contexts/AuthContext";
 
-const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
-
-function computeStatus(commenceTime) {
-  if (!commenceTime) return "upcoming";
-  try {
-    const ct  = new Date(commenceTime);
-    const now = Date.now();
-    const diff = now - ct.getTime();
-    if (diff < 0)                   return "upcoming";
-    if (diff < 4 * 60 * 60 * 1000) return "live";
-    return "finished";
-  } catch {
-    return "upcoming";
-  }
+export function normalizeMatchStatus(match) {
+  const pred = match.prediction || {};
+  const finished = Boolean(match.completed || match.is_finished || pred.is_finished);
+  const live = !finished && Boolean(match.is_live || pred.is_live);
+  const time = new Date(match.commence_time).getTime();
+  const status = finished ? "finished" : live ? "live" : Number.isFinite(time) && time <= Date.now() ? "unconfirmed" : "upcoming";
+  return { ...match, is_live: live, is_finished: finished, match_status: status,
+    prediction: { ...pred, is_live: live, is_finished: finished } };
 }
 
-const STATUS_ORDER = { live: 0, upcoming: 1, finished: 2 };
-
 export function useRealtimeMatches(intervalMs = 3 * 60 * 1000) {
-  const [matches,    setMatches]    = useState([]);
-  const [loading,    setLoading]    = useState(true);
-  const [lastUpdate, setLastUpdate] = useState(null);
-  const cacheRef = useRef({ data: null, ts: 0 });
-  const timerRef = useRef(null);
-
+  const { user } = useAuth();
+  const owner = `${user?.id || "anonymous"}|${user?.subscription_tier || user?.subscription || "free"}|${user?.subscription_expires_at || ""}|${Boolean(user?.is_admin)}`;
+  const [state, setState] = useState({ owner: null, matches: [], lastUpdate: null });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(false);
+  const flight = useRef(null), mounted = useRef(false), ownerRef = useRef(owner);
+  ownerRef.current = owner;
   const fetchMatches = useCallback(async () => {
-    try {
-      const { data } = await api.get("/matches");
-
-      // Enrichir chaque match avec le statut calculé côté client
-      const enriched = (data || []).map(m => {
-        const status     = computeStatus(m.commence_time);
-        const is_live     = status === "live";
-        const is_finished = status === "finished";
-        return {
-          ...m,
-          is_live,
-          is_finished,
-          match_status: status,
-          prediction: {
-            ...(m.prediction || {}),
-            is_live,
-            is_finished,
-          },
-        };
-      });
-
-      // Tri : LIVE → À venir → Terminés
-      enriched.sort((a, b) => {
-        const oa = STATUS_ORDER[a.match_status] ?? 1;
-        const ob = STATUS_ORDER[b.match_status] ?? 1;
-        if (oa !== ob) return oa - ob;
-        return new Date(a.commence_time) - new Date(b.commence_time);
-      });
-
-      // Mise à jour cache + état
-      cacheRef.current = { data: enriched, ts: Date.now() };
-      setMatches(enriched);
-      setLastUpdate(Date.now());
-    } catch (err) {
-      // En cas d'erreur réseau → garder le cache existant
-      if (cacheRef.current.data) {
-        setMatches(cacheRef.current.data);
+    if (flight.current) return flight.current.promise;
+    const controller = new AbortController();
+    const promise = (async () => {
+      try {
+        const { data } = await api.get("/matches", { signal: controller.signal, timeout: 20000 });
+        if (!Array.isArray(data)) throw new Error("INVALID_MATCH_CATALOGUE");
+        if (controller.signal.aborted || !mounted.current || ownerRef.current !== owner) return;
+        const order = { live: 0, upcoming: 1, unconfirmed: 2, finished: 3 };
+        const rows = data.map(normalizeMatchStatus).sort((a,b) => order[a.match_status]-order[b.match_status] || (new Date(a.commence_time).getTime()||0)-(new Date(b.commence_time).getTime()||0));
+        setState({ owner, matches: rows, lastUpdate: Date.now() });
+        setError(false);
+      } catch (cause) {
+        if (!controller.signal.aborted && mounted.current && ownerRef.current === owner) {
+          setError(true);
+          if ([401,403].includes(cause?.response?.status)) setState({owner,matches:[],lastUpdate:null});
+        }
+        if (!controller.signal.aborted) throw cause;
+      } finally {
+        if (flight.current?.controller === controller) flight.current = null;
+        if (mounted.current && ownerRef.current === owner) setLoading(false);
       }
-      console.warn("realtimeService fetch error:", err?.message || err);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+    })();
+    flight.current = { controller, promise };
+    return promise;
+  }, [owner]);
   useEffect(() => {
-    // Si cache valide → utiliser immédiatement sans attendre
-    if (
-      cacheRef.current.data &&
-      Date.now() - cacheRef.current.ts < CACHE_TTL_MS
-    ) {
-      setMatches(cacheRef.current.data);
-      setLoading(false);
-    } else {
-      fetchMatches();
-    }
-
-    // Refresh automatique toutes les 3 minutes
-    timerRef.current = setInterval(fetchMatches, intervalMs);
-    return () => clearInterval(timerRef.current);
-  }, [fetchMatches, intervalMs]);
-
-  return {
-    matches,
-    loading,
-    lastUpdate,
-    refresh: fetchMatches,
-  };
+    mounted.current = true;
+    setState({owner,matches:[],lastUpdate:null}); setLoading(true); setError(false);
+    fetchMatches().catch(()=>{});
+    const refreshVisible = () => { if (!document.hidden) fetchMatches().catch(()=>{}); };
+    const timer = window.setInterval(refreshVisible, Math.max(30000, intervalMs));
+    window.addEventListener("focus", refreshVisible);
+    return () => { mounted.current=false; flight.current?.controller.abort(); flight.current=null; window.clearInterval(timer); window.removeEventListener("focus",refreshVisible); };
+  }, [fetchMatches, intervalMs, owner]);
+  return { matches: state.owner === owner ? state.matches : [], loading, error,
+    lastUpdate: state.owner === owner ? state.lastUpdate : null, refresh: fetchMatches };
 }
 
 export function useDataStatus(intervalMs = 60000) {
