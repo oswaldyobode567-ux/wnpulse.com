@@ -1,38 +1,42 @@
 import { BrowserRouter, Routes, Route, Navigate, useLocation, Link } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
-import LandingPage from "@/pages/LandingPage";
-import LoginPage from "@/pages/LoginPage";
-import RegisterPage from "@/pages/RegisterPage";
-import ForgotPasswordPage from "@/pages/ForgotPasswordPage";
-import ResetPasswordPage from "@/pages/ResetPasswordPage";
-import DashboardPage from "@/pages/DashboardPage";
-import MatchDetailPage from "@/pages/MatchDetailPage";
-import CombosPage from "@/pages/CombosPage";
-import HistoryPage from "@/pages/HistoryPage";
-import SubscriptionPage from "@/pages/SubscriptionPage";
-import TopPicksPage from "@/pages/TopPicksPage";
-import AdminPage from "@/pages/AdminPage";
-import TrackRecordPage from "@/pages/TrackRecordPage";
-import ValueBetsPage from "@/pages/ValueBetsPage";
-import ProfilePage from "@/pages/ProfilePage";
-import ParrainagePage from "@/pages/ParrainagePage";
-import ComboBuilderPage from "@/pages/ComboBuilderPage";
-import TodayCombosPage from "@/pages/TodayCombosPage";
-import LivePage from "@/pages/LivePage";
-import BlogPage from "@/pages/BlogPage";
-import BlogPostPage from "@/pages/BlogPostPage";
-import LegalPage from "@/pages/LegalPage";
 import WhatsAppWidget from "@/components/WhatsAppWidget";
 import PageTracker from "@/components/PageTracker";
-import AppLayout, { LanguageProvider, LanguageSwitcher, useLanguage, usePageLanguage, FollowedPicksPage } from "@/components/AppLayout";
+import AppLayout, { LanguageProvider, LanguageSwitcher, useLanguage, usePageLanguage, FollowedPicksPage, ExperienceProvider, useExperienceCopy, useExperiencePreferences } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CalendarDays, CheckCircle2, Clock, Info, Layers, Lock, Play, Radar, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Target, XCircle } from "lucide-react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+
+const LandingPage = lazy(() => import("@/pages/LandingPage"));
+const LoginPage = lazy(() => import("@/pages/LoginPage"));
+const RegisterPage = lazy(() => import("@/pages/RegisterPage"));
+const ForgotPasswordPage = lazy(() => import("@/pages/ForgotPasswordPage"));
+const ResetPasswordPage = lazy(() => import("@/pages/ResetPasswordPage"));
+const DashboardPage = lazy(() => import("@/pages/DashboardPage"));
+const MatchCataloguePage = lazy(() => import("@/pages/DashboardPage").then(module=>({default:module.MatchCataloguePage})));
+const ExplorePage = lazy(() => import("@/pages/DashboardPage").then(module=>({default:module.ExplorePage})));
+const CombinationsHubPage = lazy(() => import("@/pages/DashboardPage").then(module=>({default:module.CombinationsHubPage})));
+const MatchDetailPage = lazy(() => import("@/pages/MatchDetailPage"));
+const CombosPage = lazy(() => import("@/pages/CombosPage"));
+const HistoryPage = lazy(() => import("@/pages/HistoryPage"));
+const SubscriptionPage = lazy(() => import("@/pages/SubscriptionPage"));
+const TopPicksPage = lazy(() => import("@/pages/TopPicksPage"));
+const AdminPage = lazy(() => import("@/pages/AdminPage"));
+const TrackRecordPage = lazy(() => import("@/pages/TrackRecordPage"));
+const ValueBetsPage = lazy(() => import("@/pages/ValueBetsPage"));
+const ProfilePage = lazy(() => import("@/pages/ProfilePage"));
+const ParrainagePage = lazy(() => import("@/pages/ParrainagePage"));
+const ComboBuilderPage = lazy(() => import("@/pages/ComboBuilderPage"));
+const TodayCombosPage = lazy(() => import("@/pages/TodayCombosPage"));
+const LivePage = lazy(() => import("@/pages/LivePage"));
+const BlogPage = lazy(() => import("@/pages/BlogPage"));
+const BlogPostPage = lazy(() => import("@/pages/BlogPostPage"));
+const LegalPage = lazy(() => import("@/pages/LegalPage"));
 
 // Page Montante intégrée : aucun import de fichier MontantePage séparé.
 const RESULT = {
@@ -144,6 +148,8 @@ function errorLabel(i18n, error) {
 
 function MontantePage() {
   const i18n = usePageLanguage();
+  const experienceWords = useExperienceCopy();
+  const experience = useExperiencePreferences();
   const { user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -304,7 +310,7 @@ function MontantePage() {
                 v0: i18n.tx(format(i18n, data.diagnostic.matches_received, 0)),
                 v1: i18n.tx(format(i18n, data.diagnostic.eligible, 0))
               })}</p>{i18n.tx(Object.entries(data.diagnostic.rejections || {}).map(([reason, n]) => <p key={reason}>{i18n.tx(reason)} : {i18n.tx(format(i18n, n, 0))}</p>))}</div></details>)}</Card>)}
-      {i18n.tx(loading ? <Card role="status" className="grid h-64 place-items-center rounded-2xl border-neutral-200"><div className="text-center"><RefreshCw className="mx-auto h-6 w-6 animate-spin text-orange-500" /><p className="mt-3 text-sm text-slate-500">{i18n.t("Chargement de la montante\u2026")}</p></div></Card> : !data || data.status === "NONE" ? <WaitingCard reason="La prochaine série apparaîtra ici dès son lancement par l’administrateur." title={i18n.t("Nouvelle montante à venir")} /> : <>
+      {i18n.tx(experience.preferences.montante_paused && !isAdmin ? <WaitingCard title={experienceWords.paused} reason={experienceWords.pauseHint} /> : loading ? <Card role="status" className="grid h-64 place-items-center rounded-2xl border-neutral-200"><div className="text-center"><RefreshCw className="mx-auto h-6 w-6 animate-spin text-orange-500" /><p className="mt-3 text-sm text-slate-500">{i18n.t("Chargement de la montante\u2026")}</p></div></Card> : !data || data.status === "NONE" ? <WaitingCard reason="La prochaine série apparaîtra ici dès son lancement par l’administrateur." title={i18n.t("Nouvelle montante à venir")} /> : <>
         <Card className="rounded-2xl border-neutral-200 p-5 sm:p-6"><div className="flex items-center justify-between gap-3"><div><p className="text-xs font-bold uppercase tracking-widest text-orange-600">{i18n.t("Parcours de la s\xE9rie")}</p><h2 className="mt-1 font-heading text-xl font-bold text-slate-900">{i18n.rich("{{v0}} \xE9tape{{v1}} gagn\xE9e{{v2}} sur {{v3}}", {
                   v0: i18n.tx(wins),
                   v1: i18n.tx(wins > 1 ? "s" : ""),
@@ -342,6 +348,8 @@ function MontantePage() {
                     v0: i18n.tx(numeric(row.pick_count) ?? list(row.picks).length)
                   })}</p>)}</div></details>))}</div>)}</Card>
       </>)}
+      <section className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="montante-personal-pause"><h2 className="text-base font-bold text-slate-900">{experienceWords.follow}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{experienceWords.pauseHint}</p>{experience.preferences.montante_paused&&<p className="mt-3 font-semibold text-amber-800">{experienceWords.paused}</p>}<button type="button" disabled={experience.busy||experience.loading||experience.failed} onClick={()=>experience.save({montante_paused:!experience.preferences.montante_paused})} className="mt-4 min-h-11 rounded-xl border border-orange-200 bg-orange-50 px-4 text-sm font-bold text-orange-800 disabled:opacity-50">{experience.preferences.montante_paused?experienceWords.resume:experienceWords.pause}</button>{experience.failed&&<p role="alert" className="mt-2 text-sm text-rose-700">{experienceWords.error}<button type="button" onClick={experience.retry} className="ms-3 min-h-11 px-3 font-bold">↻</button></p>}</section>
+      <MontanteArchives />
       <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{i18n.t("Les petites cotes ne re\xE7oivent aucun bonus. Le s\xE9lecteur compare la probabilit\xE9 estim\xE9e, l\u2019accord entre les sources et leur nombre. Ce score de classement n\u2019est pas une probabilit\xE9.")}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
     </div>
   </AppLayout>;
@@ -456,9 +464,10 @@ function RequireAuth({
 export default function App() {
   return <LanguageProvider>
     <AuthProvider>
+      <ExperienceProvider>
       <BrowserRouter>
         <PublicLanguageBar />
-        <Routes>
+        <RouteBoundary><Suspense fallback={<RouteLoading />}><Routes>
           <Route path="/" element={<LandingPage />} />
           <Route path="/login" element={<LoginPage />} />
           <Route path="/register" element={<RegisterPage />} />
@@ -504,17 +513,16 @@ export default function App() {
                 <MatchDetailPage />
               </RequireAuth>} />
 
-          <Route path="/app/combines" element={<RequireAuth>
-                <CombosPage />
-              </RequireAuth>} />
+          <Route path="/app/explorer" element={<RequireAuth><ExplorePage /></RequireAuth>} />
+          <Route path="/app/combines" element={<RequireAuth><CombinationsHubPage /></RequireAuth>} />
+          <Route path="/app/combines/personnaliser" element={<RequireAuth><CombosPage /></RequireAuth>} />
+          <Route path="/app/combines/recommandations" element={<RequireAuth><TodayCombosPage /></RequireAuth>} />
 
           <Route path="/app/builder" element={<RequireAuth>
                 <ComboBuilderPage />
               </RequireAuth>} />
 
-          <Route path="/app/aujourdhui" element={<RequireAuth>
-                <TodayCombosPage />
-              </RequireAuth>} />
+          <Route path="/app/aujourdhui" element={<RequireAuth><MatchCataloguePage /></RequireAuth>} />
 
           <Route path="/app/live" element={<RequireAuth>
                 <LivePage />
@@ -533,12 +541,13 @@ export default function App() {
               </RequireAuth>} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        </Routes></Suspense></RouteBoundary>
 
         <PageTracker />
-        <WhatsAppWidget />
+        <ContextualWhatsAppWidget />
         <LocalizedToaster />
       </BrowserRouter>
+      </ExperienceProvider>
     </AuthProvider>
     </LanguageProvider>;
 }
@@ -567,3 +576,20 @@ function LocalizedToaster() {
 }
 
 
+
+function MontanteArchives(){
+ const {user}=useAuth();const i18n=usePageLanguage();const w=useExperienceCopy();const [open,setOpen]=useState(false);const [data,setData]=useState(null);const [failed,setFailed]=useState(false);const [retry,setRetry]=useState(0);
+ useEffect(()=>{setData(null);setFailed(false);if(!open)return;const controller=new AbortController();api.get('/montante/archives',{signal:controller.signal,timeout:15000}).then(r=>{if(!controller.signal.aborted)setData(r.data);}).catch(()=>{if(!controller.signal.aborted)setFailed(true);});return()=>controller.abort();},[open,retry,user?.id,user?.subscription,user?.subscription_tier]);
+ return <details onToggle={event=>setOpen(event.currentTarget.open)} className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="montante-archives"><summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-bold text-slate-900"><Layers className="h-4 w-4 text-orange-600"/>{w.montante} · {w.results} · 10</summary>{failed?<div role="alert" className="mt-3 text-sm text-amber-800">{w.error}<button type="button" onClick={()=>setRetry(v=>v+1)} className="ms-3 min-h-11 font-bold">↻</button></div>:!data?<p className="p-4 text-sm">…</p>:<div className="mt-3 space-y-3">{!data.items?.length?<p className="text-sm text-slate-500">{w.noResults}</p>:data.items.map(series=><article key={series.id} className="rounded-xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-500">{i18n.formatDate(series.started_at,{day:'2-digit',month:'short',year:'numeric'})}</span><span className="text-xs font-bold text-slate-700">{series.status==='FAILED'?w.lost:series.status==='COMPLETED'?w.won:w.pending}</span></div><div className="mt-3 flex flex-wrap gap-2">{(series.history||[]).map((row,index)=><ResultBadge key={index} status={row.status}/>)}</div></article>)}</div>}</details>;
+}
+
+function RouteLoading(){const w=useExperienceCopy();return <div role="status" className="grid min-h-[65vh] place-items-center bg-neutral-50 p-6"><div className="text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-orange-600 motion-reduce:animate-none"/><p className="mt-4 text-sm font-bold text-slate-600">WinPulse · {w.open}…</p></div></div>;}
+class RouteErrorBoundary extends Component {
+ constructor(props){super(props);this.state={failed:false};}
+ static getDerivedStateFromError(){return {failed:true};}
+ componentDidUpdate(previous){if(previous.route!==this.props.route&&this.state.failed)this.setState({failed:false});}
+ render(){return this.state.failed?<div role="alert" data-testid="route-error" className="mx-auto my-12 max-w-lg rounded-3xl border bg-white p-7"><h1 className="text-xl font-bold">WinPulse</h1><p className="mt-3 text-sm leading-6 text-slate-600">{this.props.words.error}</p><button type="button" onClick={()=>window.location.reload()} className="mt-4 min-h-11 rounded-xl bg-orange-600 px-5 font-bold text-white">↻ {this.props.words.open}</button><a href="/app" className="ms-4 inline-flex min-h-11 items-center font-bold text-orange-700">{this.props.words.home}</a></div>:this.props.children;}
+}
+function RouteBoundary({children}){const {pathname}=useLocation();const w=useExperienceCopy();return <RouteErrorBoundary route={pathname} words={w}>{children}</RouteErrorBoundary>;}
+
+function ContextualWhatsAppWidget(){const {pathname}=useLocation();return pathname.startsWith('/app')&&!['/app/abonnement','/app/profil'].includes(pathname)?null:<WhatsAppWidget/>;}
