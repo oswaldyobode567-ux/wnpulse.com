@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Check, ChevronDown, Clock, Copy, Info, Layers, Loader2, Lock, RefreshCw, SlidersHorizontal, Sparkles, X } from "lucide-react";
-import AppLayout, { usePageLanguage } from "@/components/AppLayout";
+import AppLayout, { usePageLanguage, ExperienceToolNav } from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
 
@@ -98,8 +98,8 @@ export default function CombosPage() {
       </div>
     </article>;
   }
-  return <AppLayout><style>{CSS}</style><div className="pc-page" dir={i18n.direction}>
-    <header className="pc-hero"><div className="pc-eyebrow"><SlidersHorizontal aria-hidden="true"/>WNPULSE · {t("personal")}</div><h1>{t("title")}</h1><p>{t("intro")}</p><nav className="pc-links" aria-label={t("otherTools")}><Link to="/app/aujourdhui"><Sparkles aria-hidden="true"/>{t("todayLink")}</Link><Link to="/app/builder"><Layers aria-hidden="true"/>{t("builderLink")}</Link></nav></header>
+  return <AppLayout><div className="mx-auto max-w-7xl px-4 pt-5 sm:px-6"><ExperienceToolNav /></div><style>{CSS}</style><div className="pc-page" dir={i18n.direction}>
+    <header className="pc-hero"><div className="pc-eyebrow"><SlidersHorizontal aria-hidden="true"/>WNPULSE · {t("personal")}</div><h1>{t("title")}</h1><p>{t("intro")}</p><nav className="pc-links" aria-label={t("otherTools")}><Link to="/app/combines/recommandations"><Sparkles aria-hidden="true"/>{t("todayLink")}</Link><Link to="/app/builder"><Layers aria-hidden="true"/>{t("builderLink")}</Link></nav></header>
     {access==="locked"||access==="unauthorized"?<section className="pc-empty" style={{marginTop:24}} data-testid="personal-locked"><Lock aria-hidden="true"/><h3>{t(access==="locked"?"proTitle":"sessionTitle")}</h3><p>{t(access==="locked"?"proText":"sessionText")}</p><Link className="pc-button primary pc-wide" to={access==="locked"?"/app/abonnement":"/login"}>{t(access==="locked"?"upgrade":"login")}</Link></section>:
     <div className="pc-layout"><section className="pc-panel"><h2>{t("preferences")}</h2><p className="pc-sub">{t("preferenceHint")}</p>
       <form onSubmit={e=>{e.preventDefault();build();}} className="pc-form-grid">
