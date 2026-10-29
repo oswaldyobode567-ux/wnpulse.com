@@ -9235,6 +9235,7 @@ async def _create_fedapay_subscription_payment(
         "payer_phone": (payer_phone or "").strip(),
         "payer_name": (payer_name or "").strip(),
         "payment_provider": "fedapay",
+        "payment_environment": FEDAPAY_ENV,
         "payment_status": "creating",
         "status": "pending",
         "created_at": created_at,
@@ -10166,6 +10167,8 @@ async def admin_approve_subscription_request(
         {"$set": {
             "status": "approved",
             "approved_at": datetime.now(timezone.utc).isoformat(),
+            "activation_expires_at": expires_at,
+            "activation_applied": True,
         }},
     )
     await send_subscription_activated_email(
@@ -14856,3 +14859,412 @@ async def _experience_indexes():
         await db.experience_daily.create_index("expires_at", expireAfterSeconds=0)
     except Exception:
         logging.getLogger("winpulse.experience").warning("Experience retention index unavailable")
+
+
+# ─── Quality v1: decision evidence, operational monitoring and billing metrics ───
+# This layer does not call a bookmaker, alter selection thresholds, clear the
+# prediction cache, activate a subscription or send a commercial message.
+_quality_decision_cache = {}
+_quality_business_cache = {}
+
+
+def _quality_time(value):
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+    except (ValueError, TypeError):
+        return None
+
+
+def _quality_number(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _quality_cohort_summary(rows):
+    seen = set()
+    counts = {"won": 0, "lost": 0, "void": 0}
+    for row in rows:
+        key = json.dumps([str(row.get("match_id")), row.get("market"), row.get("pick"), row.get("pick_point")], sort_keys=True)
+        if key in seen or row.get("result") not in counts:
+            continue
+        seen.add(key)
+        counts[row["result"]] += 1
+    n = counts["won"] + counts["lost"]
+    return {**counts, "evaluated": n, "total": n + counts["void"],
+            "win_rate": round(100 * counts["won"] / n, 1) if n else None,
+            "status": "sufficient" if n >= 30 else "limited" if n else "unavailable"}
+
+
+async def _quality_comparable_history(match, prediction, now):
+    odds = _quality_number(prediction.get("pick_odds"))
+    confidence = _quality_number(prediction.get("confidence"))
+    version = str(prediction.get("model_version") or MODEL_VERSION)
+    market = prediction.get("market")
+    empty = {**_quality_cohort_summary([]), "days": 90, "model_version": version}
+    if not market or odds is None or odds <= 1 or confidence is None or not 0 <= confidence <= 100 or not match.get("sport_key"):
+        return {**empty, "reason": "missing_dimensions"}
+    lo, hi = (1, 1.5) if odds < 1.5 else (1.5, 2) if odds < 2 else (2, 3) if odds < 3 else (3, None)
+    c_lo = min(90, int(confidence // 10) * 10)
+    starts = _quality_time(match.get("commence_time"))
+    as_of = min(now, starts) if starts else now
+    def date(field):
+        return {"$convert": {"input": "$" + field, "to": "date", "onError": None, "onNull": None}}
+    clauses = [{"$ne": [date(k), None]} for k in ("created_at", "commence_time", "reconciled_at")]
+    clauses += [{"$lt": [date("created_at"), date("commence_time")]},
+                {"$gte": [date("commence_time"), as_of - timedelta(days=90)]},
+                {"$lt": [date("commence_time"), as_of]}, {"$lte": [date("reconciled_at"), as_of]}]
+    # Exact sport/competition key, market, engine version, odds band and confidence
+    # band. Missing dimensions never broaden the cohort silently.
+    query = {"sport_key": match["sport_key"], "market": market, "model_version": version,
+             "match_id": {"$ne": str(match.get("id") or match.get("match_id"))},
+             "result": {"$in": ["won", "lost", "void"]},
+             "pick_odds": {"$gt": lo} if lo == 1 else {"$gte": lo},
+             "confidence": {"$gte": c_lo, **({"$lte": 100} if c_lo == 90 else {"$lt": c_lo + 10})},
+             "$expr": {"$and": clauses}}
+    if hi is not None:
+        query["pick_odds"]["$lt"] = hi
+    rows = []
+    async for row in db.predictions_history.find(query, {"match_id": 1, "market": 1, "pick": 1, "pick_point": 1, "result": 1}).max_time_ms(5000):
+        rows.append(row)
+    return {**_quality_cohort_summary(rows), "days": 90, "model_version": version,
+            "sport_key": match["sport_key"], "market": market,
+            "odds_from": lo, "odds_to": hi, "confidence_from": c_lo, "confidence_to": c_lo + 10,
+            "as_of": as_of.isoformat()}
+
+
+async def _quality_build_decision(match, prediction):
+    now = datetime.now(timezone.utc)
+    starts = _quality_time(match.get("commence_time"))
+    source_at = _quality_time(_prediction_cache.get("source_cache_updated_at"))
+    estimate = _quality_number(prediction.get("confidence"))
+    books = _quality_number(prediction.get("num_books"))
+    support, caution = [], []
+    if estimate is not None and 0 <= estimate <= 100:
+        support.append({"code": "engine_estimate", "value": estimate})
+        if estimate < 60:
+            caution.append({"code": "uncertain_estimate"})
+    if books is not None and books > 0:
+        support.append({"code": "source_count", "value": int(books)})
+        if books < 3:
+            caution.append({"code": "few_sources"})
+    else:
+        caution.append({"code": "unknown_sources"})
+    if not source_at:
+        caution.append({"code": "unknown_freshness"})
+    elif (now - source_at).total_seconds() > 86400:
+        caution.append({"code": "old_odds"})
+    insights = {}
+    try:
+        insights = await asyncio.wait_for(get_match_insights(db, match), timeout=3)
+    except Exception:
+        pass
+    home = ((insights.get("home") or {}).get("overall") or {}).get("played", 0)
+    away = ((insights.get("away") or {}).get("overall") or {}).get("played", 0)
+    coverage = "complete" if home and away else "partial" if home or away else "unavailable"
+    context = {}
+    for side in ("home", "away"):
+        summary = ((insights.get(side) or {}).get("overall") or {})
+        context[side] = {k: summary.get(k) for k in ("played", "wins", "draws", "losses", "goals_for", "goals_against")}
+    chosen = "home" if prediction.get("pick") == match.get("home_team") else "away" if prediction.get("pick") == match.get("away_team") else None
+    if chosen and prediction.get("market") == "h2h":
+        selected, opponent = context[chosen], context["away" if chosen == "home" else "home"]
+        n, other_n = _quality_number(selected.get("played")), _quality_number(opponent.get("played"))
+        wins, other_wins = _quality_number(selected.get("wins")), _quality_number(opponent.get("wins"))
+        if n and other_n and n >= 3 and other_n >= 3 and wins is not None and other_wins is not None and wins/n < other_wins/other_n:
+            caution.append({"code": "history_against_pick"})
+
+    if coverage != "complete":
+        caution.append({"code": "partial_history" if coverage == "partial" else "missing_history"})
+    if insights.get("stale"):
+        caution.append({"code": "old_history"})
+    try:
+        comparable = await asyncio.wait_for(_quality_comparable_history(match, prediction, now), timeout=6)
+    except Exception:
+        comparable = {**_quality_cohort_summary([]), "reason": "history_unavailable", "days": 90}
+    initial = None
+    identity = hashlib.sha256(json.dumps([str(match.get("id") or match.get("match_id")), match.get("commence_time"),
+        prediction.get("market"), prediction.get("pick"), prediction.get("pick_point"),
+        prediction.get("model_version") or MODEL_VERSION], sort_keys=True, default=str).encode()).hexdigest()
+    try:
+        if starts and now < starts:
+            frozen = {"match_id": str(match.get("id") or match.get("match_id")), "commence_time": starts.isoformat(),
+                      "market": prediction.get("market"), "pick": prediction.get("pick"),
+                      "pick_point": prediction.get("pick_point"), "pick_odds": prediction.get("pick_odds"),
+                      "confidence": prediction.get("confidence"), "model_version": prediction.get("model_version") or MODEL_VERSION,
+                      "captured_at": now.isoformat(), "source_updated_at": source_at.isoformat() if source_at else None}
+            # First pre-match view only; later odds changes never rewrite this copy.
+            await asyncio.wait_for(db.decision_snapshots.update_one({"_id": identity}, {"$setOnInsert": frozen}, upsert=True), timeout=2)
+        stored = await asyncio.wait_for(db.decision_snapshots.find_one({"_id": identity}, {"_id": 0}), timeout=2)
+        if stored and _quality_time(stored.get("captured_at")) and starts and _quality_time(stored["captured_at"]) < starts:
+            initial = stored
+    except Exception:
+        pass
+    result = None
+    try:
+        if starts and starts <= now:
+            query = {"match_id": str(match.get("id") or match.get("match_id")),
+                "market": prediction.get("market"), "pick": prediction.get("pick"),
+                "result": {"$in": ["won", "lost", "void"]},
+                "$expr": {"$eq": [{"$convert": {"input": "$commence_time", "to": "date", "onError": None, "onNull": None}}, starts]}}
+            if prediction.get("pick_point") is not None:
+                query["pick_point"] = prediction["pick_point"]
+            settled = await asyncio.wait_for(db.predictions_history.find_one(query,
+                {"_id": 0, "result": 1, "final_score": 1, "reconciled_at": 1}), timeout=2)
+            stamp = _quality_time((settled or {}).get("reconciled_at"))
+            if stamp and starts <= stamp <= now:
+                result = settled
+    except Exception:
+        pass
+    return {"version": 1, "status": "ready", "generated_at": now.isoformat(), "support": support,
+            "cautions": caution, "source_updated_at": source_at.isoformat() if source_at else None,
+            "context": context, "coverage": {"status": coverage, "home_games": home, "away_games": away,
+                         "source": insights.get("source") if home or away else None, "updated_at": insights.get("updated_at")},
+            "comparable": comparable, "initial_snapshot": initial, "result": result}
+
+
+@app.get("/api/matches/{match_id}/decision")
+async def quality_match_decision(match_id: str, payload: Optional[dict] = Depends(get_optional_user_payload)):
+    view = await get_single_match(match_id, payload)
+    prediction = view.get("prediction") or {}
+    if prediction.get("locked") or not prediction.get("pick"):
+        return {"version": 1, "status": "locked" if prediction.get("locked") else "unavailable"}
+    key = hashlib.sha256(json.dumps([match_id, prediction, view.get("commence_time"),
+        str(_prediction_cache.get("source_cache_updated_at"))], sort_keys=True, default=str).encode()).hexdigest()
+    cached = _quality_decision_cache.get(key)
+    if cached and time.monotonic() - cached["at"] < 120:
+        return copy.deepcopy(cached["data"])
+    result = await asyncio.wait_for(_quality_build_decision(view, prediction), timeout=18)
+    if len(_quality_decision_cache) >= 500:
+        _quality_decision_cache.pop(next(iter(_quality_decision_cache)), None)
+    _quality_decision_cache[key] = {"at": time.monotonic(), "data": copy.deepcopy(result)}
+    return result
+
+
+def _quality_payment_metrics(rows, now, days, registrations=None):
+    cutoff = now - timedelta(days=days)
+    unique = {}
+    for row in rows:
+        uid = str(row.get("user_id") or "")
+        if not uid or uid.startswith("health-") or row.get("health_monitor_run_id") or str(row.get("payment_environment") or "").lower() in ("sandbox", "test"):
+            continue
+        key = str(row.get("reference") or row.get("_id") or "")
+        if key:
+            unique.setdefault(key, row)
+    confirmed, attempts = [], []
+    for row in unique.values():
+        created = _quality_time(row.get("created_at"))
+        if created and cutoff <= created <= now:
+            attempts.append(row)
+        provider = str(row.get("payment_provider") or "manual_legacy")
+        paid = _quality_time(row.get("paid_at")) or _quality_time(row.get("approved_at"))
+        valid = row.get("status") == "approved" and paid and paid <= now and str(row.get("payment_status") or "").lower() not in {"refunded", "reversed", "chargeback", "cancelled", "canceled", "declined", "failed"}
+        if provider == "fedapay":
+            valid = valid and row.get("activation_applied") is True and bool(row.get("fedapay_verified_at"))
+        elif provider not in ("manual_momo", "manual_legacy"):
+            valid = False
+        if valid:
+            confirmed.append((paid, row))
+    by_user = {}
+    for paid, row in sorted(confirmed, key=lambda pair: (pair[0], str(pair[1].get("reference")))):
+        by_user.setdefault(str(row["user_id"]), []).append((paid, row))
+    paid_period = [(paid, row) for paid, row in confirmed if cutoff <= paid <= now]
+    period_refs = {str(row.get("reference") or row.get("_id")) for _, row in confirmed}
+    attempt_paid = sum(str(r.get("reference") or r.get("_id")) in period_refs for r in attempts)
+    repeated = 0; first_buyers = set(); due = renewed = missing_expiry = 0
+    for uid, payments in by_user.items():
+        for i, (paid, row) in enumerate(payments):
+            if cutoff <= paid <= now:
+                if i:
+                    repeated += 1
+                else:
+                    first_buyers.add(uid)
+            expiry = _quality_time(row.get("activation_expires_at"))
+            if not expiry:
+                if cutoff <= paid <= now:
+                    missing_expiry += 1
+                continue
+            # A complete seven-day grace window is required; unfinished cohorts
+            # are never called churn. Early renewal also counts.
+            if cutoff - timedelta(days=7) <= expiry <= now - timedelta(days=7):
+                due += 1
+                if any(paid < later <= expiry + timedelta(days=7) for later, _ in payments[i+1:]):
+                    renewed += 1
+    revenue = 0; amount_missing = 0; fedapay = manual = unknown_environment = 0
+    for _, row in paid_period:
+        amount = _quality_number(row.get("amount_fcfa"))
+        if str(row.get("currency") or "XOF").upper() != "XOF" or amount is None or amount < 0:
+            amount_missing += 1
+        else:
+            revenue += amount
+        if row.get("payment_provider") == "fedapay":
+            fedapay += 1
+            if row.get("payment_environment") != "live":
+                unknown_environment += 1
+        else:
+            manual += 1
+    registrations = registrations or {}
+    converted = sum(uid in by_user and created <= by_user[uid][0][0] <= now for uid, created in registrations.items())
+    return {"days": days, "from": cutoff.isoformat(), "to": now.isoformat(),
+        "checkout_requests": len(attempts), "checkout_requests_paid": attempt_paid,
+        "checkout_to_paid_percent": round(100*attempt_paid/len(attempts), 1) if attempts else None,
+        "confirmed_payments": len(paid_period), "verified_fedapay": fedapay, "manual_approved": manual,
+        "fedapay_unknown_environment": unknown_environment,
+        "confirmed_amount_xof": round(revenue, 2), "payments_missing_amount": amount_missing,
+        "first_buyers": len(first_buyers), "repeat_purchases": repeated,
+        "renewal_cycles_due": due, "renewal_cycles_renewed": renewed,
+        "renewal_percent": round(100*renewed/due, 1) if due else None,
+        "payments_missing_expiry": missing_expiry, "grace_days": 7,
+        "renewal_from": (cutoff-timedelta(days=7)).isoformat(), "renewal_to": (now-timedelta(days=7)).isoformat(),
+        "new_registrations": len(registrations), "new_registrations_paid": converted,
+        "signup_to_paid_percent": round(100*converted/len(registrations), 1) if registrations else None}
+
+
+@app.get("/api/admin/quality/business")
+async def quality_business(days: int = 30, payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    if days not in (7, 30, 90):
+        raise HTTPException(status_code=422, detail="Période invalide")
+    cached = _quality_business_cache.get(days)
+    if cached and time.monotonic()-cached["at"] < 30:
+        return copy.deepcopy(cached["data"])
+    now = datetime.now(timezone.utc); cutoff = now - timedelta(days=days)
+    fields = {key: 1 for key in ("reference", "user_id", "payment_provider", "status", "payment_status", "created_at", "paid_at", "approved_at", "amount_fcfa", "currency", "activation_applied", "fedapay_verified_at", "activation_expires_at", "health_monitor_run_id", "payment_environment")}
+    try:
+        rows = [row async for row in db.subscription_requests.find({}, fields).max_time_ms(8000)]
+        registered = {}
+        date = {"$convert": {"input": "$created_at", "to": "date", "onError": None, "onNull": None}}
+        async for user in db.users.find({"is_admin": {"$ne": True}, "health_monitor_account": {"$ne": True},
+            "$expr": {"$and": [{"$gte": [date, cutoff]}, {"$lte": [date, now]}]}}, {"id": 1, "created_at": 1}).max_time_ms(5000):
+            created = _quality_time(user.get("created_at"))
+            if user.get("id") and created:
+                registered[str(user["id"])] = created
+        result = _quality_payment_metrics(rows, now, days, registered)
+    except Exception:
+        raise HTTPException(status_code=503, detail="Mesures temporairement indisponibles")
+    try:
+        nav_from = (now-timedelta(days=days-1)).strftime("%Y-%m-%d")
+        nav = {"pro_views": 0, "checkout_openings": 0, "from_day_utc": nav_from}
+        async for daily in db.experience_daily.find({"day": {"$gte": nav_from, "$lte": now.strftime("%Y-%m-%d")}}, {"counts": 1}).max_time_ms(3000):
+            values = daily.get("counts") or {}
+            nav["pro_views"] += int(values.get("pro_view", 0))
+            nav["checkout_openings"] += int(values.get("pro_checkout", 0))
+        result["navigation"] = nav
+    except Exception:
+        result["navigation"] = None
+    _quality_business_cache[days] = {"at": time.monotonic(), "data": result}
+    return copy.deepcopy(result)
+
+
+async def _quality_run_checks():
+    now = datetime.now(timezone.utc)
+    checks = []
+    async def count(code, collection, query, severity="warning"):
+        try:
+            n = await asyncio.wait_for(collection.count_documents(query, maxTimeMS=4000), timeout=5)
+            checks.append({"code": code, "status": severity if n else "healthy", "value": n})
+        except Exception:
+            checks.append({"code": code, "status": "unknown", "value": None})
+    try:
+        await asyncio.wait_for(db.command("ping"), timeout=3)
+        checks.append({"code": "database", "status": "healthy"})
+    except Exception:
+        # An unavailable database cannot persist its own outage. Log without PII.
+        logging.getLogger("winpulse.quality").error("Quality heartbeat: database unavailable")
+        return {"checked_at": now.isoformat(), "checks": [{"code": "database", "status": "critical"}], "status": "critical"}
+    try:
+        cache = await asyncio.wait_for(db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1}), timeout=3)
+        stamp = _quality_time((cache or {}).get("updated_at"))
+        age = max(0, int((now-stamp).total_seconds())) if stamp else None
+        checks.append({"code": "odds_freshness", "status": "unknown" if age is None else "warning" if age > 86400 else "healthy", "age_seconds": age})
+    except Exception:
+        checks.append({"code": "odds_freshness", "status": "unknown"})
+    await count("payment_provider_errors", db.subscription_requests, {"created_at": {"$gte": (now-timedelta(days=1)).isoformat()}, "payment_status": "provider_error"})
+    await count("activation_pending", db.subscription_requests, {"payment_provider": "fedapay", "payment_status": "approved", "activation_applied": {"$ne": True}, "created_at": {"$lt": (now-timedelta(minutes=15)).isoformat()}}, "critical")
+    await count("results_overdue", db.predictions_history, {"result": "pending", "commence_time": {"$lt": (now-timedelta(hours=12)).isoformat()}})
+    try:
+        signals = await asyncio.wait_for(db.quality_daily.find_one({"_id": now.strftime("%Y-%m-%d")}), timeout=3)
+        n = sum(int(((signals or {}).get("counts") or {}).get(k, 0)) for k in ("runtime_error", "render_error", "request_failure"))
+        checks.append({"code": "browser_errors_today", "status": "warning" if n else "healthy", "value": n})
+    except Exception:
+        checks.append({"code": "browser_errors_today", "status": "unknown"})
+    scheduler_ok = bool(globals().get("scheduler") and scheduler.running)
+    checks.append({"code": "scheduler", "status": "healthy" if scheduler_ok else "warning"})
+    report = {"checked_at": now.isoformat(), "checks": checks,
+              "status": "critical" if any(c["status"]=="critical" for c in checks) else "warning" if any(c["status"]!="healthy" for c in checks) else "healthy"}
+    await asyncio.wait_for(db.quality_state.update_one({"_id": "heartbeat"}, {"$set": report}, upsert=True), timeout=3)
+    for check in checks:
+        if check["status"] in ("warning", "critical", "unknown"):
+            await db.quality_incidents.update_one({"_id": check["code"]}, {"$set": {**check, "last_seen_at": now.isoformat(), "active": True}, "$setOnInsert": {"first_seen_at": now.isoformat()}}, upsert=True)
+        else:
+            await db.quality_incidents.update_one({"_id": check["code"], "active": True}, {"$set": {"active": False, "resolved_at": now.isoformat()}})
+    return report
+
+
+async def _quality_scheduled_check():
+    try:
+        return await _run_with_scheduler_lease("quality_heartbeat", lambda: asyncio.wait_for(_quality_run_checks(), timeout=45), lease_seconds=90)
+    except Exception as exc:
+        logging.getLogger("winpulse.quality").warning("Quality heartbeat failed (%s)", type(exc).__name__)
+
+
+@app.get("/api/admin/quality/status")
+async def quality_status(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    report = await asyncio.wait_for(db.quality_state.find_one({"_id": "heartbeat"}, {"_id": 0}), timeout=5)
+    if not report:
+        return {"status": "never_run", "checks": [], "scheduler_enabled": bool(ENABLE_INTERNAL_SCHEDULER)}
+    stamp = _quality_time(report.get("checked_at"))
+    return {**report, "stale": not stamp or (datetime.now(timezone.utc)-stamp).total_seconds()>900,
+            "scheduler_enabled": bool(ENABLE_INTERNAL_SCHEDULER)}
+
+
+@app.post("/api/admin/quality/check")
+async def quality_check(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    await _consume_security_limit("quality_check", str(payload.get("sub") or "admin"), limit=3, window_seconds=60)
+    result = await _quality_scheduled_check()
+    if result is None:
+        raise HTTPException(status_code=409, detail="Contrôle déjà en cours ou indisponible")
+    return result
+
+
+@app.on_event("startup")
+async def _quality_startup():
+    try:
+        await asyncio.wait_for(db.decision_snapshots.create_index([("match_id", 1), ("market", 1)]), timeout=5)
+        await asyncio.wait_for(db.subscription_requests.create_index([("user_id", 1), ("status", 1)]), timeout=5)
+        await asyncio.wait_for(db.subscription_requests.create_index("created_at"), timeout=5)
+        await asyncio.wait_for(db.quality_daily.create_index("expires_at", expireAfterSeconds=0), timeout=5)
+    except Exception:
+        logging.getLogger("winpulse.quality").warning("Quality indexes unavailable")
+    if ENABLE_INTERNAL_SCHEDULER:
+        scheduler.add_job(_quality_scheduled_check, "interval", minutes=5, id="quality_heartbeat",
+            replace_existing=True, coalesce=True, max_instances=1,
+            next_run_time=datetime.now(timezone.utc)+timedelta(seconds=45))
+
+
+class QualityClientEvent(BaseModel):
+    event: str = Field(max_length=30)
+    route: str = Field(max_length=50)
+
+
+@app.post("/api/experience/quality-event")
+async def quality_client_event(data: QualityClientEvent, payload: dict = Depends(get_current_user_payload)):
+    user = await _experience_user(payload)
+    if data.event not in {"runtime_error", "render_error", "request_failure"} or data.route not in {"home", "catalogue", "match", "follow", "subscription", "combos", "montante", "other"}:
+        raise HTTPException(status_code=422, detail="Signal invalide")
+    await _consume_security_limit("quality_client_event", str(user["id"]), limit=10, window_seconds=60)
+    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    # Operational aggregates only. No account ID, exception, query or match ID.
+    await db.quality_daily.update_one({"_id": day}, {"$setOnInsert": {"day": day,
+        "expires_at": datetime.now(timezone.utc)+timedelta(days=100)},
+        "$inc": {"counts." + data.event: 1, "routes." + data.route: 1}}, upsert=True)
+    return {"ok": True}
