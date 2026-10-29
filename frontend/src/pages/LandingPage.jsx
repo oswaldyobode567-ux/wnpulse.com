@@ -1,4 +1,4 @@
-import { TeamBadge, badgeUrl } from "@/components/MatchCard";
+import { TeamBadge, badgeUrl, MediaCredits } from "@/components/MatchCard";
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -444,7 +444,7 @@ export default function LandingPage() {
                       const showConfidence = !locked && Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
                       return (
                         <div key={row.id || i} className="wp-public-pick wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
-                          <div className="space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} /><bdi className="min-w-0 break-words text-sm font-bold leading-5 text-slate-800">{row[`${side}_team`]}</bdi></div>)}{row.sport_title && <p className="text-xs text-slate-500">{row.sport_title}</p>}</div>
+                          <div className="space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} kind={row[`${side}_media`]?.kind} /><bdi className="min-w-0 break-words text-sm font-bold leading-5 text-slate-800">{row[`${side}_team`]}</bdi></div>)}{row.sport_title && <p className="text-xs text-slate-500">{row.sport_title}</p>}</div>
                           <p className="mt-2 text-xs text-slate-500"><time dateTime={row.commence_time || undefined}>{landingTime(row.commence_time,locale,extra[7])}</time>{row.market_label && <> · {row.market_label}</>}</p>
                           <div className="mt-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
                             <p className="min-w-0 break-words text-sm font-semibold text-slate-900">
@@ -453,6 +453,7 @@ export default function LandingPage() {
                             {showConfidence && <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-700">{t("Indice : {{value}} %", { value: formatNumber(Math.round(confidence)) })}</span>}
                           </div>
                           {!locked && <details className="wp-public-reasons mt-3 rounded-lg border border-orange-100 bg-white px-3 text-xs leading-5 text-slate-600"><summary className="min-h-11 cursor-pointer py-3 font-bold text-slate-800">{extra[0]}</summary><p className="mt-1">• {row.model_probability != null && Number.isFinite(Number(row.model_probability)) && Number(row.model_probability)>=0 && Number(row.model_probability)<=100 ? `${extra[1]} : ${formatNumber(Number(row.model_probability))} %` : extra[19]}</p><p>• {row.num_books != null && Number.isFinite(Number(row.num_books)) && Number(row.num_books)>0 ? `${extra[2]} : ${formatNumber(Number(row.num_books))} ${extra[3]}` : extra[4]}</p><p className="mt-2 text-amber-800"><strong>{extra[5]} :</strong> {extra[6]}</p></details>}
+                          <MediaCredits match={row}/>
                         </div>
                       );
                     })}
@@ -521,7 +522,7 @@ export default function LandingPage() {
                           <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-bold text-emerald-700"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" />{t("Gagné")}</span>
                           <span className="text-xs text-slate-500">{new Intl.DateTimeFormat(locale, { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit", timeZone: RESULTS_TIME_ZONE }).format(new Date(row.start_time))}</span>
                         </div>
-                        <div className="mt-4 space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} /><h3 className="min-w-0 break-words font-heading text-base font-bold text-slate-900"><bdi>{row[`${side}_team`]}</bdi></h3></div>)}</div>
+                        <div className="mt-4 space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} kind={row[`${side}_media`]?.kind} /><h3 className="min-w-0 break-words font-heading text-base font-bold text-slate-900"><bdi>{row[`${side}_team`]}</bdi></h3></div>)}</div>
                         <p className="mt-3 break-words text-sm font-semibold leading-relaxed text-slate-700">{row.pick}</p>
                         <dl className="mt-4 grid grid-cols-2 gap-3 border-t border-slate-100 pt-4">
                           <div className="min-w-0"><dt className="text-xs text-slate-500">{t("Cote publiée")}</dt><dd className="mt-1 font-bold text-slate-900">{row.pick_odds.toLocaleString(locale, { minimumFractionDigits: 2, maximumFractionDigits: 3 })}</dd></div>
