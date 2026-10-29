@@ -7,7 +7,7 @@ import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio } from "lucide-react";
+import { ChevronLeft, Brain, AlertTriangle, Lightbulb, Loader2, Lock, Radio, CheckCircle2 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import PaymentModal from "@/components/payment/PaymentModal";
 import { AdminShareActions } from "@/components/MatchCard";
@@ -272,8 +272,9 @@ export default function MatchDetailPage() {
               <AdminShareActions isAdmin={isAdmin} item={{ ...data, prediction: p }} />
             </div>)}
         </Card>)}
+        {!locked && <DecisionReport matchId={matchId} owner={owner} match={data} />}
         {i18n.tx(!locked && <Card className="mb-5 rounded-3xl border-orange-200 bg-orange-50/40 p-4 sm:p-6" data-testid="pick-explanation">
-          <h2 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Comprendre ce pronostic")}</h2>
+          <details><summary className="min-h-11 cursor-pointer py-2 font-heading text-lg font-bold text-slate-900">{i18n.t("Comprendre ce pronostic")}</summary>
           <div className="mt-3 space-y-3 text-sm leading-relaxed text-slate-700">
             <p>{i18n.tx(pickExplanation(i18n, p))}</p>
             <p>{i18n.t("Le moteur compare les march\xE9s et les cotes disponibles pour classer les s\xE9lections. L\u2019estimation affich\xE9e est un indicateur calcul\xE9 ; elle ne garantit pas le r\xE9sultat du match.")}</p>
@@ -283,7 +284,7 @@ export default function MatchDetailPage() {
             })}</p>)}
             {i18n.tx(p.reasoning?.real_data_used ? <p>{i18n.t("Des statistiques externes sont disponibles pour compl\xE9ter cette analyse. Leur d\xE9tail figure plus bas.")}</p> : <p>{i18n.t("Les informations disponibles ne permettent pas ici d\u2019ajouter une analyse v\xE9rifi\xE9e de la forme des \xE9quipes ou des absences.")}</p>)}
           </div>
-        </Card>)}
+        </details></Card>)}
         {!locked && <div className="mb-5 flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4" data-testid="match-risk-note">
           <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-700" aria-hidden="true" />
           <div><h2 className="text-sm font-extrabold text-amber-950">{detailWords.riskTitle}</h2><p className="mt-1 text-sm leading-6 text-amber-900">{detailWords.risk}</p></div>
@@ -415,3 +416,401 @@ function ConfidenceBadge({
       })}</bdi>)}</span>;
 }
 
+
+const DECISION_COPY = {
+  "fr": {
+    "title": "La fiche de décision",
+    "intro": "Les données qui accompagnent ce choix, leurs limites et leur historique.",
+    "evidence": "Données du moteur",
+    "cautions": "Points de vigilance",
+    "engine_estimate": "Indicateur du moteur : {value} % (non garanti).",
+    "source_count": "Bookmakers annoncés par le moteur : {value}.",
+    "uncertain_estimate": "Le signal du moteur reste incertain.",
+    "few_sources": "Peu de bookmakers annoncés pour cette sélection.",
+    "unknown_sources": "Le nombre de sources n’est pas communiqué.",
+    "unknown_freshness": "La date de collecte des cotes n’est pas communiquée.",
+    "old_odds": "Les cotes disponibles ont plus de 24 heures.",
+    "missing_history": "Aucun historique récent vérifié disponible ici.",
+    "partial_history": "L’historique récent ne couvre qu’une des deux équipes.",
+    "old_history": "Les statistiques disponibles datent de plus de 24 heures.",
+    "alwaysRisk": "Une sélection peut perdre, même avec des données complètes.",
+    "coverage": "Couverture des données",
+    "complete": "Historique des deux équipes",
+    "partial": "Historique partiel",
+    "unavailable": "Données indisponibles",
+    "games": "Matchs observés : domicile {home} · extérieur {away}",
+    "collected": "Cotes collectées",
+    "source": "Source des statistiques",
+    "cohort": "Sélections historiques comparables",
+    "basis": "Même compétition, marché, version du moteur, tranche de cote et tranche de confiance, sur les 90 jours précédents.",
+    "wins": "Gagnées",
+    "losses": "Perdues",
+    "voids": "Remboursées",
+    "rate": "Taux observé",
+    "limited": "Moins de 30 sélections départagées : échantillon limité. Ce taux ne prédit pas l’issue du match.",
+    "historical": "Résultats passés, pas une probabilité pour cette rencontre. Plusieurs sélections peuvent concerner un même match.",
+    "none": "Aucun résultat comparable exploitable.",
+    "frozen": "Première fiche enregistrée avant le coup d’envoi",
+    "frozenNote": "Cette copie conserve la cote et l’indicateur lors de la première consultation ; elle n’est pas réécrite lorsque les cotes changent.",
+    "notFrozen": "Aucune copie avant-match disponible. La date d’enregistrement n’est jamais reconstituée.",
+    "initialOdds": "Cote enregistrée",
+    "initialEstimate": "Indicateur enregistré",
+    "recorded": "Enregistrée le",
+    "result": "Résultat confirmé",
+    "won": "Gagné",
+    "lost": "Perdu",
+    "void": "Remboursé",
+    "retry": "Réessayer",
+    "error": "La fiche ne peut pas être chargée. Le pronostic et les autres détails restent disponibles.",
+    "loading": "Préparation de la fiche…",
+    "unknown": "Non communiqué",
+    "model": "Version du moteur",
+    "contextTitle": "Forme récente observée",
+    "contextNote": "Ces statistiques décrivent les matchs observés. Elles ne sont pas nécessairement utilisées par le moteur actuel ; adversaires et périodes peuvent différer.",
+    "winsGames": "victoires / matchs",
+    "history_against_pick": "Le taux de victoires récent de l’équipe choisie est inférieur à celui de l’adversaire dans les échantillons disponibles."
+  },
+  "en": {
+    "title": "Decision report",
+    "intro": "The evidence behind this selection, its limits and its history.",
+    "evidence": "Engine data",
+    "cautions": "Points to consider",
+    "engine_estimate": "Engine indicator: {value}% (not guaranteed).",
+    "source_count": "Bookmakers reported by the engine: {value}.",
+    "uncertain_estimate": "The engine signal remains uncertain.",
+    "few_sources": "Few bookmakers reported for this selection.",
+    "unknown_sources": "The source count is not provided.",
+    "unknown_freshness": "The odds collection time is not provided.",
+    "old_odds": "Available odds are more than 24 hours old.",
+    "missing_history": "No verified recent history is available here.",
+    "partial_history": "Recent history covers only one team.",
+    "old_history": "Available statistics are over 24 hours old.",
+    "alwaysRisk": "A selection may lose even with complete data.",
+    "coverage": "Data coverage",
+    "complete": "History for both teams",
+    "partial": "Partial history",
+    "unavailable": "Data unavailable",
+    "games": "Observed games: home {home} · away {away}",
+    "collected": "Odds collected",
+    "source": "Statistics source",
+    "cohort": "Comparable historical selections",
+    "basis": "Same competition, market, engine version, odds band and confidence band over the preceding 90 days.",
+    "wins": "Won",
+    "losses": "Lost",
+    "voids": "Refunded",
+    "rate": "Observed win rate",
+    "limited": "Fewer than 30 graded selections: limited sample. This rate does not predict this match.",
+    "historical": "Past results, not a probability for this fixture. Multiple selections may concern one match.",
+    "none": "No usable comparable results.",
+    "frozen": "First report recorded before kickoff",
+    "frozenNote": "This copy preserves the odds and indicator at the first visit; later odds changes do not rewrite it.",
+    "notFrozen": "No pre-match copy available. Recording dates are never reconstructed.",
+    "initialOdds": "Recorded odds",
+    "initialEstimate": "Recorded indicator",
+    "recorded": "Recorded on",
+    "result": "Confirmed result",
+    "won": "Won",
+    "lost": "Lost",
+    "void": "Refunded",
+    "retry": "Retry",
+    "error": "Unable to load this report. The prediction and other details remain available.",
+    "loading": "Preparing report…",
+    "unknown": "Not provided",
+    "model": "Engine version",
+    "contextTitle": "Observed recent form",
+    "contextNote": "These statistics describe observed games. The current engine may not use them; opponents and periods may differ.",
+    "winsGames": "wins / games",
+    "history_against_pick": "The selected team has a lower recent win rate than its opponent in the available samples."
+  },
+  "es": {
+    "title": "Ficha de decisión",
+    "intro": "Datos que acompañan la selección, sus límites e historial.",
+    "evidence": "Datos del motor",
+    "cautions": "Puntos de atención",
+    "engine_estimate": "Indicador del motor: {value}% (sin garantía).",
+    "source_count": "Casas indicadas por el motor: {value}.",
+    "uncertain_estimate": "La señal del motor sigue siendo incierta.",
+    "few_sources": "Pocas casas indicadas para esta selección.",
+    "unknown_sources": "No se indica el número de fuentes.",
+    "unknown_freshness": "No se indica cuándo se recogieron las cuotas.",
+    "old_odds": "Las cuotas disponibles tienen más de 24 horas.",
+    "missing_history": "No hay historial reciente verificado disponible.",
+    "partial_history": "El historial reciente solo cubre un equipo.",
+    "old_history": "Las estadísticas tienen más de 24 horas.",
+    "alwaysRisk": "Una selección puede perder incluso con datos completos.",
+    "coverage": "Cobertura de datos",
+    "complete": "Historial de ambos equipos",
+    "partial": "Historial parcial",
+    "unavailable": "Datos no disponibles",
+    "games": "Partidos observados: local {home} · visitante {away}",
+    "collected": "Cuotas recogidas",
+    "source": "Fuente estadística",
+    "cohort": "Selecciones históricas comparables",
+    "basis": "Misma competición, mercado, versión del motor, rango de cuota y confianza en los 90 días anteriores.",
+    "wins": "Ganadas",
+    "losses": "Perdidas",
+    "voids": "Reembolsadas",
+    "rate": "Tasa observada",
+    "limited": "Menos de 30 selecciones evaluadas: muestra limitada. No predice este partido.",
+    "historical": "Resultados pasados, no una probabilidad para este partido. Puede haber varias selecciones del mismo encuentro.",
+    "none": "No hay resultados comparables utilizables.",
+    "frozen": "Primera ficha registrada antes del inicio",
+    "frozenNote": "Conserva la cuota y el indicador de la primera consulta, sin reescribirlos cuando cambian las cuotas.",
+    "notFrozen": "No hay copia previa al partido. Nunca se reconstruye la fecha.",
+    "initialOdds": "Cuota registrada",
+    "initialEstimate": "Indicador registrado",
+    "recorded": "Registrada el",
+    "result": "Resultado confirmado",
+    "won": "Ganado",
+    "lost": "Perdido",
+    "void": "Reembolsado",
+    "retry": "Reintentar",
+    "error": "No se pudo cargar la ficha. El pronóstico y otros detalles siguen disponibles.",
+    "loading": "Preparando ficha…",
+    "unknown": "No indicado",
+    "model": "Versión del motor",
+    "contextTitle": "Forma reciente observada",
+    "contextNote": "Estas estadísticas describen partidos observados. El motor actual puede no usarlas; rivales y periodos pueden diferir.",
+    "winsGames": "victorias / partidos",
+    "history_against_pick": "El equipo elegido tiene una tasa reciente de victorias inferior a la del rival en las muestras disponibles."
+  },
+  "pt": {
+    "title": "Ficha de decisão",
+    "intro": "Os dados desta seleção, as suas limitações e o histórico.",
+    "evidence": "Dados do motor",
+    "cautions": "Pontos de atenção",
+    "engine_estimate": "Indicador do motor: {value}% (sem garantia).",
+    "source_count": "Casas indicadas pelo motor: {value}.",
+    "uncertain_estimate": "O sinal do motor continua incerto.",
+    "few_sources": "Poucas casas indicadas para esta seleção.",
+    "unknown_sources": "O número de fontes não é comunicado.",
+    "unknown_freshness": "A data de recolha das cotas não é comunicada.",
+    "old_odds": "As cotas disponíveis têm mais de 24 horas.",
+    "missing_history": "Não existe histórico recente verificado disponível.",
+    "partial_history": "O histórico recente cobre apenas uma equipa.",
+    "old_history": "As estatísticas têm mais de 24 horas.",
+    "alwaysRisk": "Uma seleção pode perder mesmo com dados completos.",
+    "coverage": "Cobertura dos dados",
+    "complete": "Histórico das duas equipas",
+    "partial": "Histórico parcial",
+    "unavailable": "Dados indisponíveis",
+    "games": "Jogos observados: casa {home} · fora {away}",
+    "collected": "Cotas recolhidas",
+    "source": "Fonte estatística",
+    "cohort": "Seleções históricas comparáveis",
+    "basis": "Mesma competição, mercado, versão, faixa de cota e confiança nos 90 dias anteriores.",
+    "wins": "Ganhas",
+    "losses": "Perdidas",
+    "voids": "Reembolsadas",
+    "rate": "Taxa observada",
+    "limited": "Menos de 30 seleções avaliadas: amostra limitada. Não prevê este jogo.",
+    "historical": "Resultados passados, não uma probabilidade para este encontro. Pode haver várias seleções do mesmo jogo.",
+    "none": "Sem resultados comparáveis utilizáveis.",
+    "frozen": "Primeira ficha registada antes do início",
+    "frozenNote": "Preserva a cota e o indicador da primeira consulta, sem os alterar quando as cotas mudam.",
+    "notFrozen": "Sem cópia anterior ao jogo. A data nunca é reconstruída.",
+    "initialOdds": "Cota registada",
+    "initialEstimate": "Indicador registado",
+    "recorded": "Registada em",
+    "result": "Resultado confirmado",
+    "won": "Ganho",
+    "lost": "Perdido",
+    "void": "Reembolsado",
+    "retry": "Tentar novamente",
+    "error": "Não foi possível carregar a ficha. O palpite e outros detalhes continuam disponíveis.",
+    "loading": "A preparar ficha…",
+    "unknown": "Não comunicado",
+    "model": "Versão do motor",
+    "contextTitle": "Forma recente observada",
+    "contextNote": "Estas estatísticas descrevem jogos observados. O motor atual pode não as utilizar; adversários e períodos podem variar.",
+    "winsGames": "vitórias / jogos",
+    "history_against_pick": "A equipa escolhida tem uma taxa recente de vitórias inferior à do adversário nas amostras disponíveis."
+  },
+  "de": {
+    "title": "Entscheidungsbericht",
+    "intro": "Daten zu diesem Tipp, ihre Grenzen und ihre Historie.",
+    "evidence": "Modelldaten",
+    "cautions": "Wichtige Einschränkungen",
+    "engine_estimate": "Modellindikator: {value}% (ohne Garantie).",
+    "source_count": "Vom Modell gemeldete Buchmacher: {value}.",
+    "uncertain_estimate": "Das Modellsignal bleibt unsicher.",
+    "few_sources": "Wenige gemeldete Buchmacher für diesen Tipp.",
+    "unknown_sources": "Die Quellenanzahl wird nicht angegeben.",
+    "unknown_freshness": "Die Erfassungszeit der Quoten wird nicht angegeben.",
+    "old_odds": "Die verfügbaren Quoten sind älter als 24 Stunden.",
+    "missing_history": "Keine verifizierte jüngere Historie verfügbar.",
+    "partial_history": "Die jüngere Historie umfasst nur ein Team.",
+    "old_history": "Die Statistiken sind älter als 24 Stunden.",
+    "alwaysRisk": "Auch bei vollständigen Daten kann ein Tipp verlieren.",
+    "coverage": "Datenabdeckung",
+    "complete": "Historie beider Teams",
+    "partial": "Teilweise Historie",
+    "unavailable": "Daten nicht verfügbar",
+    "games": "Beobachtete Spiele: Heim {home} · Gast {away}",
+    "collected": "Quoten erfasst",
+    "source": "Statistikquelle",
+    "cohort": "Vergleichbare historische Tipps",
+    "basis": "Gleicher Wettbewerb, Markt, Modellversion, Quoten- und Konfidenzbereich in den vorherigen 90 Tagen.",
+    "wins": "Gewonnen",
+    "losses": "Verloren",
+    "voids": "Erstattet",
+    "rate": "Beobachtete Trefferquote",
+    "limited": "Weniger als 30 bewertete Tipps: begrenzte Stichprobe. Keine Vorhersage für dieses Spiel.",
+    "historical": "Vergangene Ergebnisse, keine Wahrscheinlichkeit für diese Partie. Mehrere Tipps können dasselbe Spiel betreffen.",
+    "none": "Keine nutzbaren vergleichbaren Ergebnisse.",
+    "frozen": "Erster Bericht vor Spielbeginn",
+    "frozenNote": "Quote und Indikator der ersten Abfrage bleiben erhalten; spätere Änderungen überschreiben sie nicht.",
+    "notFrozen": "Keine Kopie vor Spielbeginn. Erfassungsdaten werden nie rekonstruiert.",
+    "initialOdds": "Erfasste Quote",
+    "initialEstimate": "Erfasster Indikator",
+    "recorded": "Erfasst am",
+    "result": "Bestätigtes Ergebnis",
+    "won": "Gewonnen",
+    "lost": "Verloren",
+    "void": "Erstattet",
+    "retry": "Erneut versuchen",
+    "error": "Bericht nicht verfügbar. Tipp und andere Details bleiben zugänglich.",
+    "loading": "Bericht wird vorbereitet…",
+    "unknown": "Nicht angegeben",
+    "model": "Modellversion",
+    "contextTitle": "Beobachtete jüngste Form",
+    "contextNote": "Diese Statistiken beschreiben beobachtete Spiele. Das aktuelle Modell nutzt sie nicht unbedingt; Gegner und Zeiträume können abweichen.",
+    "winsGames": "Siege / Spiele",
+    "history_against_pick": "Das ausgewählte Team hat in den verfügbaren Stichproben eine niedrigere jüngste Siegquote als sein Gegner."
+  },
+  "ar": {
+    "title": "تقرير القرار",
+    "intro": "بيانات هذا الاختيار وحدودها وسجلها.",
+    "evidence": "بيانات المحرك",
+    "cautions": "نقاط الانتباه",
+    "engine_estimate": "مؤشر المحرك: {value}% (دون ضمان).",
+    "source_count": "عدد المراهنين المعلن من المحرك: {value}.",
+    "uncertain_estimate": "إشارة المحرك لا تزال غير مؤكدة.",
+    "few_sources": "عدد المصادر المعلنة محدود.",
+    "unknown_sources": "عدد المصادر غير مذكور.",
+    "unknown_freshness": "وقت جمع المعاملات غير مذكور.",
+    "old_odds": "المعاملات المتاحة أقدم من 24 ساعة.",
+    "missing_history": "لا يوجد سجل حديث موثق متاح.",
+    "partial_history": "السجل الحديث يغطي فريقاً واحداً فقط.",
+    "old_history": "الإحصاءات أقدم من 24 ساعة.",
+    "alwaysRisk": "قد يخسر الاختيار حتى مع اكتمال البيانات.",
+    "coverage": "تغطية البيانات",
+    "complete": "سجل الفريقين",
+    "partial": "سجل جزئي",
+    "unavailable": "البيانات غير متاحة",
+    "games": "المباريات المرصودة: المضيف {home} · الضيف {away}",
+    "collected": "جمع المعاملات",
+    "source": "مصدر الإحصاءات",
+    "cohort": "اختيارات تاريخية مشابهة",
+    "basis": "نفس المسابقة والسوق وإصدار المحرك وفئة المعامل والثقة خلال التسعين يوماً السابقة.",
+    "wins": "فائزة",
+    "losses": "خاسرة",
+    "voids": "مستردة",
+    "rate": "النسبة المرصودة",
+    "limited": "أقل من 30 اختياراً مقيماً: عينة محدودة لا تتنبأ بهذه المباراة.",
+    "historical": "نتائج سابقة وليست احتمالاً لهذه المباراة. قد تخص عدة اختيارات مباراة واحدة.",
+    "none": "لا توجد نتائج مشابهة قابلة للاستخدام.",
+    "frozen": "أول تقرير مسجل قبل البداية",
+    "frozenNote": "يحفظ المعامل والمؤشر عند أول عرض ولا يُعدل مع تغير المعاملات.",
+    "notFrozen": "لا توجد نسخة قبل المباراة. لا يُختلق تاريخ التسجيل.",
+    "initialOdds": "المعامل المسجل",
+    "initialEstimate": "المؤشر المسجل",
+    "recorded": "تاريخ التسجيل",
+    "result": "نتيجة مؤكدة",
+    "won": "فائز",
+    "lost": "خاسر",
+    "void": "مسترد",
+    "retry": "إعادة المحاولة",
+    "error": "تعذر تحميل التقرير. يبقى التوقع والتفاصيل الأخرى متاحة.",
+    "loading": "جارٍ إعداد التقرير…",
+    "unknown": "غير مذكور",
+    "model": "إصدار المحرك",
+    "contextTitle": "المستوى الحديث المرصود",
+    "contextNote": "تصف الإحصاءات مباريات مرصودة. قد لا يستخدمها المحرك الحالي وقد يختلف الخصوم والفترات.",
+    "winsGames": "انتصارات / مباريات",
+    "history_against_pick": "نسبة الانتصارات الحديثة للفريق المختار أقل من خصمه في العينات المتاحة."
+  }
+};
+
+function DecisionReport({
+  matchId,
+  owner,
+  match
+}) {
+  const i18n = usePageLanguage();
+  const w = DECISION_COPY[i18n.language] || DECISION_COPY.fr;
+  const [state, setState] = useState({
+    key: null,
+    data: null,
+    error: false,
+    loading: true
+  });
+  const [retry, setRetry] = useState(0);
+  const key = `${owner}:${matchId}`;
+  const stateRef = useRef(null);
+  stateRef.current = key;
+  useEffect(() => {
+    const controller = new AbortController();
+    setState({
+      key,
+      data: null,
+      error: false,
+      loading: true
+    });
+    api.get(`/matches/${encodeURIComponent(matchId)}/decision`, {
+      signal: controller.signal,
+      timeout: 23000
+    }).then(({
+      data
+    }) => {
+      if (!controller.signal.aborted && stateRef.current === key) {
+        if (data?.version !== 1 || data.status !== 'ready') throw new Error('Unavailable report');
+        setState({
+          key,
+          data,
+          error: false,
+          loading: false
+        });
+      }
+    }).catch(() => {
+      if (!controller.signal.aborted && stateRef.current === key) setState({
+        key,
+        data: null,
+        error: true,
+        loading: false
+      });
+    });
+    return () => controller.abort();
+  }, [key, matchId, retry]);
+  const data = state.key === key ? state.data : null;
+  const failed = state.key === key && state.error;
+  const text = (code, values = {}) => (w[code] || w.unknown).replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? '—'));
+  const date = value => value && Number.isFinite(new Date(value).getTime()) ? i18n.formatDate(value, {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  }) : w.unknown;
+  const number = value => value !== null && value !== undefined && Number.isFinite(Number(value)) ? i18n.formatNumber(Number(value), {
+    maximumFractionDigits: 2
+  }) : '—';
+  const c = data?.comparable || {};
+  const frozen = data?.initial_snapshot;
+  return <section className="wp-decision mb-5 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5" data-testid="decision-report" dir={i18n.direction}>
+  <p className="wp-eyebrow">WinPulse / Insights</p><h2 className="mt-2 text-2xl font-bold text-slate-900">{w.title}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{w.intro}</p>
+  {!data ? failed ? <div role="alert" className="mt-4 text-sm leading-6 text-slate-600"><p>{w.error}</p><button type="button" onClick={() => setRetry(n => n + 1)} className="mt-2 min-h-11 rounded-xl border px-4 font-bold text-orange-700">{w.retry}</button></div> : <p role="status" className="mt-4 text-sm text-slate-500">{w.loading}</p> : <>
+   <div className="mt-5"><h3 className="text-base font-bold text-slate-900">{w.evidence}</h3><ul className="mt-2 space-y-2 text-sm leading-6 text-slate-600">{(data.support || []).map((fact, i) => <li key={i} className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-600" /><span>{text(fact.code, {
+                value: number(fact.value)
+              })}</span></li>)}</ul></div>
+   <div className="mt-4 rounded-xl bg-amber-50 p-3"><h3 className="text-sm font-bold text-amber-900">{w.cautions}</h3><ul className="mt-2 space-y-2 text-sm leading-6 text-amber-900">{(data.cautions || []).map((fact, i) => <li key={i}>• {text(fact.code)}</li>)}<li>• {w.alwaysRisk}</li></ul></div>
+   {data.context && (data.coverage?.home_games > 0 || data.coverage?.away_games > 0) && <details className="mt-4 border-t border-slate-200 pt-3" data-testid="decision-context"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.contextTitle}</summary><div className="mt-3 grid grid-cols-2 gap-3">{['home', 'away'].map(side => <div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><p className="break-words text-xs font-bold">{match?.[`${side}_team`]}</p><strong className="mt-2 block font-mono text-lg">{number(data.context[side]?.wins)} / {number(data.context[side]?.played)}</strong><p className="text-xs text-slate-500">{w.winsGames}</p></div>)}</div><p className="mt-3 text-xs leading-6 text-slate-500">{w.contextNote}</p></details>}
+   <details className="mt-4 border-t border-slate-200 pt-3" data-testid="decision-coverage"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.coverage} · {w[data.coverage?.status] || w.unknown}</summary><p className="mt-2 text-sm leading-6 text-slate-600">{text('games', {
+            home: number(data.coverage?.home_games),
+            away: number(data.coverage?.away_games)
+          })}</p><p className="mt-2 text-xs leading-6 text-slate-500">{w.collected} : {date(data.source_updated_at)}<br />{w.source} : {data.coverage?.source || w.unknown}</p></details>
+   <details className="mt-3 border-t border-slate-200 pt-3" data-testid="decision-cohort"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.cohort} <span className="text-slate-500">({number(c.evaluated ?? 0)})</span></summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.basis}</p><div className="mt-3 grid grid-cols-3 gap-2">{[[w.wins, c.won], [w.losses, c.lost], [w.voids, c.void]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><strong className="font-mono text-lg">{number(value ?? 0)}</strong><p className="mt-1 text-xs text-slate-500">{label}</p></div>)}</div><p className="mt-3 text-sm font-bold">{w.rate} : {c.win_rate == null ? '—' : `${number(c.win_rate)} %`}</p><p className="mt-2 text-xs leading-6 text-slate-500">{c.evaluated ? c.evaluated < 30 ? w.limited : w.historical : w.none}</p><p className="mt-2 text-xs leading-6 text-slate-500">{w.model} : {c.model_version || w.unknown}</p></details>
+   <details className="mt-3 border-t border-slate-200 pt-3" data-testid="decision-frozen"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.frozen}</summary>{frozen ? <><div className="mt-2 grid grid-cols-2 gap-3 text-sm"><div>{w.initialOdds}<strong className="mt-1 block font-mono">{number(frozen.pick_odds)}</strong></div><div>{w.initialEstimate}<strong className="mt-1 block font-mono">{number(frozen.confidence)} %</strong></div></div><p className="mt-3 text-xs text-slate-500">{w.recorded} : {date(frozen.captured_at)}</p><p className="mt-2 text-xs leading-6 text-slate-500">{w.frozenNote}</p></> : <p className="mt-2 text-xs leading-6 text-slate-500">{w.notFrozen}</p>}</details>
+   {data.result && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-bold">{w.result} : {w[data.result.result] || w.unknown} {data.result.final_score && <bdi>· {data.result.final_score}</bdi>}</p>}
+  </>}
+ </section>;
+}
