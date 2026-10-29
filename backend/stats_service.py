@@ -17,6 +17,12 @@ from typing import Dict, List, Optional
 
 import httpx
 import logging
+import hashlib
+import json
+import re
+import html
+from pymongo.errors import DuplicateKeyError
+from pymongo import UpdateOne
 logger = logging.getLogger("winpulse.stats_service")
 logger.setLevel(logging.INFO)
 
@@ -519,15 +525,18 @@ async def get_match_insights(db, match):
 # API-Sports is an optional, read-only enrichment; no prediction is changed.
 # The scheduler owns a distributed lease, and requests are never made by page views.
 API_SPORTS_KEY = os.environ.get("API_SPORTS_KEY", "").strip()
-_APISPORTS_BASE = {"football": "https://v3.football.api-sports.io", "basketball": "https://v1.basketball.api-sports.io"}
+_APISPORTS_BASE = {"football": "https://v3.football.api-sports.io", "basketball": "https://v1.basketball.api-sports.io", "hockey": "https://v1.hockey.api-sports.io", "baseball": "https://v1.baseball.api-sports.io", "american_football": "https://v1.american-football.api-sports.io"}
 _APISPORTS_DAILY_LIMIT = 80  # per API; leaves space for other account activity
-_APISPORTS_RUN_LIMIT = 12   # across both APIs, per scheduler run
+_APISPORTS_RUN_LIMIT = 12   # across all APIs, per scheduler run
 
 
 def _as_sport(match):
     key = str(match.get("sport_key") or "").lower()
     if key.startswith("soccer_"): return "football"
     if key.startswith("basketball_"): return "basketball"
+    if key.startswith("icehockey_"): return "hockey"
+    if key.startswith("baseball_"): return "baseball"
+    if key.startswith("americanfootball_"): return "american_football"
     return None
 
 
@@ -540,37 +549,19 @@ def _as_key(sport, name):
 
 
 async def _as_request(db, sport, path, params):
-    if not API_SPORTS_KEY or sport not in _APISPORTS_BASE: return None
-    day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    # The scheduled worker runs under a cross-process lease. Separate documents
-    # ensure that the football and basketball free quotas remain independent.
-    quota_id = "apisports:" + sport + ":" + day
-    quota = await db.stats_cache.find_one({"_id": quota_id}) or {}
-    if quota.get("calls", 0) >= _APISPORTS_DAILY_LIMIT: return None
-    await db.stats_cache.update_one({"_id": quota_id}, {"$inc": {"calls": 1}}, upsert=True)
-    try:
-        async with httpx.AsyncClient(timeout=12.0, follow_redirects=False) as client:
-            response = await client.get(_APISPORTS_BASE[sport] + path, params=params, headers={"x-apisports-key": API_SPORTS_KEY})
-        if response.status_code != 200:
-            logger.warning("API-Sports %s: HTTP %s", sport, response.status_code)
-            return None
-        data = response.json()
-        if not isinstance(data, dict) or data.get("errors") or not isinstance(data.get("response"), list):
-            logger.warning("API-Sports %s: reponse indisponible ou quota atteint", sport)
-            return None
-        return data["response"]
-    except (httpx.HTTPError, ValueError):
-        logger.warning("API-Sports %s: requete indisponible", sport)
-        return None
+    data = await enrichment_request(db, "apisports:" + sport, path, params)
+    value = data.get("response") if isinstance(data, dict) else None
+    return value if isinstance(value, list) else None
 
 
 async def refresh_apisports_cache(db, matches):
     if not API_SPORTS_KEY: return {"skipped": "key_missing"}
     now = datetime.now(timezone.utc)
     used = 0
+    unavailable_sports = set()
     for match in matches:
         sport = _as_sport(match)
-        if not sport: continue
+        if not sport or sport in unavailable_sports: continue
         kickoff = _display_date(match.get("commence_time"))
         if not kickoff or kickoff < now or kickoff > now + timedelta(days=7): continue
         for side in ("home", "away"):
@@ -579,22 +570,32 @@ async def refresh_apisports_cache(db, matches):
             cache_id = _as_key(sport, name)
             doc = await db.stats_cache.find_one({"_id": cache_id}) or {}
             updated = _display_date(doc.get("updated_at"))
-            if updated and now - updated < timedelta(hours=24): continue
+            identity_fresh = bool(updated and now - updated < timedelta(days=30 if doc.get("matched") else 3))
+            recent_updated = _display_date(doc.get("recent_updated_at"))
+            refresh_history = sport == "football" and doc.get("matched") and (not recent_updated or now - recent_updated > timedelta(hours=24))
+            if identity_fresh and not refresh_history: continue
             if used >= _APISPORTS_RUN_LIMIT: return {"requests": used}
-            rows = await _as_request(db, sport, "/teams", {"search": name})
-            used += 1
-            if rows is None: return {"requests": used, "stopped": "provider_unavailable"}  # retry on a later cycle
+            if identity_fresh and doc.get("team_id"):
+                rows = [{"team": {"id": doc["team_id"], "name": doc.get("name") or name, "logo": doc.get("logo")}}]
+            else:
+                rows = await _as_request(db, sport, "/teams", {"search": name})
+                used += 1
+            if rows is None:
+                unavailable_sports.add(sport)
+                break  # another sport can still be enriched
             candidates = []
             for item in rows:
-                team = item.get("team", {}) if sport == "football" else item
-                if _as_normalize(team.get("name")) == _as_normalize(name) and team.get("id"):
+                team = item.get("team") if isinstance(item.get("team"),dict) else item
+                if entity_name(team.get("name"),sport) == entity_name(name,sport) and team.get("id"):
                     candidates.append(team)
             unique = {str(t["id"]): t for t in candidates}
             if len(unique) != 1:
+                if doc.get("matched"): continue  # retain a previously verified identity
                 await db.stats_cache.update_one({"_id": cache_id}, {"$set": {"updated_at": now.isoformat(), "matched": False}}, upsert=True)
                 continue
             team = next(iter(unique.values()))
-            fields = {"updated_at": now.isoformat(), "matched": True, "team_id": team["id"], "name": team.get("name"), "logo": _safe_crest(team.get("logo"))}
+            fields = {"updated_at": now.isoformat(), "matched": True, "team_id": team["id"], "name": team.get("name")}
+            if _safe_crest(team.get("logo")):fields["logo"]=_safe_crest(team["logo"])
             await db.stats_cache.update_one({"_id": cache_id}, {"$set": fields}, upsert=True)
             # Detailed comparable statistics below are football-only: the UI's
             # goal metrics must never be applied to basketball points.
@@ -644,3 +645,447 @@ async def _apisports_football_insights(db, match, cutoff):
     stamps = [v for v in stamps if v]
     stamp = min(stamps) if stamps else None
     return {"version": 1, "status": "ready", "source": "API-Sports", "sample_limit": 10, "cutoff": cutoff.isoformat(), "home": team(home,"home"), "away": team(away,"away"), "h2h": h2h, "h2h_scope": "recent_sample_only", "updated_at": stamp.isoformat() if stamp else None, "stale": not stamp or (datetime.now(timezone.utc)-stamp).total_seconds() > 86400}
+
+
+# ─── Independent enrichment v2 (no odds/cache deletion; no official picks) ───
+_ENRICHMENT_SOURCES = {
+    "openfootball": ("https://raw.githubusercontent.com", 30, .5),
+    "wikidata": ("https://www.wikidata.org", 240, 1.),
+    "commons": ("https://commons.wikimedia.org", 120, 1.),
+    "tennis": ("https://tennis-api-atp-wta-itf.p.rapidapi.com", 40, 1.),
+    **{"apisports:"+key: (url, 80, 6.1) for key,url in _APISPORTS_BASE.items()},
+}
+_enrichment_locks = {}
+_enrichment_next = {}
+_OPENFOOTBALL = {"soccer_epl":"en.1", "soccer_efl_champ":"en.2", "soccer_spain_la_liga":"es.1", "soccer_spain_segunda_division":"es.2", "soccer_germany_bundesliga":"de.1", "soccer_germany_bundesliga2":"de.2", "soccer_france_ligue_one":"fr.1", "soccer_france_ligue_two":"fr.2", "soccer_italy_serie_a":"it.1", "soccer_italy_serie_b":"it.2"}
+# Small, reviewed aliases only. Never fuzzy-match names across sports or countries.
+_TEAM_ALIASES = {"brightonandhovealbion":"brightonhovealbion", "fcbarcelona":"barcelona", "bayernmunchen":"bayernmunich", "fcbayernmunchen":"bayernmunich", "athleticclub":"athleticbilbao", "realbetisbalompie":"realbetis", "clubatleticodemadrid":"atleticomadrid", "manchestercityfc":"manchestercity", "mancity":"manchestercity", "manchesterunitedfc":"manchesterunited", "manunited":"manchesterunited", "manutd":"manchesterunited", "tottenhamhotspurfc":"tottenhamhotspur", "tottenham":"tottenhamhotspur", "wolverhamptonwanderersfc":"wolverhamptonwanderers", "wolves":"wolverhamptonwanderers", "brightonhovealbionfc":"brightonhovealbion", "brighton":"brightonhovealbion", "parissaintgermainfc":"parissaintgermain", "parissg":"parissaintgermain", "psg":"parissaintgermain", "internazionalemilano":"intermilan", "internazionalemilan":"intermilan", "fcinternazionalemilano":"intermilan"}
+
+
+def enrichment_sport(match):
+    key = str(match.get("sport_key") or "").lower()
+    return "football" if key.startswith("soccer_") else "tennis" if key.startswith("tennis_") else "basketball" if key.startswith("basketball_") else None
+
+
+def entity_name(name, sport):
+    value = _as_normalize(name)
+    if sport == "football":
+        if value in _TEAM_ALIASES: return _TEAM_ALIASES[value]
+        # FC suffix only, not reserve/women/age identifiers.
+        if value.endswith("fc") and len(value)>5: value=value[:-2]
+    return value
+
+
+def entity_key(sport,name):
+    return sport + ":" + entity_name(name,sport)
+
+
+def _enrichment_plain(value):
+    return html.unescape(re.sub(r"<[^>]*>", "", str(value or ""))).strip()[:300]
+
+
+async def enrichment_request(db, provider, path, params=None):
+    config = _ENRICHMENT_SOURCES.get(provider)
+    if not config or not path.startswith("/") or ".." in path: return None
+    headers={"User-Agent":"WinPulseData/1.0 (https://wnpulse.com; contact@wnpulse.com)"}
+    if provider.startswith("apisports:"):
+        if not API_SPORTS_KEY: return None
+        headers["x-apisports-key"]=API_SPORTS_KEY
+    if provider=="tennis":
+        key=os.environ.get("TENNIS_RAPIDAPI_KEY", "").strip()
+        if not key: return None
+        headers.update({"X-RapidAPI-Key":key,"X-RapidAPI-Host":"tennis-api-atp-wta-itf.p.rapidapi.com"})
+    now=datetime.now(timezone.utc)
+    status_id="source:"+provider
+    state=await db.enrichment_state.find_one({"_id":status_id}) or {}
+    blocked=_display_date(state.get("backoff_until"))
+    if blocked and blocked>now: return None
+    # An access-denied endpoint never disables unrelated endpoints such as teams.
+    capability=await db.enrichment_state.find_one({"_id":status_id+":endpoint:"+hashlib.sha256(path.encode()).hexdigest()}) or {}
+    retry=_display_date(capability.get("retry_at"))
+    if retry and retry>now:return None
+    lock=_enrichment_locks.setdefault(provider,asyncio.Lock())
+    async with lock:
+        wait=max(0,_enrichment_next.get(provider,0)-time.monotonic())
+        if wait:await asyncio.sleep(wait)
+        _enrichment_next[provider]=time.monotonic()+config[2]
+        # Share the same counter as the legacy API-Sports worker.
+        day=now.strftime("%Y-%m-%d")
+        quota_id=(provider+":"+day) if provider.startswith("apisports:") else "enrichment:"+provider+":"+day
+        try:
+            quota=await db.stats_cache.find_one_and_update({"_id":quota_id,"$or":[{"calls":{"$lt":config[1]}},{"calls":{"$exists":False}}]},
+                {"$inc":{"calls":1},"$setOnInsert":{"day":day,"provider":provider}},upsert=True,return_document=True)
+        except DuplicateKeyError:return None
+        if not quota:return None
+        try:
+            async with httpx.AsyncClient(timeout=12,follow_redirects=False) as client:
+                response=await client.get(config[0]+path,params=params or {},headers=headers)
+            code=response.status_code
+            update={"checked_at":now.isoformat(),"http_status":code,"status":"available" if code==200 else "unavailable"}
+            if code in (401,429,503):
+                delay=86400 if code==401 else 3600
+                update["backoff_until"]=(now+timedelta(seconds=delay)).isoformat()
+            await db.enrichment_state.update_one({"_id":status_id},{"$set":update},upsert=True)
+            if code in (403,404):
+                await db.enrichment_state.update_one({"_id":status_id+":endpoint:"+hashlib.sha256(path.encode()).hexdigest()},
+                    {"$set":{"status":"access_denied" if code==403 else "not_found","retry_at":(now+timedelta(hours=12)).isoformat()}},upsert=True)
+            if code!=200:return None
+            data=response.json()
+            if not isinstance(data,dict):return None
+            if data.get("errors"):
+                await db.enrichment_state.update_one({"_id":status_id},{"$set":{"status":"restricted","checked_at":now.isoformat()}},upsert=True)
+                return None
+            return data
+        except (httpx.HTTPError,ValueError):
+            await db.enrichment_state.update_one({"_id":status_id},{"$set":{"status":"network_error","checked_at":now.isoformat(),"backoff_until":(now+timedelta(minutes=15)).isoformat()}},upsert=True)
+            return None
+
+
+async def audit_enrichment_sources(db):
+    report={"checked_at":datetime.now(timezone.utc).isoformat(),"apisports_key_configured":bool(API_SPORTS_KEY),
+            "tennis_key_configured":bool(os.environ.get("TENNIS_RAPIDAPI_KEY", "").strip()),"automatic_promotion":False}
+    if API_SPORTS_KEY:
+        for sport in _APISPORTS_BASE:
+            data=await enrichment_request(db,"apisports:"+sport,"/status")
+            response=(data or {}).get("response") or {}
+            if isinstance(response,dict):
+                subscription=response.get("subscription") or {};requests=response.get("requests") or {}
+                report[sport]={"plan":subscription.get("plan"),"active":subscription.get("active"),"requests_today":requests.get("current"),"daily_limit":requests.get("limit_day")}
+    await db.enrichment_state.update_one({"_id":"capabilities"},{"$set":report},upsert=True)
+    return report
+
+
+def observed_result(sport,league,home,away,hs,aws,date,source,event_id=None,surface=None,precision="instant"):
+    start=_display_date(date)
+    if not start or not home or not away or entity_name(home,sport)==entity_name(away,sport):return None
+    if isinstance(hs,bool) or isinstance(aws,bool):return None
+    try:
+        hs,aws=float(hs),float(aws)
+        if not math.isfinite(hs) or not math.isfinite(aws) or hs<0 or aws<0 or int(hs)!=hs or int(aws)!=aws:return None
+        hs,aws=int(hs),int(aws)
+    except (ValueError,TypeError,OverflowError):return None
+    if sport=="football" and max(hs,aws)>20:return None
+    if sport=="tennis" and (hs==aws or max(hs,aws)>3 or min(hs,aws)>2):return None
+    now=datetime.now(timezone.utc)
+    if start>=now:return None
+    # Same event identity across sources and date-only archives; conflicts are
+    # flagged, never counted twice. A day is conservative, not a guessed kickoff.
+    h,a=entity_name(home,sport),entity_name(away,sport)
+    if sport=="tennis" and h>a:home,away,hs,aws,h,a=away,home,aws,hs,a,h
+    identity_league=("tennis_wta" if "wta" in str(league) else "tennis_atp" if "atp" in str(league) else league) if sport=="tennis" else league
+    identity=hashlib.sha256(json.dumps([sport,identity_league,start.date().isoformat(),h,a]).encode()).hexdigest()
+    return {"_id":identity,"sport":sport,"sport_key":league,"home_team":home,"away_team":away,"home_key":h,"away_key":a,
+            "team_keys":[h,a],"score_home":hs,"score_away":aws,"date":start.isoformat(),"date_precision":precision,
+            "source":source,"source_event_id":str(event_id or ""),"surface":surface if surface in ("hard","clay","grass","indoor_hard") else None}
+
+
+async def store_observed_results(db,rows):
+    now=datetime.now(timezone.utc).isoformat();values={}
+    for row in rows:
+        if not row:continue
+        previous=values.get(row["_id"])
+        if previous and (previous["score_home"],previous["score_away"])!=(row["score_home"],row["score_away"]):
+            values[row["_id"]]={**previous,"conflicting":True}
+        else:values.setdefault(row["_id"],row)
+    if not values:return 0
+    old_rows=await db.observed_results.find({"_id":{"$in":list(values)}}).to_list(length=len(values))
+    existing={row["_id"]:row for row in old_rows};operations=[];n=0
+    for identity,row in values.items():
+        old=existing.get(identity)
+        if old and (old.get("score_home"),old.get("score_away"))!=(row["score_home"],row["score_away"]) and old.get("source")!=row.get("source"):
+            operations.append(UpdateOne({"_id":identity},{"$set":{"conflicting":True,"conflict_seen_at":now}}));continue
+        update={k:v for k,v in row.items() if k!="_id"};update["last_checked_at"]=now
+        if not old or (old.get("score_home"),old.get("score_away"))!=(row["score_home"],row["score_away"]):update["score_observed_at"]=now
+        operations.append(UpdateOne({"_id":identity},{"$set":update,"$setOnInsert":{"first_observed_at":now}},upsert=True));n+=1
+    if operations:await db.observed_results.bulk_write(operations,ordered=False)
+    return n
+
+
+def parse_openfootball(data,league):
+    rows=[]
+    for game in data.get("matches",[]):
+        ft=(game.get("score") or {}).get("ft")
+        day=str(game.get("date") or "")[:10]
+        if not isinstance(ft,list) or len(ft)!=2 or not re.fullmatch(r"\d{4}-\d{2}-\d{2}",day):continue
+        rows.append(observed_result("football",league,game.get("team1"),game.get("team2"),ft[0],ft[1],day+"T23:59:59+00:00","OpenFootball",precision="day"))
+    return [r for r in rows if r]
+
+
+async def refresh_openfootball(db,matches):
+    now=datetime.now(timezone.utc);year=now.year if now.month>=7 else now.year-1
+    active=[k for k in _OPENFOOTBALL if any(m.get("sport_key")==k for m in matches)]
+    requests=stored=0
+    # Rotate seasons and competitions fairly; no first-league quota starvation.
+    jobs=[]
+    for league in active:
+        for y in (year-2,year-1,year):
+            key=f"openfootball:{league}:{y}"
+            state=await db.enrichment_state.find_one({"_id":key}) or {}
+            stamp=_display_date(state.get("updated_at"))
+            if not stamp or now-stamp>timedelta(hours=24 if y==year else 24*30):jobs.append((state.get("checked_at") or "",key,league,y))
+    for _,key,league,y in sorted(jobs)[:6]:
+        data=await enrichment_request(db,"openfootball",f"/openfootball/football.json/master/{y}-{str(y+1)[-2:]}/{_OPENFOOTBALL[league]}.json")
+        requests+=1
+        await db.enrichment_state.update_one({"_id":key},{"$set":{"checked_at":now.isoformat()}},upsert=True)
+        if data is None:continue
+        rows=parse_openfootball(data,league);stored+=await store_observed_results(db,rows)
+        await db.enrichment_state.update_one({"_id":key},{"$set":{"updated_at":now.isoformat(),"rows":len(rows)}},upsert=True)
+    return {"requests":requests,"stored":stored}
+
+
+def _wd_values(entity,prop):
+    values=[]
+    for claim in (entity.get("claims") or {}).get(prop,[]):
+        if claim.get("rank")=="deprecated":continue
+        value=((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value")
+        values.append(value.get("id") if isinstance(value,dict) else value)
+    return values
+
+
+def commons_media(info,entity_id):
+    meta=info.get("extmetadata") or {}
+    value=lambda key:_enrichment_plain((meta.get(key) or {}).get("value"))
+    license_name=value("LicenseShortName");license_url=value("LicenseUrl");artist=value("Artist")
+    # Only clear, unrestricted copyright licences. Not Google's thumbnails,
+    # not Wikipedia fair-use files, not an unverified 'CC' flag.
+    allowed=license_name in {"CC0","CC0 1.0","Public domain","CC BY 2.0","CC BY 3.0","CC BY 4.0","CC BY-SA 2.0","CC BY-SA 2.5","CC BY-SA 3.0","CC BY-SA 4.0"}
+    url=info.get("thumburl") or info.get("url");page=info.get("descriptionurl")
+    if not allowed or not artist or not isinstance(url,str) or urlparse(url).hostname!="upload.wikimedia.org" or not url.startswith("https://"):return None
+    if not isinstance(page,str) or urlparse(page).hostname!="commons.wikimedia.org" or not page.startswith("https://"):return None
+    if license_name.startswith("CC") and (not license_url.startswith("https://creativecommons.org/") and not license_url.startswith("http://creativecommons.org/")):return None
+    if value("LicenseRestriction") or value("Restrictions"):return None
+    return {"url":url,"provider":"Wikimedia Commons","source_url":page,"author":artist,"license":license_name,"license_url":(license_url or page).replace("http://","https://",1),"entity_id":entity_id,"kind":"portrait","verified_license":True}
+
+
+async def find_tennis_portrait(db,name):
+    # Initials alone are not enough to identify a person.
+    if len(name.split())<2 or any(len(x.strip('.'))==1 for x in name.split()):return None
+    data=await enrichment_request(db,"wikidata","/w/api.php",{"action":"wbsearchentities","search":name,"language":"en","uselang":"en","type":"item","limit":5,"format":"json"})
+    if data is None:return {"lookup_status":"unavailable"}
+    ids=[r.get("id") for r in data.get("search",[]) if _as_normalize(r.get("label"))==_as_normalize(name) or _as_normalize((r.get("match") or {}).get("text"))==_as_normalize(name)]
+    if not ids:return None
+    data=await enrichment_request(db,"wikidata","/w/api.php",{"action":"wbgetentities","ids":"|".join(ids),"props":"claims|labels|aliases","languages":"en|fr","format":"json"})
+    if data is None:return {"lookup_status":"unavailable"}
+    candidates=[]
+    for entity in data.get("entities",{}).values():
+        if "Q5" not in _wd_values(entity,"P31"):continue
+        if "Q847" not in _wd_values(entity,"P641") and "Q10833314" not in _wd_values(entity,"P106"):continue
+        files=[v for v in _wd_values(entity,"P18") if isinstance(v,str) and v.lower().endswith((".jpg",".jpeg",".png"))]
+        if files:candidates.append((entity.get("id"),files[0]))
+    if len(candidates)!=1:return None
+    entity_id,file=candidates[0]
+    data=await enrichment_request(db,"commons","/w/api.php",{"action":"query","titles":"File:"+file,"prop":"imageinfo","iiprop":"url|extmetadata","iiurlwidth":240,"format":"json"})
+    if data is None:return {"lookup_status":"unavailable"}
+    for page in (data.get("query") or {}).get("pages",{}).values():
+        for info in page.get("imageinfo",[]):
+            result=commons_media(info,entity_id)
+            if result:return result
+    return None
+
+
+async def refresh_media_cache(db,matches):
+    now=datetime.now(timezone.utc);pending={}
+    for match in matches:
+        if enrichment_sport(match)!="tennis":continue
+        starts=_display_date(match.get("commence_time"))
+        if not starts or not now<starts<now+timedelta(days=7):continue
+        for side in ("home","away"):
+            name=str(match.get(side+"_team") or "").strip()
+            if name:pending[entity_key("tennis",name)]=name
+    jobs=[]
+    for key,name in pending.items():
+        old=await db.entity_media.find_one({"_id":key}) or {}
+        retry=_display_date(old.get("next_check_at"))
+        if not retry or retry<=now:jobs.append((old.get("checked_at") or "",key,name,old))
+    updated=0
+    for _,key,name,old in sorted(jobs)[:4]:
+        media=await find_tennis_portrait(db,name)
+        unavailable=bool((media or {}).get("lookup_status"));valid=bool((media or {}).get("url"))
+        values={"sport":"tennis","name":name,"checked_at":now.isoformat(),"next_check_at":(now+(timedelta(minutes=30) if unavailable else timedelta(days=30 if valid else 3))).isoformat(),"status":"ready" if valid else "unavailable" if unavailable else "unresolved"}
+        if valid:values["media"]=media;updated+=1
+        # Failure never deletes a previously verified image.
+        await db.entity_media.update_one({"_id":key},{"$set":values},upsert=True)
+    return {"checked":min(4,len(jobs)),"updated":updated}
+
+
+async def enrich_cached_media(db,matches):
+    # One optional left join; exactly one output per input in the same order.
+    if not matches:return matches
+    keys={entity_key(enrichment_sport(m),m.get(side+"_team")) for m in matches for side in ("home","away") if enrichment_sport(m) and m.get(side+"_team")}
+    docs=await db.entity_media.find({"_id":{"$in":list(keys)}}).to_list(length=len(keys)) if keys else []
+    by_key={d["_id"]:d for d in docs};result=[]
+    for match in matches:
+        row=dict(match);sport=enrichment_sport(row)
+        for side in ("home","away"):
+            doc=by_key.get(entity_key(sport,row.get(side+"_team"))) if sport and row.get(side+"_team") else None
+            media=(doc or {}).get("media") or {}
+            if media.get("verified_license") and media.get("url"):
+                row[side+"_media"]=media
+                if not row.get(side+"_logo"):row[side+"_logo"]=media["url"]
+        result.append(row)
+    return result
+
+
+def _summary_observed(rows,sport):
+    values=[]
+    for row in rows:
+        own=row["score_home"] if row["venue"]=="home" else row["score_away"]
+        opp=row["score_away"] if row["venue"]=="home" else row["score_home"]
+        values.append((own,opp))
+    n=len(values);forms=["W" if a>b else "L" if a<b else "D" for a,b in values]
+    result={"played":n,"wins":forms.count("W"),"draws":forms.count("D"),"losses":forms.count("L"),"form":forms[:5]}
+    if sport=="football":result.update(_display_summary(rows))
+    else:
+        prefix="sets" if sport=="tennis" else "points"
+        result[prefix+"_for"]=round(sum(a for a,b in values)/n,2) if n else None
+        result[prefix+"_against"]=round(sum(b for a,b in values)/n,2) if n else None
+    return result
+
+
+async def observed_insights(db,match):
+    sport=enrichment_sport(match);cutoff=min(datetime.now(timezone.utc),_display_date(match.get("commence_time")) or datetime.now(timezone.utc))
+    if not sport:return None
+    h,a=entity_name(match.get("home_team"),sport),entity_name(match.get("away_team"),sport)
+    # Exact league where available; tennis Elo may span tournaments but details
+    # identify sample scope explicitly. No cross-sport fuzzy joins.
+    query={"sport":sport,"team_keys":{"$in":[h,a]},"date":{"$lt":cutoff.isoformat()},"conflicting":{"$ne":True}}
+    if sport!="tennis":query["sport_key"]=match.get("sport_key")
+    rows=await db.observed_results.find(query).sort("date",-1).limit(500).to_list(length=500)
+    def history(key):
+        found=[]
+        for row in rows:
+            if key not in row.get("team_keys",[]) or not _display_date(row.get("date")) or _display_date(row["date"])>=cutoff:continue
+            found.append({**row,"id":row["_id"],"venue":"home" if row["home_key"]==key else "away","competition":row.get("competition") or row.get("sport_key")})
+        return found[:10]
+    home,away=history(h),history(a)
+    if not home and not away:return None
+    def team(games,venue):return {"recent":games,"overall":_summary_observed(games,sport),"venue":_summary_observed([r for r in games if r["venue"]==venue],sport) if sport!="tennis" else _summary_observed(games,sport)}
+    stamps=[_display_date(r.get("last_checked_at")) for r in rows if r.get("last_checked_at")];stamps=[x for x in stamps if x]
+    return {"version":1,"status":"ready","metric_family":sport,"venue_supported":sport!="tennis","source":" + ".join(sorted({r.get("source","Observed results") for r in home+away})),"updated_at":max(stamps).isoformat() if stamps else None,"cutoff":cutoff.isoformat(),"sample_limit":10,"sample_scope":"recent_observed_only","h2h_scope":"recent_sample_only","stale":not stamps or (datetime.now(timezone.utc)-max(stamps)).total_seconds()>86400,
+            "home":team(home,"home"),"away":team(away,"away"),"h2h":[{**r,"id":r["_id"]} for r in rows if set(r.get("team_keys",[]))=={h,a}][:10]}
+
+
+_original_match_insights=get_match_insights
+async def get_match_insights(db,match):
+    # Prefer existing verified football coverage; fill other sports/missing
+    # coverage with the independent observed-results store.
+    original=await _original_match_insights(db,match)
+    complete=all((((original.get(side) or {}).get("overall") or {}).get("played") or 0)>0 for side in ("home","away"))
+    if original.get("status")=="ready" and complete:return {**original,"metric_family":"football"}
+    try:alternative=await observed_insights(db,match)
+    except Exception:alternative=None  # optional collection never hides existing detail
+    if original.get("status")=="ready" and alternative:
+        result={**original,"metric_family":"football"}
+        for side in ("home","away"):
+            if not (((result.get(side) or {}).get("overall") or {}).get("played") or 0):result[side]=alternative[side]
+        result["source"]=original.get("source","")+" + "+alternative.get("source","")
+        result["stale"]=bool(original.get("stale") or alternative.get("stale"))
+        return result
+    return alternative or original
+
+
+_original_enrich_badges=enrich_match_badges
+async def enrich_match_badges(db,matches):
+    original=await _original_enrich_badges(db,matches)
+    try:return await enrich_cached_media(db,original)
+    except Exception:return original  # optional portraits never remove a catalogue item
+
+
+def parse_tennis_results(data,tour):
+    rows=[]
+    for game in data.get("data",[]):
+        if game.get("result_type")!="completed":continue
+        p1,p2=game.get("player1") or {},game.get("player2") or {}
+        if not p1.get("name") or not p2.get("name") or "/" in p1["name"] or "/" in p2["name"]:continue
+        sets=re.findall(r"(\d+)[-:](\d+)(?:\([^)]*\))?",str(game.get("result") or ""))
+        if not 2<=len(sets)<=5:continue
+        won=sum(int(a)>int(b) for a,b in sets);lost=sum(int(a)<int(b) for a,b in sets)
+        if won<=lost:continue
+        tournament=game.get("tournament") or {};court=tournament.get("court") or {}
+        surface={"hard":"hard","clay":"clay","grass":"grass","indoor hard":"indoor_hard","carpet":None}.get(str(court.get("name") or "").lower())
+        event=game.get("liveMatchId") or f"{p1.get('id')}:{p2.get('id')}:{tournament.get('id')}:{game.get('roundId')}"
+        row=observed_result("tennis","tennis_"+tour,p1["name"],p2["name"],won,lost,game.get("date"),"Tennis API",event,surface)
+        if row:row["competition"]=tournament.get("name");rows.append(row)
+    return rows
+
+
+async def refresh_tennis_history(db):
+    if not os.environ.get("TENNIS_RAPIDAPI_KEY", "").strip():return {"status":"key_missing","stored":0}
+    now=datetime.now(timezone.utc);jobs=[]
+    # A rolling two-week bootstrap, four paginated batches per run. Historical
+    # IDs are not stable; store the date+players identity, not numeric matchId.
+    for delta in range(1,15):
+        day=(now-timedelta(days=delta)).date().isoformat()
+        for tour in ("atp","wta"):
+            key=f"tennis-results:{tour}:{day}";state=await db.enrichment_state.find_one({"_id":key}) or {}
+            if state.get("complete"):continue
+            jobs.append((state.get("checked_at") or "",key,tour,day,state.get("next_page",1)))
+    total=0
+    for _,key,tour,day,page in sorted(jobs)[:4]:
+        data=await enrichment_request(db,"tennis",f"/tennis/v2/{tour}/results/{day}",{"pageSize":500,"pageNo":page,"filter":"PlayerGroup:singles"})
+        if data is None:continue
+        total+=await store_observed_results(db,parse_tennis_results(data,tour))
+        more=bool(data.get("hasNextPage") and data.get("data"))
+        await db.enrichment_state.update_one({"_id":key},{"$set":{"checked_at":now.isoformat(),"complete":not more,"next_page":page+1 if more else 1}},upsert=True)
+    return {"status":"available","stored":total}
+
+
+async def harvest_score_archive(db):
+    """Incremental cache-only import; no replay of thousands of rows per page."""
+    state=await db.enrichment_state.find_one({"_id":"score_archive_import"}) or {}
+    query={"completed":True}
+    if state.get("at"):
+        query["$or"]=[{"last_seen_at":{"$gt":state["at"]}},{"last_seen_at":state["at"],"event_id":{"$gt":state.get("event_id","")}}]
+    items=await db.scores_archive.find(query).sort([("last_seen_at",1),("event_id",1)]).limit(500).to_list(length=500)
+    rows=[]
+    for item in items:
+        sport=enrichment_sport(item)
+        if not sport:continue
+        score={x.get("name"):x.get("score") for x in item.get("scores",[]) if isinstance(x,dict)}
+        row=observed_result(sport,item.get("sport_key"),item.get("home_team"),item.get("away_team"),score.get(item.get("home_team")),score.get(item.get("away_team")),item.get("commence_time"),"Existing score archive",item.get("event_id"),item.get("surface"))
+        if row:rows.append(row)
+    stored=await store_observed_results(db,rows)
+    if items and items[-1].get("last_seen_at"):
+        await db.enrichment_state.update_one({"_id":"score_archive_import"},{"$set":{"at":items[-1]["last_seen_at"],"event_id":items[-1].get("event_id","")}},upsert=True)
+    return {"stored":stored,"batch_limit":500}
+
+
+async def refresh_basketball_results(db,matches):
+    if not API_SPORTS_KEY:return {"status":"key_missing"}
+    now=datetime.now(timezone.utc);stored=0
+    pairs={}
+    for match in matches:
+        if enrichment_sport(match)!="basketball":continue
+        pair=frozenset([entity_name(match.get("home_team"),"basketball"),entity_name(match.get("away_team"),"basketball")])
+        pairs.setdefault(pair,set()).add(match.get("sport_key"))
+    if not pairs:return {"stored":0}
+    # Once per finished day; do not poll every viewer or every team.
+    for ago in (1,2):
+        day=(now-timedelta(days=ago)).date().isoformat();key="basketball-games:"+day
+        previous=await db.enrichment_state.find_one({"_id":key}) or {}
+        stamp=_display_date(previous.get("checked_at"))
+        if stamp and now-stamp<timedelta(hours=12):continue
+        data=await enrichment_request(db,"apisports:basketball","/games",{"date":day})
+        if data is None:continue
+        result=[]
+        for game in data.get("response",[]):
+            if (game.get("status") or {}).get("short") not in ("FT","AOT"):continue
+            teams=game.get("teams") or {};h=teams.get("home") or {};a=teams.get("away") or {};scores=game.get("scores") or {}
+            leagues=pairs.get(frozenset([entity_name(h.get("name"),"basketball"),entity_name(a.get("name"),"basketball")]),set())
+            if len(leagues)!=1:continue
+            row=observed_result("basketball",next(iter(leagues)),h.get("name"),a.get("name"),(scores.get("home") or {}).get("total"),(scores.get("away") or {}).get("total"),game.get("date"),"API-Sports",game.get("id"))
+            if row:result.append(row)
+        stored+=await store_observed_results(db,result)
+        await db.enrichment_state.update_one({"_id":key},{"$set":{"checked_at":now.isoformat(),"stored":len(result)}},upsert=True)
+    return {"stored":stored}
+
+
+async def enrichment_cycle(db,matches):
+    # Each source is isolated; a denial never cancels another source or clears data.
+    report={"started_at":datetime.now(timezone.utc).isoformat()}
+    for name,callback in (("archive",lambda:harvest_score_archive(db)),("openfootball",lambda:refresh_openfootball(db,matches)),("basketball",lambda:refresh_basketball_results(db,matches)),("tennis",lambda:refresh_tennis_history(db)),("portraits",lambda:refresh_media_cache(db,matches))):
+        try:report[name]=await asyncio.wait_for(callback(),timeout=120)
+        except Exception as exc:report[name]={"status":"unavailable","error_type":type(exc).__name__}
+    report["finished_at"]=datetime.now(timezone.utc).isoformat()
+    await db.enrichment_state.update_one({"_id":"last_cycle"},{"$set":report},upsert=True)
+    return report
