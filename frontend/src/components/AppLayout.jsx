@@ -6980,6 +6980,22 @@ function AppLayoutContent({
   const location = useLocation();
   const [moreOpen, setMoreOpen] = useState(false);
   const [headerSearch, setHeaderSearch] = useState("");
+  const [qualityAlert, setQualityAlert] = useState({owner:null,count:0});
+  const qualityWarningCount = qualityAlert.owner === user?.id && user?.is_admin ? qualityAlert.count : 0;
+  useEffect(() => {
+    if (!user?.is_admin || !user?.id) return undefined;
+    const owner=user.id;let active=true;let flight=null;
+    const load=async()=>{if(document.hidden||flight)return;const controller=new AbortController();flight=controller;
+      try {const {data}=await api.get('/admin/quality/status',{signal:controller.signal,timeout:8000});
+        const count=(Array.isArray(data?.checks)?data.checks:[]).filter(check=>check.status!=='healthy').length;
+        if(active&&!controller.signal.aborted)setQualityAlert({owner,count:Math.max(count,data?.stale||data?.status==='never_run'?1:0)});
+      } catch {if(active&&!controller.signal.aborted)setQualityAlert({owner,count:1});}
+      finally {flight=null;}
+    };
+    load();const timer=window.setInterval(load,60000);document.addEventListener('visibilitychange',load);
+    return()=>{active=false;flight?.abort();window.clearInterval(timer);document.removeEventListener('visibilitychange',load);};
+  },[user?.id,user?.is_admin]);
+
   useEffect(() => {
     setMoreOpen(false);
   }, [location.pathname]);
@@ -7108,6 +7124,7 @@ function AppLayoutContent({
       to: "/app/admin",
       label: t("Admin"),
       icon: ShieldCheck,
+      badge: qualityWarningCount ? String(qualityWarningCount) : null,
       testId: "nav-admin"
     });
   }
@@ -7203,7 +7220,7 @@ function AppLayoutContent({
         </div>
 
         <div className="flex min-w-0 items-center gap-1 shrink-0">
-          <button type="button" onClick={()=>setMoreOpen(v=>!v)} aria-label={experienceWords.account} aria-expanded={moreOpen} data-testid="mobile-more-toggle" className="grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-600 hover:bg-slate-100"><Menu className="h-5 w-5" /></button>
+          <button type="button" onClick={()=>setMoreOpen(v=>!v)} aria-label={experienceWords.account} aria-expanded={moreOpen} data-testid="mobile-more-toggle" className="relative grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-600 hover:bg-slate-100"><Menu className="h-5 w-5" />{qualityWarningCount>0&&<span className="absolute end-1 top-1 h-2 w-2 rounded-full bg-orange-500" aria-label={t("Admin")} />}</button>
           <ResultNotificationBell />
           <LanguageSwitcher compact />
           <Badge className={cn("hidden min-[400px]:inline-flex text-[10px] font-bold", tierLabel.cls)}>
@@ -7242,7 +7259,7 @@ function AppLayoutContent({
                     <Icon className="h-5 w-5" />
 
                     <span className="leading-tight">
-                      {item.label}
+                      {item.label}{item.badge&&<span className="ms-1 rounded-full bg-orange-500 px-1.5 text-white">{item.badge}</span>}
                     </span>
                   </Link>;
           })}
