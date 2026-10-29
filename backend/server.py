@@ -47,12 +47,12 @@ from odds_service import (
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
 )
-from stats_service import refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache
+from stats_service import (refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache, enrichment_cycle, audit_enrichment_sources, entity_name, enrichment_sport)
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
     _legacy_build_today_combos_by_sport, personal_combo_options, build_personalized_combos, train_hybrid_models,
-    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
+    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD, train_observed_models, observed_model_forecast, OBSERVED_MODEL_VERSION,
 )
 from ai_service import generate_analysis
 from blog_seed import (
@@ -8273,7 +8273,7 @@ async def _refresh_hybrid_registry(force=False):
             "ready":sum(r.get("status")=="shadow_ready" for r in reports.values()),
             "mode":"shadow","automatic_promotion":False}},upsert=True)
         _hybrid_registry_cache.update(loaded=0.,models={})
-        await _invalidate_prediction_cache()
+        # Shadow registry is read on the normal cache TTL; never erase public picks.
 
 
 def _queue_hybrid_training(force=False):
@@ -8587,7 +8587,7 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
     is_paid = await _has_paid_access(payload)
     size = max(1,min(limit,50))
-    logos = {_discovery_match_id(m):{k:m[k] for k in ("home_logo","away_logo","home_team_logo","away_team_logo") if m.get(k)} for m in snapshot["matches"]}
+    logos = {_discovery_match_id(m):{k:m[k] for k in ("home_logo","away_logo","home_team_logo","away_team_logo","home_media","away_media") if m.get(k)} for m in snapshot["matches"]}
     if is_paid:
         return [{**_discovery_prediction(pred,{},paid=True), **logos.get(_discovery_match_id(pred),{})} for pred in preds[:size]]
     manifest = await _discovery_manifest(snapshot)
@@ -11454,7 +11454,7 @@ def _discovery_date(value):
 def _discovery_metadata(match):
     fields = ("id", "match_id", "sport_key", "sport_title", "home_team", "away_team", "commence_time",
               "is_live", "is_finished", "completed", "score_home", "score_away", "scores",
-              "home_logo", "away_logo", "home_team_logo", "away_team_logo", "league", "country")
+              "home_logo", "away_logo", "home_team_logo", "away_team_logo", "home_media", "away_media", "surface", "league", "country")
     return {key: copy.deepcopy(match[key]) for key in fields if key in match}
 
 
@@ -11584,6 +11584,11 @@ async def get_free_discovery(payload: Optional[dict] = Depends(get_optional_user
                             "prediction":_lock_prediction_for_free(pred)})
         if len(preview)==3:
             break
+    try:
+        items=await asyncio.wait_for(enrich_match_badges(db,items),timeout=2)
+        preview=await asyncio.wait_for(enrich_match_badges(db,preview),timeout=2)
+    except Exception:
+        pass  # Optional metadata only; never alter the frozen free picks.
     return {"date":manifest["_id"],"timezone":"Africa/Porto-Novo","limit":FREE_DAILY_PICK_LIMIT,
             "mode":"rolling_upcoming","horizon_hours":48,"paid":paid,"items":items,"preview":preview,
             "locked_count":sum(_discovery_match_id(p) not in free_ids for p in available)}
@@ -14449,7 +14454,7 @@ async def _football_stats_background(matches):
         except asyncio.TimeoutError:
             logging.getLogger("winpulse.stats_service").warning("football-data.org temps limite atteint; les donnees deja en cache sont conservees")
         finally:
-            await _invalidate_prediction_cache()
+            pass  # Enrichment failure must not clear the independent prediction cache.
     try:
         await _run_with_scheduler_lease("football_data_stats_refresh", run, lease_seconds=240)
     except Exception as exc:
@@ -14481,7 +14486,7 @@ async def _apisports_background(matches):
             result = await asyncio.wait_for(refresh_apisports_cache(db, matches), timeout=210)
             logging.getLogger("winpulse.stats_service").info("API-Sports rafraichissement: %s", result)
         finally:
-            await _invalidate_prediction_cache()
+            pass  # Media and history updates do not invalidate official selections.
     try:
         await _run_with_scheduler_lease("apisports_refresh", run, lease_seconds=240)
     except Exception as exc:
@@ -15268,3 +15273,125 @@ async def quality_client_event(data: QualityClientEvent, payload: dict = Depends
         "expires_at": datetime.now(timezone.utc)+timedelta(days=100)},
         "$inc": {"counts." + data.event: 1, "routes." + data.route: 1}}, upsert=True)
     return {"ok": True}
+
+
+# ─── Optional data/enrichment and observational model workers ────────────────
+# Only the background worker contacts new data sources. It has its own collections
+# and never modifies odds_cache, predictions_history or official selection gates.
+_enrichment_task = None
+
+
+async def _enrichment_forecast_settlement():
+    now=datetime.now(timezone.utc)
+    pending=await db.observed_forecasts.find({"evaluation":{"$exists":False},"commence_time":{"$lt":now.isoformat()}}).limit(1000).to_list(length=1000)
+    for item in pending:
+        starts=_quality_time(item.get("commence_time"));captured=_quality_time(item.get("captured_at"))
+        if not starts or not captured or captured>=starts:continue
+        h,a=entity_name(item.get("home_team"),item["sport"]),entity_name(item.get("away_team"),item["sport"])
+        rows=await db.observed_results.find({"sport":item["sport"],"team_keys":{"$all":[h,a]},"conflicting":{"$ne":True},
+             "date":{"$gte":starts.replace(hour=0,minute=0,second=0,microsecond=0).isoformat(),"$lt":(starts.replace(hour=0,minute=0,second=0,microsecond=0)+timedelta(days=1)).isoformat()}}).limit(4).to_list(length=4)
+        # Exact competition except tennis tour, which can use multiple titles.
+        rows=[r for r in rows if r.get("sport_key")==item.get("sport_key") or item['sport']=='tennis' and
+              (('wta' in str(r.get('sport_key'))) == ('wta' in str(item.get('sport_key'))))]
+        if len(rows)!=1:continue
+        row=rows[0];observed=_quality_time(row.get("score_observed_at"))
+        if not observed or observed<starts:continue
+        hs,aws=row['score_home'],row['score_away']
+        if row['home_key']!=h:hs,aws=aws,hs
+        outcome=item['home_team'] if hs>aws else item['away_team'] if aws>hs else 'Draw'
+        if outcome not in item['sport_probabilities']:continue
+        evaluation={"outcome":outcome,"score":f"{hs}-{aws}","settled_at":now.isoformat()}
+        for name,key in (("model","sport_probabilities"),("market","market_probabilities")):
+            probabilities=item[key]
+            evaluation[name+'_brier']=sum((p-int(team==outcome))**2 for team,p in probabilities.items())
+            evaluation[name+'_log_loss']=-math.log(max(1e-9,probabilities[outcome]))
+        await db.observed_forecasts.update_one({"_id":item['_id'],"evaluation":{"$exists":False}},{"$set":{"evaluation":evaluation}})
+
+
+async def _enrichment_run(force_train=False):
+    # Read exactly the existing catalogue, without provider calls or an odds refresh.
+    source=await db.odds_cache.find_one({"_id":"all_matches"}) or {}
+    matches=source.get("data") if isinstance(source.get("data"),list) else list(_prediction_cache.get("matches") or [])
+    prior=await db.enrichment_state.find_one({"_id":"capabilities"}) or {}
+    stamp=_quality_time(prior.get("checked_at"))
+    if not stamp or datetime.now(timezone.utc)-stamp>timedelta(days=1):
+        try:await asyncio.wait_for(audit_enrichment_sources(db),timeout=45)
+        except Exception:pass
+    report=await enrichment_cycle(db,matches)
+    trained=await db.enrichment_state.find_one({"_id":"observed_training"}) or {}
+    last=_quality_time(trained.get("finished_at"));now=datetime.now(timezone.utc)
+    if force_train or not last or now-last>timedelta(days=1):
+        rows=await db.observed_results.find({"conflicting":{"$ne":True},"date":{"$gte":(now-timedelta(days=1095)).isoformat()}}).sort("date",1).to_list(length=None)
+        models=await asyncio.to_thread(train_observed_models,rows,now)
+        for key,model in models.items():
+            await db.observed_model_registry.update_one({"_id":key},{"$set":model},upsert=True)
+        await db.enrichment_state.update_one({"_id":"observed_training"},{"$set":{"finished_at":datetime.now(timezone.utc).isoformat(),"records":len(rows),"models":len(models),"mode":"shadow","automatic_promotion":False}},upsert=True)
+    registry={r['_id']:r for r in await db.observed_model_registry.find({"version":OBSERVED_MODEL_VERSION,"status":"shadow_ready"}).to_list(length=None)}
+    for match in matches:
+        try:forecast=observed_model_forecast(match,registry)
+        except Exception:forecast=None
+        if not forecast:continue
+        # First pre-match probabilities for this event/version; no later cherry-pick.
+        identity=hashlib.sha256(json.dumps([forecast['version'],forecast['match_id'],forecast['commence_time']]).encode()).hexdigest()
+        await db.observed_forecasts.update_one({"_id":identity},{"$setOnInsert":forecast},upsert=True)
+    await _enrichment_forecast_settlement()
+    return report
+
+
+async def _scheduled_independent_enrichment():
+    _queue_enrichment()
+
+
+def _queue_enrichment(force_train=False):
+    global _enrichment_task
+    if _enrichment_task and not _enrichment_task.done():return False
+    async def run():
+        try:
+            await _run_with_scheduler_lease("independent_enrichment",lambda:_enrichment_run(force_train),lease_seconds=1800)
+        except Exception as exc:
+            logging.getLogger("winpulse.enrichment").warning("Independent enrichment unavailable (%s)",type(exc).__name__)
+    _enrichment_task=asyncio.create_task(run())
+    return True
+
+
+@app.get("/api/admin/enrichment/status")
+async def enrichment_admin_status(payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    sources=await db.enrichment_state.find({"_id":{"$in":["capabilities","last_cycle","observed_training"]}}).to_list(length=3)
+    statuses=await db.enrichment_state.find({"_id":{"$regex":"^source:[^:]+(?::(?:football|basketball|hockey|baseball|american_football))?$"}},{"_id":1,"status":1,"http_status":1,"checked_at":1,"backoff_until":1}).to_list(length=20)
+    models=await db.observed_model_registry.find({"version":OBSERVED_MODEL_VERSION},{"model":0}).to_list(length=100)
+    pipeline=[{"$match":{"evaluation":{"$exists":True}}},{"$group":{"_id":"$model_key","n":{"$sum":1},
+        "model_brier":{"$avg":"$evaluation.model_brier"},"market_brier":{"$avg":"$evaluation.market_brier"},
+        "model_log_loss":{"$avg":"$evaluation.model_log_loss"},"market_log_loss":{"$avg":"$evaluation.market_log_loss"}}}]
+    prospective=await db.observed_forecasts.aggregate(pipeline,maxTimeMS=5000).to_list(length=100)
+    day=datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    ids=["apisports:"+sport+":"+day for sport in ("football","basketball","hockey","baseball","american_football")]+["enrichment:"+key+":"+day for key in ("openfootball","wikidata","commons","tennis")]
+    usage=await db.stats_cache.find({"_id":{"$in":ids}},{"_id":1,"calls":1}).to_list(length=len(ids))
+    return {"sources":sources,"provider_status":statuses,"models":models,"prospective":prospective,"usage":usage,
+            "media":await db.entity_media.count_documents({"media.verified_license":True}),
+            "results":await db.observed_results.count_documents({"conflicting":{"$ne":True}}),
+            "automatic_promotion":False,"scheduler_enabled":bool(ENABLE_INTERNAL_SCHEDULER)}
+
+
+@app.post("/api/admin/enrichment/refresh",status_code=202)
+async def enrichment_admin_refresh(payload:dict=Depends(get_current_user_payload)):
+    user=await _require_admin(payload)
+    await _consume_security_limit("enrichment_refresh",str(user['id']),limit=2,window_seconds=300)
+    return {"queued":_queue_enrichment(force_train=True),"mode":"shadow","automatic_promotion":False}
+
+
+@app.on_event("startup")
+async def _enrichment_startup():
+    for collection,spec in ((db.observed_results,[("sport",1),("team_keys",1),("date",-1)]),(db.observed_forecasts,[("model_key",1),("commence_time",1)]),(db.entity_media,[("sport",1)])):
+        try:await asyncio.wait_for(collection.create_index(spec),timeout=5)
+        except Exception:logging.getLogger("winpulse.enrichment").warning("Optional enrichment index unavailable")
+    if ENABLE_INTERNAL_SCHEDULER:
+        scheduler.add_job(_scheduled_independent_enrichment,"interval",minutes=30,id="independent_enrichment",replace_existing=True,coalesce=True,max_instances=1,next_run_time=datetime.now(timezone.utc)+timedelta(seconds=90))
+
+
+@app.on_event("shutdown")
+async def _enrichment_shutdown():
+    if _enrichment_task and not _enrichment_task.done():
+        _enrichment_task.cancel()
+        try:await _enrichment_task
+        except asyncio.CancelledError:pass
