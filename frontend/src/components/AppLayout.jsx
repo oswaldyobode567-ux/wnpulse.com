@@ -7222,7 +7222,7 @@ function AppLayoutContent({
         <div className="flex min-w-0 items-center gap-1 shrink-0">
           <button type="button" onClick={()=>setMoreOpen(v=>!v)} aria-label={experienceWords.account} aria-expanded={moreOpen} data-testid="mobile-more-toggle" className="relative grid h-11 w-11 shrink-0 place-items-center rounded-xl text-slate-600 hover:bg-slate-100"><Menu className="h-5 w-5" />{qualityWarningCount>0&&<span className="absolute end-1 top-1 h-2 w-2 rounded-full bg-orange-500" aria-label={t("Admin")} />}</button>
           <ResultNotificationBell />
-          <LanguageSwitcher compact />
+          <AppearanceSwitcher /><LanguageSwitcher compact />
           <Badge className={cn("hidden min-[400px]:inline-flex text-[10px] font-bold", tierLabel.cls)}>
             {tierLabel.label}
           </Badge>
@@ -7294,7 +7294,7 @@ function AppLayoutContent({
             <input id="wp-header-search" type="search" value={headerSearch} maxLength={200} onChange={event=>setHeaderSearch(event.target.value)} placeholder={experienceWords.allMatches} />
             <button type="submit" aria-label={experienceWords.open}><ArrowUpRight className="h-4 w-4" aria-hidden="true" /></button>
           </form>
-          <div className="ms-auto flex items-center gap-3"><LanguageSwitcher dark compact /><ResultNotificationBell /><Link to="/app/profil" className="wp-avatar" aria-label={experienceWords.account}>{Array.from(user?.full_name || "W")[0]}</Link></div>
+          <div className="ms-auto flex items-center gap-3"><AppearanceSwitcher /><LanguageSwitcher dark compact /><ResultNotificationBell /><Link to="/app/profil" className="wp-avatar" aria-label={experienceWords.account}>{Array.from(user?.full_name || "W")[0]}</Link></div>
         </div>
         <div className="flex-1 min-w-0 max-w-full overflow-x-hidden">
           {children}
@@ -8488,4 +8488,54 @@ export function StadiumBackdrop({ className = "" }) {
     <ellipse cx="500" cy="484" rx="75" ry="27" stroke="#bfdad1" strokeWidth="2" fill="none" opacity=".3"/>
     <circle cx="500" cy="484" r="2.5" fill="#bfdad1" opacity=".5"/>
   </svg>;
+}
+
+
+// User-controlled appearance, independent from subscriptions and predictions.
+const AppearanceContext = createContext(null);
+const APPEARANCE_COPY = {
+ fr: ["Apparence", "Clair", "Sombre", "Automatique"], en: ["Appearance", "Light", "Dark", "Automatic"],
+ es: ["Apariencia", "Claro", "Oscuro", "Automático"], pt: ["Aparência", "Claro", "Escuro", "Automático"],
+ de: ["Darstellung", "Hell", "Dunkel", "Automatisch"], ar: ["المظهر", "فاتح", "داكن", "تلقائي"]
+};
+function readAppearance() {
+ try { const value = localStorage.getItem("wnpulse_theme"); return ["light","dark","system"].includes(value) ? value : "light"; }
+ catch { return "light"; }
+}
+export function initializeAppearance(preference = readAppearance()) {
+ const choice = ["light","dark","system"].includes(preference) ? preference : "light";
+ const resolved = choice === "system" ? (typeof window !== "undefined" && window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light") : choice;
+ if (typeof document !== "undefined") {
+   document.documentElement.dataset.wpTheme = resolved;
+   document.documentElement.style.colorScheme = resolved;
+   document.documentElement.classList.toggle("dark", resolved === "dark");
+ }
+ return resolved;
+}
+export function AppearanceProvider({children}) {
+ const [preference,setPreference] = useState(readAppearance);
+ useEffect(() => {
+   const apply = () => initializeAppearance(preference); apply();
+   const media = window.matchMedia?.("(prefers-color-scheme: dark)");
+   const changed = () => { if (preference === "system") apply(); };
+   media?.addEventListener?.("change", changed);
+   if (media && !media.addEventListener) media.addListener?.(changed);
+   return () => { media?.removeEventListener?.("change",changed); if (media && !media.removeEventListener) media.removeListener?.(changed); };
+ },[preference]);
+ useEffect(() => {
+   const sync = event => { if (event.key === "wnpulse_theme" || event.key === null) setPreference(readAppearance()); };
+   window.addEventListener("storage",sync);return () => window.removeEventListener("storage",sync);
+ },[]);
+ const change = value => {
+   if (!["light","dark","system"].includes(value)) return;
+   initializeAppearance(value);setPreference(value);
+   try { localStorage.setItem("wnpulse_theme",value); } catch { /* usable even when storage is blocked */ }
+ };
+ return <AppearanceContext.Provider value={{preference,change}}>{children}</AppearanceContext.Provider>;
+}
+export function AppearanceSwitcher() {
+ const context = useContext(AppearanceContext);const {language} = usePageLanguage();
+ const words = APPEARANCE_COPY[language] || APPEARANCE_COPY.fr;const id = useId();
+ if (!context) return null;
+ return <label htmlFor={id} className="wp-appearance"><span aria-hidden="true">◐</span><span className="sr-only">{words[0]}</span><select id={id} aria-label={words[0]} value={context.preference} onChange={event=>context.change(event.target.value)} data-testid="appearance-switcher">{["light","dark","system"].map((value,index)=><option key={value} value={value}>{words[index+1]}</option>)}</select></label>;
 }
