@@ -10829,7 +10829,7 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
             oaio_scores_map = {}
             if oaio_docs:
                 try:
-                    oaio_scores_map = await fetch_odds_api_io_scores_map()
+                    oaio_scores_map = await fetch_odds_api_io_scores_map(db)
                 except Exception:
                     diagnostic["errors"] += 1
                     oaio_scores_map = {}
@@ -10859,7 +10859,7 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
                                 for row in score_entry.get("scores") or []:
                                     name = _norm_team_for_reconcile(row.get("name"))
                                     try:
-                                        value = int(row.get("score"))
+                                        value = _settlement_integer(row.get("score"))
                                     except Exception:
                                         continue
                                     if name == _norm_team_for_reconcile(pred.get("home_team")):
@@ -13035,7 +13035,7 @@ async def _update_closing_odds(matches: List[Dict]) -> Dict:
 def _norm_team_for_reconcile(value: str) -> str:
     """Normalisation souple pour rapprocher un score d'un pronostic."""
     text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
-    text = re.sub(r"\b(fc|cf|sc|afc|bc|hc|club|women|w)\b", "", text)
+    text = re.sub(r"\b(fc|cf|sc|afc|bc|hc|club)\b", "", text)
     return re.sub(r"[^a-z0-9]+", "", text)
 
 
@@ -13044,8 +13044,10 @@ def _score_pair(score_entry: Dict) -> tuple:
     for row in score_entry.get("scores") or []:
         name = row.get("name")
         try:
-            value = int(row.get("score"))
-        except Exception:
+            raw=row.get("score")
+            if isinstance(raw,bool) or not math.isfinite(float(raw)) or float(raw)<0 or int(float(raw))!=float(raw):continue
+            value=int(float(raw))
+        except (ValueError,TypeError,OverflowError):
             continue
         if name == score_entry.get("home_team"):
             home_score = value
@@ -13063,8 +13065,10 @@ def _find_score_fallback(pred: Dict, scores: List[Dict]) -> Optional[Dict]:
     pred_dt = _parse_iso(pred.get("commence_time"))
     sport_key = str(pred.get("sport_key") or "").strip()
 
+    if not pred_dt:return None
     best = None
     best_delta = None
+    ambiguous = False
     for score in scores:
         if not score.get("completed"):
             continue
@@ -13086,13 +13090,16 @@ def _find_score_fallback(pred: Dict, scores: List[Dict]) -> Optional[Dict]:
             if delta > 12 * 3600:
                 continue
         else:
-            delta = 0
+            continue
 
         if best is None or delta < best_delta:
             best = dict(score)
             best["_teams_reversed"] = bool(reversed_pair)
             best_delta = delta
-    return best
+            ambiguous = False
+        elif delta == best_delta:
+            ambiguous = True
+    return None if ambiguous else best
 
 
 def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Optional[Dict]:
@@ -13108,9 +13115,13 @@ def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Option
     if not ph or not pa:
         return None
     pred_dt = _parse_iso(pred.get("commence_time"))
+    if not pred_dt:return None
     best = None
     best_delta = None
+    ambiguous = False
     for candidate in (scores_map or {}).values():
+        family={'football':'soccer_','basketball':'basketball_','ice-hockey':'icehockey_'}.get(str(candidate.get('sport') or ''))
+        if family and pred.get('sport_key') and not str(pred['sport_key']).startswith(family):continue
         sh = _norm_team_for_reconcile(candidate.get("home_team"))
         sa = _norm_team_for_reconcile(candidate.get("away_team"))
         direct = sh == ph and sa == pa
@@ -13123,15 +13134,18 @@ def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Option
             if delta > 12 * 3600:
                 continue
         else:
-            delta = 0
+            continue
         if best is None or delta < best_delta:
             best = dict(candidate)
             best["_teams_reversed"] = bool(reversed_pair)
             best_delta = delta
-    return best
+            ambiguous = False
+        elif delta == best_delta:
+            ambiguous = True
+    return None if ambiguous else best
 
 
-async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) -> Dict:
+async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dict:
     """Synchronise tous les pronostics terminés avec leurs scores finaux.
 
     Le moteur cible les ``sport_key`` réellement présents dans les pronostics en
@@ -13140,11 +13154,15 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
     équipes+horaire via odds-api.io. Le diagnostic de chaque exécution est persisté
     pour être visible directement dans le Track Record.
     """
-    pending = await db.predictions_history.find({"result": "pending"}).to_list(length=10000)
+    started=time.monotonic()
+    now=datetime.now(timezone.utc)
+    # Old unchecked rows cannot indefinitely hide recently completed events.
+    # Existing future picks are never part of this settlement queue.
+    pending=await db.predictions_history.find({"result":"pending","commence_time":{"$lt":now.isoformat()}}).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(300).to_list(length=300)
     run_at = datetime.now(timezone.utc).isoformat()
     if not pending:
         result = {
-            "ok": True, "checked": 0, "updated": 0, "pending_remaining": 0,
+            "ok": True, "checked": 0, "updated": 0, "pending_remaining": await db.predictions_history.count_documents({"result":"pending"}),
             "recovered_by_team_time": 0, "recovered_by_secondary": 0,
             "outside_provider_window": 0, "no_score": 0,
             "not_completed": 0, "unsupported_market": 0, "errors": 0,
@@ -13155,29 +13173,43 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
             upsert=True,
         )
         try:
-            result["montante"] = await _montante_sync_after_track_results()
+            result["montante"] = await asyncio.wait_for(_montante_sync_after_track_results(),timeout=20)
         except Exception as exc:
             result["montante"] = {"status": "ERROR", "progressed": False, "detail": str(exc)}
         return result
 
     now = datetime.now(timezone.utc)
     classic_pending = [p for p in pending if not str(p.get("match_id") or "").startswith("oaio-")]
+    recent_classic=[p for p in classic_pending if _parse_iso(p.get("commence_time")) and now-timedelta(days=3)<=_parse_iso(p["commence_time"])<now]
+    archive_keys=sorted({str(p.get('sport_key')) for p in classic_pending if p.get('sport_key')})
     required_sport_keys = sorted({
         str(p.get("sport_key") or "").strip()
-        for p in classic_pending
+        for p in recent_classic
         if str(p.get("sport_key") or "").strip()
     })
 
-    scores = await fetch_all_scores(
-        db,
-        sport_keys=required_sport_keys or None,
-        force_refresh=force_score_refresh,
-        days_from=3,
-        include_archive=True,
-        archive_days=60,
-    )
-    scores_by_match = {str(s.get("id")): s for s in scores if s.get("id")}
-    oaio_scores_map = await fetch_odds_api_io_scores_map()
+    # Read all cached/archived sports in this batch first, without HTTP calls.
+    scores=await fetch_all_scores(db,sport_keys=archive_keys,archive_only=True,include_archive=True,archive_days=180)
+    if required_sport_keys:
+        try:
+            fresh=await asyncio.wait_for(fetch_all_scores(db,sport_keys=required_sport_keys,force_refresh=force_score_refresh,days_from=3,include_archive=True,archive_days=180),timeout=40)
+            by_id={str(r.get('id')):r for r in scores if r.get('id')}
+            for row in fresh:
+                key=str(row.get('id') or '')
+                if key and (row.get('completed') is True or (by_id.get(key) or {}).get('completed') is not True):by_id[key]=row
+            scores=list(by_id.values())
+        except asyncio.TimeoutError:pass
+    scores_by_match={str(r['id']):r for r in scores if r.get('id')}
+    # Exact archived IDs recover even records older than the broad 180-day sample.
+    missing=[str(p.get('match_id')) for p in classic_pending if p.get('match_id') and str(p['match_id']) not in scores_by_match]
+    if missing:
+        archived=await db.scores_archive.find({'event_id':{'$in':missing},'completed':True}).limit(300).to_list(length=300)
+        for row in archived:
+            item={**row,'id':row['event_id'],'_from_archive':True};scores.append(item);scores_by_match[str(item['id'])]=item
+    try:oaio_scores_map=await asyncio.wait_for(fetch_odds_api_io_scores_map(db),timeout=40)
+    except asyncio.TimeoutError:
+        saved=await db.scores_cache.find_one({'_id':'secondary_results'}) or {};oaio_scores_map=saved.get('data') or {}
+    check_updates=[]
 
     updated = 0
     recovered_by_team_time = 0
@@ -13193,6 +13225,7 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
         commence_dt = _parse_iso(pred.get("commence_time"))
         age_days = ((now - commence_dt).total_seconds() / 86400.0) if commence_dt else None
 
+        reason="no_final_score"
         try:
             score_entry = None
             home_score = away_score = None
@@ -13227,6 +13260,7 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
 
                 if score_entry:
                     if not score_entry.get("completed"):
+                        reason="provider_not_completed"
                         not_completed += 1
                         continue
                     home_score, away_score = _score_pair(score_entry)
@@ -13234,7 +13268,7 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
                         for row in score_entry.get("scores") or []:
                             name = _norm_team_for_reconcile(row.get("name"))
                             try:
-                                value = int(row.get("score"))
+                                value = _settlement_integer(row.get("score"))
                             except Exception:
                                 continue
                             if name == _norm_team_for_reconcile(pred.get("home_team")):
@@ -13257,13 +13291,14 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
             if home_score is None or away_score is None:
                 no_score += 1
                 if age_days is not None and age_days > 3:
+                    reason="outside_primary_window_no_archive"
                     outside_provider_window += 1
                 continue
 
             result_value = _evaluate_pick_result(pred, int(home_score), int(away_score))
             if result_value:
-                await db.predictions_history.update_one(
-                    {"signature": pred["signature"]},
+                written=await db.predictions_history.update_one(
+                    {"_id":pred["_id"],"result":"pending"},
                     {"$set": {
                         "result": result_value,
                         "final_score": f"{home_score}-{away_score}",
@@ -13271,16 +13306,24 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
                         "reconciliation_source": reconciliation_source,
                     }},
                 )
-                updated += 1
+                updated += int(written.modified_count)
+                reason="settled"
             else:
+                reason="unsupported_market"
                 unsupported_market += 1
         except Exception:
+            reason="processing_error"
             errors += 1
             continue
+        finally:
+            check_updates.append(UpdateOne({'_id':pred['_id']},{'$set':{'settlement_checked_at':run_at,'settlement_diagnostic':reason}}))
+
+    if check_updates:await db.predictions_history.bulk_write(check_updates,ordered=False)
 
     pending_remaining = await db.predictions_history.count_documents({"result": "pending"})
     result = {
         "ok": True,
+        "batch_limit":300,"duration_seconds":round(time.monotonic()-started,2),
         "checked": len(pending),
         "updated": updated,
         "pending_remaining": pending_remaining,
@@ -13300,7 +13343,7 @@ async def _reconcile_predictions_with_scores(force_score_refresh: bool = False) 
         upsert=True,
     )
     try:
-        result["montante"] = await _montante_sync_after_track_results()
+        result["montante"] = await asyncio.wait_for(_montante_sync_after_track_results(),timeout=20)
     except Exception as exc:
         result["montante"] = {"status": "ERROR", "progressed": False, "detail": str(exc)}
     return result
@@ -13310,12 +13353,25 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     """Évalue les marchés courants sans dépendre d'une seule langue d'affichage."""
     import re
 
+    market_identity=str(pred.get('market') or pred.get('market_key') or '').lower()
+    if any(token in market_identity for token in ('_1st_','_2nd_','_q1','_q2','_q3','_q4','_h1','_h2','corners','cards','player_')):
+        return None
+
     def norm(value: str) -> str:
         text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
         return re.sub(r"\s+", " ", text).strip()
 
     pick = norm(pred.get("pick"))
-    market = norm(pred.get("market"))
+    market = norm(pred.get("market") or pred.get("market_key"))
+    if re.fullmatch(r"syn_(over|under)_\d+",market):market="totals"
+    supported={"h2h","moneyline","ml","syn_home_win","syn_away_win","totals","total","syn_over_25","syn_over_15","btts","syn_btts","double_chance","syn_double_chance","draw_no_bet","syn_draw_no_bet","dnb","spreads","spread","handicap","asian_handicap","syn_clean_sheet_home","syn_clean_sheet_away"}
+    if market not in supported:return None
+    point=pred.get('pick_point')
+    if point is not None:
+        try:
+            point=float(point)
+            if not math.isfinite(point) or abs(point*2-round(point*2))>1e-8:return None
+        except (ValueError,TypeError):return None
     home = norm(pred.get("home_team"))
     away = norm(pred.get("away_team"))
     total_points = home_score + away_score
@@ -13334,8 +13390,9 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
         token in pick for token in ("plus de", "moins de", "over", "under")
     ):
         match_num = re.search(r"(\d+(?:[.,]\d+)?)", pick)
-        if match_num:
-            threshold = float(match_num.group(1).replace(",", "."))
+        if match_num or point is not None:
+            threshold = point if point is not None else float(match_num.group(1).replace(",", "."))
+            if abs(threshold*2-round(threshold*2))>1e-8:return None
             if "plus de" in pick or "over" in pick:
                 if total_points == threshold:
                     return "void"
@@ -13355,6 +13412,15 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
 
     # Double chance
     if market in ("double_chance", "syn_double_chance"):
+        # Actual engine labels can contain team names rather than literal 1X/X2.
+        raw=norm(pred.get('pick_raw'))
+        code=re.sub(r'[^12x]','',pick) if re.fullmatch(r'[12x /-]+',pick) else raw
+        has_home=bool(home and re.search(r'(?<!\w)'+re.escape(home)+r'(?!\w)',pick))
+        has_away=bool(away and re.search(r'(?<!\w)'+re.escape(away)+r'(?!\w)',pick))
+        has_draw=bool(re.search(r'\b(nul|draw|tie)\b',pick))
+        if code in ('1x','x1') or (has_home and has_draw and not has_away):return 'won' if home_score>=away_score else 'lost'
+        if code in ('x2','2x') or (has_away and has_draw and not has_home):return 'won' if away_score>=home_score else 'lost'
+        if code in ('12','21') or (has_home and has_away and not has_draw):return 'won' if home_score!=away_score else 'lost'
         if "1x" in pick or "domicile ou nul" in pick or "home or draw" in pick:
             return "won" if home_score >= away_score else "lost"
         if "x2" in pick or "nul ou victoire exterieure" in pick or "draw or away" in pick:
@@ -13374,8 +13440,9 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     # Handicap / spread simple : ex. "Lakers -4.5" ou "Team +1.5"
     if market in ("spreads", "spread", "handicap", "asian_handicap"):
         line_match = re.search(r"([+-]\s*\d+(?:[.,]\d+)?)", pick)
-        if line_match:
-            line = float(line_match.group(1).replace(" ", "").replace(",", "."))
+        if line_match or point is not None:
+            line = point if point is not None else float(line_match.group(1).replace(" ", "").replace(",", "."))
+            if abs(line*2-round(line*2))>1e-8:return None
             if home and home in pick:
                 adjusted = home_score + line
                 return "void" if adjusted == away_score else ("won" if adjusted > away_score else "lost")
@@ -14512,12 +14579,12 @@ async def _force_track_reconcile():
 
 
 async def _scheduled_reconcile():
-    return await _run_with_scheduler_lease("results_reconcile", _force_track_reconcile, lease_seconds=6600)
+    return await _run_with_scheduler_lease("results_reconcile", _force_track_reconcile, lease_seconds=180)
 
 
 async def _scheduled_montante_result_sync():
     async def run_targeted_sync():
-        _state, diagnostic = await _montante_sync_current_results(force_provider=False)
+        _state, diagnostic = await asyncio.wait_for(_montante_sync_current_results(force_provider=False),timeout=90)
         return diagnostic
 
     return await _run_with_scheduler_lease(
@@ -14622,24 +14689,14 @@ async def startup_event():
     except Exception:
         pass
 
-    # Rattrapage immédiat du Track Record au redémarrage. Les endpoints de scores
-    # sont distincts des cotes et la synchronisation cible uniquement les sports
-    # des pronostics encore pending. Cela évite plusieurs jours de statistiques figées.
+    # Recovery is queued; API readiness does not wait on external scores.
+    _queue_track_results()
     try:
-        pending_at_startup = await db.predictions_history.count_documents({"result": "pending"})
-        if pending_at_startup:
-            await _run_with_scheduler_lease(
-                "startup_results_reconcile", _force_track_reconcile, lease_seconds=900
-            )
-    except Exception:
-        pass
+        await asyncio.wait_for(db.predictions_history.create_index([('result',1),('settlement_checked_at',1),('commence_time',-1)]),timeout=5)
+    except Exception:pass
 
-    # Rattrapage Montante au démarrage. Ne consulte le fournisseur que si un
-    # match actif devrait déjà être terminé.
-    try:
-        await _montante_sync_current_results(force_provider=False)
-    except Exception:
-        pass
+    # The targeted Montante startup sync is independent of API readiness.
+    _queue_startup_montante_results()
 
     if ENABLE_INTERNAL_SCHEDULER:
         # Deux refresh complets par jour par défaut (06:05 et 13:05 WAT = 05:05
@@ -14660,7 +14717,7 @@ async def startup_event():
         scheduler.add_job(_scheduled_apisports_refresh, "interval", minutes=30, id="apisports_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_football_stats_refresh, "interval", minutes=30,
                           id="football_stats_refresh", replace_existing=True, coalesce=True, max_instances=1)
-        scheduler.add_job(_scheduled_reconcile, "cron", minute=0, hour="*/2", id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
+        scheduler.add_job(_scheduled_reconcile, "interval", minutes=15, id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
         # Synchronisation dédiée Montante : uniquement 1–2 picks actifs, donc bien
         # plus légère que la réconciliation générale du Track Record.
         scheduler.add_job(
@@ -15195,6 +15252,13 @@ async def _quality_run_checks():
     await count("activation_pending", db.subscription_requests, {"payment_provider": "fedapay", "payment_status": "approved", "activation_applied": {"$ne": True}, "created_at": {"$lt": (now-timedelta(minutes=15)).isoformat()}}, "critical")
     await count("results_overdue", db.predictions_history, {"result": "pending", "commence_time": {"$lt": (now-timedelta(hours=12)).isoformat()}})
     try:
+        last=await asyncio.wait_for(db.system_meta.find_one({'_id':'track_sync'},{'_id':0}),timeout=3) or {}
+        for check in checks:
+            if check.get('code')=='results_overdue':
+                check['details']={k:last.get(k) for k in ('last_run_at','checked','updated','outside_provider_window','no_score','unsupported_market','errors','status')}
+    except Exception:pass
+
+    try:
         signals = await asyncio.wait_for(db.quality_daily.find_one({"_id": now.strftime("%Y-%m-%d")}), timeout=3)
         n = sum(int(((signals or {}).get("counts") or {}).get(k, 0)) for k in ("runtime_error", "render_error", "request_failure"))
         checks.append({"code": "browser_errors_today", "status": "warning" if n else "healthy", "value": n})
@@ -15394,4 +15458,87 @@ async def _enrichment_shutdown():
     if _enrichment_task and not _enrichment_task.done():
         _enrichment_task.cancel()
         try:await _enrichment_task
+        except asyncio.CancelledError:pass
+
+_track_results_lock=asyncio.Lock()
+_track_results_task=None
+
+async def _reconcile_predictions_with_scores(force_score_refresh: bool=False) -> Dict:
+    if _track_results_lock.locked():return {"ok":True,"status":"already_running","updated":0}
+    async with _track_results_lock:
+        async def run():return await asyncio.wait_for(_reconcile_predictions_batch(force_score_refresh),timeout=150)
+        try:
+            report=await _run_with_scheduler_lease('track_results_batch',run,lease_seconds=180)
+            if report is None:return {"ok":True,"status":"already_running_elsewhere","updated":0}
+            return report
+        except asyncio.TimeoutError:
+            await db.system_meta.update_one({'_id':'track_sync'},{'$set':{'last_run_at':datetime.now(timezone.utc).isoformat(),'ok':False,'status':'timeout_retry_next_batch'}},upsert=True)
+            return {"ok":False,"status":"timeout_retry_next_batch"}
+
+
+def _queue_track_results():
+    global _track_results_task
+    if _track_results_task and not _track_results_task.done():return False
+    async def run():
+        try:
+            await _reconcile_predictions_with_scores(False)
+            await _quality_run_checks()
+        except Exception as exc:logging.getLogger('winpulse.results').warning('Result batch unavailable (%s)',type(exc).__name__)
+    _track_results_task=asyncio.create_task(run())
+    return True
+
+
+@app.get('/api/admin/results-sync/status')
+async def admin_results_sync_status(payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    now=datetime.now(timezone.utc)
+    summary=await db.system_meta.find_one({'_id':'track_sync'},{'_id':0}) or {}
+    rows=await db.scores_cache.find_one({'_id':'all_scores'},{'refresh_by_sport':1}) or {}
+    older={'result':'pending','commence_time':{'$lt':(now-timedelta(hours=12)).isoformat()}}
+    outside={'result':'pending','commence_time':{'$lt':(now-timedelta(days=3)).isoformat()}}
+    return {'running':bool(_track_results_task and not _track_results_task.done()) or _track_results_lock.locked(),'last_run':summary,
+        'pending_over_12h':await db.predictions_history.count_documents(older),
+        'pending_over_3days':await db.predictions_history.count_documents(outside),
+        'distinct_matches_over_12h':len(await db.predictions_history.distinct('match_id',older)),
+        'providers':rows.get('refresh_by_sport') or {},'batch_limit':300,
+        'automatic_result_deletion':False}
+
+
+@app.post('/api/admin/results-sync',status_code=202)
+async def admin_results_sync_queue(payload:dict=Depends(get_current_user_payload)):
+    user=await _require_admin(payload)
+    await _consume_security_limit('results_sync',str(user['id']),limit=2,window_seconds=300)
+    return {'queued':_queue_track_results(),'batch_limit':300,'automatic_result_deletion':False}
+
+
+@app.on_event('shutdown')
+async def _stop_track_results_task():
+    if _track_results_task and not _track_results_task.done():
+        _track_results_task.cancel()
+        try:await _track_results_task
+        except asyncio.CancelledError:pass
+
+
+def _settlement_integer(raw):
+    if isinstance(raw,bool):raise ValueError('Boolean score')
+    value=float(raw)
+    if not math.isfinite(value) or value<0 or int(value)!=value:raise ValueError('Invalid final score')
+    return int(value)
+
+
+_startup_montante_task=None
+
+def _queue_startup_montante_results():
+    global _startup_montante_task
+    if _startup_montante_task and not _startup_montante_task.done():return
+    async def run():
+        try:await asyncio.wait_for(_montante_sync_current_results(force_provider=False),timeout=90)
+        except Exception as exc:logging.getLogger('winpulse.results').warning('Montante startup sync unavailable (%s)',type(exc).__name__)
+    _startup_montante_task=asyncio.create_task(run())
+
+@app.on_event('shutdown')
+async def _stop_startup_montante_task():
+    if _startup_montante_task and not _startup_montante_task.done():
+        _startup_montante_task.cancel()
+        try:await _startup_montante_task
         except asyncio.CancelledError:pass
