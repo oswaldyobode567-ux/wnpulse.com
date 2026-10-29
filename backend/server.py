@@ -47,13 +47,33 @@ from odds_service import (
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
 )
-from stats_service import (refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache, enrichment_cycle, audit_enrichment_sources, entity_name, enrichment_sport)
+from stats_service import (refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache)
+import stats_service as _optional_stats_service
+import prediction_engine as _optional_prediction_engine
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
     _legacy_build_today_combos_by_sport, personal_combo_options, build_personalized_combos, train_hybrid_models,
-    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD, train_observed_models, observed_model_forecast, OBSERVED_MODEL_VERSION,
+    _is_today as _is_today_match, MODEL_VERSION, SAFE_THRESHOLD, VALUE_THRESHOLD,
 )
+# Experimental observation is optional. Missing experimental exports must never
+# prevent the existing prediction engine/API from starting. Required imports
+# above remain strict: an error in the public engine is not silently hidden.
+train_observed_models = getattr(_optional_prediction_engine, "train_observed_models", None)
+observed_model_forecast = getattr(_optional_prediction_engine, "observed_model_forecast", None)
+OBSERVED_MODEL_VERSION = getattr(_optional_prediction_engine, "OBSERVED_MODEL_VERSION", None)
+enrichment_cycle = getattr(_optional_stats_service, "enrichment_cycle", None)
+audit_enrichment_sources = getattr(_optional_stats_service, "audit_enrichment_sources", None)
+entity_name = getattr(_optional_stats_service, "entity_name", None)
+enrichment_sport = getattr(_optional_stats_service, "enrichment_sport", None)
+_OBSERVED_ENRICHMENT_AVAILABLE = (
+    isinstance(OBSERVED_MODEL_VERSION, str) and bool(OBSERVED_MODEL_VERSION.strip())
+    and all(callable(fn) for fn in (
+        train_observed_models, observed_model_forecast, enrichment_cycle,
+        audit_enrichment_sources, entity_name, enrichment_sport,
+    ))
+)
+
 from ai_service import generate_analysis
 from blog_seed import (
     bootstrap_blog, blog_cover_svg, list_posts as blog_list_posts, get_post as blog_get_post,
@@ -15373,6 +15393,8 @@ async def _enrichment_forecast_settlement():
 
 
 async def _enrichment_run(force_train=False):
+    if not _OBSERVED_ENRICHMENT_AVAILABLE:
+        return {"status":"optional_module_unavailable","automatic_promotion":False}
     # Read exactly the existing catalogue, without provider calls or an odds refresh.
     source=await db.odds_cache.find_one({"_id":"all_matches"}) or {}
     matches=source.get("data") if isinstance(source.get("data"),list) else list(_prediction_cache.get("matches") or [])
@@ -15408,6 +15430,7 @@ async def _scheduled_independent_enrichment():
 
 def _queue_enrichment(force_train=False):
     global _enrichment_task
+    if not _OBSERVED_ENRICHMENT_AVAILABLE:return False
     if _enrichment_task and not _enrichment_task.done():return False
     async def run():
         try:
@@ -15421,6 +15444,11 @@ def _queue_enrichment(force_train=False):
 @app.get("/api/admin/enrichment/status")
 async def enrichment_admin_status(payload:dict=Depends(get_current_user_payload)):
     await _require_admin(payload)
+    if not _OBSERVED_ENRICHMENT_AVAILABLE:
+        return {"status":"optional_module_unavailable","available":False,
+                "note":"Observation expérimentale indisponible : fichiers de modules non synchronisés. Le moteur public reste actif.",
+                "sources":[],"provider_status":[],"models":[],"prospective":[],"usage":[],
+                "media":None,"results":None,"automatic_promotion":False,"scheduler_enabled":False}
     sources=await db.enrichment_state.find({"_id":{"$in":["capabilities","last_cycle","observed_training"]}}).to_list(length=3)
     statuses=await db.enrichment_state.find({"_id":{"$regex":"^source:[^:]+(?::(?:football|basketball|hockey|baseball|american_football))?$"}},{"_id":1,"status":1,"http_status":1,"checked_at":1,"backoff_until":1}).to_list(length=20)
     models=await db.observed_model_registry.find({"version":OBSERVED_MODEL_VERSION},{"model":0}).to_list(length=100)
@@ -15440,12 +15468,17 @@ async def enrichment_admin_status(payload:dict=Depends(get_current_user_payload)
 @app.post("/api/admin/enrichment/refresh",status_code=202)
 async def enrichment_admin_refresh(payload:dict=Depends(get_current_user_payload)):
     user=await _require_admin(payload)
+    if not _OBSERVED_ENRICHMENT_AVAILABLE:
+        raise HTTPException(status_code=503,detail="Observation expérimentale indisponible : déployer les versions compatibles de prediction_engine.py et stats_service.py. Le moteur public fonctionne indépendamment.")
     await _consume_security_limit("enrichment_refresh",str(user['id']),limit=2,window_seconds=300)
     return {"queued":_queue_enrichment(force_train=True),"mode":"shadow","automatic_promotion":False}
 
 
 @app.on_event("startup")
 async def _enrichment_startup():
+    if not _OBSERVED_ENRICHMENT_AVAILABLE:
+        logging.getLogger("winpulse.enrichment").warning("Experimental observation disabled: optional module exports unavailable; public engine unchanged")
+        return
     for collection,spec in ((db.observed_results,[("sport",1),("team_keys",1),("date",-1)]),(db.observed_forecasts,[("model_key",1),("commence_time",1)]),(db.entity_media,[("sport",1)])):
         try:await asyncio.wait_for(collection.create_index(spec),timeout=5)
         except Exception:logging.getLogger("winpulse.enrichment").warning("Optional enrichment index unavailable")
