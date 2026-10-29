@@ -544,6 +544,7 @@ export default function App() {
         </Routes></Suspense></RouteBoundary>
 
         <PageTracker />
+        <QualitySignals />
         <ContextualWhatsAppWidget />
         <LocalizedToaster />
       </BrowserRouter>
@@ -585,6 +586,7 @@ function MontanteArchives(){
 
 function RouteLoading(){const w=useExperienceCopy();return <div role="status" className="grid min-h-[65vh] place-items-center bg-neutral-50 p-6"><div className="text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-orange-600 motion-reduce:animate-none"/><p className="mt-4 text-sm font-bold text-slate-600">WinPulse · {w.open}…</p></div></div>;}
 class RouteErrorBoundary extends Component {
+  componentDidCatch() { window.dispatchEvent(new Event('wnpulse:render-error')); }
  constructor(props){super(props);this.state={failed:false};}
  static getDerivedStateFromError(){return {failed:true};}
  componentDidUpdate(previous){if(previous.route!==this.props.route&&this.state.failed)this.setState({failed:false});}
@@ -593,3 +595,35 @@ class RouteErrorBoundary extends Component {
 function RouteBoundary({children}){const {pathname}=useLocation();const w=useExperienceCopy();return <RouteErrorBoundary route={pathname} words={w}>{children}</RouteErrorBoundary>;}
 
 function ContextualWhatsAppWidget(){const {pathname}=useLocation();return pathname.startsWith('/app')&&!['/app/abonnement','/app/profil'].includes(pathname)?null:<WhatsAppWidget/>;}
+
+function QualitySignals() {
+  const {
+    user
+  } = useAuth();
+  const location = useLocation();
+  useEffect(() => {
+    if (!user?.id) return undefined;
+    let sent = 0;
+    const route = location.pathname === '/app' ? 'home' : location.pathname.startsWith('/app/match/') ? 'match' : location.pathname.startsWith('/app/aujourdhui') ? 'catalogue' : location.pathname.startsWith('/app/suivi') ? 'follow' : location.pathname.startsWith('/app/abonnement') ? 'subscription' : location.pathname.includes('montante') ? 'montante' : location.pathname.includes('combin') || location.pathname.includes('builder') ? 'combos' : 'other';
+    const report = event => {
+      const reason = event.reason;
+      if (reason?.name === 'AbortError' || reason?.name === 'CanceledError' || reason?.response?.status >= 400 && reason?.response?.status < 500 || sent >= 3) return;
+      sent += 1;
+      api.post('/experience/quality-event', {
+        event: event.type === 'wnpulse:render-error' ? 'render_error' : 'runtime_error',
+        route
+      }, {
+        timeout: 5000
+      }).catch(() => {});
+    };
+    window.addEventListener('error', report);
+    window.addEventListener('unhandledrejection', report);
+    window.addEventListener('wnpulse:render-error', report);
+    return () => {
+      window.removeEventListener('error', report);
+      window.removeEventListener('unhandledrejection', report);
+      window.removeEventListener('wnpulse:render-error', report);
+    };
+  }, [user?.id, location.pathname]);
+  return null;
+}
