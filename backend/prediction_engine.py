@@ -2209,3 +2209,148 @@ def _hybrid_shadow(match,stats_map=None):
 _legacy_poisson_shadow_analysis = _shadow_analysis
 _shadow_analysis = _hybrid_shadow
 
+
+
+# Independent observational models. Public analyze_all/analyze_match are untouched.
+# Reports distinguish retrospective score-only tests from prospective market tests.
+OBSERVED_MODEL_VERSION = "observed-sports-1"
+
+
+def _observed_scope(row):
+    key=str(row.get("sport_key") or "")
+    if row.get("sport")=="football":return key
+    if row.get("sport")=="basketball":return key
+    if row.get("sport")=="tennis":
+        return "tennis_wta" if "wta" in key else "tennis_atp" if "atp" in key else key
+    return None
+
+
+def _observed_rows(records,as_of):
+    # A historical file supplies outcomes, not an authenticated publication log.
+    # Retrospective evaluation assumes availability the following UTC day, and
+    # explicitly labels this assumption. Live tests use real capture timestamps.
+    from stats_service import entity_name
+    unique={};conflicts=set()
+    for raw in records:
+        if raw.get("conflicting"):continue
+        date=_hybrid_dt(raw.get("date"));observed=_hybrid_dt(raw.get("score_observed_at") or raw.get("first_observed_at"))
+        sport=raw.get("sport");scope=_observed_scope(raw)
+        if not date or not observed or date>=as_of or observed>as_of or (as_of-date).days>1095 or not scope:continue
+        h,a=entity_name(raw.get("home_team"),sport),entity_name(raw.get("away_team"),sport)
+        hg,ag=_hybrid_number(raw.get("score_home")),_hybrid_number(raw.get("score_away"))
+        if not h or not a or h==a or hg is None or ag is None or min(hg,ag)<0 or hg!=int(hg) or ag!=int(ag):continue
+        if sport=="football" and max(hg,ag)>20:continue
+        if sport in ("basketball","tennis") and hg==ag:continue
+        identity=(scope,date.date().isoformat(),h,a)
+        if identity in unique and (unique[identity]["hg"],unique[identity]["ag"])!=(hg,ag):conflicts.add(identity);continue
+        availability=(date.replace(hour=0,minute=0,second=0,microsecond=0)+timedelta(days=1))
+        unique[identity]={"id":str(raw.get("_id")),"league":scope,"sport":sport,"date":date.isoformat(),"known_at":availability.isoformat(),"home":h,"away":a,"hg":int(hg),"ag":int(ag),"surface":raw.get("surface"),"observation":None}
+    return sorted((v for k,v in unique.items() if k not in conflicts),key=lambda r:(r["date"],r["id"]))
+
+
+def _observed_elo_replay(rows,k=20.,home_advantage=0.,surface=None):
+    import heapq,math
+    ratings={};counts={};surface_ratings={};surface_counts={};queue=[];predictions=[]
+    def apply(row):
+        h,a=row['home'],row['away'];rh,ra=ratings.get(h,1500.),ratings.get(a,1500.)
+        expected=1/(1+10**((ra-rh-home_advantage)/400));outcome=float(row['hg']>row['ag'])
+        delta=k*(outcome-expected);ratings[h]=rh+delta;ratings[a]=ra-delta;counts[h]=counts.get(h,0)+1;counts[a]=counts.get(a,0)+1
+        if row.get('surface'):
+            table=surface_ratings.setdefault(row['surface'],{});cnt=surface_counts.setdefault(row['surface'],{});sh,sa=table.get(h,1500.),table.get(a,1500.)
+            d=k*(outcome-1/(1+10**((sa-sh)/400)));table[h]=sh+d;table[a]=sa-d;cnt[h]=cnt.get(h,0)+1;cnt[a]=cnt.get(a,0)+1
+    for i,row in enumerate(rows):
+        while queue and queue[0][0]<row['date']:apply(heapq.heappop(queue)[2])
+        h,a=row['home'],row['away'];diff=ratings.get(h,1500.)-ratings.get(a,1500.)
+        court=row.get('surface')
+        if surface and court:
+            table=surface_ratings.get(court,{}) ;cnt=surface_counts.get(court,{})
+            weight=min(cnt.get(h,0),cnt.get(a,0))/(min(cnt.get(h,0),cnt.get(a,0))+20)
+            diff=(1-weight)*diff+weight*(table.get(h,1500.)-table.get(a,1500.))
+        p=1/(1+10**(-(diff+home_advantage)/400))
+        predictions.append((max(1e-6,min(1-1e-6,p)),int(row['hg']>row['ag']),min(counts.get(h,0),counts.get(a,0))))
+        heapq.heappush(queue,(row['known_at'],i,row))
+    while queue:apply(heapq.heappop(queue)[2])
+    return predictions,{"ratings":ratings,"counts":counts,"surface_ratings":surface_ratings,"surface_counts":surface_counts,"k":k,"home_advantage":home_advantage}
+
+
+def _observed_binary_score(values):
+    import math
+    values=[(p,y) for p,y,n in values if n>=5]
+    return {"n":len(values),"brier":statistics.mean((p-y)**2 for p,y in values) if values else None,
+            "log_loss":statistics.mean(-math.log(p if y else 1-p) for p,y in values) if values else None}
+
+
+def train_observed_models(records,as_of=None):
+    import math,json
+    as_of=as_of or datetime.now(timezone.utc);rows=_observed_rows(records,as_of);grouped={}
+    for row in rows:grouped.setdefault(row['league'],[]).append(row)
+    reports={}
+    for league,history in grouped.items():
+        history=history[-1800:];sport=history[0]['sport'];cut=int(len(history)*.7)
+        while cut>0 and cut<len(history) and history[cut-1]['date'][:10]==history[cut]['date'][:10]:cut-=1
+        report={"version":OBSERVED_MODEL_VERSION,"sport_key":league,"sport":sport,"as_of":as_of.isoformat(),"fixtures":len(history),"mode":"shadow","automatic_promotion":False,"status":"insufficient_history","model":None,"availability_assumption":"score_available_next_UTC_day_for_retrospective_only","dataset_sha256":hashlib.sha256(json.dumps(history,sort_keys=True).encode()).hexdigest(),"market_benchmark_available":False}
+        reports[league]=report
+        if len(history)<120 or cut<60 or len(history)-cut<30:continue
+        train=history[:cut];evaluation=history[cut:];boundary=evaluation[0]['date']
+        train=[r for r in train if r['known_at']<boundary]
+        try:
+            if sport=='football':
+                if not 6<=len({r[k] for r in train for k in ('home','away')})<=80:continue
+                model=_hybrid_fit(train);values=[]
+                for row in evaluation:
+                    past=[r for r in history if r['known_at']<row['date']];_,ratings,counts=_hybrid_elo(past)
+                    prediction=_hybrid_grid({**model,'ratings':ratings,'counts':counts},row['home'],row['away'])
+                    if not prediction:continue
+                    grid=prediction[0];probs=[_hybrid_result_probability(grid,t) for t in ('home','draw','away')];truth=0 if row['hg']>row['ag'] else 1 if row['hg']==row['ag'] else 2
+                    values.append((-math.log(max(1e-9,probs[truth])),sum((p-int(i==truth))**2 for i,p in enumerate(probs))))
+                metric={'n':len(values),'log_loss':statistics.mean(v[0] for v in values) if values else None,'brier':statistics.mean(v[1] for v in values) if values else None,'classes':3}
+                fitted=_hybrid_fit(history);model_type='dixon_coles_elo'
+            else:
+                # Tune only before the untouched final 30%; no future scores in
+                # a feature, including simultaneous fixtures and delayed results.
+                middle=int(len(train)*.7);choices=[]
+                for k in (10.,20.,40.):
+                    for adv in ((0.,) if sport=='tennis' else (0.,50.,80.)):
+                        predictions,_=_observed_elo_replay(train,k,adv,surface=sport=='tennis');score=_observed_binary_score(predictions[middle:])
+                        if score['n']>=15:choices.append((score['log_loss'],k,adv))
+                _,k,adv=min(choices) if choices else (0,20.,0. if sport=='tennis' else 50.)
+                predictions,fitted=_observed_elo_replay(history,k,adv,surface=sport=='tennis');metric={**_observed_binary_score(predictions[cut:]),'classes':2};model_type='surface_elo' if sport=='tennis' else 'basketball_elo'
+            report.update(status='shadow_ready',model=fitted,model_type=model_type,retrospective=metric,split_date=boundary,calibrated=False)
+        except Exception as exc:report.update(status='training_failed',error_type=type(exc).__name__)
+    return reports
+
+
+def observed_model_forecast(match,registry,now=None):
+    import math
+    from stats_service import entity_name,enrichment_sport
+    now=now or datetime.now(timezone.utc);kickoff=_hybrid_dt(match.get('commence_time'));sport=enrichment_sport(match);scope=_observed_scope({**match,'sport':sport})
+    report=registry.get(scope,{})
+    if not kickoff or not now<kickoff or report.get('status')!='shadow_ready' or not report.get('model'):return None
+    trained=_hybrid_dt(report.get('as_of'))
+    if not trained or trained>now or (now-trained).days>7:return None
+    h,a=entity_name(match.get('home_team'),sport),entity_name(match.get('away_team'),sport);model=report['model'];sport_probs=None
+    if sport=='football':
+        prediction=_hybrid_grid(model,h,a)
+        if prediction:sport_probs={match['home_team']:_hybrid_result_probability(prediction[0],'home'),'Draw':_hybrid_result_probability(prediction[0],'draw'),match['away_team']:_hybrid_result_probability(prediction[0],'away')}
+    elif sport in ('tennis','basketball') and min(model['counts'].get(h,0),model['counts'].get(a,0))>=5:
+        diff=model['ratings'][h]-model['ratings'][a];surface=match.get('surface')
+        if sport=='tennis' and surface in ('hard','clay','grass','indoor_hard'):
+            table=model.get('surface_ratings',{}).get(surface,{}) ;cnt=model.get('surface_counts',{}).get(surface,{})
+            weight=min(cnt.get(h,0),cnt.get(a,0))/(min(cnt.get(h,0),cnt.get(a,0))+20);diff=(1-weight)*diff+weight*(table.get(h,1500)-table.get(a,1500))
+        p=1/(1+10**(-(diff+model.get('home_advantage',0))/400));sport_probs={match['home_team']:p,match['away_team']:1-p}
+    if not sport_probs:return None
+    refs={name:[] for name in sport_probs};seen_books=set()
+    for book in match.get('bookmakers',[]) or []:
+        book_id=str(book.get('key') or book.get('title') or '').strip().lower()
+        if not book_id or book_id in seen_books:continue
+        for market in book.get('markets',[]) or []:
+            if market.get('key')!='h2h':continue
+            prices={o.get('name'):_hybrid_number(o.get('price')) for o in market.get('outcomes',[]) if isinstance(o,dict)}
+            if set(prices)!=set(sport_probs) or not all(p and p>1 for p in prices.values()):continue
+            total=sum(1/p for p in prices.values())
+            for name,price in prices.items():refs[name].append((1/price)/total)
+            seen_books.add(book_id)
+            break
+    if not all(refs.values()):return None
+    market={k:statistics.median(v) for k,v in refs.items()};total=sum(market.values());market={k:v/total for k,v in market.items()}
+    return {'version':OBSERVED_MODEL_VERSION,'model_key':scope,'model_type':report['model_type'],'trained_as_of':report['as_of'],'captured_at':now.isoformat(),'commence_time':match['commence_time'],'match_id':str(match.get('id') or match.get('match_id')),'sport_key':match.get('sport_key'),'sport':sport,'home_team':match['home_team'],'away_team':match['away_team'],'sport_probabilities':sport_probs,'market_probabilities':market,'mode':'shadow','automatic_promotion':False,'calibrated':False}
