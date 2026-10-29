@@ -419,7 +419,7 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
       <div className="wp-match-meta"><span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
         {isLive ? <span className="wp-live-label"><Radio className="h-3 w-3" aria-hidden="true" />{t("LIVE")}</span> : <time dateTime={event.commence_time || undefined}>{formatDate(event.commence_time, {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>}
       </div>
-      <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
+      <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} kind={event[`${side}_media`]?.kind} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
       {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && <div className="wp-match-score" data-testid="match-score"><bdi>{formatScore(pred.score_home,formatNumber)} — {formatScore(pred.score_away,formatNumber)}</bdi>{isFinished && <span>{t("TERMINÉ")}</span>}</div>}
       {!locked && (pred.pick ? <div className="wp-pick-panel">
         <div className="wp-pick-heading"><span>{pred.market_label ? translateBetText(pred.market_label,t,formatNumber) : t("Pronostic")}</span><span>{t("Cote")}</span></div>
@@ -435,6 +435,7 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
     <div className="wp-match-actions"><Link to={`/app/match/${event.id}`} className="wp-analysis-link">{t("Voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true"/></Link>{!locked && <FollowPickButton matchId={event.id} pick={pred.pick} market={pred.market} disabled={isFinished||isLive}/>}</div>
     {locked && <div className="wp-upgrade-action">{typeof onUpgrade==='function'?<button type="button" onClick={eventClick=>{eventClick.stopPropagation();onUpgrade();}} data-testid="match-upgrade">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></button>:<Link to="/app/abonnement" data-testid="match-upgrade-link">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link>}</div>}
     {isAdmin && !locked && !unavailable && <AdminShareActions isAdmin={isAdmin} item={{...event,prediction:pred}}/>}
+    <MediaCredits match={event}/>
   </Card>;
 }
 
@@ -592,7 +593,8 @@ const LABELS = {
 };
 
 export function badgeUrl(match, side) {
-  const candidates = [match?.[`${side}_logo`], match?.[`${side}_team_logo`], match?.[`${side}_crest`], match?.[`${side}Team`]?.crest];
+  const portrait=String(match?.sport_key||'').startsWith('tennis_')&&match?.[`${side}_media`]?.verified_license?match[`${side}_media`].url:null;
+  const candidates = [portrait, match?.[`${side}_logo`], match?.[`${side}_team_logo`], match?.[`${side}_crest`], match?.[`${side}Team`]?.crest, match?.[`${side}_media`]?.url];
   return candidates.find(value => {
     if (typeof value !== "string") return false;
     try { const parsed = new URL(value); return parsed.protocol === "https:" && !parsed.username && !parsed.password; } catch { return false; }
@@ -603,20 +605,22 @@ function teamInitials(name) {
   return String(name || "").trim().split(/\s+/).filter(word => /[\p{L}\p{N}]/u.test(word)).slice(0,2).map(word => Array.from(word)[0]).join("").toLocaleUpperCase() || "•";
 }
 
-export function TeamBadge({ name = "", src, size = "small" }) {
+export function TeamBadge({ name = "", src, size = "small", kind }) {
   const [failed, setFailed] = useState(null);
   let url = null;
   try { const parsed = new URL(src); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = src; } catch {}
   const initials = teamInitials(name);
-  return <span aria-hidden="true" className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white font-black text-slate-500 shadow-sm ${size === "large" ? "h-16 w-16 rounded-2xl text-xl sm:h-20 sm:w-20" : "h-10 w-10 rounded-xl text-xs"}`}>
-    {url && failed !== url ? <img src={url} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(url)} className="h-full w-full object-contain p-1.5" /> : initials}
+  return <span aria-hidden="true" style={kind === "portrait" ? {borderRadius:"50%"} : undefined} className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white font-black text-slate-500 shadow-sm ${size === "large" ? "h-16 w-16 rounded-2xl text-xl sm:h-20 sm:w-20" : "h-10 w-10 rounded-xl text-xs"}`}>
+    {url && failed !== url ? <img src={url} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(url)} className={`h-full w-full ${kind === "portrait" ? "object-cover" : "object-contain p-1.5"}`} style={kind === "portrait" ? {objectPosition:"center 22%"} : undefined} /> : initials}
   </span>;
 }
 
+const SPORT_INSIGHT_COPY = {"fr": {"points_for": "Points marqués / match", "points_against": "Points encaissés / match", "sets_for": "Sets gagnés / match", "sets_against": "Sets perdus / match", "credits": "Crédits photo", "crop": "cadrage adapté", "first": "Joueur 1", "second": "Joueur 2"}, "en": {"points_for": "Points scored / game", "points_against": "Points allowed / game", "sets_for": "Sets won / match", "sets_against": "Sets lost / match", "credits": "Photo credits", "crop": "display crop", "first": "Player 1", "second": "Player 2"}, "es": {"points_for": "Puntos anotados / partido", "points_against": "Puntos recibidos / partido", "sets_for": "Sets ganados / partido", "sets_against": "Sets perdidos / partido", "credits": "Créditos fotográficos", "crop": "encuadre adaptado", "first": "Jugador 1", "second": "Jugador 2"}, "pt": {"points_for": "Pontos marcados / jogo", "points_against": "Pontos sofridos / jogo", "sets_for": "Sets ganhos / jogo", "sets_against": "Sets perdidos / jogo", "credits": "Créditos das fotos", "crop": "enquadramento adaptado", "first": "Jogador 1", "second": "Jogador 2"}, "de": {"points_for": "Erzielte Punkte / Spiel", "points_against": "Zugelassene Punkte / Spiel", "sets_for": "Gewonnene Sätze / Spiel", "sets_against": "Verlorene Sätze / Spiel", "credits": "Bildnachweise", "crop": "Darstellung zugeschnitten", "first": "Spieler 1", "second": "Spieler 2"}, "ar": {"points_for": "نقاط مسجلة / مباراة", "points_against": "نقاط مستقبلة / مباراة", "sets_for": "مجموعات فائزة / مباراة", "sets_against": "مجموعات خاسرة / مباراة", "credits": "حقوق الصور", "crop": "اقتصاص للعرض", "first": "اللاعب الأول", "second": "اللاعب الثاني"}};
 const METRICS = [["played",7],["wins",8],["draws",9],["losses",10],["goals_for",11],["goals_against",12],["over25",13,"%"],["btts",14,"%"],["clean_sheets",15,"%"],["scored",16,"%"]];
 export function MatchInsights({ match }) {
   const i18n = usePageLanguage();
   const words = LABELS[i18n.language] || LABELS.fr;
+  const sportWords = SPORT_INSIGHT_COPY[i18n.language] || SPORT_INSIGHT_COPY.fr;
   const id = String(match?.id || match?.match_id || "");
   const [state,setState] = useState({ id:null,data:null,error:false });
   const [retry,setRetry] = useState(0);
@@ -637,6 +641,7 @@ export function MatchInsights({ match }) {
   },[id,retry]);
   const number = (value,suffix="") => value == null || !Number.isFinite(Number(value)) ? "—" : `${new Intl.NumberFormat(i18n.locale,{maximumFractionDigits:2}).format(Number(value))}${suffix}`;
   const date = value => { const stamp = new Date(value); return !value || !Number.isFinite(stamp.getTime()) ? words[36] : new Intl.DateTimeFormat(i18n.locale,{day:"2-digit",month:"short",year:"numeric"}).format(stamp); };
+  const metricRows = data?.metric_family === "basketball" ? [["played",7],["wins",8],["losses",10],["points_for","points_for"],["points_against","points_against"]] : data?.metric_family === "tennis" ? [["played",7],["wins",8],["losses",10],["sets_for","sets_for"],["sets_against","sets_against"]] : METRICS;
   const home = data?.home?.[venue ? "venue":"overall"] || {};
   const away = data?.away?.[venue ? "venue":"overall"] || {};
   const form = rows => <div className="flex flex-wrap gap-1.5">{(rows || []).map((v,index) => <span key={index} className={`inline-flex h-8 w-8 items-center justify-center rounded-lg text-xs font-extrabold ${v==="W" ? "bg-emerald-100 text-emerald-800" : v==="D" ? "bg-amber-100 text-amber-800" : "bg-rose-100 text-rose-800"}`} title={words[v==="W" ? 8 : v==="D" ? 9 : 10]}>{words[v==="W" ? 38 : v==="D" ? 39 : 40]}</span>)}</div>;
@@ -651,10 +656,10 @@ export function MatchInsights({ match }) {
       <div className="p-4 sm:p-6">
         {data.stale && <p role="status" className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{words[30]}</p>}
         {tab === "compare" && <>
-          <div className="mb-4 flex flex-wrap gap-2">{[false,true].map(v=><button key={String(v)} type="button" onClick={()=>setVenue(v)} aria-pressed={venue===v} className={`min-h-11 rounded-xl border px-3 text-xs font-semibold ${venue===v ? "border-orange-300 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{words[v?6:5]}</button>)}</div>
-          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played)}</p></div>)}</div>
+          <div className="mb-4 flex flex-wrap gap-2">{data.venue_supported!==false && [false,true].map(v=><button key={String(v)} type="button" onClick={()=>setVenue(v)} aria-pressed={venue===v} className={`min-h-11 rounded-xl border px-3 text-xs font-semibold ${venue===v ? "border-orange-300 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{words[v?6:5]}</button>)}</div>
+          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} kind={match[`${side}_media`]?.kind} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played)}</p></div>)}</div>
           <p className="my-3 text-xs text-slate-500">{words[31]}</p>
-          <table className="w-full table-fixed text-sm" data-testid="match-comparison-table"><caption className="sr-only">{words[2]}: {match.home_team} / {match.away_team}</caption><thead><tr className="border-b border-slate-200"><th scope="col" className="w-[46%] py-3 text-start text-xs font-semibold text-slate-500">{words[17]}</th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.home_team} className="no-underline sm:hidden">{teamInitials(match.home_team)}</abbr><span className="hidden sm:inline">{match.home_team}</span></th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.away_team} className="no-underline sm:hidden">{teamInitials(match.away_team)}</abbr><span className="hidden sm:inline">{match.away_team}</span></th></tr></thead><tbody>{METRICS.map(([key,index,suffix])=><tr key={key} className="border-b border-slate-100 last:border-0"><th scope="row" className="break-words py-3 pe-2 text-start text-xs font-medium leading-5 text-slate-600 sm:text-sm">{words[index]}</th><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(home[key],suffix)}</td><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(away[key],suffix)}</td></tr>)}</tbody></table>
+          <table className="w-full table-fixed text-sm" data-testid="match-comparison-table"><caption className="sr-only">{words[2]}: {match.home_team} / {match.away_team}</caption><thead><tr className="border-b border-slate-200"><th scope="col" className="w-[46%] py-3 text-start text-xs font-semibold text-slate-500">{words[17]}</th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.home_team} className="no-underline sm:hidden">{teamInitials(match.home_team)}</abbr><span className="hidden sm:inline">{match.home_team}</span></th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.away_team} className="no-underline sm:hidden">{teamInitials(match.away_team)}</abbr><span className="hidden sm:inline">{match.away_team}</span></th></tr></thead><tbody>{metricRows.map(([key,index,suffix])=><tr key={key} className="border-b border-slate-100 last:border-0"><th scope="row" className="break-words py-3 pe-2 text-start text-xs font-medium leading-5 text-slate-600 sm:text-sm">{typeof index === "number" ? words[index] : sportWords[index]}</th><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(home[key],suffix)}</td><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(away[key],suffix)}</td></tr>)}</tbody></table>
         </>}
         {tab === "recent" && <div className="grid min-w-0 gap-6 lg:grid-cols-2">{[[match.home_team,data.home?.recent],[match.away_team,data.away?.recent]].map(([name,rows],index)=><div key={index} className="min-w-0"><h3 className="mb-2 break-words text-base font-extrabold text-slate-900">{name}</h3>{history(rows)}</div>)}</div>}
         {tab === "h2h" && <><p className="mb-3 text-sm leading-6 text-slate-500">{words[37]}</p>{data.h2h?.length ? history(data.h2h) : <p className="rounded-xl bg-slate-50 p-4 text-sm leading-6 text-slate-600">{words[26]}</p>}</>}
@@ -689,4 +694,16 @@ export function MarketQuotes({ match }) {
     return valid && (point == null || Number(outcome.point) === Number(point));
   }).map(outcome => ({book:book.title || book.key,name:outcome.name,point:outcome.point,price:outcome.price}))));
   return <section className="mb-6 min-w-0 rounded-2xl border border-slate-200 bg-white p-4 sm:p-6" data-testid="selected-market-quotes"><h2 className="text-lg font-extrabold text-slate-900">{labels[0]}</h2><p className="mt-1 text-sm text-slate-500">{i18n.bet(prediction.market_label || key || "")}</p>{rows.length ? <div className="mt-4 overflow-x-auto"><table className="w-full text-sm"><thead><tr className="border-b border-slate-200 text-start text-xs text-slate-500">{labels.slice(1,4).map(text=><th key={text} scope="col" className="px-2 py-3 text-start">{text}</th>)}</tr></thead><tbody>{rows.map((row,index)=><tr key={index} className="border-b border-slate-100"><th scope="row" className="px-2 py-3 text-start font-semibold text-slate-700">{row.book}</th><td className="px-2 py-3 text-slate-600">{i18n.bet(row.name)}{row.point != null ? ` ${row.point}` : ""}</td><td className="px-2 py-3 font-mono font-bold text-slate-900">{new Intl.NumberFormat(i18n.locale,{maximumFractionDigits:3}).format(row.price)}</td></tr>)}</tbody></table></div> : <p className="mt-4 text-sm text-slate-500">{labels[4]}</p>}<p className="mt-3 text-xs leading-5 text-slate-500">{labels[5]}</p></section>;
+}
+
+
+export function sportRole(match,side,language="fr") {
+ const words=SPORT_INSIGHT_COPY[language]||SPORT_INSIGHT_COPY.fr;
+ return String(match?.sport_key||'').startsWith('tennis_')?words[side==='home'?'first':'second']:null;
+}
+export function MediaCredits({match}) {
+ const {language}=usePageLanguage();const words=SPORT_INSIGHT_COPY[language]||SPORT_INSIGHT_COPY.fr;
+ const entries=['home','away'].map(side=>({...(match?.[`${side}_media`]||{}),name:match?.[`${side}_team`],displayed:badgeUrl(match,side)})).filter(row=>row.verified_license&&row.kind==='portrait'&&row.url===row.displayed&&row.author&&row.license&&/^https:\/\/commons\.wikimedia\.org\//.test(row.source_url||'')&&/^https:\/\/(?:creativecommons\.org|commons\.wikimedia\.org)\//.test(row.license_url||''));
+ if(!entries.length)return null;
+ return <div className="mt-3 border-t border-slate-200 pt-2 text-[11px] leading-5 text-slate-500" data-testid="media-credits"><span className="font-semibold">{words.credits} : </span>{entries.map((row,i)=><span key={row.url} className="break-words">{i>0&&' · '}<a href={row.source_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.name} — {row.author}</a>{' / '}<a href={row.license_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.license}</a> ({words.crop})</span>)}</div>;
 }
