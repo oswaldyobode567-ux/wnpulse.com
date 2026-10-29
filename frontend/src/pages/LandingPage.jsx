@@ -18,7 +18,7 @@ import {
   Gift,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLanguage, useExperienceCopy, StadiumBackdrop } from "@/components/AppLayout";
+import { useLanguage, useExperienceCopy, StadiumBackdrop, AppearanceSwitcher } from "@/components/AppLayout";
 import api from "@/lib/api";
 
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
@@ -141,7 +141,8 @@ function homepagePicks(data) {
   }
   const rows = data.filter((row) => row && typeof row === "object");
   // Chercher la sélection disponible AVANT de limiter l'aperçu à trois cartes.
-  return [...rows.filter(isAvailablePick), ...rows.filter((row) => !isAvailablePick(row))].slice(0, 3);
+  const upcoming = rows.filter(row => !row.is_finished && !row.is_live && Number.isFinite(Date.parse(row.commence_time)) && Date.parse(row.commence_time) > Date.now());
+  return [...upcoming.filter(isAvailablePick), ...upcoming.filter(row => !isAvailablePick(row))].slice(0,3);
 }
 
 function yesterdayDate(now = new Date()) {
@@ -204,6 +205,7 @@ export default function LandingPage() {
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
   const extra = LANDING_EXTRA[language] || LANDING_EXTRA.fr;
+  const pathWords = DISCOVERY_PATH_COPY[language] || DISCOVERY_PATH_COPY.fr;
   const [picksStatus, setPicksStatus] = useState("loading");
   const [reloadKey, setReloadKey] = useState(0);
   const [resultsDate, setResultsDate] = useState(yesterdayDate);
@@ -254,6 +256,10 @@ export default function LandingPage() {
       });
     return () => { active = false; };
   }, [reloadKey]);
+  useEffect(() => {
+    const timer = window.setInterval(() => { if (document.visibilityState !== "hidden") setReloadKey(value=>value+1); },120000);
+    return () => window.clearInterval(timer);
+  },[]);
 
   useEffect(() => {
     if (!DAILY_RESULTS_ENDPOINT) return;
@@ -307,6 +313,7 @@ export default function LandingPage() {
           </Link>
 
           <nav className="ms-auto flex max-w-full flex-wrap min-w-0 items-center gap-1 sm:gap-2">
+            <AppearanceSwitcher />
             <Link to="/resultats" className="hidden lg:inline-flex">
               <Button variant="ghost" size="sm" data-testid="public-trackrecord-link">
                 {t("Historique des résultats")}
@@ -593,6 +600,15 @@ export default function LandingPage() {
         </div>
       </section>
 
+      <section className="border-t py-12 sm:py-16" data-testid="discovery-path">
+        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8">
+          <h2 className="max-w-3xl text-3xl font-extrabold">{pathWords[0]}</h2><p className="mt-3 max-w-3xl text-sm leading-7 text-slate-600">{pathWords[1]}</p>
+          <div className="wp-discovery-path mt-7">{[0,1,2].map(index=><article key={index}><span className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-orange-100 font-bold text-orange-800">{index+1}</span><h3>{pathWords[2+index*2]}</h3><p>{pathWords[3+index*2]}</p></article>)}</div>
+          <div className="mt-6 flex flex-wrap gap-3"><button type="button" onClick={showPicks} className="wp-primary-button">{pathWords[8]}</button><button type="button" onClick={showPricing} className="wp-quiet-button">{pathWords[9]}</button><Link to={user ? "/app/suivi" : signupUrl} className="wp-quiet-button">{user ? pathWords[6] : pathWords[11]}</Link></div>
+          <p className="mt-4 text-sm leading-7 text-slate-500">{pathWords[10]}</p>
+        </div>
+      </section>
+
       <section id="pricing" className="bg-slate-950 text-white border-t border-neutral-200 relative overflow-hidden">
         <div className="absolute inset-0 wp-gradient-hero opacity-20" />
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 relative">
@@ -705,3 +721,6 @@ export default function LandingPage() {
 }
 
 
+
+
+const DISCOVERY_PATH_COPY = {"fr": ["Découvre la méthode avant de choisir ton accès", "Des sélections lisibles, des données disponibles et un suivi qui conserve aussi les résultats perdants.", "Explore gratuitement", "Consulte les rencontres à venir et les sélections gratuites réellement disponibles, sans paiement.", "Comprends le choix", "Ouvre une fiche : marché, cote, horaire, données disponibles et points de vigilance. Une estimation ne garantit pas un résultat.", "Retrouve ton suivi", "Enregistre les pronostics qui t’intéressent et consulte leur évolution, gagnants comme perdants.", "Voir les sélections", "Comparer Free et Pro", "Pro donne accès aux sélections et outils réservés. Il ne rend aucun pari certain.", "Créer mon compte gratuit"], "en": ["Explore the method before choosing access", "Clear selections, available data and tracking that also keeps losing results.", "Explore for free", "View upcoming fixtures and genuinely available free selections without payment.", "Understand the choice", "Open a match card: market, odds, kickoff, available data and risks. An estimate never guarantees a result.", "Keep track", "Save selections you care about and follow their progress, including wins and losses.", "View selections", "Compare Free and Pro", "Pro unlocks subscriber selections and tools. It cannot make any bet certain.", "Create my free account"], "es": ["Conoce el método antes de elegir tu acceso", "Selecciones claras, datos disponibles y seguimiento que conserva también las pérdidas.", "Explora gratis", "Consulta próximos partidos y selecciones gratuitas realmente disponibles, sin pagar.", "Comprende la selección", "Abre la ficha: mercado, cuota, hora, datos disponibles y riesgos. Una estimación no garantiza el resultado.", "Guarda tu seguimiento", "Guarda selecciones y consulta su evolución, tanto victorias como derrotas.", "Ver selecciones", "Comparar Free y Pro", "Pro desbloquea selecciones y herramientas reservadas. Ninguna apuesta es segura.", "Crear mi cuenta gratuita"], "pt": ["Conhece o método antes de escolher o acesso", "Seleções claras, dados disponíveis e acompanhamento que também conserva perdas.", "Explora gratuitamente", "Consulta próximos jogos e seleções gratuitas realmente disponíveis, sem pagamento.", "Compreende a escolha", "Abre a ficha: mercado, cota, horário, dados disponíveis e riscos. Uma estimativa não garante o resultado.", "Guarda o acompanhamento", "Guarda seleções e acompanha a evolução, com vitórias e derrotas.", "Ver seleções", "Comparar Free e Pro", "Pro desbloqueia seleções e ferramentas reservadas. Nenhuma aposta é certa.", "Criar conta gratuita"], "de": ["Die Methode vor der Zugangswahl kennenlernen", "Klare Tipps, verfügbare Daten und ein Verlauf, der auch verlorene Tipps bewahrt.", "Kostenlos entdecken", "Kommende Spiele und tatsächlich verfügbare kostenlose Tipps ohne Zahlung ansehen.", "Auswahl verstehen", "Die Spielansicht zeigt Markt, Quote, Beginn, verfügbare Daten und Risiken. Eine Schätzung garantiert kein Ergebnis.", "Tipps verfolgen", "Interessante Tipps speichern und den Verlauf einschließlich Siegen und Niederlagen verfolgen.", "Tipps ansehen", "Free und Pro vergleichen", "Pro bietet reservierte Tipps und Werkzeuge. Keine Wette wird dadurch sicher.", "Kostenloses Konto erstellen"], "ar": ["اكتشف المنهج قبل اختيار الاشتراك", "اختيارات واضحة وبيانات متاحة ومتابعة تحتفظ بالخسائر أيضاً.", "استكشف مجاناً", "شاهد المباريات القادمة والاختيارات المجانية المتاحة فعلياً دون دفع.", "افهم الاختيار", "افتح التفاصيل: السوق والمعامل والموعد والبيانات المتاحة والمخاطر. لا يضمن التقدير أي نتيجة.", "تابع اختياراتك", "احفظ الاختيارات التي تهمك وتابع تطورها، مع النتائج الرابحة والخاسرة.", "شاهد الاختيارات", "قارن Free وPro", "يفتح Pro اختيارات وأدوات للمشتركين. لا يجعل أي رهان مضموناً.", "أنشئ حساباً مجانياً"]};
