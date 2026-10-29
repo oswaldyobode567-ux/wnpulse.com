@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import api from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
-import AppLayout from "@/components/AppLayout";
+import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -201,8 +201,9 @@ export default function AdminPage() {
           </div>
         )}
 
-        <Tabs defaultValue="payments" className="space-y-6">
+        <Tabs defaultValue="quality" className="space-y-6">
           <TabsList className="h-auto flex flex-wrap justify-start gap-1 bg-neutral-100">
+            <TabsTrigger value="quality" data-testid="tab-quality"><ShieldCheck className="mr-1.5 h-3.5 w-3.5" />Pilotage</TabsTrigger>
             <TabsTrigger value="payments" data-testid="tab-payments">Paiements</TabsTrigger>
             <TabsTrigger value="users" data-testid="tab-users">Utilisateurs</TabsTrigger>
             <TabsTrigger value="whatsapp-contacts" data-testid="tab-whatsapp-contacts"><MessageCircle className="mr-1.5 h-3.5 w-3.5" />Contacts WhatsApp</TabsTrigger>
@@ -212,10 +213,12 @@ export default function AdminPage() {
             </TabsTrigger>
           </TabsList>
 
+          <TabsContent value="quality"><QualityControlPanel /></TabsContent>
+
           <TabsContent value="payments">
             <Card className="bg-white border-neutral-200">
               <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between gap-4">
-                <h2 className="font-heading font-bold text-slate-900">Paiements MTN MoMo</h2>
+                <h2 className="font-heading font-bold text-slate-900">Demandes d’abonnement</h2>
                 <Select value={statusFilter} onValueChange={setStatusFilter}>
                   <SelectTrigger className="w-40" data-testid="payment-status-filter">
                     <SelectValue />
@@ -650,4 +653,119 @@ function AdminWhatsAppContacts() {
       )}
     </Card>
   );
+}
+
+const QUALITY_ADMIN_COPY = {"fr": ["Pilotage de WinPulse", "Fiabilité et abonnements, à partir des données réellement enregistrées.", "Actualiser", "Contrôle léger", "Contrôle en cours…", "État du service", "Dernier contrôle", "Aucun contrôle disponible", "Rapport ancien : relance un contrôle.", "Automatisation désactivée sur le serveur.", "Audit quotidien", "Chargement…", "Indisponible. Réessaie.", "jours", "Demandes de paiement", "Paiements validés", "Montants validés dans l’application", "Premiers acheteurs", "Achats répétés", "Renouvellements observables", "Inscriptions → premier paiement", "Demandes → paiement validé", "Nouvelles inscriptions", "Inscriptions devenues payantes", "Lecture des chiffres", "Les ouvertures de la fenêtre de paiement ne sont pas des paiements. Le ratio des demandes concerne les demandes créées sur la période ; les paiements sont comptés à leur date de validation.", "Ces montants ne sont pas un rapprochement bancaire ni un bénéfice net. Les paiements manuels restent distingués de FedaPay.", "Les cohortes récentes évoluent encore. Sans dénominateur, aucun pourcentage n’est inventé.", "Renouvellements : fenêtre de même durée, décalée de 7 jours pour observer chaque échéance jusqu’au bout. Paiements avant expiration inclus.", "Paiements sans échéance historique connue", "FedaPay historique sans environnement enregistré", "FedaPay vérifiés", "Validations manuelles", "Aucune alerte détectée par ce contrôle.", "Les signaux navigateur sont des compteurs agrégés des utilisateurs connectés, pas un test complet de toutes les pages.", "Sain", "Attention", "Critique", "Inconnu", "Le contrôle est en cours ou temporairement indisponible.", "Échéances évaluées", "Renouvelées", "Paiements sans montant exploitable", "Gagnants et perdants restent dans l’historique public.", "La surveillance légère fonctionne toutes les 5 minutes lorsque le scheduler interne est actif. Elle ne contacte pas les bookmakers.", "Consultations de l’offre Pro", "Ouvertures du paiement", "Navigation : compteurs par jours UTC, avec visites répétées possibles. Ce ne sont pas des visiteurs uniques.", "Fenêtre des échéances"], "en": ["WinPulse control centre", "Reliability and subscriptions from recorded data.", "Refresh", "Lightweight check", "Checking…", "Service status", "Last check", "No check available", "Old report: run another check.", "Server automation is disabled.", "Daily audit", "Loading…", "Unavailable. Try again.", "days", "Payment requests", "Confirmed payments", "Amounts validated in the app", "First buyers", "Repeat purchases", "Observable renewals", "Signups → first payment", "Requests → confirmed payment", "New signups", "Signups that paid", "Reading the figures", "Opening checkout is not a payment. Request conversion uses requests created in the period; payments use their approval date.", "These amounts are not bank reconciliation or net profit. Manual approvals are separated from FedaPay.", "Recent cohorts are still evolving. No percentage is invented without a denominator.", "Renewals use a window of the same length shifted back seven days, giving every expiry a full grace period. Early payments count.", "Payments without a known historical expiry", "Historical FedaPay payments without recorded environment", "Verified FedaPay", "Manual approvals", "No alert detected by this check.", "Browser signals aggregate signed-in users; they are not a full test of every page.", "Healthy", "Warning", "Critical", "Unknown", "Check running or temporarily unavailable.", "Evaluated expiry cycles", "Renewed", "Payments without a usable amount", "Wins and losses remain in the public record.", "Lightweight monitoring runs every five minutes when the internal scheduler is active. It does not contact bookmakers.", "Pro offer views", "Checkout openings", "Navigation counts use UTC calendar days and may include repeat visits. These are not unique visitors.", "Expiry window"], "es": ["Control de WinPulse", "Fiabilidad y suscripciones según datos registrados.", "Actualizar", "Control ligero", "Comprobando…", "Estado del servicio", "Último control", "Sin controles disponibles", "Informe antiguo: ejecuta otro control.", "La automatización está desactivada.", "Auditoría diaria", "Cargando…", "No disponible. Reintenta.", "días", "Solicitudes de pago", "Pagos validados", "Importes validados en la aplicación", "Primeros compradores", "Compras repetidas", "Renovaciones observables", "Inscripciones → primer pago", "Solicitudes → pago validado", "Nuevas inscripciones", "Inscripciones que pagaron", "Interpretar cifras", "Abrir el pago no es pagar. La conversión usa las solicitudes creadas en el periodo; los pagos usan la fecha de validación.", "No es una conciliación bancaria ni un beneficio neto. Las aprobaciones manuales se separan de FedaPay.", "Las cohortes recientes siguen cambiando. Sin denominador no se inventa un porcentaje.", "Renovaciones: ventana de igual duración desplazada siete días para completar el margen de cada vencimiento. Incluye pagos anticipados.", "Pagos sin vencimiento histórico conocido", "FedaPay histórico sin entorno registrado", "FedaPay verificados", "Validaciones manuales", "Sin alertas detectadas por este control.", "Los errores del navegador se agregan para usuarios conectados; no prueban todas las páginas.", "Correcto", "Atención", "Crítico", "Desconocido", "Control en curso o no disponible.", "Vencimientos evaluados", "Renovados", "Pagos sin importe utilizable", "Ganados y perdidos permanecen en el historial público.", "Control cada cinco minutos con el planificador activo, sin contactar a las casas.", "Visitas a la oferta Pro", "Aperturas del pago", "Contadores por días UTC; pueden incluir visitas repetidas. No son visitantes únicos.", "Ventana de vencimientos"], "pt": ["Controlo WinPulse", "Fiabilidade e subscrições com dados registados.", "Atualizar", "Controlo ligeiro", "A verificar…", "Estado do serviço", "Último controlo", "Sem controlo disponível", "Relatório antigo: executa novo controlo.", "Automatização desativada.", "Auditoria diária", "A carregar…", "Indisponível. Tenta novamente.", "dias", "Pedidos de pagamento", "Pagamentos validados", "Montantes validados na aplicação", "Primeiros compradores", "Compras repetidas", "Renovações observáveis", "Inscrições → primeiro pagamento", "Pedidos → pagamento validado", "Novas inscrições", "Inscrições que pagaram", "Interpretar os números", "Abrir o pagamento não equivale a pagar. A conversão usa pedidos criados no período; os pagamentos usam a data de validação.", "Não é reconciliação bancária nem lucro líquido. As validações manuais são separadas da FedaPay.", "As coortes recentes ainda evoluem. Sem denominador não se inventa uma percentagem.", "Renovações: janela da mesma duração recuada sete dias para completar a margem de cada validade. Inclui pagamentos antecipados.", "Pagamentos sem validade histórica conhecida", "FedaPay histórico sem ambiente registado", "FedaPay verificados", "Validações manuais", "Sem alerta detetado neste controlo.", "Os sinais agregam utilizadores ligados; não são um teste completo de todas as páginas.", "Saudável", "Atenção", "Crítico", "Desconhecido", "Controlo em curso ou indisponível.", "Validades avaliadas", "Renovadas", "Pagamentos sem montante utilizável", "Ganhos e perdas continuam no histórico público.", "Controlo a cada cinco minutos com o agendador ativo, sem contactar casas.", "Visitas à oferta Pro", "Aberturas do pagamento", "Contadores por dias UTC com possíveis visitas repetidas. Não são visitantes únicos.", "Janela de validades"], "de": ["WinPulse-Steuerung", "Zuverlässigkeit und Abonnements aus erfassten Daten.", "Aktualisieren", "Leichte Prüfung", "Wird geprüft…", "Dienststatus", "Letzte Prüfung", "Keine Prüfung verfügbar", "Alter Bericht: erneut prüfen.", "Serverautomatisierung deaktiviert.", "Tägliche Prüfung", "Wird geladen…", "Nicht verfügbar. Erneut versuchen.", "Tage", "Zahlungsanfragen", "Bestätigte Zahlungen", "In der App bestätigte Beträge", "Erstkäufer", "Wiederholte Käufe", "Beobachtbare Verlängerungen", "Anmeldungen → erste Zahlung", "Anfragen → bestätigte Zahlung", "Neue Anmeldungen", "Anmeldungen mit Zahlung", "Zahlen verstehen", "Ein geöffnetes Zahlungsfenster ist keine Zahlung. Die Anfragenquote betrifft im Zeitraum erstellte Anfragen; Zahlungen zählen nach Bestätigungsdatum.", "Kein Bankabgleich und kein Nettogewinn. Manuelle Freigaben werden von FedaPay getrennt.", "Jüngere Kohorten verändern sich noch. Ohne Nenner wird keine Quote erfunden.", "Verlängerungen: gleich langes Fenster, um sieben Tage zurückversetzt für eine vollständige Nachfrist. Frühzahlungen zählen.", "Zahlungen ohne bekanntes historisches Ablaufdatum", "Historische FedaPay-Zahlungen ohne Umgebung", "Verifizierte FedaPay", "Manuelle Freigaben", "Keine Warnung bei dieser Prüfung.", "Browsersignale aggregieren angemeldete Nutzer und testen nicht jede Seite.", "Gesund", "Warnung", "Kritisch", "Unbekannt", "Prüfung läuft oder ist nicht verfügbar.", "Bewertete Ablaufzyklen", "Verlängert", "Zahlungen ohne nutzbaren Betrag", "Siege und Niederlagen bleiben öffentlich sichtbar.", "Leichte Prüfung alle fünf Minuten bei aktivem Scheduler, ohne Buchmacheraufrufe.", "Pro-Angebotsaufrufe", "Geöffnete Zahlungen", "Zähler nach UTC-Kalendertagen, möglicherweise mit Wiederholungen. Keine eindeutigen Besucher.", "Ablauffenster"], "ar": ["مركز تحكم WinPulse", "موثوقية واشتراكات بناءً على بيانات مسجلة.", "تحديث", "فحص خفيف", "جارٍ الفحص…", "حالة الخدمة", "آخر فحص", "لا يوجد فحص", "تقرير قديم: أعد الفحص.", "الأتمتة متوقفة على الخادم.", "الفحص اليومي", "جارٍ التحميل…", "غير متاح. أعد المحاولة.", "أيام", "طلبات الدفع", "مدفوعات مؤكدة", "مبالغ مؤكدة داخل التطبيق", "مشترون جدد", "مشتريات متكررة", "تجديدات قابلة للرصد", "التسجيل → أول دفع", "الطلبات → دفع مؤكد", "تسجيلات جديدة", "تسجيلات دفعت", "قراءة الأرقام", "فتح نافذة الدفع ليس دفعاً. النسبة تخص الطلبات المنشأة خلال الفترة؛ وتُحسب المدفوعات بتاريخ تأكيدها.", "ليست مطابقة مصرفية أو ربحاً صافياً. تُفصل الموافقات اليدوية عن FedaPay.", "الدفعات الحديثة لا تزال تتغير. لا تُختلق نسبة دون مقام.", "التجديدات ضمن نافذة مساوية المدة مؤخرة سبعة أيام لإكمال مهلة كل انتهاء. يشمل الدفع المبكر.", "مدفوعات بلا تاريخ انتهاء سابق معروف", "مدفوعات FedaPay سابقة بلا بيئة مسجلة", "FedaPay موثق", "موافقات يدوية", "لم يرصد الفحص تنبيهاً.", "إشارات المتصفح مجمعة للمستخدمين المتصلين وليست اختباراً لكل الصفحات.", "سليم", "تنبيه", "حرج", "غير معروف", "الفحص جارٍ أو غير متاح.", "دورات انتهاء مقيمة", "مجددة", "مدفوعات بلا مبلغ صالح", "تبقى النتائج الفائزة والخاسرة في السجل العام.", "فحص كل خمس دقائق عند تشغيل المجدول دون الاتصال بشركات المراهنة.", "مشاهدات عرض Pro", "مرات فتح الدفع", "عدادات حسب أيام UTC وقد تتكرر الزيارات. ليست زواراً فريدين.", "نافذة تواريخ الانتهاء"]};
+const QUALITY_CHECK_COPY = {"fr": ["Base de données", "Fraîcheur des cotes", "Erreurs de paiement récentes", "Activation de paiement à vérifier", "Résultats en attente depuis plus de 12 h", "Planificateur automatique", "Erreurs navigateur signalées aujourd’hui (UTC)"], "en": ["Database", "Odds freshness", "Recent payment errors", "Payment activation needs review", "Results pending over 12 hours", "Automatic scheduler", "Browser errors reported today (UTC)"], "es": ["Base de datos", "Actualidad de cuotas", "Errores de pago recientes", "Revisar activación de pago", "Resultados pendientes más de 12 h", "Planificador automático", "Errores del navegador de hoy (UTC)"], "pt": ["Base de dados", "Atualidade das cotas", "Erros de pagamento recentes", "Rever ativação do pagamento", "Resultados pendentes há mais de 12 h", "Agendador automático", "Erros do navegador hoje (UTC)"], "de": ["Datenbank", "Quotenaktualität", "Jüngste Zahlungsfehler", "Zahlungsaktivierung prüfen", "Ergebnisse über 12 Stunden ausstehend", "Automatischer Scheduler", "Heute gemeldete Browserfehler (UTC)"], "ar": ["قاعدة البيانات", "حداثة المعاملات", "أخطاء دفع حديثة", "تفعيل دفع يحتاج مراجعة", "نتائج معلقة أكثر من 12 ساعة", "المجدول الآلي", "أخطاء المتصفح المبلغة اليوم (UTC)"]};
+
+function QualityControlPanel() {
+  const {
+    user
+  } = useAuth();
+  const i18n = usePageLanguage();
+  const w = QUALITY_ADMIN_COPY[i18n.language] || QUALITY_ADMIN_COPY.fr;
+  const names = QUALITY_CHECK_COPY[i18n.language] || QUALITY_CHECK_COPY.fr;
+  const [days, setDays] = useState(30),
+    [retry, setRetry] = useState(0),
+    [checking, setChecking] = useState(false);
+  const [state, setState] = useState({
+    key: null,
+    loading: true
+  });
+  const alive = useRef(false);
+  const key = `${user?.id}:${days}`;
+  useEffect(() => {
+    alive.current = true;
+    return () => {
+      alive.current = false;
+    };
+  }, []);
+  useEffect(() => {
+    if (!user?.is_admin) return undefined;
+    let active = true;
+    let flight = null;
+    const load = async () => {
+      if (flight || document.hidden) return;
+      const controller = new AbortController();
+      flight = controller;
+      setState(old => ({
+        ...old,
+        key,
+        loading: true
+      }));
+      const results = await Promise.allSettled([api.get(`/admin/quality/status`, {
+        signal: controller.signal,
+        timeout: 8000
+      }), api.get(`/admin/quality/business?days=${days}`, {
+        signal: controller.signal,
+        timeout: 25000
+      }), api.get('/admin/health-monitor/latest', {
+        signal: controller.signal,
+        timeout: 8000
+      })]);
+      if (active && !controller.signal.aborted) setState({
+        key,
+        loading: false,
+        status: results[0].status === 'fulfilled' ? results[0].value.data : null,
+        business: results[1].status === 'fulfilled' ? results[1].value.data : null,
+        audit: results[2].status === 'fulfilled' ? results[2].value.data : null
+      });
+      flight = null;
+    };
+    load();
+    const timer = window.setInterval(load, 60000);
+    document.addEventListener('visibilitychange', load);
+    return () => {
+      active = false;
+      flight?.abort();
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', load);
+    };
+  }, [key, days, retry, user?.is_admin]);
+  if (!user?.is_admin) return null;
+  const visible = state.key === key ? state : {};
+  const data = visible.business;
+  const report = visible.status;
+  const audit = visible.audit;
+  const number = value => value !== null && value !== undefined && Number.isFinite(Number(value)) ? i18n.formatNumber(Number(value), {
+    maximumFractionDigits: 2
+  }) : '—';
+  const percent = value => value == null ? '—' : `${number(value)} %`;
+  const date = value => value && Number.isFinite(new Date(value).getTime()) ? i18n.formatDate(value, {
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit'
+  }) : '—';
+  const statuses = {
+    healthy: w[35],
+    warning: w[36],
+    critical: w[37],
+    unknown: w[38],
+    never_run: w[7]
+  };
+  const codes = ['database', 'odds_freshness', 'payment_provider_errors', 'activation_pending', 'results_overdue', 'scheduler', 'browser_errors_today'];
+  const metric = (label, value, sub) => <div key={label} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4"><p className="text-xs leading-5 text-slate-500">{label}</p><strong className="mt-2 block break-words font-mono text-2xl text-slate-900">{value}</strong>{sub && <p className="mt-2 text-xs leading-5 text-slate-500">{sub}</p>}</div>;
+  return <section data-testid="quality-control" className="space-y-6" dir={i18n.direction}>
+  <header className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="text-2xl font-bold text-slate-900">{w[0]}</h2><p className="mt-2 text-sm text-slate-500">{w[1]}</p></div><div className="flex flex-wrap gap-2"><button type="button" disabled={visible.loading} onClick={() => setRetry(n => n + 1)} className="inline-flex min-h-11 items-center gap-2 rounded-xl border px-4 text-sm font-bold disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${visible.loading ? 'animate-spin' : ''}`} />{w[2]}</button><button type="button" data-testid="quality-check" disabled={checking} onClick={async () => {
+          setChecking(true);
+          try {
+            await api.post('/admin/quality/check', {}, {
+              timeout: 55000
+            });
+            if (alive.current) setRetry(n => n + 1);
+          } catch {
+            if (alive.current) toast.error(w[39]);
+          } finally {
+            if (alive.current) setChecking(false);
+          }
+        }} className="min-h-11 rounded-xl bg-orange-600 px-4 text-sm font-bold text-white disabled:opacity-50">{checking ? w[4] : w[3]}</button></div></header>
+  <div className="rounded-2xl border border-slate-200 bg-white p-4 sm:p-5" data-testid="quality-status"><div className="flex flex-wrap justify-between gap-2"><h3 className="text-xl font-bold">{w[5]}</h3><span className="text-sm text-slate-500">{w[6]} : {date(report?.checked_at)}</span></div>
+   {!report ? <p className="mt-3 text-sm" role="status">{visible.loading ? w[11] : w[12]}</p> : <><p className={`mt-3 text-sm font-bold ${report.status === 'healthy' && !report.stale ? 'text-emerald-700' : 'text-amber-800'}`}>{statuses[report.stale ? "unknown" : report.status] || w[38]}{report.stale && ` · ${w[8]}`}</p>{report.scheduler_enabled === false && <p className="mt-2 text-sm text-amber-800">{w[9]}</p>}<div className="mt-4 grid gap-2 sm:grid-cols-2">{(report.checks || []).map(check => <div key={check.code} className="flex min-w-0 items-start justify-between gap-3 rounded-xl bg-slate-50 p-3 text-sm"><span className="min-w-0 break-words">{names[codes.indexOf(check.code)] || w[38]}{check.value != null && <bdi className="ms-2 font-mono font-bold">{number(check.value)}</bdi>}</span><span className={`text-xs font-bold ${check.status === 'healthy' ? 'text-emerald-700' : check.status === 'critical' ? 'text-rose-700' : 'text-amber-800'}`}>{statuses[check.status] || w[38]}</span></div>)}</div></>}
+   <p className="mt-4 text-xs leading-6 text-slate-500">{w[44]}<br />{w[34]}</p><p className="mt-3 border-t border-slate-200 pt-3 text-xs leading-6 text-slate-500">{w[10]} : {date(audit?.started_at)} · {audit?.overall_status ? statuses[audit.overall_status] || w[38] : w[7]}</p></div>
+  <div className="flex flex-wrap gap-2">{[7, 30, 90].map(n => <button type="button" key={n} aria-pressed={days === n} onClick={() => setDays(n)} className={`min-h-11 rounded-xl border px-4 text-sm font-bold ${days === n ? 'border-orange-300 bg-orange-50 text-orange-800' : 'border-slate-200 text-slate-600'}`}>{n} {w[13]}</button>)}</div>
+  {!data ? <p role="status" className="text-sm text-slate-500">{visible.loading ? w[11] : w[12]}</p> : <><div className="grid grid-cols-2 gap-3 lg:grid-cols-3" data-testid="quality-business">
+   {metric(w[45], number(data.navigation?.pro_views))}{metric(w[46], number(data.navigation?.checkout_openings))}{metric(w[14], number(data.checkout_requests))}{metric(w[15], number(data.confirmed_payments), `${w[31]} : ${number(data.verified_fedapay)} · ${w[32]} : ${number(data.manual_approved)}`)}{metric(w[16], `${number(data.confirmed_amount_xof)} XOF`)}{metric(w[17], number(data.first_buyers))}{metric(w[18], number(data.repeat_purchases))}{metric(w[19], percent(data.renewal_percent), `${w[40]} : ${number(data.renewal_cycles_due)} · ${w[41]} : ${number(data.renewal_cycles_renewed)}`)}{metric(w[20], percent(data.signup_to_paid_percent), `${w[22]} : ${number(data.new_registrations)} · ${w[23]} : ${number(data.new_registrations_paid)}`)}{metric(w[21], percent(data.checkout_to_paid_percent), `${number(data.checkout_requests_paid)} / ${number(data.checkout_requests)}`)}
+  </div><div className="rounded-2xl border border-slate-200 bg-white p-4 text-xs leading-6 text-slate-500"><h3 className="mb-2 text-base font-bold text-slate-900">{w[24]}</h3><p>{w[25]}</p><p className="mt-2">{w[47]}</p><p className="mt-2">{w[26]}</p><p className="mt-2">{w[27]}</p><p className="mt-2">{w[28]}<br />{w[48]} : {date(data.renewal_from)} → {date(data.renewal_to)}</p><p className="mt-3">{w[29]} : {number(data.payments_missing_expiry)}<br />{w[30]} : {number(data.fedapay_unknown_environment)}<br />{w[42]} : {number(data.payments_missing_amount)}</p></div></>}
+ </section>;
 }
