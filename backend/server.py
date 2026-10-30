@@ -8219,37 +8219,57 @@ async def _invalidate_prediction_cache():
         _prediction_cache["source_cache_updated_at"] = None
 
 
-async def _compute_calibration_map() -> Dict[int, Dict]:
+def _calibration_key(prediction):
+    import math
+    try:
+        confidence = float(prediction.get("confidence", 0))
+        if not math.isfinite(confidence):
+            return None
+    except (TypeError, ValueError):
+        return None
+    sport = prediction.get("sport_key")
+    market = prediction.get("market")
+    if not sport or not market:
+        return None
+    bucket = max(0, min(95, int(confidence // 5) * 5))
+    return f"{sport}|{market}|{bucket}"
+
+
+async def _compute_calibration_map() -> Dict[str, Dict]:
+    # New engine versions must build their own evidence. A resolved-only view
+    # does not establish performance of still-unresolved selections.
     resolved = await db.predictions_history.find(
         {"result": {"$in": ["won", "lost"]}, "model_version": MODEL_VERSION},
-        {"confidence": 1, "result": 1}
-    ).to_list(length=10000)
-    buckets: Dict[int, Dict[str, int]] = {}
+        {"confidence": 1, "result": 1, "match_id": 1, "market": 1,
+         "sport_key": 1, "created_at": 1, "commence_time": 1}
+    ).sort("created_at", 1).to_list(length=10000)
+    buckets = {}
+    seen = set()
     for row in resolved:
-        try:
-            c = float(row.get("confidence", 0))
-        except (TypeError, ValueError):
+        kickoff = _parse_iso(row.get("commence_time"))
+        captured = _parse_iso(row.get("created_at"))
+        key = _calibration_key(row)
+        # One pre-match observation per fixture/market, not per refresh.
+        identity = (row.get("match_id"), row.get("market"))
+        if not key or not identity[0] or not kickoff or not captured or captured >= kickoff or identity in seen:
             continue
-        bucket = max(0, min(95, int(c // 5) * 5))
-        item = buckets.setdefault(bucket, {"wins": 0, "total": 0})
+        seen.add(identity)
+        item = buckets.setdefault(key, {"wins": 0, "total": 0, "confidence_sum": 0.})
         item["total"] += 1
-        if row.get("result") == "won":
-            item["wins"] += 1
-
+        item["wins"] += int(row["result"] == "won")
+        item["confidence_sum"] += float(row["confidence"]) / 100.
     out = {}
-    for bucket, item in buckets.items():
+    for key, item in buckets.items():
         total = item["total"]
         if total < 30:
             continue
-        prior = (bucket + 2.5) / 100.0
-        calibrated = (item["wins"] + prior * 20.0) / (total + 20.0)
-        out[bucket] = {
-            "probability": round(calibrated * 100.0, 1),
-            "wins": item["wins"],
-            "total": total,
-        }
+        prior = item["confidence_sum"] / total
+        probability = (item["wins"] + prior*20.) / (total+20.)
+        out[key] = {"probability": round(probability*100, 1),
+                    "wins": item["wins"], "total": total,
+                    "scope": "sport_market_version", "version": MODEL_VERSION,
+                    "status": "descriptive_resolved_only"}
     return out
-
 
 
 _hybrid_registry_cache = {"loaded":0.,"models":{}}
@@ -8261,7 +8281,7 @@ async def _get_hybrid_registry():
     if time.monotonic()-_hybrid_registry_cache["loaded"]<300:
         return _hybrid_registry_cache["models"]
     try:
-        rows=await asyncio.wait_for(db.hybrid_model_registry.find({"version":"dc-elo-market-1","status":"shadow_ready"}).to_list(length=None),timeout=2)
+        rows=await asyncio.wait_for(db.hybrid_model_registry.find({"version":"dc-elo-market-2","status":"shadow_ready"}).to_list(length=None),timeout=2)
         models={row["sport_key"]:row for row in rows if row.get("model")}
         _hybrid_registry_cache.update(loaded=time.monotonic(),models=models)
         return models
@@ -8284,11 +8304,11 @@ async def _refresh_hybrid_registry(force=False):
         operations=[UpdateOne({"_id":league},{"$set":report},upsert=True) for league,report in reports.items()]
         if operations:
             await db.hybrid_model_registry.bulk_write(operations,ordered=False)
-            versions=[UpdateOne({"_id":f"dc-elo-market-1:{league}:{report['as_of']}"},
+            versions=[UpdateOne({"_id":f"dc-elo-market-2:{league}:{report['as_of']}"},
                       {"$setOnInsert":report},upsert=True) for league,report in reports.items()]
             await db.hybrid_model_versions.bulk_write(versions,ordered=False)
         await db.system_meta.update_one({"_id":"hybrid_training"},{"$set":{
-            "finished_at":datetime.now(timezone.utc).isoformat(),"version":"dc-elo-market-1",
+            "finished_at":datetime.now(timezone.utc).isoformat(),"version":"dc-elo-market-2",
             "confirmed_records_read":len(records),"leagues":len(reports),
             "ready":sum(r.get("status")=="shadow_ready" for r in reports.values()),
             "mode":"shadow","automatic_promotion":False}},upsert=True)
@@ -8319,7 +8339,7 @@ async def hybrid_prediction_train(payload:dict=Depends(get_current_user_payload)
 
 async def _evaluate_hybrid_history():
     import math
-    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-1","hybrid_evaluation":{"$exists":False}}).to_list(length=None)
+    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-2","hybrid_evaluation":{"$exists":False}}).to_list(length=None)
     ids=list({r["match_id"] for r in rows})
     if not ids:return
     confirmed=await db.predictions_history.find({"match_id":{"$in":ids},"result":{"$in":["won","lost","void"]}}).to_list(length=None)
@@ -8364,7 +8384,7 @@ async def _evaluate_hybrid_history():
 
 
 async def _hybrid_prospective_report():
-    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-1"},{"hybrid_evaluation":1}).to_list(length=None)
+    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-2"},{"hybrid_evaluation":1}).to_list(length=None)
     outcomes=[r["hybrid_evaluation"] for r in rows if r.get("hybrid_evaluation")]
     evaluated=[r for r in outcomes if r["result"]!="void"]
     count=len(outcomes)
@@ -8385,7 +8405,7 @@ async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload
     if not user or not user.get("is_admin"):
         raise HTTPException(status_code=403,detail="Accès administrateur requis")
     summary=await db.system_meta.find_one({"_id":"hybrid_training"},{"_id":0})
-    reports=await db.hybrid_model_registry.find({"version":"dc-elo-market-1"},{"_id":0,"model":0}).to_list(length=None)
+    reports=await db.hybrid_model_registry.find({"version":"dc-elo-market-2"},{"_id":0,"model":0}).to_list(length=None)
     return {"mode":"shadow","training_running":bool(_hybrid_training_task and not _hybrid_training_task.done()),"automatic_promotion":False,"summary":summary,"leagues":reports,
             "prospective":await _hybrid_prospective_report(),
             "note":"Aucun pronostic public remplacé. Absence de données ou de modèle : moteur actuel conservé."}
@@ -8469,26 +8489,22 @@ async def _get_calibration_map() -> Dict[int, Dict]:
     return snapshot["calibration"]
 
 
-def _apply_calibration(predictions: List[Dict], calibration: Dict[int, Dict]) -> List[Dict]:
+def _apply_calibration(predictions: List[Dict], calibration: Dict[str, Dict]) -> List[Dict]:
     for p in predictions:
-        try:
-            c = float(p.get("confidence", 0))
-        except (TypeError, ValueError):
-            c = 0.0
-        bucket = max(0, min(95, int(c // 5) * 5))
-        cal = calibration.get(bucket)
+        key = _calibration_key(p)
+        cal = calibration.get(key) if key else None
         if cal:
             p["calibrated_probability"] = cal["probability"]
             p["calibration_sample"] = cal["total"]
             p["calibration_status"] = "empirique"
-            p["effective_score"] = round(
-                float(p.get("wp_score", c)) * 0.70 + cal["probability"] * 0.30, 1
-            )
+            p["calibration_scope"] = "sport_market_version"
         else:
             p["calibrated_probability"] = None
             p["calibration_sample"] = 0
             p["calibration_status"] = "insuffisant"
-            p["effective_score"] = round(float(p.get("wp_score", c)), 1)
+        # Descriptive history is not an out-of-time validated probability.
+        # Keep ranking independent until prospective validation succeeds.
+        p["effective_score"] = round(float(p.get("wp_score", p.get("confidence", 0)) or 0), 1)
     return predictions
 
 
@@ -12973,6 +12989,12 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "num_books": p.get("num_books"),
                 "edge": p.get("edge"),
                 "model_version": p.get("model_version", MODEL_VERSION),
+                "engine_revision": p.get("engine_revision"),
+                "best_bookmaker": p.get("best_bookmaker"),
+                "probability_basis": p.get("probability_basis", "unconditional"),
+                "push_probability": p.get("push_probability"),
+                "expected_return": p.get("expected_return"),
+                "probability_source": p.get("probability_source"),
                 "is_combo": p.get("is_combo", False),
                 "official_track_eligible": bool(p.get("official_track_eligible", False)),
                 "result": "pending",
@@ -15575,3 +15597,4 @@ async def _stop_startup_montante_task():
         _startup_montante_task.cancel()
         try:await _startup_montante_task
         except asyncio.CancelledError:pass
+
