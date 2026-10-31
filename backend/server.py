@@ -8406,9 +8406,9 @@ async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload
         raise HTTPException(status_code=403,detail="Accès administrateur requis")
     summary=await db.system_meta.find_one({"_id":"hybrid_training"},{"_id":0})
     reports=await db.hybrid_model_registry.find({"version":"dc-elo-market-2"},{"_id":0,"model":0}).to_list(length=None)
-    return {"mode":"shadow","training_running":bool(_hybrid_training_task and not _hybrid_training_task.done()),"automatic_promotion":False,"summary":summary,"leagues":reports,
+    return {"mode":os.environ.get("WNPULSE_HYBRID_MODE", "pilot"),"training_running":bool(_hybrid_training_task and not _hybrid_training_task.done()),"automatic_promotion":False,"summary":summary,"leagues":reports,
             "prospective":await _hybrid_prospective_report(),
-            "note":"Aucun pronostic public remplacé. Absence de données ou de modèle : moteur actuel conservé."}
+            "note":"Pilote public : modèle statistique jusqu'à 10%, ou poids appris sur 1X2 si critères rétrospectifs satisfaits. Aucun avantage futur garanti. Sans modèle exploitable : consensus conservé."}
 
 
 
@@ -12989,6 +12989,13 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "num_books": p.get("num_books"),
                 "edge": p.get("edge"),
                 "model_version": p.get("model_version", MODEL_VERSION),
+                "market_probability": p.get("market_probability"),
+                "sport_probability": p.get("sport_probability"),
+                "sport_weight": p.get("sport_weight"),
+                "public_hybrid": p.get("public_hybrid"),
+                "analysis_quality": p.get("analysis_quality"),
+                "risk_policy_version": p.get("risk_policy_version"),
+                "estimated_loss_probability": p.get("estimated_loss_probability"),
                 "engine_revision": p.get("engine_revision"),
                 "best_bookmaker": p.get("best_bookmaker"),
                 "probability_basis": p.get("probability_basis", "unconditional"),
@@ -15597,4 +15604,5 @@ async def _stop_startup_montante_task():
         _startup_montante_task.cancel()
         try:await _startup_montante_task
         except asyncio.CancelledError:pass
+
 
