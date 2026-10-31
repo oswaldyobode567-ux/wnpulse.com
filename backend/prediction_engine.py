@@ -26,7 +26,7 @@ MIN_CONFIDENCE = 60.0    # Seuil minimum de score pour publication
 MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
 MIN_BOOKMAKERS = 1       # Minimum pour analyser un marche disponible
 MIN_BOOKMAKERS_STRONG = 2     # minimum pour une recommandation forte
-MODEL_VERSION = "8.3"
+MODEL_VERSION = "8.4"
 CALIBRATION_MIN_SAMPLE = 30
 
 # ─── Seuils de label et ciblage de "bonnes cotes" ────────────────────────────
@@ -1672,7 +1672,7 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
     except Exception:
         # Experimental analysis must never take down the public feed.
         result["shadow_analysis"] = {"mode":"shadow","status":"error","reason":"experimental_analysis_failed","candidates":[]}
-    return result
+    return _public_hybrid_and_risk(match, result, real_stats_map or {})
 
 # Personalized construction reuses today's quality gates without limiting the feed.
 PERSONAL_COMBO_VERSION = "personal-quality-1"
@@ -1850,7 +1850,9 @@ def hybrid_training_rows(records, as_of=None):
         if known < _hybrid_dt(row["known_at"]):
             row["known_at"] = known.isoformat()
         # Only a genuinely pre-match, non-combined 1X2 forecast is a benchmark.
-        probability = _hybrid_number(record.get("model_probability"))
+        # Never relabel an already blended public forecast as the market benchmark.
+        baseline_field = "market_probability" if str(record.get("probability_source") or "").startswith("hybrid_") else "model_probability"
+        probability = _hybrid_number(record.get(baseline_field))
         published = _hybrid_dt(record.get("created_at"))
         pick = _hybrid_team(record.get("pick") or "")
         target = "home" if pick==home else "away" if pick==away else "draw" if pick in ("draw","nul","matchnul") else None
@@ -2306,3 +2308,139 @@ def observed_model_forecast(match,registry,now=None):
     market={k:statistics.median(v) for k,v in refs.items()};total=sum(market.values());market={k:v/total for k,v in market.items()}
     return {'version':OBSERVED_MODEL_VERSION,'model_key':scope,'model_type':report['model_type'],'trained_as_of':report['as_of'],'captured_at':now.isoformat(),'commence_time':match['commence_time'],'match_id':str(match.get('id') or match.get('match_id')),'sport_key':match.get('sport_key'),'sport':sport,'home_team':match['home_team'],'away_team':match['away_team'],'sport_probabilities':sport_probs,'market_probabilities':market,'mode':'shadow','automatic_promotion':False,'calibrated':False}
 
+
+
+
+# Public activation is a bounded pilot, not a claim of established superiority.
+# Missing/stale models always retain the existing market selections and fixtures.
+PUBLIC_HYBRID_REVISION = "hybrid-pilot-risk-2026-10-31"
+
+
+def _risk_profile(candidate, model_disagreement=None):
+    probability = _hybrid_number(candidate.get("model_probability"))
+    stability = _hybrid_number(candidate.get("stability_score")) or 0.
+    books = int(candidate.get("num_books") or 0)
+    basis = candidate.get("probability_basis", "unconditional")
+    push = _hybrid_number(candidate.get("push_probability"))
+    quality = "strong" if books >= 5 and stability >= 85 else "moderate" if books >= 2 and stability >= 65 else "limited"
+    if model_disagreement is not None and model_disagreement >= 15:
+        quality = "limited"
+    elif model_disagreement is not None and model_disagreement >= 8 and quality == "strong":
+        quality = "moderate"
+    loss = None
+    if probability is not None and 0 <= probability <= 100:
+        if basis == "unconditional":
+            loss = 100-probability
+        elif basis == "conditional_on_no_draw" and push is not None and 0 <= push <= 100:
+            loss = (1-push/100)*(100-probability)
+    if loss is None:
+        label, reason = "unknown", "refund_probability_unavailable"
+    elif loss <= 28 and quality != "limited":
+        label, reason = "safe", "lower_estimated_loss_with_supported_data"
+    elif loss <= 45:
+        label, reason = "value", "moderate_estimated_loss_or_limited_data"
+    else:
+        label, reason = "risky", "higher_estimated_loss"
+    # A short price alone cannot produce a prudent label. Quality can downgrade
+    # a probable event without changing its numerical probability artificially.
+    candidate.update(label=label, risk_level=label, analysis_quality=quality,
+        estimated_loss_probability=round(loss, 1) if loss is not None else None,
+        risk_reason=reason, risk_policy_version="loss-and-evidence-1",
+        risk_is_estimated=True, quote_freshness_verified=False,
+        model_market_disagreement=round(model_disagreement,1) if model_disagreement is not None else None)
+    return candidate
+
+
+def _public_hybrid_and_risk(match, result, stats_map):
+    import copy, os
+    mode = os.environ.get("WNPULSE_HYBRID_MODE", "pilot").strip().lower()
+    if mode not in ("off", "pilot", "validated"):
+        mode = "off"
+    shadow = result.get("shadow_analysis") or {}
+    report = stats_map.get("__hybrid_models__", {}).get(str(match.get("sport_key") or "")) or {}
+    use_model = (mode != "off" and shadow.get("status") == "experimental"
+        and report.get("version") == HYBRID_VERSION
+        and report.get("status") == "shadow_ready"
+        and int(report.get("fixtures") or 0) >= HYBRID_MIN_FIXTURES)
+    indexed = {(c.get("market"), c.get("pick"), c.get("point")): c
+               for c in shadow.get("candidates", [])}
+    markets = [copy.deepcopy(m) for m in result.get("markets", [])]
+    applied = 0
+    for market in markets:
+        source = indexed.get((market.get("market"), market.get("pick_raw"), market.get("pick_point")))
+        disagreement = None
+        if source:
+            market_p = _hybrid_number(source.get("market_probability"))
+            sport_p = _hybrid_number(source.get("sport_probability"))
+            if market_p is not None and sport_p is not None:
+                disagreement = abs(sport_p-market_p)
+                validated = bool(report.get("improvement_candidate") and source.get("calibration_available")
+                    and report.get("interval_method") == "paired_UTC_day_block_bootstrap_500")
+                if use_model and (mode == "pilot" or validated):
+                    # Retrospective 1X2 evidence does not validate other markets.
+                    weight = float(report.get("blend_weight") or 0) if validated else .10
+                    weight = max(0., min(.30 if validated else .10, weight))
+                    p = (1-weight)*market_p + weight*sport_p
+                    if market.get("probability_basis") == "conditional_on_no_draw":
+                        market_push = _hybrid_number(market.get("push_probability"))
+                        sport_push = _hybrid_number(source.get("push_probability"))
+                        if market_push is not None and sport_push is not None:
+                            push = (1-weight)*market_push + weight*sport_push
+                            win = (1-weight)*(1-market_push/100)*market_p + weight*(1-sport_push/100)*sport_p
+                            p = win/(1-push/100)
+                            market["push_probability"] = push
+                    if validated:
+                        p = 100*_hybrid_adjust(p/100, float(report.get("temperature") or 1))
+                    if weight > 0 and 0 < p < 100:
+                        market.update(market_probability=market_p, sport_probability=sport_p,
+                            model_probability=p, confidence=p, sport_weight=weight,
+                            probability_source="hybrid_retrospective" if validated else "hybrid_pilot",
+                            probability_validated=False, hybrid_applied=True,
+                            hybrid_validation="retrospective_only" if validated else "experimental")
+                        if market.get("probability_basis", "unconditional") == "unconditional":
+                            market["estimated_win_probability"] = p
+                        applied += 1
+        _risk_profile(market, disagreement)
+    # A 1X2 vector must sum to one even after per-outcome calibration.
+    h2h = [m for m in markets if m.get("market") == "h2h"]
+    names = {m.get("pick_raw") for m in h2h}
+    if any(m.get("hybrid_applied") for m in h2h) and names == {match.get("home_team"), match.get("away_team"), "Draw"}:
+        total = sum(m["model_probability"] for m in h2h)
+        for m in h2h:
+            m["model_probability"] = m["confidence"] = m["estimated_win_probability"] = 100*m["model_probability"]/total
+    for market in markets:
+        p = market["model_probability"]/100
+        odds = float(market["pick_odds"])
+        edge = 100*(p-1/odds)
+        market["edge"] = round(edge, 2)
+        if market.get("probability_basis", "unconditional") == "unconditional":
+            market["expected_return"] = round(p*odds-1,4)
+        elif market.get("probability_basis") == "conditional_on_no_draw" and market.get("push_probability") is not None:
+            market["expected_return"] = round((1-market["push_probability"]/100)*(p*odds-1),4)
+        _risk_profile(market, market.get("model_market_disagreement"))
+        for key in ("confidence", "model_probability", "estimated_win_probability"):
+            if market.get(key) is not None:
+                market[key] = round(market[key],1)
+        market["selection_score"] = market["wp_score"] = _wp_score(p,market.get("stability_score",0),edge,market.get("num_books",0))
+    if markets:
+        markets.sort(key=_market_sort_key, reverse=True)
+        best = markets[0]
+        for key in ("pick", "pick_raw", "pick_point", "pick_odds", "market", "market_label", "confidence",
+                    "model_probability", "estimated_win_probability", "edge", "expected_return", "selection_score",
+                    "wp_score", "num_books", "best_bookmaker", "stability_score", "probability_source",
+                    "probability_validated", "probability_basis", "push_probability", "label", "risk_level",
+                    "analysis_quality", "estimated_loss_probability", "risk_reason", "risk_policy_version",
+                    "risk_is_estimated", "quote_freshness_verified", "model_market_disagreement",
+                    "market_probability", "sport_probability", "sport_weight", "hybrid_applied", "hybrid_validation"):
+            result[key] = best.get(key)
+        result["markets"] = markets
+        result["recommendations"] = _top_recommendations(markets, limit=4)
+        result["official_track_eligible"] = bool(best.get("label")=="safe" and best.get("edge",0)>=2
+            and best.get("num_books",0)>=5 and 1.20<=best.get("pick_odds",0)<=2.20
+            and not result.get("is_live") and not result.get("is_finished"))
+    result["engine_revision"] = PUBLIC_HYBRID_REVISION
+    result["public_hybrid"] = {"mode":mode,"applied_markets":applied,
+        "status":"applied" if applied else "market_fallback",
+        "reason":"eligible_statistical_model" if applied else "disabled_by_configuration" if mode == "off" else "retrospective_validation_not_met" if mode == "validated" and use_model else shadow.get("reason", "model_not_eligible"),
+        "performance_improvement_proven":False}
+    return result
