@@ -12313,7 +12313,12 @@ async def get_track_record_public(
     latest_event_dates = [d for d in latest_event_dates if d]
 
     track_sync_meta = await db.system_meta.find_one({"_id": "track_sync"}) or {}
+    result_cache = await db.scores_cache.find_one({"_id":"all_scores"}, {"refresh_by_sport":1}) or {}
+    provider_states = list((result_cache.get("refresh_by_sport") or {}).values())
     sync = {
+        "local_budget_blocked_sports": sum(row.get("status")=="local_budget_reached" for row in provider_states),
+        "provider_error_sports": sum(row.get("status")=="provider_error" for row in provider_states),
+        "last_sync_status": track_sync_meta.get("status", "finished" if track_sync_meta.get("ok") else "unknown"),
         "pending_total": len(pending_docs),
         "overdue_pending": overdue_pending,
         "outside_provider_window": outside_provider_window,
@@ -13194,6 +13199,43 @@ def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Option
     return None if ambiguous else best
 
 
+async def _results_priority_batch(database, now):
+    """Reserve 200 slots for recoverable recent events, 100 for rotating backlog.
+
+    Only kickoff times older than two hours enter HTTP settlement selection.
+    Confirmed provider completion is still required; elapsed time never settles.
+    """
+    due = now-timedelta(hours=2)
+    recent = await database.predictions_history.find({"result":"pending",
+        "commence_time":{"$gte":(now-timedelta(days=3)).isoformat(),"$lt":due.isoformat()}
+    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(200).to_list(length=200)
+    ids = [row["_id"] for row in recent]
+    backlog = await database.predictions_history.find({"result":"pending",
+        "_id":{"$nin":ids},"commence_time":{"$lt":due.isoformat()}
+    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(300-len(recent)).to_list(length=300-len(recent))
+    return recent+backlog
+
+
+def _merge_final_result_caches(primary, live):
+    """Only explicitly completed, numerically valid, nonconflicting scores."""
+    merged = {str(row["id"]):dict(row) for row in primary if row.get("id")}
+    conflicts = set()
+    for row in live:
+        identity = str(row.get("id") or "")
+        if not identity or row.get("completed") is not True:
+            continue
+        home,away = _score_pair(row)
+        if home is None or away is None:
+            continue
+        old = merged.get(identity)
+        if old and old.get("completed") is True:
+            if _score_pair(old)!=(home,away):
+                conflicts.add(identity)
+            continue
+        merged[identity] = dict(row)
+    return [row for identity,row in merged.items() if identity not in conflicts]
+
+
 async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dict:
     """Synchronise tous les pronostics terminés avec leurs scores finaux.
 
@@ -13207,7 +13249,8 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     now=datetime.now(timezone.utc)
     # Old unchecked rows cannot indefinitely hide recently completed events.
     # Existing future picks are never part of this settlement queue.
-    pending=await db.predictions_history.find({"result":"pending","commence_time":{"$lt":now.isoformat()}}).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(300).to_list(length=300)
+    pending = await _results_priority_batch(db, now)
+
     run_at = datetime.now(timezone.utc).isoformat()
     if not pending:
         result = {
@@ -13239,6 +13282,13 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
 
     # Read all cached/archived sports in this batch first, without HTTP calls.
     scores=await fetch_all_scores(db,sport_keys=archive_keys,archive_only=True,include_archive=True,archive_days=180)
+    # A completed score collected by Live is usable even if the separate
+    # reconciliation HTTP budget has run out. This is a read-only cache bridge.
+    live = await db.scores_cache.find_one({"_id":"live_scores"}) or {}
+    scores = _merge_final_result_caches(scores, live.get("data") or [])
+    verified = {str(row.get("id")) for row in scores if row.get("completed") is True}
+    required_sport_keys = sorted({str(p["sport_key"]) for p in recent_classic
+        if p.get("sport_key") and str(p.get("match_id")) not in verified})
     if required_sport_keys:
         try:
             fresh=await asyncio.wait_for(fetch_all_scores(db,sport_keys=required_sport_keys,force_refresh=force_score_refresh,days_from=3,include_archive=True,archive_days=180),timeout=40)
@@ -15604,5 +15654,6 @@ async def _stop_startup_montante_task():
         _startup_montante_task.cancel()
         try:await _startup_montante_task
         except asyncio.CancelledError:pass
+
 
 
