@@ -108,28 +108,45 @@ export default function TrackRecordPage() {
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState("all");
   useEffect(() => {
-    const controller = new AbortController();
     let active = true;
-    setLoading(true);
-    setError("");
+    let busy = false;
+    let successful = false;
+    let controller;
     const sportParam = sport !== "all" ? `&sport=${encodeURIComponent(sport)}` : "";
-    api.get(`/track-record?page=${page}&per_page=20${sportParam}`, {
-      signal: controller.signal
-    }).then(response => {
-      if (!active) return;
-      if (!response.data || typeof response.data !== "object" || Array.isArray(response.data)) throw Error("Invalid track record");
-      setData(response.data);
-    }).catch(cause => {
-      if (active && !controller.signal.aborted) {
-        setData(null);
-        setError(typeof cause?.response?.data?.detail === "string" ? cause.response.data.detail : "Impossible de charger les résultats.");
+    const load = async (background = false) => {
+      if (!active || busy || (background && document.visibilityState !== "visible")) return;
+      busy = true;
+      controller = new AbortController();
+      if (!background) { setLoading(true); setError(""); }
+      try {
+        const response = await api.get(`/track-record?page=${page}&per_page=20${sportParam}`, {
+          signal: controller.signal, timeout: 20000
+        });
+        if (!active) return;
+        if (!response.data || typeof response.data !== "object" || Array.isArray(response.data)) throw Error("Invalid track record");
+        successful = true;
+        setData(response.data);
+        setError("");
+      } catch (cause) {
+        if (active && !controller.signal.aborted && !successful) {
+          setError(typeof cause?.response?.data?.detail === "string" ? cause.response.data.detail : "Impossible de charger les résultats.");
+        }
+      } finally {
+        busy = false;
+        if (active) setLoading(false);
       }
-    }).finally(() => {
-      if (active) setLoading(false);
-    });
+    };
+    const resume = () => { if (document.visibilityState === "visible") load(true); };
+    load();
+    const timer = window.setInterval(() => load(true), 90000);
+    document.addEventListener("visibilitychange", resume);
+    window.addEventListener("focus", resume);
     return () => {
       active = false;
-      controller.abort();
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", resume);
+      window.removeEventListener("focus", resume);
+      if (controller) controller.abort();
     };
   }, [page, sport, refresh]);
   const stats = data?.stats || {};
@@ -1017,4 +1034,5 @@ function useResultsLanguage() {
     };
   }, []);
 }
+
 
