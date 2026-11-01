@@ -21,6 +21,7 @@ CORRECTIONS v8.4 :
   fusionnees dans le reasoning des matchs, sans remplacer le moteur maison
 """
 import os
+import time
 import random
 import hashlib
 import asyncio
@@ -763,13 +764,17 @@ async def _fetch_odds_api_io_finished_events(
     return finished
 
 
+_oaio_odds_blocked_until = 0.0
+
+
 async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
     """
     Recupere les cotes pour un evenement donne via odds-api.io.
     NOTE : le plan actuel limite a 1 bookmaker autorise (Bet365) — confirme
     en test reel le 23/07/2026 ("Access denied... Allowed: Bet365").
     """
-    if not ODDS_API_IO_KEY:
+    global _oaio_odds_blocked_until
+    if not ODDS_API_IO_KEY or time.monotonic() < _oaio_odds_blocked_until:
         return None
     url = f"{ODDS_API_IO_BASE}/odds"
     params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id, "bookmakers": "Bet365"}
@@ -777,7 +782,10 @@ async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params=params)
             if r.status_code != 200:
-                logger.warning(f"odds-api.io odds [eventId={event_id}] -> HTTP {r.status_code}: {r.text[:200]}")
+                if r.status_code in (401,403,429):
+                    delay = 86400 if r.status_code in (401,403) else 3600
+                    _oaio_odds_blocked_until = time.monotonic()+delay
+                logger.warning("odds-api.io odds: HTTP %s; unsupported/rate-limited calls paused", r.status_code)
                 return None
             return r.json()
     except Exception as e:
@@ -1514,6 +1522,10 @@ async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dic
             response=await client.get(f"{ODDS_API_BASE}/sports/{sport_key}/scores",params={"apiKey":ODDS_API_KEY,"daysFrom":max(1,min(int(days_from or 3),3)),"dateFormat":"iso"})
         code=response.status_code
         _result_http_status[sport_key]={"status":"available" if code==200 else "provider_error","http_status":code}
+        for header, field in (("x-requests-remaining","requests_remaining"),("x-requests-used","requests_used")):
+            value = response.headers.get(header)
+            if value is not None and str(value).isdigit():
+                _result_http_status[sport_key][field] = int(value)
         if code!=200:
             logger.warning("Scores %s: HTTP %s",sport_key,code)
             return []
@@ -1941,3 +1953,4 @@ async def _reserve_result_request(db,now,provider="primary"):
             if not row:return False
         except DuplicateKeyError:return False
     return True
+
