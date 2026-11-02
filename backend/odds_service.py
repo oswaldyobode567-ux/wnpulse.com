@@ -529,7 +529,7 @@ def get_all_mock_matches() -> List[Dict]:
 
 # ─── Real API : The Odds API (source principale) ─────────────────────────────
 
-async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: Optional[str] = None) -> List[Dict]:
+async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: Optional[str] = None, db=None) -> List[Dict]:
     """Fetch odds pour une compétition avec retry borné et fallback h2h.
 
     Les réponses 404/422 sur une clé inactive ne doivent pas bloquer les autres
@@ -560,7 +560,7 @@ async def _fetch_real_sport(sport_key: str, markets: str = "h2h", regions: Optio
             attempt = 0
             while True:
                 try:
-                    r = await http.get(url, params=params)
+                    r = await _budgeted_primary_get(db, http, url, params=params, category="odds")
                     _record_odds_api_response(r, context=sport_key)
                 except (httpx.TimeoutException, httpx.NetworkError) as exc:
                     if attempt >= max_retries:
@@ -1204,6 +1204,12 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
             if groups.get(g):
                 ordered_keys.append(groups[g].pop(0))
 
+    # Rotate collection priority; paced credits must not starve leagues at the
+    # end of the catalogue. Previous cached matches are preserved below.
+    if ordered_keys:
+        offset = (int(time.time() // 14400) * 17) % len(ordered_keys)
+        ordered_keys = ordered_keys[offset:] + ordered_keys[:offset]
+
     logger.warning(
         "The Odds API : %s compétition(s) actives à interroger (%s découvertes)",
         len(ordered_keys), len(discovered),
@@ -1219,7 +1225,7 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
                 fetched_by_key[sk] = []
                 return
             result = await _fetch_real_sport(
-                sk, markets=_get_markets_for_sport(sk), regions=_regions_for_sport(sk)
+                sk, markets=_get_markets_for_sport(sk), regions=_regions_for_sport(sk), db=db
             )
             fetched_by_key[sk] = result if isinstance(result, list) else []
             # Espacement volontaire pour éviter les rafales 429.
@@ -1415,6 +1421,9 @@ async def fetch_live_scores(db) -> List[Dict]:
     keys = keys or list(dict.fromkeys(REAL_SPORT_KEYS))
 
     now = datetime.now(timezone.utc)
+    if keys:
+        rotation = int(now.timestamp() // 300) % len(keys)
+        keys = keys[rotation:] + keys[:rotation]
     old = await db.scores_cache.find_one({"_id": "live_scores"})
     succeeded: Dict[str, List[Dict]] = {}
     failures: Dict[str, str] = {}
@@ -1424,8 +1433,8 @@ async def fetch_live_scores(db) -> List[Dict]:
         async def collect(key):
             async with semaphore:
                 try:
-                    response = await client.get(
-                        f"{ODDS_API_BASE}/sports/{key}/scores",
+                    response = await _budgeted_primary_get(
+                        db, client, f"{ODDS_API_BASE}/sports/{key}/scores", category="live",
                         params={"apiKey": ODDS_API_KEY, "daysFrom": 1, "dateFormat": "iso"},
                     )
                     if response.status_code != 200:
@@ -1450,6 +1459,8 @@ async def fetch_live_scores(db) -> List[Dict]:
                         {**row, "sport_key": row.get("sport_key") or key, "_score_fetched_at": now.isoformat()}
                         for row in rows if isinstance(row, dict)
                     ]
+                except PrimaryBudgetError as exc:
+                    failures[key] = exc.code
                 except (httpx.TimeoutException, asyncio.TimeoutError):
                     failures[key] = "provider_timeout"
                 except Exception as exc:
@@ -1474,7 +1485,7 @@ async def fetch_live_scores(db) -> List[Dict]:
             failures[key] = "provider_timeout"
     if not succeeded:
         codes = set(failures.values())
-        code = next((c for c in ("provider_quota_exhausted", "provider_access_denied", "provider_rate_limited", "provider_timeout", "sport_not_supported") if c in codes), "provider_unavailable")
+        code = next((c for c in ("credit_budget_paced", "credit_budget_reached", "credit_budget_unavailable", "provider_quota_exhausted", "provider_access_denied", "provider_rate_limited", "provider_timeout", "sport_not_supported") if c in codes), "provider_unavailable")
         raise LiveScoresProviderError(code)
 
     rows = [row for items in succeeded.values() for row in items]
@@ -1513,13 +1524,13 @@ async def fetch_live_scores(db) -> List[Dict]:
     return rows
 
 
-async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dict]:
+async def fetch_scores_for_sport(sport_key: str, days_from: int = 3, db=None) -> List[Dict]:
     """Scores only; credentials and HTTP bodies are never written to logs."""
     if not ODDS_API_KEY or not sport_key:return []
     _result_http_status[sport_key] = {"status":"network_error"}
     try:
         async with httpx.AsyncClient(timeout=12.0) as client:
-            response=await client.get(f"{ODDS_API_BASE}/sports/{sport_key}/scores",params={"apiKey":ODDS_API_KEY,"daysFrom":max(1,min(int(days_from or 3),3)),"dateFormat":"iso"})
+            response=await _budgeted_primary_get(db,client,f"{ODDS_API_BASE}/sports/{sport_key}/scores",category="results",params={"apiKey":ODDS_API_KEY,"daysFrom":max(1,min(int(days_from or 3),3)),"dateFormat":"iso"})
         code=response.status_code
         _result_http_status[sport_key]={"status":"available" if code==200 else "provider_error","http_status":code}
         for header, field in (("x-requests-remaining","requests_remaining"),("x-requests-used","requests_used")):
@@ -1533,6 +1544,12 @@ async def fetch_scores_for_sport(sport_key: str, days_from: int = 3) -> List[Dic
         if not isinstance(data,list):
             _result_http_status[sport_key]={"status":"invalid_response"};return []
         return [row for row in data if isinstance(row,dict)]
+    except PrimaryBudgetError as exc:
+        _result_http_status[sport_key] = {
+            "status": "budget_paced" if exc.code == "credit_budget_paced" else "local_budget_reached",
+            "budget_reason": exc.code,
+        }
+        return []
     except Exception as exc:
         logger.warning("Scores %s: %s",sport_key,type(exc).__name__)
         return []
@@ -1669,7 +1686,7 @@ async def fetch_all_scores(db, sport_keys: Optional[List[str]]=None, force_refre
                     states[key]={**(states.get(key) or {}),'status':'budget_paced' if plan.get('reason')=='budget_paced' else 'local_budget_reached',
                         'budget_reason':plan.get('reason'),'attempted_at':now.isoformat(),
                         'retry_at':(now+timedelta(minutes=15)).isoformat()};return
-                rows=await fetch_scores_for_sport(key,days_from)
+                rows=await fetch_scores_for_sport(key,days_from,db=db)
                 info=_result_http_status.get(key,{"status":"network_error"})
                 if info.get('requests_remaining') is not None:
                     await db.scores_cache.update_one({'_id':'result_provider_quota:primary'},{'$set':{
@@ -1859,7 +1876,7 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
     localiser precisement la cause d'un championnat absent du site.
     """
     markets = _get_markets_for_sport(sport_key)
-    raw = await _fetch_real_sport(sport_key, markets=markets, regions="eu")
+    raw = await _fetch_real_sport(sport_key, markets=markets, regions="eu", db=db)
     now = datetime.now(timezone.utc)
     after_filters: List[Dict] = []
     filtered_out_reasons: Dict[str, int] = {}
@@ -2004,3 +2021,159 @@ async def _reserve_result_request(db, now, provider="primary"):
     _result_budget_status[provider]=plan
     await db.scores_cache.update_one({'_id':'result_budget_status:'+provider},{'$set':{**plan,'updated_at':now.isoformat()}},upsert=True)
     return plan['allowed']
+
+
+# Shared credit guard for The Odds API only (odds-api.io is a separate plan).
+# Reservations are pessimistic: network errors and retries remain charged to
+# the local allowance. The provider headers can only raise this upper bound.
+class PrimaryBudgetError(RuntimeError):
+    def __init__(self, code):
+        super().__init__(code)
+        self.code = code
+
+
+def _primary_request_cost(url, params):
+    if url.rstrip('/').endswith('/scores'):
+        return 2 if params.get('daysFrom') is not None else 1
+    if url.rstrip('/').endswith('/odds'):
+        markets = {x.strip() for x in str(params.get('markets') or 'h2h').split(',') if x.strip()}
+        if params.get('bookmakers'):
+            import math
+            regions = max(1, math.ceil(len(set(str(params['bookmakers']).split(','))) / 10))
+        else:
+            regions = max(1, len(set(str(params.get('regions') or 'eu').split(','))))
+        return max(1, len(markets)) * regions
+    raise PrimaryBudgetError('credit_budget_unavailable')
+
+
+def _primary_budget_decision(doc, category, cost, now):
+    import calendar
+    import math
+    cap = max(0, min(90000, int(os.environ.get('ODDS_MONTHLY_CREDIT_LIMIT', '90000'))))
+    cap = min(cap, int(doc.get('provider_ceiling', 0)))
+    category_cap = max(0, min(cap, int(os.environ.get('ODDS_' + category.upper() + '_MONTHLY_CREDITS', '30000'))))
+    used = int(doc.get('total', 0))
+    spent = int(doc.get('categories', {}).get(category, 0))
+    day_key = now.strftime('%Y-%m-%d')
+    today = int(doc.get('days', {}).get(day_key, {}).get(category, 0))
+    days_left = calendar.monthrange(now.year, now.month)[1] - now.day + 1
+    allowance = max(0, (category_cap - spent + today) // days_left)
+    seconds = now.hour * 3600 + now.minute * 60 + now.second
+    unlocked = min(allowance, math.ceil(allowance * min(86400, seconds + 3600) / 86400))
+    if not doc.get('initialized'):
+        reason = 'credit_budget_unavailable'
+    elif used + cost > cap or spent + cost > category_cap:
+        reason = 'credit_budget_reached'
+    elif today + cost > unlocked:
+        reason = 'credit_budget_paced'
+    else:
+        reason = 'available'
+    return {'allowed': reason == 'available', 'reason': reason,
+            'limit': cap, 'used_upper_bound': used,
+            'category': category, 'category_limit': category_cap,
+            'category_used_upper_bound': spent,
+            'day_allowance': allowance, 'unlocked_today': unlocked,
+            'day_used_upper_bound': today, 'cost_reserved': cost,
+            'updated_at': now.isoformat()}
+
+
+async def _primary_budget_change(db, key, mutate):
+    # Compare-and-swap serializes reservations across processes and deployments.
+    for _ in range(30):
+        doc = await db.scores_cache.find_one({'_id': key})
+        if doc is None:
+            await db.scores_cache.update_one({'_id': key}, {'$setOnInsert': {
+                'revision': 0, 'total': 0, 'pending': 0, 'initialized': False,
+                'categories': {}, 'days': {}}}, upsert=True)
+            continue
+        import copy
+        changes = mutate(copy.deepcopy(doc))
+        changes.pop('_id', None)
+        changes['revision'] = doc['revision'] + 1
+        result = await db.scores_cache.update_one(
+            {'_id': key, 'revision': doc['revision']}, {'$set': changes})
+        if result.modified_count:
+            return changes
+    raise PrimaryBudgetError('credit_budget_unavailable')
+
+
+_primary_quota_probe_at = 0.0
+_primary_quota_probe_period = None
+_primary_quota_probe_lock = asyncio.Lock()
+
+
+async def _budgeted_primary_get(db, client, url, *, params, category):
+    global _primary_quota_probe_at, _primary_quota_probe_period
+    if db is None or category not in ('odds', 'results', 'live'):
+        raise PrimaryBudgetError('credit_budget_unavailable')
+    now = datetime.now(timezone.utc)
+    key = 'primary_credit_budget_v1:' + now.strftime('%Y-%m')
+    try:
+        # Free /sports call obtains account-wide usage before paid calls. It is
+        # shared per process, refreshed every five minutes and at month rollover.
+        async with _primary_quota_probe_lock:
+            if _primary_quota_probe_period != key or time.monotonic() >= _primary_quota_probe_at:
+                response = await client.get(f'{ODDS_API_BASE}/sports', params={'apiKey': ODDS_API_KEY})
+                response.raise_for_status()
+                used = _header_int(response.headers, 'x-requests-used')
+                remaining = _header_int(response.headers, 'x-requests-remaining')
+                if used is None or remaining is None:
+                    raise PrimaryBudgetError('credit_budget_unavailable')
+                reserve = max(10000, int(os.environ.get('ODDS_CREDIT_SAFETY_RESERVE', '10000')))
+                def initialize(doc):
+                    doc['total'] = max(doc['total'], used + doc['pending'])
+                    doc['provider_ceiling'] = max(0, used + remaining - reserve)
+                    doc['provider_used'] = used
+                    doc['provider_remaining'] = remaining
+                    doc['initialized'] = True
+                    return doc
+                await _primary_budget_change(db, key, initialize)
+                _primary_quota_probe_period = key
+                _primary_quota_probe_at = time.monotonic() + 300
+
+        cost = _primary_request_cost(url, params)
+        def reserve_credit(doc):
+            decision = _primary_budget_decision(doc, category, cost, now)
+            if not decision['allowed']:
+                raise PrimaryBudgetError(decision['reason'])
+            day = now.strftime('%Y-%m-%d')
+            doc['total'] += cost
+            doc['pending'] += cost
+            doc['categories'][category] = doc['categories'].get(category, 0) + cost
+            doc['days'].setdefault(day, {})
+            doc['days'][day][category] = doc['days'][day].get(category, 0) + cost
+            doc['last_reservation'] = decision
+            return doc
+        await _primary_budget_change(db, key, reserve_credit)
+    except PrimaryBudgetError:
+        raise
+    except Exception as exc:
+        logger.warning('Primary credit guard unavailable: %s', type(exc).__name__)
+        raise PrimaryBudgetError('credit_budget_unavailable') from None
+
+    response = None
+    try:
+        response = await client.get(url, params=params)
+        _record_odds_api_response(response, context=category)
+        return response
+    finally:
+        def settle(doc):
+            doc['pending'] = max(0, doc['pending'] - cost)
+            if response is not None:
+                used = _header_int(response.headers, 'x-requests-used')
+                if used is not None:
+                    doc['total'] = max(doc['total'], used + doc['pending'])
+                    doc['provider_used'] = max(used, doc.get('provider_used', 0))
+                last_cost = _header_int(response.headers, 'x-requests-last')
+                if last_cost is not None and last_cost > cost:
+                    doc['total'] += last_cost - cost
+                    doc['categories'][category] += last_cost - cost
+                    doc['days'][now.strftime('%Y-%m-%d')][category] += last_cost - cost
+                doc['provider_remaining'] = _header_int(response.headers, 'x-requests-remaining')
+            doc['updated_at'] = datetime.now(timezone.utc).isoformat()
+            return doc
+        try:
+            await asyncio.shield(_primary_budget_change(db, key, settle))
+        except Exception as exc:
+            # Failed settlements retain pessimistic reservations, never unlock.
+            logger.warning('Primary credit settlement deferred: %s', type(exc).__name__)
