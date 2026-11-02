@@ -12582,8 +12582,24 @@ async def admin_sweep_expired_simple(key: str = Header(default="", alias="X-Admi
 
 # ─── Scores ───────────────────────────────────────────────────────────────
 
-LIVE_SCORES_FRESH_SECONDS = 60
-LIVE_SCORES_MAX_AGE_SECONDS = 5 * 60
+@app.get("/api/admin/odds-credit-budget")
+async def admin_odds_credit_budget(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    period = datetime.now(timezone.utc).strftime("%Y-%m")
+    state = await db.scores_cache.find_one({"_id": "primary_credit_budget_v1:" + period})
+    if not state:
+        return {"status": "not_initialized", "period": period}
+    return {"status": "ready", "period": period,
+            "used_upper_bound": state.get("total"),
+            "provider_used": state.get("provider_used"),
+            "provider_remaining": state.get("provider_remaining"),
+            "provider_ceiling": state.get("provider_ceiling"),
+            "categories": state.get("categories", {}),
+            "last_reservation": state.get("last_reservation"),
+            "updated_at": state.get("updated_at")}
+
+LIVE_SCORES_FRESH_SECONDS = max(60, int(os.environ.get("LIVE_SCORES_FRESH_SECONDS", "300")))
+LIVE_SCORES_MAX_AGE_SECONDS = max(LIVE_SCORES_FRESH_SECONDS + 60, int(os.environ.get("LIVE_SCORES_MAX_AGE_SECONDS", "600")))
 LIVE_SCORES_REFRESH_TIMEOUT_SECONDS = 60
 _live_scores_refresh_task = None
 _live_scores_retry_at = 0.0
@@ -15657,7 +15673,3 @@ async def _stop_startup_montante_task():
         _startup_montante_task.cancel()
         try:await _startup_montante_task
         except asyncio.CancelledError:pass
-
-
-
-
