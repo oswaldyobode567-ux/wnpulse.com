@@ -1665,9 +1665,16 @@ async def fetch_all_scores(db, sport_keys: Optional[List[str]]=None, force_refre
                 if not ODDS_API_KEY:return
                 # Atomic persistent budgets shared by all reconciliation calls.
                 if not await _reserve_result_request(db,now):
-                    states[key]={**(states.get(key) or {}),'status':'local_budget_reached','attempted_at':now.isoformat(),'retry_at':(now+timedelta(minutes=30)).isoformat()};return
+                    plan=_result_budget_status.get('primary') or {}
+                    states[key]={**(states.get(key) or {}),'status':'budget_paced' if plan.get('reason')=='budget_paced' else 'local_budget_reached',
+                        'budget_reason':plan.get('reason'),'attempted_at':now.isoformat(),
+                        'retry_at':(now+timedelta(minutes=15)).isoformat()};return
                 rows=await fetch_scores_for_sport(key,days_from)
                 info=_result_http_status.get(key,{"status":"network_error"})
+                if info.get('requests_remaining') is not None:
+                    await db.scores_cache.update_one({'_id':'result_provider_quota:primary'},{'$set':{
+                        'remaining':info['requests_remaining'],'used':info.get('requests_used'),
+                        'updated_at':now.isoformat()}},upsert=True)
                 code=info.get('http_status');success=code==200
                 previous=states.get(key) or {}
                 states[key]={**previous,**info,'attempted_at':now.isoformat(),'retry_at':(now+timedelta(seconds=60 if success else 86400 if code in (401,403) else 21600 if code in (404,422) else 3600 if code==429 else 900)).isoformat()}
@@ -1927,6 +1934,7 @@ async def diagnose_sport_key(db, sport_key: str) -> Dict:
 _result_fetch_lock=asyncio.Lock()
 _secondary_result_lock=asyncio.Lock()
 _result_http_status={}
+_result_budget_status={}
 _secondary_result_memory={}
 
 def _result_dt(value):
@@ -1940,17 +1948,59 @@ def _result_valid_number(value):
     try:return math.isfinite(float(value)) and float(value)>=0 and int(float(value))==float(value)
     except (ValueError,TypeError,OverflowError):return False
 
-async def _reserve_result_request(db,now,provider="primary"):
-    from pymongo.errors import DuplicateKeyError
-    # Defaults reserve at most 300 monthly credits (2 per score request).
-    # Other application endpoints have their own consumption; this is not an
-    # account-wide quota promise. Operators can configure their actual paid plan.
-    prefix="RESULTS_" if provider=="primary" else "RESULTS_SECONDARY_"
-    for identity,limit in [('day:'+now.strftime('%Y-%m-%d'),max(0,int(os.environ.get(prefix+'DAILY_REQUEST_LIMIT','12')))),('month:'+now.strftime('%Y-%m'),max(0,int(os.environ.get(prefix+'MONTHLY_REQUEST_LIMIT','150'))))]:
-        if not limit:return False
-        try:
-            row=await db.scores_cache.find_one_and_update({'_id':'result_budget:'+provider+':'+identity,'$or':[{'calls':{'$lt':limit}},{'calls':{'$exists':False}}]},{'$inc':{'calls':1}},upsert=True,return_document=True)
-            if not row:return False
-        except DuplicateKeyError:return False
-    return True
+def _result_budget_plan(now, daily_limit, monthly_limit, day_calls, month_calls):
+    """Even distribution within the operator's existing caps; no quota increase."""
+    import calendar
+    now = now.astimezone(timezone.utc)
+    days_left = calendar.monthrange(now.year, now.month)[1]-now.day+1
+    # Include today's already spent calls when computing today's total envelope.
+    allowance = min(daily_limit, max(0, (monthly_limit-month_calls+day_calls)//days_left))
+    elapsed = now.hour*3600+now.minute*60+now.second
+    unlocked = min(allowance, math.ceil(allowance*min(86400,elapsed+3600)/86400))
+    allowed = daily_limit>0 and monthly_limit>0 and day_calls<unlocked and month_calls<monthly_limit
+    reason = "available" if allowed else "disabled" if min(daily_limit,monthly_limit)<=0 else "monthly_exhausted" if month_calls>=monthly_limit else "daily_exhausted" if day_calls>=daily_limit else "budget_paced"
+    return {"allowed":allowed,"reason":reason,"daily_limit":daily_limit,"monthly_limit":monthly_limit,
+            "day_calls":day_calls,"month_calls":month_calls,"day_allowance":allowance,
+            "unlocked_today":unlocked,"days_left":days_left}
 
+
+async def _reserve_result_request(db, now, provider="primary"):
+    from pymongo.errors import DuplicateKeyError
+    prefix="RESULTS_" if provider=="primary" else "RESULTS_SECONDARY_"
+    def limit(name,default):
+        try:return max(0,int(os.environ.get(prefix+name,default)))
+        except (TypeError,ValueError):return int(default)
+    daily,monthly=limit('DAILY_REQUEST_LIMIT','12'),limit('MONTHLY_REQUEST_LIMIT','150')
+    day=now.astimezone(timezone.utc).strftime('%Y-%m-%d')
+    month=now.astimezone(timezone.utc).strftime('%Y-%m')
+    identity='result_budget_v2:'+provider+':'+month
+    state=await db.scores_cache.find_one({'_id':identity})
+    if not state:
+        # Preserve spent reservations: deploying this code never resets a quota.
+        old_day=await db.scores_cache.find_one({'_id':'result_budget:'+provider+':day:'+day}) or {}
+        old_month=await db.scores_cache.find_one({'_id':'result_budget:'+provider+':month:'+month}) or {}
+        await db.scores_cache.update_one({'_id':identity},{'$setOnInsert':{
+            'calls':int(old_month.get('calls') or 0),'days':{day:int(old_day.get('calls') or 0)}}},upsert=True)
+        state=await db.scores_cache.find_one({'_id':identity}) or {}
+    day_calls=int((state.get('days') or {}).get(day) or 0)
+    month_calls=int(state.get('calls') or 0)
+    plan=_result_budget_plan(now,daily,monthly,day_calls,month_calls)
+    quota=await db.scores_cache.find_one({'_id':'result_provider_quota:'+provider}) or {}
+    stamp=_result_dt(quota.get('updated_at'))
+    if stamp and 0<=(now-stamp).total_seconds()<21600 and quota.get('remaining') is not None and quota['remaining']<2:
+        plan.update(allowed=False,reason='provider_quota_exhausted')
+    if plan['allowed']:
+        # One atomic document increments day and month together. A refused
+        # reservation consumes neither counter, unlike the former two-step loop.
+        path='days.'+day
+        try:
+            row=await db.scores_cache.find_one_and_update({'_id':identity,'calls':{'$lt':monthly},
+                '$or':[{path:{'$lt':plan['unlocked_today']}},{path:{'$exists':False}}]},
+                {'$inc':{'calls':1,path:1}},return_document=True)
+        except DuplicateKeyError:row=None
+        if row:
+            plan.update(day_calls=int((row.get('days') or {}).get(day) or 0),month_calls=int(row.get('calls') or 0))
+        else:plan.update(allowed=False,reason='concurrent_budget_reservation')
+    _result_budget_status[provider]=plan
+    await db.scores_cache.update_one({'_id':'result_budget_status:'+provider},{'$set':{**plan,'updated_at':now.isoformat()}},upsert=True)
+    return plan['allowed']
