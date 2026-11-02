@@ -12315,7 +12315,10 @@ async def get_track_record_public(
     track_sync_meta = await db.system_meta.find_one({"_id": "track_sync"}) or {}
     result_cache = await db.scores_cache.find_one({"_id":"all_scores"}, {"refresh_by_sport":1}) or {}
     provider_states = list((result_cache.get("refresh_by_sport") or {}).values())
+    budget_state = await db.scores_cache.find_one({"_id":"result_budget_status:primary"}, {"_id":0}) or {}
     sync = {
+        "request_budget": budget_state,
+        "budget_paced_sports": sum(row.get("status")=="budget_paced" for row in provider_states),
         "local_budget_blocked_sports": sum(row.get("status")=="local_budget_reached" for row in provider_states),
         "provider_error_sports": sum(row.get("status")=="provider_error" for row in provider_states),
         "last_sync_status": track_sync_meta.get("status", "finished" if track_sync_meta.get("ok") else "unknown"),
@@ -15654,6 +15657,7 @@ async def _stop_startup_montante_task():
         _startup_montante_task.cancel()
         try:await _startup_montante_task
         except asyncio.CancelledError:pass
+
 
 
 
