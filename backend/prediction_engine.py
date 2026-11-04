@@ -1790,7 +1790,7 @@ def build_personalized_combos(matches, preferences, now=None):
 
 # Dixon-Coles + Elo + market reference, observational mode only.
 # No external dependency. Training is scheduled, never performed in analyze_match.
-HYBRID_VERSION = "dc-elo-market-2"
+HYBRID_VERSION = "dc-elo-market-3"
 HYBRID_MIN_FIXTURES = 240
 HYBRID_MIN_EVAL = 40
 
@@ -1805,7 +1805,8 @@ def _hybrid_dt(value):
 
 def _hybrid_team(value):
     import unicodedata
-    return "".join(c for c in unicodedata.normalize("NFKD",str(value)).casefold() if c.isalnum() and not unicodedata.combining(c))
+    normalized = "".join(c for c in unicodedata.normalize("NFKD",str(value)).casefold() if c.isalnum() and not unicodedata.combining(c))
+    return _BOOTSTRAP_TEAM_ALIASES.get(normalized, normalized)
 
 
 def _hybrid_number(value):
@@ -1830,7 +1831,7 @@ def hybrid_training_rows(records, as_of=None):
         kickoff,known = _hybrid_dt(record.get("commence_time")),_hybrid_dt(record.get("reconciled_at"))
         if not kickoff or not known or not kickoff < known <= as_of or (as_of-kickoff).days>1095:
             continue
-        if record.get("result") not in ("won","lost","void"):
+        if record.get("result") not in ("won","lost","void") and not record.get("bootstrap_training_only"):
             continue
         score = re.fullmatch(r"\s*(\d+)\s*-\s*(\d+)\s*",str(record.get("final_score") or ""))
         if not score:
@@ -1845,7 +1846,7 @@ def hybrid_training_rows(records, as_of=None):
             conflicts.add(identity);continue
         if not row:
             row = {"league":league,"id":str(record.get("match_id") or ""),"date":kickoff.isoformat(),"known_at":known.isoformat(),
-                   "home":home,"away":away,"hg":goals[0],"ag":goals[1],"observations":[]}
+                   "home":home,"away":away,"hg":goals[0],"ag":goals[1],"observations":[],"bootstrap":bool(record.get("bootstrap_training_only"))}
             fixtures[identity] = row
         if known < _hybrid_dt(row["known_at"]):
             row["known_at"] = known.isoformat()
@@ -2037,6 +2038,19 @@ def train_hybrid_models(records,as_of=None):
                 "dataset_sha256":hashlib.sha256(json.dumps(history,sort_keys=True).encode()).hexdigest()}
         output[league]=report
         if len(history)<HYBRID_MIN_FIXTURES:continue
+        # Imported scores have no demonstrable pre-match capture timestamp.
+        # Fit for a limited prospective pilot, never fabricate a backtest.
+        if any(r.get("bootstrap") for r in history):
+            native = [r for r in history if not r.get("bootstrap")]
+            split_at = int(len(native)*.6)
+            native_usable = (len(native) >= HYBRID_MIN_FIXTURES and split_at < len(native)
+                and sum(r["known_at"] < native[split_at]["date"] for r in native[:split_at]) >= 120)
+            if not native_usable:
+                report.update(_fit_bootstrap_pilot(history, as_of))
+                continue
+            history = native
+            report["fixtures"] = len(history)
+            report["dataset_sha256"] = hashlib.sha256(json.dumps(history,sort_keys=True).encode()).hexdigest()
         teams={r[k] for r in history for k in ("home","away")}
         if not 6<=len(teams)<=80:
             report["status"]="heterogeneous_competition";continue
@@ -2313,7 +2327,101 @@ def observed_model_forecast(match,registry,now=None):
 
 # Public activation is a bounded pilot, not a claim of established superiority.
 # Missing/stale models always retain the existing market selections and fixtures.
-PUBLIC_HYBRID_REVISION = "hybrid-pilot-risk-2026-10-31"
+PUBLIC_HYBRID_REVISION = "hybrid-bootstrap-2026-11-04"
+
+# Explicit same-club aliases only. No fuzzy matching across clubs or teams.
+_BOOTSTRAP_ALIAS_GROUPS = {
+    'Arsenal': ['Arsenal FC'], 'Aston Villa': ['Aston Villa FC'],
+    'Bournemouth': ['AFC Bournemouth'], 'Brentford': ['Brentford FC'],
+    'Brighton and Hove Albion': ['Brighton & Hove Albion', 'Brighton & Hove Albion FC', 'Brighton'],
+    'Burnley': ['Burnley FC'], 'Chelsea': ['Chelsea FC'], 'Crystal Palace': ['Crystal Palace FC'],
+    'Everton': ['Everton FC'], 'Fulham': ['Fulham FC'], 'Leeds United': ['Leeds United FC'],
+    'Liverpool': ['Liverpool FC'], 'Manchester City': ['Manchester City FC', 'Man City'],
+    'Manchester United': ['Manchester United FC', 'Man United'],
+    'Newcastle United': ['Newcastle United FC'], 'Nottingham Forest': ['Nottingham Forest FC'],
+    'Sunderland': ['Sunderland AFC'], 'Tottenham Hotspur': ['Tottenham Hotspur FC', 'Tottenham'],
+    'West Ham United': ['West Ham United FC'], 'Wolverhampton Wanderers': ['Wolverhampton Wanderers FC', 'Wolves'],
+    'Southampton': ['Southampton FC'], 'Leicester City': ['Leicester City FC'],
+    'Coventry City': ['Coventry City FC'], 'Hull City': ['Hull City AFC'],
+    'Ipswich Town': ['Ipswich Town FC'], 'Luton Town': ['Luton Town FC'],
+    'Lille': ['Lille OSC', 'LOSC Lille'], 'Rennes': ['Stade Rennais FC 1901', 'Stade Rennais FC', 'Stade Rennais'],
+    'Marseille': ['Olympique de Marseille', 'Olympique Marseille'], 'Lyon': ['Olympique Lyonnais'],
+    'Lens': ['Racing Club de Lens', 'RC Lens'], 'Paris Saint Germain': ['Paris Saint-Germain FC', 'Paris Saint-Germain', 'PSG'],
+    'Strasbourg': ['RC Strasbourg Alsace', 'Racing Strasbourg'], 'Toulouse': ['Toulouse FC'],
+    'Nantes': ['FC Nantes'], 'Brest': ['Stade Brestois 29', 'Stade Brestois'],
+    'Monaco': ['AS Monaco FC', 'AS Monaco'], 'Nice': ['OGC Nice'],
+    'Auxerre': ['AJ Auxerre'], 'Angers': ['Angers SCO'], 'Le Havre': ['Le Havre AC'],
+    'Metz': ['FC Metz'], 'Lorient': ['FC Lorient'], 'Saint Etienne': ['AS Saint-Etienne'],
+    'Reims': ['Stade de Reims'], 'Montpellier': ['Montpellier HSC'], 'Paris FC': [],
+    'Bayern Munich': ['FC Bayern München', 'Bayern München', 'Bayern Munchen'],
+    'Borussia Dortmund': ['BV Borussia 09 Dortmund', 'BVB Dortmund'],
+    'Bayer Leverkusen': ['Bayer 04 Leverkusen'], 'RB Leipzig': ['RasenBallsport Leipzig'],
+    'Eintracht Frankfurt': [], 'Freiburg': ['SC Freiburg'], 'Stuttgart': ['VfB Stuttgart'],
+    'Hoffenheim': ['TSG 1899 Hoffenheim', 'TSG Hoffenheim'], 'Wolfsburg': ['VfL Wolfsburg'],
+    'Mainz': ['1. FSV Mainz 05', 'FSV Mainz 05', 'Mainz 05'], 'Augsburg': ['FC Augsburg'],
+    'Werder Bremen': ['SV Werder Bremen'], 'Union Berlin': ['1. FC Union Berlin', 'FC Union Berlin'],
+    'Borussia Monchengladbach': ['Borussia Mönchengladbach', 'Borussia M.Gladbach'],
+    'Hamburger SV': ['Hamburg'], 'FC Koln': ['1. FC Köln', 'FC Köln', 'Cologne'],
+    'Heidenheim': ['1. FC Heidenheim 1846', '1. FC Heidenheim', 'FC Heidenheim'],
+    'St Pauli': ['FC St. Pauli', 'St. Pauli'], 'Bochum': ['VfL Bochum 1848', 'VfL Bochum'],
+    'Holstein Kiel': ['KSV Holstein Kiel'], 'Darmstadt': ['SV Darmstadt 98'],
+    'Real Madrid': ['Real Madrid CF'], 'Barcelona': ['FC Barcelona'],
+    'Atletico Madrid': ['Club Atlético de Madrid', 'Atlético Madrid', 'Atlético de Madrid'],
+    'Athletic Bilbao': ['Athletic Club', 'Athletic Club Bilbao'],
+    'Real Betis': ['Real Betis Balompié'], 'Villarreal': ['Villarreal CF'],
+    'Valencia': ['Valencia CF'], 'Sevilla': ['Sevilla FC'], 'Getafe': ['Getafe CF'],
+    'Girona': ['Girona FC'], 'Espanyol': ['RCD Espanyol'], 'Mallorca': ['RCD Mallorca'],
+    'Celta Vigo': ['RC Celta de Vigo', 'Celta de Vigo'], 'Osasuna': ['CA Osasuna'],
+    'Alaves': ['Deportivo Alavés'], 'Elche': ['Elche CF'], 'Levante': ['Levante UD'],
+    'Real Oviedo': [], 'Las Palmas': ['UD Las Palmas'], 'Leganes': ['CD Leganés'],
+    'Real Valladolid': ['Real Valladolid CF'], 'Granada': ['Granada CF'],
+    'Almeria': ['UD Almería'], 'Cadiz': ['Cádiz CF'],
+    'Inter Milan': ['FC Internazionale Milano', 'Internazionale', 'Inter'],
+    'AC Milan': ['AC Milan', 'Milan'], 'AS Roma': ['AS Roma', 'Roma'],
+    'Napoli': ['SSC Napoli'], 'Lazio': ['SS Lazio'], 'Juventus': ['Juventus FC'],
+    'Atalanta': ['Atalanta BC'], 'Bologna': ['Bologna FC 1909', 'Bologna FC'],
+    'Fiorentina': ['ACF Fiorentina'], 'Torino': ['Torino FC'], 'Genoa': ['Genoa CFC'],
+    'Udinese': ['Udinese Calcio'], 'Lecce': ['US Lecce'], 'Cagliari': ['Cagliari Calcio'],
+    'Parma': ['Parma Calcio 1913'], 'Como': ['Como 1907'], 'Sassuolo': ['US Sassuolo Calcio', 'US Sassuolo'],
+    'Cremonese': ['US Cremonese'], 'Pisa': ['Pisa Sporting Club', 'Pisa SC'],
+    'Hellas Verona': ['Hellas Verona FC', 'Verona'], 'Empoli': ['Empoli FC'],
+    'Monza': ['AC Monza'], 'Venezia': ['Venezia FC'], 'Frosinone': ['Frosinone Calcio'],
+    'Salernitana': ['US Salernitana 1919'],
+}
+
+
+def _bootstrap_alias_key(value):
+    import unicodedata
+    return ''.join(c for c in unicodedata.normalize('NFKD', str(value)).casefold()
+                   if c.isalnum() and not unicodedata.combining(c))
+
+
+_BOOTSTRAP_TEAM_ALIASES = {
+    _bootstrap_alias_key(name): _bootstrap_alias_key(canonical)
+    for canonical, names in _BOOTSTRAP_ALIAS_GROUPS.items() for name in [canonical]+names
+}
+
+
+def _fit_bootstrap_pilot(history, as_of):
+    teams = {r[k] for r in history for k in ('home', 'away')}
+    latest = max(_hybrid_dt(r['date']) for r in history)
+    if not 6 <= len(teams) <= 80:
+        return {'status': 'heterogeneous_competition', 'model': None}
+    if (as_of-latest).days > 90:
+        return {'status': 'stale_bootstrap_history', 'model': None, 'latest_fixture_at': latest.isoformat()}
+    try:
+        model = _hybrid_fit(history)
+    except Exception as exc:
+        return {'status': 'training_failed', 'model': None, 'error': type(exc).__name__}
+    # No probabilities/odds fabricated for these source scores. No retrospective
+    # accuracy is claimed, because availability at historical kickoff is unknown.
+    return {'status': 'shadow_ready', 'model': model, 'model_type': 'dixon_coles_bootstrap_pilot',
+            'training_origin': 'openfootball_plus_confirmed_native_scores',
+            'bootstrap_fixtures': sum(bool(r.get('bootstrap')) for r in history),
+            'latest_fixture_at': latest.isoformat(), 'blend_weight': .1, 'temperature': 1.,
+            'calibration_matches': 0, 'evaluation_matches': 0, 'improvement_candidate': False,
+            'historical_performance_proven': False, 'prospective_evaluation_required': True,
+            'validation_reason': 'imported_scores_have_no_verified_historical_capture_time'}
 
 
 def _risk_profile(candidate, model_disagreement=None):
