@@ -10276,7 +10276,7 @@ montante_selector = MontanteService(
     min_confidence=MONTANTE_MIN_CONFIDENCE,
     min_odds=MONTANTE_MIN_ODDS,
     max_odds=MONTANTE_MAX_ODDS,
-    min_edge=-3.0,  # Percentage points; do not claim positive expected returns.
+    min_edge=0.0,  # No estimated negative return; not proof of profitability.
     min_books=MONTANTE_MIN_BOOKS,
     min_stability=MONTANTE_MIN_STABILITY,
     max_odds_age_minutes=MONTANTE_MAX_ODDS_AGE_MINUTES,
@@ -10370,6 +10370,21 @@ async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Di
     public["selection_version"] = public.get("selection_version") or "legacy"
     public["minimum_matches_per_step"] = 2
     public["selection_policy"] = {"model_estimates_only": True, "requires_two_distinct_matches": True, "low_odds_bonus": False, "minimum_sources": MONTANTE_MIN_BOOKS, "historically_validated": False}
+    initial = montante_selector._num(public.get("initial_bankroll"))
+    balance = montante_selector._num(public.get("theoretical_bankroll"))
+    stake = balance if public.get("status") == "ACTIVE" else 0.
+    public["capital_summary"] = {
+        "initial": initial, "balance": balance,
+        "net_change": round(balance-initial,2) if balance is not None and initial is not None else None,
+        "next_stake": stake, "mode":"theoretical_full_reinvestment", "currency":"XOF"}
+    # The amount projected from the current pair must not disclose its odds to Free accounts.
+    if has_paid_access and public.get("status") == "ACTIVE" and current_pick_count == 2:
+        odds = montante_selector._num((public.get("selection_summary") or {}).get("combined_odds"))
+        if odds is not None and balance is not None:
+            public["capital_summary"]["if_both_win"] = round(balance*odds,2)
+    public["selection_policy"].update(
+        unconditional_payout_distribution=True, nonnegative_estimated_return=True,
+        refund_probability_required=True, model_is_experimental=True)
     public["current_picks_preview"] = [
         {"slot": index + 1, "locked": not has_paid_access}
         for index in range(current_pick_count)
@@ -10662,7 +10677,8 @@ async def _montante_choose_pair(state: Dict) -> Dict:
         state["waiting_reason"] = "Les cotes sont trop anciennes : attente d’un flux actualisé pour vérifier deux matchs."
         state["updated_at"] = now.isoformat()
         return await _montante_publish_selection(state)
-    stats = await get_real_stats_map(db, matches)
+    stats = dict(await get_real_stats_map(db, matches) or {})
+    stats["__hybrid_models__"] = await _get_hybrid_registry()
     predictions = analyze_all(matches, real_stats_map=stats)
     raw_by_id = {str(m.get("id") or m.get("match_id")): m for m in matches if isinstance(m, dict)}
     previously_used = {str(p.get("match_id")) for h in state.get("history", []) for p in h.get("picks", []) if p.get("match_id")}
@@ -10705,22 +10721,40 @@ async def _montante_choose_pair(state: Dict) -> Dict:
                 "pick_raw": item.get("pick_raw"), "pick_point": item.get("pick_point"),
                 "pick_odds": item["odds"], "confidence": (item["confidence"] * 100 if item["confidence"] is not None else None),
                 "model_probability": item["model_probability"] * 100, "edge": item["edge"],
+                "estimated_win_probability": item["model_probability"] * 100,
+                "push_probability": item["push_probability"] * 100,
+                "estimated_loss_probability": item["estimated_loss_probability"] * 100,
+                "probability_basis": "unconditional", "probability_source": item["probability_source"],
+                "probability_validated": item["probability_validated"], "expected_return": item["expected_return"],
+                "team": item.get("team"),
                 "model_version": MODEL_VERSION, "selector_version": montante_selector.VERSION,
                 "is_combo": False, "official_track_eligible": False, "result": "pending",
                 "created_at": now.isoformat(), "source": "montante"}}, upsert=True,
         )
     state["current_picks"] = selected
     state["waiting_reason"] = None
-    state["selection_summary"] = {
-        "combined_odds": round(math.prod(p["odds"] for p in selected), 3),
-        "independence_estimate": round(math.prod(p["model_probability"] for p in selected) * 100, 1),
-        "assumption": "Indépendance supposée ; estimation du moteur, pas une fréquence de réussite vérifiée.",
-        "minimum_sources": min(p["num_books"] for p in selected), "published_at": now.isoformat(),
-    }
+    state["selection_summary"] = montante_selector.pair_summary(selected)
+    state["selection_summary"]["published_at"] = now.isoformat()
     state["last_settlement_check"] = {"day": int(state.get("current_day", 1)), "checked_at": now.isoformat(),
         "statuses": ["PENDING", "PENDING"], "details": [{"slot": i+1, "match_id": p["match_id"],
         "history_signature": p["history_signature"], "status": "PENDING"} for i,p in enumerate(selected)]}
-    return await _montante_publish_selection(state)
+    published = await _montante_publish_selection(state)
+    # Freeze only the pair that actually won publication; never replace it after kickoff.
+    official = published.get("current_picks") or []
+    if [p.get("history_signature") for p in official] == [p.get("history_signature") for p in selected]:
+        try:
+            captured = datetime.now(timezone.utc)
+            if all(captured < _parse_iso(p["start_time"]) for p in selected):
+                observation = copy.deepcopy(montante_selector.last_observation)
+                observation.update(montante_id=state["id"], day=state["current_day"],
+                    captured_at=captured.isoformat(), selected=copy.deepcopy(selected))
+                # Signature also handles a fully void attempt on the same step.
+                observation_id = state["id"] + ":" + str(state["current_day"]) + ":" + "|".join(p["history_signature"] for p in selected)
+                await db.montante_selection_observations.update_one({"_id":observation_id},
+                    {"$setOnInsert":observation}, upsert=True)
+        except Exception as exc:
+            logging.getLogger("winpulse.montante").warning("Observation unavailable (%s)", type(exc).__name__)
+    return published
 
 
 
@@ -10986,6 +11020,18 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
         state = await _montante_prepare_next_day(state)
 
     return await _montante_view_for_payload(state, payload)
+
+
+@app.get("/api/admin/montante/selection-report")
+async def montante_selection_report(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    from montante_service import evaluate_selection_observations
+    observations = await db.montante_selection_observations.find({}).sort("captured_at", -1).limit(200).to_list(length=200)
+    ids = list({p.get("match_id") for row in observations
+        for key in ("selected", "baseline_pair", "contenders") for p in row.get(key,[]) if p.get("match_id")})
+    results = await db.predictions_history.find({"match_id":{"$in":ids},
+        "result":{"$in":["won","lost","void"]}}).limit(12000).to_list(length=12000) if ids else []
+    return evaluate_selection_observations(observations, results, _evaluate_pick_result)
 
 
 @app.post("/api/montante/start")
@@ -16014,3 +16060,4 @@ async def football_statistics_refresh(payload:dict=Depends(get_current_user_payl
     await _scheduled_apisports_refresh()
     queued=bool(_apisports_task and not _apisports_task.done())
     return {'queued':queued,'status':'queued' if queued else 'not_started'}
+
