@@ -384,7 +384,7 @@ function ConfidenceBar({ value, label }) {
   const raw = finiteNumber(value);
   if (raw === null) return null;
   const bounded = Math.max(0, Math.min(raw, 100));
-  const color = bounded >= 82 ? "bg-green-500" : bounded >= 75 ? "bg-orange-400" : "bg-red-400";
+  const color = bounded >= 70 ? "bg-gradient-to-r from-emerald-500 to-teal-500" : bounded >= 55 ? "bg-gradient-to-r from-amber-400 to-orange-400" : "bg-gradient-to-r from-rose-400 to-fuchsia-500";
   return (
     <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100"
       role="progressbar" aria-label={label} aria-valuenow={bounded} aria-valuemin={0} aria-valuemax={100}>
@@ -730,8 +730,8 @@ export function PredictionEvidence({ prediction = {}, compact = false }) {
   const words = PROFILE_COPY[language] || PROFILE_COPY.fr;
   const probability = finiteNumber(prediction.estimated_win_probability) ?? ((!prediction.probability_basis || prediction.probability_basis === "unconditional") ? finiteNumber(prediction.model_probability ?? prediction.confidence) : null);
   const profile = probability === null ? "unknown" : probability >= 70 ? "strong" : probability >= 55 ? "shared" : "bold";
-  const cls = profile === "strong" ? "border-teal-200 bg-teal-50 text-teal-900" : profile === "shared" ? "border-indigo-200 bg-indigo-50 text-indigo-900" : profile === "bold" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-600";
-  return <span className={`inline-flex max-w-full rounded-lg border px-2.5 py-1 text-xs font-bold leading-5 ${cls}`} data-testid="prediction-evidence" title={compact ? undefined : words.hint}>{words[profile]}</span>;
+  const cls = profile === "strong" ? "border-emerald-300 bg-gradient-to-r from-emerald-100 to-teal-100 text-emerald-950 shadow-sm shadow-emerald-100" : profile === "shared" ? "border-amber-300 bg-gradient-to-r from-amber-100 to-orange-100 text-amber-950 shadow-sm shadow-amber-100" : profile === "bold" ? "border-rose-300 bg-gradient-to-r from-rose-100 to-fuchsia-100 text-rose-950 shadow-sm shadow-rose-100" : "border-slate-300 bg-slate-100 text-slate-700";
+  return <span className={`inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-extrabold leading-5 ${cls}`} data-testid="prediction-evidence" title={compact ? undefined : words.hint}><span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-current opacity-80" />{words[profile]}</span>;
 }
 
 export function MultiMarketBoard({ prediction = {} }) {
