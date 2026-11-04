@@ -2187,7 +2187,7 @@ async def _budgeted_primary_get(db, client, url, *, params, category):
 
 # Supplemental markets are collected in bounded batches and never replace the
 # all-match catalogue. Every paid call uses the same persistent credit guard.
-_EXTRA_FOOTBALL_MARKETS = {'btts', 'draw_no_bet', 'alternate_totals', 'alternate_spreads', 'team_totals'}
+_EXTRA_FOOTBALL_MARKETS = {'btts', 'draw_no_bet', 'spreads', 'alternate_totals', 'alternate_spreads', 'team_totals'}
 _EXTRA_MARKET_CANONICAL = {'alternate_totals':'totals', 'alternate_spreads':'spreads'}
 
 
