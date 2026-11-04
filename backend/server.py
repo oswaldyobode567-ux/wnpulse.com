@@ -8281,7 +8281,7 @@ async def _get_hybrid_registry():
     if time.monotonic()-_hybrid_registry_cache["loaded"]<300:
         return _hybrid_registry_cache["models"]
     try:
-        rows=await asyncio.wait_for(db.hybrid_model_registry.find({"version":"dc-elo-market-2","status":"shadow_ready"}).to_list(length=None),timeout=2)
+        rows=await asyncio.wait_for(db.hybrid_model_registry.find({"version":"dc-elo-market-3","status":"shadow_ready"}).to_list(length=None),timeout=2)
         models={row["sport_key"]:row for row in rows if row.get("model")}
         _hybrid_registry_cache.update(loaded=time.monotonic(),models=models)
         return models
@@ -8295,25 +8295,36 @@ async def _refresh_hybrid_registry(force=False):
         now=datetime.now(timezone.utc)
         status=await db.system_meta.find_one({"_id":"hybrid_training"})
         last=_parse_iso((status or {}).get("finished_at"))
-        if not force and last and (now-last).total_seconds()<86400:
+        if not force and last and (now-last).total_seconds()<86400 and (status or {}).get("version")=="dc-elo-market-3":
             return
         # Read historical outcomes only; no new request to the odds/stat providers.
         records=await db.predictions_history.find({"sport_key":{"$regex":"^soccer_"},"result":{"$in":["won","lost","void"]}}).to_list(length=None)
+        native_records = len(records)
+        try:
+            imported_history = await _load_bootstrap_history()
+        except Exception as exc:
+            imported_history = []
+            logging.getLogger("winpulse.hybrid").warning("Historical bootstrap unavailable (%s)", type(exc).__name__)
+        # Newly downloaded records were observed after this task began.
+        now = datetime.now(timezone.utc)
+        records = _merge_bootstrap_history(records, imported_history)
         # CPU work is off the event loop and cannot gate the public prediction feed.
         reports=await asyncio.to_thread(train_hybrid_models,records,now)
         operations=[UpdateOne({"_id":league},{"$set":report},upsert=True) for league,report in reports.items()]
         if operations:
             await db.hybrid_model_registry.bulk_write(operations,ordered=False)
-            versions=[UpdateOne({"_id":f"dc-elo-market-2:{league}:{report['as_of']}"},
+            versions=[UpdateOne({"_id":f"dc-elo-market-3:{league}:{report['as_of']}"},
                       {"$setOnInsert":report},upsert=True) for league,report in reports.items()]
             await db.hybrid_model_versions.bulk_write(versions,ordered=False)
         await db.system_meta.update_one({"_id":"hybrid_training"},{"$set":{
-            "finished_at":datetime.now(timezone.utc).isoformat(),"version":"dc-elo-market-2",
-            "confirmed_records_read":len(records),"leagues":len(reports),
+            "finished_at":datetime.now(timezone.utc).isoformat(),"version":"dc-elo-market-3",
+            "confirmed_records_read":native_records,"training_records_after_merge":len(records),"bootstrap_rows_available":len(imported_history),"leagues":len(reports),
             "ready":sum(r.get("status")=="shadow_ready" for r in reports.values()),
             "mode":"shadow","automatic_promotion":False}},upsert=True)
         _hybrid_registry_cache.update(loaded=0.,models={})
-        # Shadow registry is read on the normal cache TTL; never erase public picks.
+        # Recompute on the next normal request without deleting the match catalogue.
+        _prediction_cache["timestamp"] = 0.
+        # Existing predictions remain available while the refreshed registry loads.
 
 
 def _queue_hybrid_training(force=False):
@@ -8339,7 +8350,7 @@ async def hybrid_prediction_train(payload:dict=Depends(get_current_user_payload)
 
 async def _evaluate_hybrid_history():
     import math
-    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-2","hybrid_evaluation":{"$exists":False}}).to_list(length=None)
+    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-3","hybrid_evaluation":{"$exists":False}}).to_list(length=None)
     ids=list({r["match_id"] for r in rows})
     if not ids:return
     confirmed=await db.predictions_history.find({"match_id":{"$in":ids},"result":{"$in":["won","lost","void"]}}).to_list(length=None)
@@ -8384,7 +8395,7 @@ async def _evaluate_hybrid_history():
 
 
 async def _hybrid_prospective_report():
-    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-2"},{"hybrid_evaluation":1}).to_list(length=None)
+    rows=await db.prediction_shadow_history.find({"shadow.version":"dc-elo-market-3"},{"hybrid_evaluation":1}).to_list(length=None)
     outcomes=[r["hybrid_evaluation"] for r in rows if r.get("hybrid_evaluation")]
     evaluated=[r for r in outcomes if r["result"]!="void"]
     count=len(outcomes)
@@ -8405,8 +8416,9 @@ async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload
     if not user or not user.get("is_admin"):
         raise HTTPException(status_code=403,detail="Accès administrateur requis")
     summary=await db.system_meta.find_one({"_id":"hybrid_training"},{"_id":0})
-    reports=await db.hybrid_model_registry.find({"version":"dc-elo-market-2"},{"_id":0,"model":0}).to_list(length=None)
+    reports=await db.hybrid_model_registry.find({"version":"dc-elo-market-3"},{"_id":0,"model":0}).to_list(length=None)
     return {"mode":os.environ.get("WNPULSE_HYBRID_MODE", "pilot"),"training_running":bool(_hybrid_training_task and not _hybrid_training_task.done()),"automatic_promotion":False,"summary":summary,"leagues":reports,
+            "history_bootstrap":await db.system_meta.find_one({"_id":"hybrid_history_bootstrap"},{"_id":0}),
             "prospective":await _hybrid_prospective_report(),
             "note":"Pilote public : modèle statistique jusqu'à 10%, ou poids appris sur 1X2 si critères rétrospectifs satisfaits. Aucun avantage futur garanti. Sans modèle exploitable : consensus conservé."}
 
@@ -15673,3 +15685,142 @@ async def _stop_startup_montante_task():
         _startup_montante_task.cancel()
         try:await _startup_montante_task
         except asyncio.CancelledError:pass
+
+
+# Public-domain historical scores, kept separate from official predictions.
+_BOOTSTRAP_LEAGUES = {
+    'soccer_epl': 'en.1', 'soccer_france_ligue_one': 'fr.1',
+    'soccer_germany_bundesliga': 'de.1', 'soccer_spain_la_liga': 'es.1',
+    'soccer_italy_serie_a': 'it.1',
+}
+
+
+def _bootstrap_history_records(document, league, source_url, fetched_at):
+    if league not in _BOOTSTRAP_LEAGUES or not isinstance(document, dict):
+        return []
+    rows = []
+    for match in document.get('matches', [])[:1500]:
+        if not isinstance(match, dict):
+            continue
+        score_data = match.get('score')
+        if not isinstance(score_data, dict):
+            continue
+        goals = score_data.get('ft')
+        if not isinstance(goals, list) or len(goals) != 2:
+            continue
+        if any(type(g) is not int or not 0 <= g <= 20 for g in goals):
+            continue
+        try:
+            kickoff = datetime.strptime(str(match.get('date')), '%Y-%m-%d').replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            continue
+        # Date-only data: never import today's or future matches as confirmed.
+        if kickoff.date() >= fetched_at.date() or (fetched_at-kickoff).days > 1095:
+            continue
+        home, away = match.get('team1'), match.get('team2')
+        if not isinstance(home, str) or not isinstance(away, str) or not home.strip() or not away.strip():
+            continue
+        if _optional_prediction_engine._hybrid_team(home) == _optional_prediction_engine._hybrid_team(away):
+            continue
+        identity = hashlib.sha256(json.dumps([league, match['date'], home, away]).encode()).hexdigest()
+        rows.append({'_id': identity, 'sport_key': league, 'match_id': 'openfootball:'+identity,
+            'commence_time': kickoff.isoformat(), 'home_team': home, 'away_team': away,
+            'final_score': f'{goals[0]}-{goals[1]}', 'reconciled_at': fetched_at.isoformat(),
+            'bootstrap_training_only': True, 'historical_availability_verified': False,
+            'time_precision': 'date', 'source': 'openfootball_cc0', 'source_url': source_url,
+            'retrieved_at': fetched_at.isoformat()})
+    return rows
+
+
+def _merge_bootstrap_history(native, imported):
+    # Deduplicate across native picks, source files and seasons. Disagreements
+    # exclude the whole fixture; never choose a convenient score.
+    grouped, conflict = {}, set()
+    for row in list(native) + list(imported):
+        if not isinstance(row, dict):
+            continue
+        kickoff = _optional_prediction_engine._hybrid_dt(row.get('commence_time'))
+        if not kickoff:
+            continue
+        key = (row.get('sport_key'), kickoff.date().isoformat(),
+               _optional_prediction_engine._hybrid_team(row.get('home_team', '')),
+               _optional_prediction_engine._hybrid_team(row.get('away_team', '')))
+        score = re.fullmatch(r'\s*(\d+)\s*-\s*(\d+)\s*', str(row.get('final_score') or ''))
+        if not score:
+            continue
+        goals = tuple(map(int, score.groups()))
+        if key in grouped and grouped[key][0] != goals:
+            conflict.add(key)
+        else:
+            grouped.setdefault(key, (goals, []))[1].append(row)
+    rows = []
+    for key, (_, items) in grouped.items():
+        if key in conflict:
+            continue
+        originals = [r for r in items if not r.get('bootstrap_training_only')]
+        rows.extend(originals if originals else items[:1])
+    return rows
+
+
+async def _load_bootstrap_history():
+    enabled = os.environ.get('WNPULSE_HISTORY_BOOTSTRAP_ENABLED', 'true').lower() not in ('0', 'false', 'no')
+    now = datetime.now(timezone.utc)
+    summary = await db.system_meta.find_one({'_id': 'hybrid_history_bootstrap'}) or {}
+    last = _parse_iso(summary.get('finished_at'))
+    if enabled and (not last or now-last > timedelta(hours=24)):
+        # Five countries, three seasons, once a day; never per visitor.
+        season_start = now.year if now.month >= 7 else now.year-1
+        downloaded, errors, imported = 0, [], 0
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            for league, filename in _BOOTSTRAP_LEAGUES.items():
+                for year in range(season_start-2, season_start+1):
+                    season = f'{year}-{str(year+1)[-2:]}'
+                    url = f'https://raw.githubusercontent.com/openfootball/football.json/master/{season}/{filename}.json'
+                    cache_id = 'bootstrap_resource:'+league+':'+season
+                    cached = await db.system_meta.find_one({'_id': cache_id}) or {}
+                    headers = {'If-None-Match': cached['etag']} if cached.get('etag') else {}
+                    try:
+                        response = await client.get(url, headers=headers)
+                        if response.status_code == 304:
+                            continue
+                        response.raise_for_status()
+                        if len(response.content) > 3000000:
+                            raise ValueError('historical_resource_too_large')
+                        records = _bootstrap_history_records(response.json(), league, url, now)
+                        if not records:
+                            errors.append({'league': league, 'season': season, 'reason': 'no_confirmed_scores'})
+                            continue
+                        await db.hybrid_bootstrap_results.bulk_write([
+                            UpdateOne({'_id': r['_id']}, {'$set': {k: v for k, v in r.items() if k != '_id'}}, upsert=True) for r in records
+                        ], ordered=False)
+                        await db.system_meta.update_one({'_id': cache_id}, {'$set': {
+                            'etag': response.headers.get('etag'), 'retrieved_at': now.isoformat(),
+                            'rows': len(records), 'source_url': url}}, upsert=True)
+                        downloaded += 1
+                        imported += len(records)
+                    except Exception as exc:
+                        errors.append({'league': league, 'season': season, 'reason': type(exc).__name__})
+        await db.system_meta.update_one({'_id': 'hybrid_history_bootstrap'}, {'$set': {
+            'finished_at': datetime.now(timezone.utc).isoformat(), 'source': 'openfootball_cc0',
+            'downloaded_resources': downloaded, 'imported_rows': imported, 'errors': errors,
+            'uses_odds_api_credits': False, 'historical_performance_proven': False}}, upsert=True)
+    # Disabled means no public bootstrap contribution, not destructive deletion.
+    if not enabled:
+        return []
+    return await db.hybrid_bootstrap_results.find({
+        'commence_time': {'$gte': (now-timedelta(days=1095)).isoformat()},
+        'bootstrap_training_only': True}).to_list(length=20000)
+
+
+async def _scheduled_hybrid_bootstrap():
+    _queue_hybrid_training()
+
+
+@app.on_event('startup')
+async def _bootstrap_model_startup():
+    if ENABLE_INTERNAL_SCHEDULER:
+        # Independent of provider refreshes and pending-result reconciliation.
+        _queue_hybrid_training()
+        scheduler.add_job(_scheduled_hybrid_bootstrap, 'interval', hours=6,
+            id='hybrid_history_training', replace_existing=True, coalesce=True, max_instances=1)
+
