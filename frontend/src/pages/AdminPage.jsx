@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import api from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
 import { Input } from "@/components/ui/input";
@@ -216,7 +216,7 @@ export default function AdminPage() {
 
           <TabsContent value="quality"><QualityControlPanel /></TabsContent>
 
-          <TabsContent value="enrichment"><EnrichmentPanel /></TabsContent>
+          <TabsContent value="enrichment"><VisualAssetsPanel /><EnrichmentPanel /></TabsContent>
           <TabsContent value="payments">
             <Card className="bg-white border-neutral-200">
               <div className="px-5 py-4 border-b border-neutral-200 flex items-center justify-between gap-4">
@@ -905,4 +905,47 @@ function ResultSyncPanel({ onUpdated }) {
     {!!monitor && <p role="status" className="mt-4 text-xs leading-6 text-slate-500">{words.polling}</p>}
     <p className="mt-4 border-t border-orange-200 pt-3 text-sm leading-6 text-slate-600">{words.honest}</p>
   </section>;
+}
+
+
+const VISUAL_ASSETS_COPY={
+ fr:["Logos et portraits","Actualiser le bilan","Synchroniser les images","La recherche est lancée en arrière-plan. Actualise le bilan dans quelques instants.","Une synchronisation est déjà en cours.","Impossible de charger les images. Réessaie.","Sport","Disponibles","À rechercher","Aucune rencontre dans la fenêtre de synchronisation.","Images manquantes ou ambiguës","La couverture dépend des sources. Aucune image incertaine n’est attribuée à un joueur.","football","basket","tennis","hockey","baseball","football américain","Synchronisation automatique désactivée : vérifie la configuration du serveur.","Dernier passage"],
+ en:["Logos and portraits","Refresh report","Sync images","Search started in the background. Refresh the report shortly.","A sync is already running.","Images could not be loaded. Try again.","Sport","Available","To find","No matches in the sync window.","Missing or ambiguous images","Coverage depends on providers. Uncertain images are never assigned to a player.","football","basketball","tennis","hockey","baseball","American football","Automatic sync is disabled: check server configuration.","Last run"],
+ es:["Logotipos y retratos","Actualizar informe","Sincronizar imágenes","Búsqueda iniciada en segundo plano. Actualiza el informe en unos instantes.","Ya hay una sincronización en curso.","No se pudieron cargar las imágenes. Reintenta.","Deporte","Disponibles","Por buscar","No hay partidos en la ventana de sincronización.","Imágenes ausentes o ambiguas","La cobertura depende de los proveedores. No se asignan imágenes dudosas a un jugador.","fútbol","baloncesto","tenis","hockey","béisbol","fútbol americano","Sincronización automática desactivada: revisa la configuración.","Última ejecución"],
+ pt:["Logos e retratos","Atualizar relatório","Sincronizar imagens","Pesquisa iniciada em segundo plano. Atualize o relatório em instantes.","Já existe uma sincronização em curso.","Não foi possível carregar as imagens. Tente novamente.","Desporto","Disponíveis","Por pesquisar","Sem jogos na janela de sincronização.","Imagens ausentes ou ambíguas","A cobertura depende dos fornecedores. Não são atribuídas imagens duvidosas a um jogador.","futebol","basquetebol","ténis","hóquei","basebol","futebol americano","Sincronização automática desativada: verifique a configuração.","Última execução"],
+ de:["Logos und Porträts","Bericht aktualisieren","Bilder synchronisieren","Suche im Hintergrund gestartet. Aktualisiere den Bericht in Kürze.","Eine Synchronisierung läuft bereits.","Bilder konnten nicht geladen werden. Erneut versuchen.","Sport","Verfügbar","Zu suchen","Keine Spiele im Synchronisierungsfenster.","Fehlende oder mehrdeutige Bilder","Die Abdeckung hängt von den Anbietern ab. Unsichere Bilder werden keinem Spieler zugeordnet.","Fußball","Basketball","Tennis","Eishockey","Baseball","American Football","Automatische Synchronisierung deaktiviert: Serverkonfiguration prüfen.","Letzter Lauf"],
+ ar:["الشعارات والصور","تحديث التقرير","مزامنة الصور","بدأ البحث في الخلفية. حدّث التقرير بعد قليل.","المزامنة قيد التنفيذ بالفعل.","تعذر تحميل الصور. حاول مجدداً.","الرياضة","متاحة","قيد البحث","لا توجد مباريات ضمن نافذة المزامنة.","صور مفقودة أو غير مؤكدة","تعتمد التغطية على المصادر. لا تنسب صورة غير مؤكدة إلى لاعب.","كرة القدم","كرة السلة","التنس","الهوكي","البيسبول","كرة القدم الأمريكية","المزامنة التلقائية معطلة: تحقق من إعدادات الخادم.","آخر تشغيل"]
+};
+function VisualAssetsPanel(){
+ const i18n=usePageLanguage();const w=VISUAL_ASSETS_COPY[i18n.language]||VISUAL_ASSETS_COPY.fr;
+ const [data,setData]=useState(null),[busy,setBusy]=useState(false),[message,setMessage]=useState("");
+ const requestRef=useRef(null);
+ const sports={football:w[12],basketball:w[13],tennis:w[14],hockey:w[15],baseball:w[16],american_football:w[17]};
+ const load=useCallback(async()=>{
+   requestRef.current?.abort();const request=new AbortController();requestRef.current=request;
+   setBusy(true);setMessage("");
+   try{const r=await api.get('/admin/media/status',{signal:request.signal,timeout:15000});if(!request.signal.aborted)setData(r.data);}
+   catch{if(!request.signal.aborted)setMessage(w[5]);}
+   finally{if(!request.signal.aborted)setBusy(false);}
+ },[w]);
+ useEffect(()=>{load();return()=>requestRef.current?.abort();},[load]);
+ const sync=async()=>{
+   if(busy)return;
+   const request=new AbortController();requestRef.current=request;
+   setBusy(true);setMessage("");
+   try{const r=await api.post('/admin/media/refresh',null,{signal:request.signal,timeout:15000});
+     if(!request.signal.aborted)setMessage(r.data?.queued?w[3]:r.data?.status==='already_running'?w[4]:r.data?.status==='disabled'?w[18]:w[5]);}
+   catch{if(!request.signal.aborted)setMessage(w[5]);}
+   finally{if(!request.signal.aborted)setBusy(false);}
+ };
+ return <Card className="mb-6 min-w-0 rounded-2xl border-orange-200 p-4 sm:p-6" data-testid="visual-assets-admin">
+  <h2 className="text-lg font-extrabold text-slate-900">{w[0]}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{w[11]}</p>
+  <div className="mt-4 flex flex-wrap gap-3"><Button onClick={load} disabled={busy} variant="outline" className="min-h-11"><RefreshCw className={cn("me-2 h-4 w-4",busy&&"animate-spin")}/>{w[1]}</Button><Button onClick={sync} disabled={busy||data?.running} className="min-h-11 bg-orange-600 text-white hover:bg-orange-700">{w[2]}</Button></div>
+  {message&&<p role="status" className="mt-3 text-sm text-slate-600">{message}</p>}
+  {data&&(!data.enabled||!data.scheduler_enabled)&&<p className="mt-3 rounded-xl bg-amber-50 p-3 text-sm text-amber-800">{w[18]}</p>}
+  {data&&<div className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">{Object.entries(data.sports||{}).map(([sport,row])=><div key={sport} className="min-w-0 rounded-xl border border-slate-200 bg-slate-50 p-4"><h3 className="font-bold text-slate-900">{sports[sport]||sport}</h3><p className="mt-2 text-sm text-emerald-700">{w[7]} : <b>{row.available} / {row.total}</b></p><p className="mt-1 text-sm text-slate-500">{w[8]} : <b>{row.missing}</b></p></div>)}</div>}
+  {data&&Object.keys(data.sports||{}).length===0&&<p className="mt-4 text-sm text-slate-500">{w[9]}</p>}
+  {data?.last_run?.checked_at&&<p className="mt-3 text-xs text-slate-500">{w[19]} : {new Intl.DateTimeFormat(i18n.locale,{dateStyle:'short',timeStyle:'short'}).format(new Date(data.last_run.checked_at))}</p>}
+  {data?.missing_sample?.length>0&&<details className="mt-4 rounded-xl border border-slate-200 p-3"><summary className="min-h-8 cursor-pointer text-sm font-semibold text-slate-700">{w[10]}</summary><ul className="mt-3 space-y-2 text-sm text-slate-500">{data.missing_sample.map(row=><li key={row.key} className="break-words"><bdi>{row.name}</bdi> · {sports[row.sport]||row.sport}</li>)}</ul></details>}
+ </Card>;
 }
