@@ -1,4 +1,4 @@
-import { MatchInsights, TeamBadge, badgeUrl, MarketQuotes } from "@/components/MatchCard";
+import { MatchInsights, TeamBadge, badgeUrl, MarketQuotes, PredictionEvidence, MultiMarketBoard } from "@/components/MatchCard";
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
@@ -188,11 +188,7 @@ export default function MatchDetailPage() {
   }
   const p = data.prediction || {};
   const locked = p.locked || !p.pick;
-  const labelColor = {
-    safe: "bg-emerald-50 border-emerald-200",
-    value: "bg-amber-50 border-amber-200",
-    risky: "bg-rose-50 border-rose-200"
-  }[p.label] || "bg-orange-50 border-orange-200";
+  const labelColor = "bg-white border-slate-200";
   const isPaid = Boolean(user?.is_admin || user && String(user.subscription || user.subscription_tier || "free").toLowerCase() !== "free");
   return <AppLayout>
       <div className="wp-match-detail min-w-0 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 [overflow-wrap:anywhere]">
@@ -256,12 +252,12 @@ export default function MatchDetailPage() {
                 {i18n.bet(p.pick)}
                 <span className="text-slate-500 text-xl font-mono font-semibold ms-2">@ {i18n.tx(p.pick_odds)}</span>
               </div>
-            </div>  <ConfidenceBadge label={i18n.tx(p.label)} confidence={p.confidence} size="md" />
+            </div>  <PredictionEvidence prediction={p} />
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-200/60">
             <Stat label={i18n.t("Bookmakers")} value={p.num_books} />
             <Stat label={i18n.t("Écart estimé")} value={readableNumber(i18n, p.edge, " points")} />
-            <Stat label={i18n.t("Estimation du moteur")} value={readableNumber(i18n, p.model_probability ?? p.confidence, " %")} />
+            <Stat label={i18n.t("Estimation du moteur")} value={readableNumber(i18n, p.estimated_win_probability ?? p.model_probability ?? p.confidence, " %")} />
             <Stat label={i18n.t("Cote optimale")} value={p.pick_odds} mono />
           </div>
           {i18n.tx(isAdmin && <div className="mt-4 pt-4 border-t border-slate-200/60 flex items-center justify-between gap-2">
@@ -298,37 +294,7 @@ export default function MatchDetailPage() {
           <FollowPickButton matchId={matchId} pick={p.pick} market={p.market} disabled={p.is_live || p.is_finished} />
           <Button className="h-auto min-h-11 w-full whitespace-normal bg-orange-600 px-4 py-3 text-white hover:bg-orange-700 sm:w-auto" onClick={()=>{discoveryEvent("upgrade_click", "match_detail");setPayState({isOpen:true,tier:"PRO"});}}>{freeWords.cta}</Button>
         </Card>}
-        {/* All markets analyzed (Pro feature) */}
-        {i18n.tx(!locked && p.markets && p.markets.length > 1 && <Card className="bg-white border-neutral-200 p-6 mb-6" data-testid="all-markets-card">
-            <div className="flex items-center gap-2 mb-4">
-              <Brain className="h-5 w-5 text-rose-600" />
-              <h2 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Tous les march\xE9s analys\xE9s")}</h2>
-              <span className="text-xs text-slate-500">({i18n.tx(p.markets.length)})</span>
-            </div>
-            <div className="space-y-2">
-              {i18n.tx(p.markets.map((m, i) => {
-            const labelCls = m.label === "safe" ? "bg-emerald-50 text-emerald-700 border-emerald-200" : m.label === "value" ? "bg-amber-50 text-amber-700 border-amber-200" : "bg-rose-50 text-rose-700 border-rose-200";
-            return <div key={i} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-neutral-200 hover:border-neutral-300 transition-colors">
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider font-bold text-slate-500 mb-1">
-                        <span className="bg-slate-900 text-white px-1.5 rounded">{i18n.bet(m.market_label)}</span>
-                        <span>{i18n.rich("\xB7 {{v0}} books", {
-                      v0: i18n.tx(m.num_books)
-                    })}</span>
-                        {i18n.tx(m.edge > 0 && <span className="text-emerald-600">{i18n.rich("\xB7 edge +{{v0}}%", {
-                      v0: i18n.tx(m.edge)
-                    })}</span>)}
-                      </div>
-                      <div className="font-semibold leading-6 text-slate-900 [overflow-wrap:anywhere]">
-                        {i18n.bet(m.pick)} <span className="text-slate-400 font-normal font-mono text-sm ms-1">@ {i18n.tx(m.pick_odds)}</span>
-                      </div>
-                    </div>   <span className={`inline-flex items-center rounded-full px-2.5 py-1 text-xs font-bold border ${labelCls}`}>
-                      {i18n.tx(m.confidence)}%
-                    </span>
-                  </div>;
-          }))}
-            </div>
-          </Card>)}
+        {!locked && <MultiMarketBoard prediction={p} />}
         {/* AI Analysis */}
         {i18n.tx(!locked && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
@@ -399,23 +365,6 @@ function Stat({ label, value, mono }) {
     <div className={`break-words font-bold text-slate-900 ${mono ? "font-mono" : ""}`}>{value == null || value === "" ? "—" : i18n.tx(value)}</div>
   </div>;
 }
-
-function ConfidenceBadge({
-  label,
-  confidence
-}) {
-  const i18n = usePageLanguage();
-  const key = String(label || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
-  const color = /sur|safe/.test(key) ? "bg-green-100 text-green-700 border-green-200" : /modere|value/.test(key) ? "bg-orange-100 text-orange-700 border-orange-200" : "bg-red-100 text-red-700 border-red-200";
-  const labels = { fr: ["🟢 PRUDENT", "🟡 MODÉRÉ", "🔴 RISQUÉ"], en: ["🟢 LOWER RISK", "🟡 MODERATE", "🔴 HIGHER RISK"], es: ["🟢 PRUDENTE", "🟡 MODERADO", "🔴 ARRIESGADO"], pt: ["🟢 PRUDENTE", "🟡 MODERADO", "🔴 ARRISCADO"], de: ["🟢 VORSICHTIG", "🟡 MITTEL", "🔴 RISKANT"], ar: ["🟢 حذر", "🟡 متوسط", "🔴 مرتفع المخاطرة"] };
-  const words = labels[i18n.language] || labels.fr;
-  const text = /sur|safe/.test(key) ? words[0] : /modere|value/.test(key) ? words[1] : words[2];
-  return <span className={`inline-flex flex-wrap items-center gap-1 rounded-full border px-2 py-1 text-xs font-bold ${color}`}>{i18n.tx(text)}{i18n.tx(confidence != null && Number.isFinite(Number(confidence)) && <bdi>{i18n.formatNumber(Number(confidence) / 100, {
-        style: "percent",
-        maximumFractionDigits: 0
-      })}</bdi>)}</span>;
-}
-
 
 const DECISION_COPY = {
   "fr": {
