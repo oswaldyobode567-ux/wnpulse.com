@@ -8640,7 +8640,7 @@ async def get_top_predictions(limit: int = 10, payload: Optional[dict] = Depends
     preds.sort(key=lambda p: p.get("effective_score", p.get("wp_score", 0)), reverse=True)
     is_paid = await _has_paid_access(payload)
     size = max(1,min(limit,50))
-    logos = {_discovery_match_id(m):{k:m[k] for k in ("home_logo","away_logo","home_team_logo","away_team_logo","home_media","away_media") if m.get(k)} for m in snapshot["matches"]}
+    logos = {_discovery_match_id(m):{k:m[k] for k in ("home_logo","away_logo","home_team_logo","away_team_logo","home_media","away_media","home_image_candidates","away_image_candidates") if m.get(k)} for m in snapshot["matches"]}
     if is_paid:
         return [{**_discovery_prediction(pred,{},paid=True), **logos.get(_discovery_match_id(pred),{})} for pred in preds[:size]]
     manifest = await _discovery_manifest(snapshot)
@@ -11554,7 +11554,7 @@ def _discovery_date(value):
 def _discovery_metadata(match):
     fields = ("id", "match_id", "sport_key", "sport_title", "home_team", "away_team", "commence_time",
               "is_live", "is_finished", "completed", "score_home", "score_away", "scores",
-              "home_logo", "away_logo", "home_team_logo", "away_team_logo", "home_media", "away_media", "surface", "league", "country")
+              "home_logo", "away_logo", "home_team_logo", "away_team_logo", "home_media", "away_media", "home_image_candidates", "away_image_candidates", "surface", "league", "country")
     return {key: copy.deepcopy(match[key]) for key in fields if key in match}
 
 
@@ -16061,3 +16061,93 @@ async def football_statistics_refresh(payload:dict=Depends(get_current_user_payl
     queued=bool(_apisports_task and not _apisports_task.done())
     return {'queued':queued,'status':'queued' if queued else 'not_started'}
 
+
+
+
+# Dedicated visual synchronization; never refreshes prices or changes forecasts.
+_visual_assets_task = None
+
+
+def _visual_assets_minutes():
+    try:return max(5,min(60,int(os.environ.get('WNPULSE_MEDIA_SYNC_MINUTES','10'))))
+    except (ValueError,TypeError):return 10
+
+
+async def _visual_assets_catalogue():
+    source=await db.odds_cache.find_one({'_id':'all_matches'}) or {}
+    matches=source.get('data') if isinstance(source.get('data'),list) else list(_prediction_cache.get('matches') or [])
+    try:return await asyncio.wait_for(enrich_match_badges(db,matches),timeout=3)
+    except Exception:return matches
+
+
+async def _run_visual_assets():
+    callback=getattr(_optional_stats_service,'refresh_visual_assets',None)
+    if not callable(callback):return {'status':'compatible_stats_service_required'}
+    matches=await _visual_assets_catalogue()
+    report=await asyncio.wait_for(callback(db,matches),timeout=160)
+    # Only presentation is updated. Do not invalidate or recompute official picks.
+    try:
+        async with _prediction_cache_lock:
+            current=list(_prediction_cache.get('matches') or [])
+            if current:_prediction_cache['matches']=await asyncio.wait_for(enrich_match_badges(db,current),timeout=3)
+    except Exception as exc:
+        logging.getLogger('winpulse.media').warning('Cached images deferred (%s)',type(exc).__name__)
+    return report
+
+
+def _queue_visual_assets():
+    global _visual_assets_task
+    if os.environ.get('WNPULSE_MEDIA_SYNC_ENABLED','true').strip().lower() in ('0','false','no'):
+        return {'queued':False,'status':'disabled'}
+    if not callable(getattr(_optional_stats_service,'refresh_visual_assets',None)):
+        return {'queued':False,'status':'compatible_stats_service_required'}
+    if _visual_assets_task and not _visual_assets_task.done():return {'queued':False,'status':'already_running'}
+    async def run():
+        try:await _run_with_scheduler_lease('visual_assets_v3',_run_visual_assets,lease_seconds=180)
+        except Exception as exc:
+            logging.getLogger('winpulse.media').warning('Visual synchronization deferred (%s)',type(exc).__name__)
+    _visual_assets_task=asyncio.create_task(run())
+    return {'queued':True,'status':'queued'}
+
+
+async def _scheduled_visual_assets():
+    _queue_visual_assets()
+
+
+@app.get('/api/admin/media/status')
+async def visual_assets_status(payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    callback=getattr(_optional_stats_service,'media_catalogue_status',None)
+    if not callable(callback):raise HTTPException(status_code=503,detail='Déployer stats_service.py compatible avec les images v3.')
+    report=await asyncio.wait_for(callback(db,await _visual_assets_catalogue()),timeout=10)
+    report.update(running=bool(_visual_assets_task and not _visual_assets_task.done()),
+        scheduler_enabled=bool(ENABLE_INTERNAL_SCHEDULER),interval_minutes=_visual_assets_minutes(),
+        enabled=os.environ.get('WNPULSE_MEDIA_SYNC_ENABLED','true').strip().lower() not in ('0','false','no'))
+    return report
+
+
+@app.post('/api/admin/media/refresh',status_code=202)
+async def visual_assets_refresh(payload:dict=Depends(get_current_user_payload)):
+    user=await _require_admin(payload)
+    await _consume_security_limit('media_refresh',str(user['id']),limit=2,window_seconds=300)
+    return _queue_visual_assets()
+
+
+@app.on_event('startup')
+async def _visual_assets_startup():
+    for collection,spec in ((db.entity_media,[('sport',1),('next_check_at',1)]),
+                            (db.media_health,[('status',1),('next_check_at',1)])):
+        try:await asyncio.wait_for(collection.create_index(spec),timeout=5)
+        except Exception:logging.getLogger('winpulse.media').warning('Optional media index deferred')
+    if ENABLE_INTERNAL_SCHEDULER:
+        scheduler.add_job(_scheduled_visual_assets,'interval',minutes=_visual_assets_minutes(),
+            id='visual_assets_v3',replace_existing=True,coalesce=True,max_instances=1,
+            next_run_time=datetime.now(timezone.utc)+timedelta(seconds=45))
+
+
+@app.on_event('shutdown')
+async def _visual_assets_shutdown():
+    if _visual_assets_task and not _visual_assets_task.done():
+        _visual_assets_task.cancel()
+        try:await _visual_assets_task
+        except asyncio.CancelledError:pass
