@@ -1632,3 +1632,86 @@ async def media_catalogue_status(db,matches):
     return {'resolver_version':3,'sports':sports,'missing_sample':missing,
         'last_run':{k:v for k,v in (await db.enrichment_state.find_one({'_id':'visual_assets'}) or {}).items() if k!='_id'},
         'broken_images':len(health),'no_complete_coverage_guarantee':True}
+
+
+
+# Presentation cache v4. Parallel projected Mongo reads, independent failure paths.
+_BADGE_PRESENTATION={'stats':{},'media':{},'broken':set(),'attempted_at':0.,'signature':None}
+
+
+def invalidate_badge_presentation_cache():
+    _BADGE_PRESENTATION['attempted_at']=0.
+
+
+async def _badge_projected_read(collection,query,projection,limit):
+    try:
+        return await asyncio.wait_for(collection.find(query,projection).to_list(length=limit),timeout=1.8)
+    except Exception as exc:
+        logger.warning('Image presentation source deferred (%s)',type(exc).__name__)
+        return None
+
+
+async def enrich_match_badges(db,matches):
+    """Keep each fixture and available crest even when another cache source times out."""
+    if not matches:return matches
+    codes={COMPETITION_MAP[m.get('sport_key')] for m in matches if m.get('sport_key') in COMPETITION_MAP}
+    stat_ids={'fd_teams_'+code for code in codes}
+    stat_ids.update(_as_key(_as_sport(m),m.get(side+'_team')) for m in matches for side in ('home','away') if _as_sport(m) and m.get(side+'_team'))
+    media_ids={_visual_key(enrichment_sport(m),m.get(side+'_team')) for m in matches for side in ('home','away') if enrichment_sport(m) and m.get(side+'_team')}
+    signature=hashlib.sha256('|'.join(sorted(stat_ids|media_ids)).encode()).hexdigest()
+    now=time.monotonic()
+    cache=_BADGE_PRESENTATION
+    # Brief retry interval coalesces repeated visitors while retaining known-good values.
+    if signature!=cache['signature'] or now-cache['attempted_at']>30 or not cache['attempted_at']:
+        cache.update(attempted_at=now,signature=signature)
+        stats,media,health=await asyncio.gather(
+            _badge_projected_read(db.stats_cache,{'_id':{'$in':list(stat_ids)}},
+                {'_id':1,'data':1,'profiles':1,'matched':1,'logo':1,'name':1,'team_id':1},len(stat_ids)),
+            _badge_projected_read(db.entity_media,{'_id':{'$in':list(media_ids)}},
+                {'_id':1,'media':1,'identity':1,'status':1},len(media_ids)),
+            _badge_projected_read(db.media_health,{'status':'broken'},{'_id':1},5000))
+        for field,ids,docs in (('stats',stat_ids,stats),('media',media_ids,media)):
+            if docs is not None:
+                for key in ids:cache[field].pop(key,None)
+                cache[field].update({doc['_id']:doc for doc in docs})
+            # Bound optional in-process state without touching persistent source documents.
+            if len(cache[field])>5000:
+                cache[field]={k:v for k,v in cache[field].items() if k in ids}
+        if health is not None:cache['broken']={doc['_id'] for doc in health}
+    result=[]
+    for match in matches:
+        row=dict(match);sport=enrichment_sport(row)
+        fd=cache['stats'].get('fd_teams_'+COMPETITION_MAP.get(row.get('sport_key'),''),{})
+        for side in ('home','away'):
+            name=row.get(side+'_team');candidates=[]
+            def add(url):
+                if _media_url(url) and _media_health_key(url) not in cache['broken'] and url not in candidates:candidates.append(url)
+            media=(cache['media'].get(_visual_key(sport,name),{}).get('media') or {}) if sport and name else {}
+            approved=(sport=='tennis' and _approved_portrait(media)) or (sport!='tennis' and media.get('kind')=='badge' and media.get('provider')=='API-Sports' and media.get('verified_identity') is True)
+            if sport=='tennis' and approved:
+                add(media.get('url'))
+                for url in media.get('alternatives') or []:add(url)
+            else:
+                add(row.get(side+'_logo'));add(row.get(side+'_team_logo'))
+                for url in row.get(side+'_image_candidates') or []:add(url)
+                if approved:
+                    add(media.get('url'))
+                    for url in media.get('alternatives') or []:add(url)
+                provider_sport=_as_sport(row)
+                stored=cache['stats'].get(_as_key(provider_sport,name),{}) if provider_sport and name else {}
+                if stored.get('matched'):add(stored.get('logo'))
+                team_id=_find_team_id(fd.get('data',{}),name or '')
+                add((fd.get('profiles',{}).get(str(team_id)) or {}).get('crest'))
+            if candidates:
+                row[side+'_logo']=candidates[0];row[side+'_image_candidates']=candidates[:4]
+                if approved and candidates[0] in [media.get('url')]+list(media.get('alternatives') or []):
+                    row[side+'_media']={**media,'url':candidates[0]}
+            else:
+                for field in (side+'_logo',side+'_team_logo'):
+                    if _media_url(row.get(field)) and _media_health_key(row[field]) in cache['broken']:row[field]=None
+                row[side+'_image_candidates']=[]
+            current_media=row.get(side+'_media') or {}
+            if current_media.get('url') and current_media.get('url') not in candidates:
+                row.pop(side+'_media',None)
+        result.append(row)
+    return result
