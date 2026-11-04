@@ -8476,7 +8476,7 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
             except Exception as exc:
                 logging.getLogger("winpulse.shadow").warning("Experimental archive unavailable (%s)", type(exc).__name__)
         try:
-            matches = await asyncio.wait_for(enrich_match_badges(db, matches), timeout=2)
+            matches = await asyncio.wait_for(enrich_match_badges(db, matches), timeout=4)
         except Exception as exc:
             logging.getLogger("winpulse.stats").warning("Badge cache unavailable (%s)", type(exc).__name__)
         calibration = await _compute_calibration_map()
@@ -11685,8 +11685,8 @@ async def get_free_discovery(payload: Optional[dict] = Depends(get_optional_user
         if len(preview)==3:
             break
     try:
-        items=await asyncio.wait_for(enrich_match_badges(db,items),timeout=2)
-        preview=await asyncio.wait_for(enrich_match_badges(db,preview),timeout=2)
+        items=await asyncio.wait_for(enrich_match_badges(db,items),timeout=4)
+        preview=await asyncio.wait_for(enrich_match_badges(db,preview),timeout=4)
     except Exception:
         pass  # Optional metadata only; never alter the frozen free picks.
     return {"date":manifest["_id"],"timezone":"Africa/Porto-Novo","limit":FREE_DAILY_PICK_LIMIT,
@@ -16085,11 +16085,15 @@ async def _run_visual_assets():
     if not callable(callback):return {'status':'compatible_stats_service_required'}
     matches=await _visual_assets_catalogue()
     report=await asyncio.wait_for(callback(db,matches),timeout=160)
+    logging.getLogger('winpulse.media').info('Visual synchronization: checked=%s updated=%s statuses=%s',
+        report.get('checked'),report.get('updated'),report.get('statuses'))
+    invalidate=getattr(_optional_stats_service,'invalidate_badge_presentation_cache',None)
+    if callable(invalidate):invalidate()
     # Only presentation is updated. Do not invalidate or recompute official picks.
     try:
         async with _prediction_cache_lock:
             current=list(_prediction_cache.get('matches') or [])
-            if current:_prediction_cache['matches']=await asyncio.wait_for(enrich_match_badges(db,current),timeout=3)
+            if current:_prediction_cache['matches']=await asyncio.wait_for(enrich_match_badges(db,current),timeout=4)
     except Exception as exc:
         logging.getLogger('winpulse.media').warning('Cached images deferred (%s)',type(exc).__name__)
     return report
@@ -16151,3 +16155,4 @@ async def _visual_assets_shutdown():
         _visual_assets_task.cancel()
         try:await _visual_assets_task
         except asyncio.CancelledError:pass
+
