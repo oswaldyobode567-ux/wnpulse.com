@@ -412,7 +412,7 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
       <div className="wp-match-meta"><span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
         {isLive ? <span className="wp-live-label"><Radio className="h-3 w-3" aria-hidden="true" />{t("LIVE")}</span> : <time dateTime={event.commence_time || undefined}>{formatDate(event.commence_time, {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>}
       </div>
-      <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} kind={event[`${side}_media`]?.kind} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
+      <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} fallbackSrcs={badgeUrls(event,side)} sport={event.sport_key} kind={event[`${side}_media`]?.kind} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
       {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && <div className="wp-match-score" data-testid="match-score"><bdi>{formatScore(pred.score_home,formatNumber)} — {formatScore(pred.score_away,formatNumber)}</bdi>{isFinished && <span>{t("TERMINÉ")}</span>}</div>}
       {!locked && (pred.pick ? <div className="wp-pick-panel">
         <div className="wp-pick-heading"><span>{pred.market_label ? translateBetText(pred.market_label,t,formatNumber) : t("Pronostic")}</span><span>{t("Cote")}</span></div>
@@ -590,26 +590,37 @@ const LABELS = {
  ar: ["المباراة بالأرقام", "نتائج مرصودة قبل هذه المباراة", "مقارنة", "آخر المباريات", "المواجهات المباشرة", "جميع المباريات", "داخل / خارج الأرض", "المباريات المرصودة", "انتصارات", "تعادلات", "هزائم", "أهداف مسجلة / مباراة", "أهداف مستقبلة / مباراة", "أكثر من 2.5 هدف", "يسجل الفريقان", "شباك نظيفة", "سجل هدفاً على الأقل", "المؤشر", "التاريخ", "المباراة", "النتيجة", "البطولة", "تحديث", "جارٍ تحميل الإحصاءات…", "السجل غير متاح لهذه المباراة.", "تعتمد البيانات على تغطية المزود وذاكرته المؤقتة. لا تُختلق نتائج.", "لا توجد مواجهة في العينات المتاحة. هذا لا يعني أن الفريقين لم يلتقيا من قبل.", "التكرارات تصف مباريات سابقة وليست احتمالات للمباراة القادمة.", "المصدر", "آخر جمع للبيانات", "بيانات قديمة: تُفسر بحذر.", "الأحدث أولاً", "العودة إلى التوقع", "حتى 10 مباريات لكل فريق حسب البيانات المتاحة. قد يختلف الخصوم والفترات.", "تعذر تحميل الإحصاءات. يبقى التوقع متاحاً.", "لا توجد نتائج موثقة متاحة.", "غير متاح", "مواجهات عُثر عليها ضمن المباريات الأخيرة المتاحة وليست سجلاً كاملاً.", "ف", "ت", "خ"]
 };
 
-export function badgeUrl(match, side) {
-  const portrait=String(match?.sport_key||'').startsWith('tennis_')&&match?.[`${side}_media`]?.verified_license?match[`${side}_media`].url:null;
-  const candidates = [portrait, match?.[`${side}_logo`], match?.[`${side}_team_logo`], match?.[`${side}_crest`], match?.[`${side}Team`]?.crest, match?.[`${side}_media`]?.url];
-  return candidates.find(value => {
-    if (typeof value !== "string") return false;
-    try { const parsed = new URL(value); return parsed.protocol === "https:" && !parsed.username && !parsed.password; } catch { return false; }
-  }) || null;
+export function badgeUrls(match, side) {
+  const media=match?.[`${side}_media`] || {};
+  const portrait=String(match?.sport_key||'').startsWith('tennis_')&&media.verified_license?media.url:null;
+  const candidates=[portrait,...(Array.isArray(match?.[`${side}_image_candidates`])?match[`${side}_image_candidates`]:[]),match?.[`${side}_logo`],match?.[`${side}_team_logo`],match?.[`${side}_crest`],match?.[`${side}Team`]?.crest,media.url];
+  return [...new Set(candidates.filter(value=>{
+    if(typeof value!=="string")return false;
+    try {const parsed=new URL(value);return parsed.protocol==="https:"&&!parsed.username&&!parsed.password;}catch{return false;}
+  }))].slice(0,4);
 }
+export function badgeUrl(match, side) { return badgeUrls(match,side)[0] || null; }
 
-function teamInitials(name) {
-  return String(name || "").trim().split(/\s+/).filter(word => /[\p{L}\p{N}]/u.test(word)).slice(0,2).map(word => Array.from(word)[0]).join("").toLocaleUpperCase() || "•";
-}
-
-export function TeamBadge({ name = "", src, size = "small", kind }) {
-  const [failed, setFailed] = useState(null);
-  let url = null;
-  try { const parsed = new URL(src); if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = src; } catch {}
-  const initials = teamInitials(name);
-  return <span aria-hidden="true" style={kind === "portrait" ? {borderRadius:"50%"} : undefined} className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white font-black text-slate-500 shadow-sm ${size === "large" ? "h-16 w-16 rounded-2xl text-xl sm:h-20 sm:w-20" : "h-10 w-10 rounded-xl text-xs"}`}>
-    {url && failed !== url ? <img src={url} alt="" loading="lazy" decoding="async" referrerPolicy="no-referrer" onError={() => setFailed(url)} className={`h-full w-full ${kind === "portrait" ? "object-cover" : "object-contain p-1.5"}`} style={kind === "portrait" ? {objectPosition:"center 22%"} : undefined} /> : initials}
+export function TeamBadge({ name = "", src, size = "small", kind, fallbackSrcs = [], sport = "" }) {
+  const [failed,setFailed]=useState([]);
+  const candidates=[...new Set([src,...(Array.isArray(fallbackSrcs)?fallbackSrcs:[])])].filter(value=>{
+    if(typeof value!=="string")return false;
+    try{const url=new URL(value);return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false;}
+  });
+  const url=candidates.find(value=>!failed.includes(value));
+  const portrait=kind==="portrait"||String(sport).startsWith("tennis_");
+  const colors=["from-orange-50 to-amber-100 text-orange-500","from-sky-50 to-indigo-100 text-indigo-500","from-emerald-50 to-teal-100 text-teal-600"];
+  const color=colors[Array.from(String(name)).reduce((sum,char)=>sum+char.codePointAt(0),0)%colors.length];
+  return <span aria-hidden="true" data-testid="participant-image" data-image-kind={portrait?"portrait":"badge"}
+    className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white shadow-sm ${portrait?"rounded-full":"rounded-2xl"} ${size==="large"?"h-16 w-16 sm:h-20 sm:w-20":"h-10 w-10"}`}>
+    {url?<img src={url} alt="" width={size==="large"?80:40} height={size==="large"?80:40} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+      onError={()=>setFailed(current=>current.includes(url)?current:[...current,url])}
+      className={`h-full w-full ${portrait?"object-cover":"object-contain p-1.5"}`} style={portrait?{objectPosition:"center 22%"}:undefined}/>
+      :<span className={`grid h-full w-full place-items-center bg-gradient-to-br ${color}`} data-testid="participant-image-placeholder">
+        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-3/5 w-3/5">
+          {portrait?<><circle cx="16" cy="11" r="5"/><path d="M6 28c0-7 4-11 10-11s10 4 10 11"/></>:<><path d="M16 3 27 7v9c0 6-5 10-11 13C10 26 5 22 5 16V7L16 3Z"/><path d="m16 10 2 4 4 .6-3 3 .7 4.4-3.7-2-3.7 2 .7-4.4-3-3 4-.6 2-4Z"/></>}
+        </svg>
+      </span>}
   </span>;
 }
 
@@ -655,7 +666,7 @@ export function MatchInsights({ match }) {
         {data.stale && <p role="status" className="mb-4 rounded-xl bg-amber-50 p-3 text-sm text-amber-900">{words[30]}</p>}
         {tab === "compare" && <>
           <div className="mb-4 flex flex-wrap gap-2">{data.venue_supported!==false && [false,true].map(v=><button key={String(v)} type="button" onClick={()=>setVenue(v)} aria-pressed={venue===v} className={`min-h-11 rounded-xl border px-3 text-xs font-semibold ${venue===v ? "border-orange-300 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{words[v?6:5]}</button>)}</div>
-          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} kind={match[`${side}_media`]?.kind} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played)}</p></div>)}</div>
+          <div className="grid grid-cols-2 gap-3">{[[match.home_team,home, "home"],[match.away_team,away,"away"]].map(([name,summary,side])=><div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><div className="mb-2 min-w-0 space-y-2"><TeamBadge name={name} src={badgeUrl(match,side)} fallbackSrcs={badgeUrls(match,side)} sport={match.sport_key} kind={match[`${side}_media`]?.kind} /><p className="min-w-0 text-sm font-bold leading-6 text-slate-900 [overflow-wrap:anywhere]"><bdi>{name}</bdi></p></div>{form(summary.form)}<p className="mt-2 text-xs leading-5 text-slate-500">{words[7]} : {number(summary.played)}</p></div>)}</div>
           <p className="my-3 text-xs text-slate-500">{words[31]}</p>
           <table className="w-full table-fixed text-sm" data-testid="match-comparison-table"><caption className="sr-only">{words[2]}: {match.home_team} / {match.away_team}</caption><thead><tr className="border-b border-slate-200"><th scope="col" className="w-[46%] py-3 text-start text-xs font-semibold text-slate-500">{words[17]}</th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.home_team} className="no-underline sm:hidden">{teamInitials(match.home_team)}</abbr><span className="hidden sm:inline">{match.home_team}</span></th><th scope="col" className="break-words px-1 py-3 text-center text-xs"><abbr title={match.away_team} className="no-underline sm:hidden">{teamInitials(match.away_team)}</abbr><span className="hidden sm:inline">{match.away_team}</span></th></tr></thead><tbody>{metricRows.map(([key,index,suffix])=><tr key={key} className="border-b border-slate-100 last:border-0"><th scope="row" className="break-words py-3 pe-2 text-start text-xs font-medium leading-5 text-slate-600 sm:text-sm">{typeof index === "number" ? words[index] : sportWords[index]}</th><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(home[key],suffix)}</td><td className="px-1 py-3 text-center font-mono font-bold tabular-nums text-slate-900">{number(away[key],suffix)}</td></tr>)}</tbody></table>
         </>}
@@ -800,3 +811,4 @@ export function DetailedFootballStats({ stats, match }) {
     <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-xs font-semibold text-slate-600">{w.method}</summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.source} : {stats.source||"API-Football"}</p>{stats.updated_at&&<p className="text-xs leading-6 text-slate-500">{w.updated} : {String(stats.updated_at).slice(0,10)}</p>}</details>
   </section>;
 }
+
