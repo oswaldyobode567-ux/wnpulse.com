@@ -1,4 +1,4 @@
-import { MatchInsights, TeamBadge, badgeUrl, MarketQuotes, PredictionEvidence, MultiMarketBoard } from "@/components/MatchCard";
+import { MatchInsights, TeamBadge, badgeUrl, badgeUrls, MediaCredits, MarketQuotes, PredictionEvidence, MultiMarketBoard } from "@/components/MatchCard";
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
@@ -206,14 +206,14 @@ export default function MatchDetailPage() {
           </div>
           <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-start gap-2 text-center sm:items-center sm:gap-5">
             <div className="text-center">
-              <div className="mb-3 flex justify-center"><TeamBadge name={data.home_team} src={badgeUrl(data,"home")} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.home_team}</div>
+              <div className="mb-3 flex justify-center"><TeamBadge name={data.home_team} src={badgeUrl(data,"home")} fallbackSrcs={badgeUrls(data,"home")} sport={data.sport_key} kind={data.home_media?.kind} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.home_team}</div>
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Domicile")}</div>
             </div>
             <div className="text-center">
               <div className="mt-5 grid h-10 w-10 place-items-center rounded-full border border-orange-100 bg-white text-xs font-extrabold text-slate-400 sm:mt-0 sm:h-12 sm:w-12">{i18n.t("VS")}</div>
             </div>
             <div className="text-center">
-              <div className="mb-3 flex justify-center"><TeamBadge name={data.away_team} src={badgeUrl(data,"away")} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.away_team}</div>
+              <div className="mb-3 flex justify-center"><TeamBadge name={data.away_team} src={badgeUrl(data,"away")} fallbackSrcs={badgeUrls(data,"away")} sport={data.sport_key} kind={data.away_media?.kind} size="large" /></div><div className="break-words font-heading text-base font-extrabold leading-6 text-slate-900 sm:text-xl">{data.away_team}</div>
               <div className="text-xs text-slate-500 mt-1">{i18n.t("Ext\xE9rieur")}</div>
             </div>
           </div>
@@ -287,6 +287,7 @@ export default function MatchDetailPage() {
         </div>}
         <div className="mb-2 text-sm leading-6 text-slate-500">{detailWords.source}</div>
         </aside><section className="wp-detail-analysis" id="match-statistics">
+        <MediaCredits match={data} />
         <MatchInsights key={`${owner}:${matchId}`} match={data} />
         {!locked && p.free_daily_pick && <Card className="mb-6 space-y-3 rounded-2xl border-orange-200 bg-gradient-to-br from-slate-950 to-slate-900 p-5 text-white" data-testid="free-analysis-upgrade">
           <h2 className="font-heading text-lg font-bold">{freeWords.offer}</h2>
@@ -763,3 +764,4 @@ function DecisionReport({
   </>}
  </section>;
 }
+
