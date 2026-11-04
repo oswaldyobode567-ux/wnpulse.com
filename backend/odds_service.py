@@ -1324,6 +1324,10 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         diversified.append(m)
         per_comp[key] = per_comp.get(key, 0) + 1
 
+    try:
+        diversified = await asyncio.wait_for(_enrich_extra_football_markets(db, diversified), timeout=240)
+    except Exception as exc:
+        logger.warning("Supplemental markets deferred: %s", type(exc).__name__)
     final = _annotate_bookmakers(diversified)
     await _save_to_cache(
         db,
@@ -2033,6 +2037,8 @@ class PrimaryBudgetError(RuntimeError):
 
 
 def _primary_request_cost(url, params):
+    if url.rstrip('/').endswith('/markets'):
+        return 1
     if url.rstrip('/').endswith('/scores'):
         return 2 if params.get('daysFrom') is not None else 1
     if url.rstrip('/').endswith('/odds'):
@@ -2177,3 +2183,114 @@ async def _budgeted_primary_get(db, client, url, *, params, category):
         except Exception as exc:
             # Failed settlements retain pessimistic reservations, never unlock.
             logger.warning('Primary credit settlement deferred: %s', type(exc).__name__)
+
+
+# Supplemental markets are collected in bounded batches and never replace the
+# all-match catalogue. Every paid call uses the same persistent credit guard.
+_EXTRA_FOOTBALL_MARKETS = {'btts', 'draw_no_bet', 'alternate_totals', 'alternate_spreads', 'team_totals'}
+_EXTRA_MARKET_CANONICAL = {'alternate_totals':'totals', 'alternate_spreads':'spreads'}
+
+
+def _merge_market_quotes(base, extra):
+    import copy
+    merged = copy.deepcopy(base)
+    books = {str(b.get('key')): b for b in merged.get('bookmakers') or [] if b.get('key')}
+    for incoming in extra.get('bookmakers') or []:
+        if not isinstance(incoming, dict) or not incoming.get('key'):
+            continue
+        book = books.setdefault(str(incoming['key']), {k:v for k,v in incoming.items() if k!='markets'})
+        current = {}
+        for owner in (book, incoming):
+            for market in owner.get('markets') or []:
+                key = _EXTRA_MARKET_CANONICAL.get(market.get('key'), market.get('key'))
+                if not key:
+                    continue
+                out = current.setdefault(key, {'key':key, 'outcomes':{}, 'last_update':None})
+                for outcome in market.get('outcomes') or []:
+                    if not isinstance(outcome, dict):
+                        continue
+                    identity = (outcome.get('name'), outcome.get('point'), outcome.get('description'))
+                    row = copy.deepcopy(outcome)
+                    row['_quote_updated_at'] = row.get('_quote_updated_at') or market.get('last_update') or owner.get('last_update')
+                    old = out['outcomes'].get(identity)
+                    prior = _result_dt((old or {}).get('_quote_updated_at'))
+                    stamp = _result_dt(row.get('_quote_updated_at'))
+                    if old is None or (stamp and (not prior or stamp >= prior)):
+                        out['outcomes'][identity] = row
+                    if stamp and (not _result_dt(out['last_update']) or stamp > _result_dt(out['last_update'])):
+                        out['last_update'] = stamp.isoformat()
+        book['markets'] = [{**m, 'outcomes':list(m['outcomes'].values())} for m in current.values()]
+    merged['bookmakers'] = list(books.values())
+    return merged
+
+
+async def _enrich_extra_football_markets(db, matches):
+    now = datetime.now(timezone.utc)
+    enabled = os.environ.get('WNPULSE_EXTRA_MARKETS_ENABLED', 'true').lower() not in ('false', '0', 'no')
+    if not enabled or not ODDS_API_KEY:
+        return matches
+    horizon = min(48, max(1, int(os.environ.get('WNPULSE_EXTRA_MARKETS_HORIZON_HOURS', '24'))))
+    candidates = []
+    result = []
+    # Reattach a previously acquired supplement without resetting timestamps.
+    for match in matches:
+        event_id = str(match.get('id') or '')
+        kickoff = _result_dt(match.get('commence_time'))
+        if not str(match.get('sport_key') or '').startswith('soccer_') or not re.fullmatch(r'[a-f0-9]{32}', event_id) or not kickoff or not now < kickoff <= now+timedelta(hours=horizon):
+            result.append(match)
+            continue
+        cached = await db.scores_cache.find_one({'_id':'extra_odds:'+event_id}) or {}
+        at = _result_dt(cached.get('fetched_at'))
+        valid = bool(at and 0 <= (now-at).total_seconds() <= 21600)
+        merged = _merge_market_quotes(match, cached['data']) if valid and isinstance(cached.get('data'), dict) else match
+        merged = dict(merged)
+        merged['multi_market_quote_status'] = {'status': 'cached' if valid else 'not_collected',
+            'updated_at':at.isoformat() if valid else None}
+        result.append(merged)
+        retry = _result_dt(cached.get('retry_at'))
+        if (not at or (now-at).total_seconds() >= 10800) and (not retry or retry <= now):
+            candidates.append((len(result)-1, merged))
+    limit = max(0, min(30, int(os.environ.get('WNPULSE_EXTRA_MARKETS_MAX_EVENTS', '12'))))
+    if not candidates or not limit:
+        return result
+    cursor = await db.scores_cache.find_one({'_id':'extra_odds_cursor'}) or {}
+    offset = int(cursor.get('offset') or 0) % len(candidates)
+    jobs = (candidates[offset:]+candidates[:offset])[:limit]
+    await db.scores_cache.update_one({'_id':'extra_odds_cursor'}, {'$set':{'offset':offset+len(jobs)}}, upsert=True)
+    async with httpx.AsyncClient(timeout=10.) as client:
+        for index, match in jobs:
+            event_id, sport = match['id'], match['sport_key']
+            base = f'{ODDS_API_BASE}/sports/{sport}/events/{event_id}'
+            try:
+                listing = await _budgeted_primary_get(db, client, base+'/markets',
+                    params={'apiKey':ODDS_API_KEY, 'regions':_regions_for_sport(sport)}, category='odds')
+                listing.raise_for_status()
+                payload = listing.json()
+                available = {m.get('key') for b in payload.get('bookmakers', []) for m in b.get('markets', [])}
+                requested = sorted(available & _EXTRA_FOOTBALL_MARKETS)
+                if not requested:
+                    result[index]['multi_market_quote_status'] = {'status':'not_available_at_provider', 'updated_at':now.isoformat()}
+                    await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{'retry_at':(now+timedelta(hours=4)).isoformat()}}, upsert=True)
+                    continue
+                response = await _budgeted_primary_get(db, client, base+'/odds', params={
+                    'apiKey':ODDS_API_KEY, 'regions':_regions_for_sport(sport),
+                    'markets':','.join(requested), 'oddsFormat':'decimal', 'dateFormat':'iso'}, category='odds')
+                response.raise_for_status()
+                data = response.json()
+                # Check identity before merging any prices from an event response.
+                if not isinstance(data, dict) or data.get('id') != event_id or data.get('home_team') != match.get('home_team') or data.get('away_team') != match.get('away_team'):
+                    raise ValueError('event_identity_mismatch')
+                result[index] = _merge_market_quotes(result[index], data)
+                result[index]['multi_market_quote_status'] = {'status':'refreshed', 'updated_at':now.isoformat(), 'requested_markets':requested}
+                await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{
+                    'fetched_at':now.isoformat(), 'retry_at':(now+timedelta(hours=3)).isoformat(),
+                    'data':data}}, upsert=True)
+            except PrimaryBudgetError as exc:
+                result[index]['multi_market_quote_status'] = {'status':exc.code}
+                break
+            except Exception as exc:
+                # Existing prices survive 401/403/422/429, timeouts and malformed data.
+                result[index]['multi_market_quote_status'] = {'status':'provider_unavailable'}
+                await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{
+                    'retry_at':(now+timedelta(hours=1)).isoformat(), 'last_error_type':type(exc).__name__}}, upsert=True)
+    return result
