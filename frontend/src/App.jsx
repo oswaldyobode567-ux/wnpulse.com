@@ -158,6 +158,8 @@ function MontantePage() {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
   const [days, setDays] = useState(10);
+  const [initialCapital, setInitialCapital] = useState("10000");
+  const capitalWords = useMontanteCapitalCopy();
   const [restartConfirmed, setRestartConfirmed] = useState(false);
   const [now, setNow] = useState(Date.now());
   const controller = useRef(null);
@@ -229,6 +231,9 @@ function MontantePage() {
   }, [load]);
   const adminAction = async kind => {
     if (!isAdmin || actionController.current || kind === "restart" && !restartConfirmed) return;
+    if (kind !== "sync" && (!Number.isFinite(Number(initialCapital)) || Number(initialCapital) <= 0)) {
+      setError(capitalWords.invalid); return;
+    }
     controller.current?.abort();
     controller.current = null;
     generation.current += 1;
@@ -247,7 +252,7 @@ function MontantePage() {
         ...(kind !== "sync" ? {
           params: {
             days,
-            initial_bankroll: 10000
+            initial_bankroll: Number(initialCapital)
           }
         } : {})
       });
@@ -302,6 +307,12 @@ function MontantePage() {
       {i18n.tx(isAdmin && <Card className="rounded-2xl border-orange-200 p-5"><p className="mb-4 flex items-center gap-2 font-bold text-slate-900"><ShieldCheck className="h-5 w-5 text-orange-600" />{i18n.t("Pilotage administrateur")}</p><div className="flex flex-wrap items-center gap-3"><label className="text-xs text-slate-500">{i18n.rich("Parcours {{v0}}", {
               v0: <select value={days} onChange={e => setDays(Number(e.target.value))} className="ms-2 rounded-lg border border-neutral-200 bg-white px-3 py-2 text-sm"><option value={10}>{i18n.t("10 \xE9tapes")}</option><option value={15}>{i18n.t("15 \xE9tapes")}</option></select>
             })}</label>
+        <label className="flex flex-wrap items-center gap-2 text-sm text-slate-600">{capitalWords.initial}
+          <input type="number" min="0.01" step="0.01" inputMode="decimal" value={initialCapital}
+            disabled={Boolean(busy)} onChange={e=>setInitialCapital(e.target.value)}
+            className="min-h-11 w-36 rounded-xl border border-neutral-300 bg-white px-3 font-mono text-base text-slate-900"
+            aria-label={capitalWords.initial} data-testid="montante-initial-capital" /><span className="text-xs">FCFA</span>
+        </label>
         {i18n.tx(data?.status === "NONE" ? <Button onClick={() => adminAction("start")} disabled={Boolean(busy)} className="bg-orange-600 text-white hover:bg-orange-700"><Play className="me-2 h-4 w-4" />{i18n.t("D\xE9marrer")}</Button> : <Button onClick={() => adminAction("sync")} disabled={Boolean(busy)} className="bg-slate-900 text-white hover:bg-slate-800"><Radar className="me-2 h-4 w-4" />{i18n.tx(busy === "sync" ? "Contrôle…" : "Synchroniser les résultats")}</Button>)}
         {i18n.tx(data?.status !== "NONE" && <details className="w-full rounded-xl border border-neutral-200 p-3"><summary className="cursor-pointer text-xs font-semibold text-slate-600">{i18n.t("Lancer une nouvelle s\xE9rie")}</summary><p className="mt-2 text-xs text-slate-500">{i18n.t("La s\xE9rie actuelle sera archiv\xE9e sur le serveur et remplac\xE9e.")}</p><label className="mt-3 flex items-center gap-2 text-xs text-slate-600">{i18n.rich("{{v0}}Remplacer la s\xE9rie actuelle", {
                 v0: <input type="checkbox" checked={restartConfirmed} onChange={e => setRestartConfirmed(e.target.checked)} />
@@ -321,6 +332,7 @@ function MontantePage() {
             }} /></div><div className="mt-5 flex gap-2 overflow-x-auto pb-2">{i18n.tx(Array.from({
               length: total
             }, (_, i) => <StageDot key={i} stage={i + 1} status={stageStatus(history, i + 1, stage, data.status)} />))}</div><p className="mt-2 text-[10px] text-slate-400">{i18n.t("Une \xE9tape annul\xE9e n\u2019est pas une victoire. Les jours sans s\xE9lection ne font pas avancer le parcours.")}</p></Card>
+        <MontanteCapitalPanel data={data} premium={premium} />
         <section><div className="mb-4 flex flex-wrap items-center justify-between gap-2"><h2 className="flex items-center gap-2 font-heading text-xl font-bold text-slate-900"><Sparkles className="h-5 w-5 text-orange-600" />{i18n.rich("S\xE9lections \xB7 \xC9tape {{v0}}", {
                 v0: i18n.tx(stage)
               })}</h2>{i18n.tx(premium && numeric(data.selection_summary?.combined_odds) !== null && <Badge className="border-orange-200 bg-orange-50 text-orange-700">{i18n.rich("Cote combin\xE9e : {{v0}}", {
@@ -336,7 +348,7 @@ function MontantePage() {
         </section>
         <Card className="overflow-hidden rounded-2xl border-neutral-200"><div className="border-b border-neutral-100 p-5"><h2 className="font-heading text-lg font-bold text-slate-900">{i18n.t("Historique de la s\xE9rie")}</h2><p className="mt-1 text-xs text-slate-500">{i18n.t("Les victoires, pertes et annulations restent visibles.")}</p></div>{i18n.tx(!history.length ? <p className="p-7 text-center text-sm text-slate-400">{i18n.t("Aucune \xE9tape r\xE9gl\xE9e pour le moment.")}</p> : <div className="divide-y divide-neutral-100">{i18n.tx([...history].reverse().map((row, i) => <details key={`${row.day}-${row.settled_at || i}`} className="p-4 sm:px-5"><summary className="flex cursor-pointer flex-wrap items-center justify-between gap-2"><span className="text-sm font-bold text-slate-800">{i18n.rich("\xC9tape {{v0}}", {
                     v0: i18n.tx(row.day)
-                  })}</span><div className="flex items-center gap-3"><span className="text-[10px] text-slate-400">{i18n.tx(dateLabel(i18n, row.settled_at))}</span><ResultBadge status={row.status} /></div></summary><div className="mt-3 space-y-2">{i18n.tx(premium ? list(row.picks).map((pick, n) => <p key={n} className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">{i18n.rich("{{v0}}{{v1}}{{v2}} \xB7 cote {{v3}}", {
+                  })}</span><div className="flex items-center gap-3"><span className="text-[10px] text-slate-400">{i18n.tx(dateLabel(i18n, row.settled_at))}</span><ResultBadge status={row.status} /></div></summary><div className="mt-3 space-y-2"><MontanteCapitalStep row={row} />{i18n.tx(premium ? list(row.picks).map((pick, n) => <p key={n} className="rounded-lg bg-slate-50 p-3 text-xs leading-relaxed text-slate-600">{i18n.rich("{{v0}}{{v1}}{{v2}} \xB7 cote {{v3}}", {
                     v0: <strong>{i18n.rich("{{v0}} vs {{v1}}", {
                         v0: i18n.tx(str(pick.home_team)),
                         v1: i18n.tx(str(pick.away_team))
@@ -349,10 +361,84 @@ function MontantePage() {
                   })}</p>)}</div></details>))}</div>)}</Card>
       </>)}
       <section className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="montante-personal-pause"><h2 className="text-base font-bold text-slate-900">{experienceWords.follow}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{experienceWords.pauseHint}</p>{experience.preferences.montante_paused&&<p className="mt-3 font-semibold text-amber-800">{experienceWords.paused}</p>}<button type="button" disabled={experience.busy||experience.loading||experience.failed} onClick={()=>experience.save({montante_paused:!experience.preferences.montante_paused})} className="mt-4 min-h-11 rounded-xl border border-orange-200 bg-orange-50 px-4 text-sm font-bold text-orange-800 disabled:opacity-50">{experience.preferences.montante_paused?experienceWords.resume:experienceWords.pause}</button>{experience.failed&&<p role="alert" className="mt-2 text-sm text-rose-700">{experienceWords.error}<button type="button" onClick={experience.retry} className="ms-3 min-h-11 px-3 font-bold">↻</button></p>}</section>
+      {isAdmin && <MontanteSelectionReport />}
       <MontanteArchives />
-      <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{i18n.t("Les petites cotes ne re\xE7oivent aucun bonus. Le s\xE9lecteur compare la probabilit\xE9 estim\xE9e, l\u2019accord entre les sources et leur nombre. Ce score de classement n\u2019est pas une probabilit\xE9.")}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
+      <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{capitalWords.policy}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
     </div>
   </AppLayout>;
+}
+
+const MONTANTE_CAPITAL_COPY = {
+ fr:["Capital théorique","Mise de départ","Capital actuel","Variation totale","Mise de la prochaine étape","Si les deux paris gagnent","Simulation : aucun argent n’est déposé ni misé sur WinPulse. Tout le capital est réinvesti après chaque étape gagnée. Une perte arrête la série.","Capital engagé","Gain net de l’étape","Capital après règlement","Saisis une mise de départ supérieure à zéro.","Mesurer le sélecteur","Charger le bilan","Pas encore de sélection enregistrée avant les matchs.","Sélections réglées","Gagnées","Perdues","Remboursées","Rendement à mise constante","En attente","Bilan exploratoire : aucun taux futur garanti.","Cote appliquée"],
+ en:["Theoretical balance","Starting amount","Current balance","Total change","Next step amount","If both bets win","Simulation: no money is deposited or wagered on WinPulse. The full balance is rolled over after each winning step. One loss ends the series.","Amount committed","Net step result","Balance after settlement","Enter a starting amount greater than zero.","Measure the selector","Load report","No pre-match selections recorded yet.","Settled selections","Won","Lost","Refunded","Flat-stake return","Pending","Exploratory report: no future success rate guaranteed.","Applied odds"],
+ es:["Capital teórico","Importe inicial","Capital actual","Variación total","Importe de la siguiente etapa","Si ambas apuestas ganan","Simulación: no se deposita ni apuesta dinero en WinPulse. Todo el capital se reinvierte tras cada etapa ganadora. Una pérdida termina la serie.","Capital comprometido","Resultado neto de la etapa","Capital tras liquidación","Introduce un importe inicial mayor que cero.","Evaluar el selector","Cargar informe","Aún no hay selecciones registradas antes de los partidos.","Selecciones liquidadas","Ganadas","Perdidas","Reembolsadas","Rendimiento con importe fijo","Pendientes","Informe exploratorio: no garantiza resultados futuros.","Cuota aplicada"],
+ pt:["Capital teórico","Valor inicial","Capital atual","Variação total","Valor da próxima etapa","Se ambas as apostas ganharem","Simulação: nenhum dinheiro é depositado ou apostado no WinPulse. Todo o capital é reinvestido após cada etapa vencedora. Uma perda encerra a série.","Capital utilizado","Resultado líquido da etapa","Capital após liquidação","Introduza um valor inicial superior a zero.","Avaliar o seletor","Carregar relatório","Ainda não existem seleções registadas antes dos jogos.","Seleções liquidadas","Ganhas","Perdidas","Reembolsadas","Retorno com valor fixo","Pendentes","Relatório exploratório: não garante resultados futuros.","Odd aplicada"],
+ de:["Theoretisches Kapital","Startbetrag","Aktueller Stand","Gesamtänderung","Betrag der nächsten Stufe","Wenn beide Wetten gewinnen","Simulation: Bei WinPulse wird kein Geld eingezahlt oder gesetzt. Nach jeder gewonnenen Stufe wird das gesamte Kapital weitergeführt. Ein Verlust beendet die Serie.","Eingesetztes Kapital","Nettoergebnis der Stufe","Kapital nach Abrechnung","Gib einen Startbetrag größer als null ein.","Auswahl auswerten","Bericht laden","Noch keine vor Spielbeginn gespeicherten Tipps.","Abgerechnete Tipps","Gewonnen","Verloren","Erstattet","Rendite bei konstantem Einsatz","Ausstehend","Explorative Auswertung: keine künftige Erfolgsquote garantiert.","Angewandte Quote"],
+ ar:["الرصيد النظري","المبلغ الأولي","الرصيد الحالي","التغير الإجمالي","مبلغ المرحلة التالية","إذا فاز الاختياران","محاكاة: لا يتم إيداع أموال أو المراهنة بها على WinPulse. يعاد استثمار الرصيد كاملاً بعد كل مرحلة رابحة. خسارة واحدة تنهي السلسلة.","المبلغ المستخدم","صافي نتيجة المرحلة","الرصيد بعد التسوية","أدخل مبلغاً أولياً أكبر من صفر.","تقييم نظام الاختيار","تحميل التقرير","لا توجد اختيارات مسجلة قبل المباريات بعد.","الاختيارات المسواة","رابحة","خاسرة","مستردة","العائد بمبلغ ثابت","قيد الانتظار","تقرير استكشافي: لا يضمن نسبة نجاح مستقبلية.","المعامل المطبق"]
+};
+const MONTANTE_POLICY_COPY = {
+ fr:{policy:"Le classement distingue gain, remboursement et perte, compare la cote au rendement théorique et vérifie les sources. Il ne force aucun type de marché. Les modèles expérimentaux restent à évaluer.",pair:"Duos réglés",pairWins:"Duos gagnés",pairLosses:"Duos perdus"},
+ en:{policy:"Ranking separates wins, refunds and losses, compares odds with theoretical returns and checks sources. No market type is forced. Experimental models still require evaluation.",pair:"Settled pairs",pairWins:"Winning pairs",pairLosses:"Losing pairs"},
+ es:{policy:"El ranking distingue ganancias, reembolsos y pérdidas, compara cuotas y rendimientos teóricos y verifica las fuentes. No fuerza ningún mercado. Los modelos experimentales aún requieren evaluación.",pair:"Dúos liquidados",pairWins:"Dúos ganados",pairLosses:"Dúos perdidos"},
+ pt:{policy:"A classificação distingue ganhos, reembolsos e perdas, compara odds e retornos teóricos e verifica as fontes. Nenhum mercado é forçado. Os modelos experimentais ainda precisam de avaliação.",pair:"Duplas liquidadas",pairWins:"Duplas ganhas",pairLosses:"Duplas perdidas"},
+ de:{policy:"Die Rangfolge trennt Gewinne, Erstattungen und Verluste, vergleicht Quoten mit theoretischen Renditen und prüft Quellen. Kein Markttyp wird erzwungen. Experimentelle Modelle müssen weiter geprüft werden.",pair:"Abgerechnete Paare",pairWins:"Gewonnene Paare",pairLosses:"Verlorene Paare"},
+ ar:{policy:"يفصل الترتيب بين الربح والاسترداد والخسارة، ويقارن المعامل بالعائد النظري ويتحقق من المصادر. لا يفرض أي نوع من الأسواق. النماذج التجريبية ما زالت تحتاج إلى تقييم.",pair:"الثنائيات المسواة",pairWins:"الثنائيات الرابحة",pairLosses:"الثنائيات الخاسرة"}
+};
+function useMontanteCapitalCopy() {
+  const i18n = usePageLanguage();
+  const lang = String(i18n.locale || "fr").split(/[-_]/)[0];
+  const w = MONTANTE_CAPITAL_COPY[lang] || MONTANTE_CAPITAL_COPY.fr;
+  return {...(MONTANTE_POLICY_COPY[lang] || MONTANTE_POLICY_COPY.fr),title:w[0],initial:w[1],balance:w[2],change:w[3],next:w[4],projected:w[5],note:w[6],
+    stake:w[7],profit:w[8],after:w[9],invalid:w[10],report:w[11],load:w[12],empty:w[13],
+    settled:w[14],won:w[15],lost:w[16],void:w[17],roi:w[18],pending:w[19],reportNote:w[20],odds:w[21]};
+}
+function MontanteCapitalPanel({data,premium}) {
+  const i18n = usePageLanguage();
+  const w = useMontanteCapitalCopy();
+  const initial = numeric(data.initial_bankroll);
+  const balance = numeric(data.theoretical_bankroll);
+  const money = value=>numeric(value) === null ? "—" : `${format(i18n,value,2)} FCFA`;
+  const metrics = [[w.initial,initial],[w.balance,balance],[w.change,balance !== null && initial !== null ? balance-initial:null],
+    [w.next,data.status === "ACTIVE" ? balance:0]];
+  const projected = numeric(data.capital_summary?.if_both_win);
+  return <Card className="overflow-hidden rounded-2xl border-orange-200 p-5 sm:p-6" data-testid="montante-capital-panel">
+    <h2 className="font-heading text-xl font-bold text-slate-900">{w.title}</h2>
+    <div className="mt-4 grid grid-cols-1 gap-3 min-[360px]:grid-cols-2 lg:grid-cols-4">{metrics.map(([label,value])=><div key={label} className="min-w-0 rounded-xl bg-slate-50 p-4"><p className="text-xs font-semibold leading-5 text-slate-500">{label}</p><bdi className="mt-2 block break-words font-mono text-lg font-extrabold text-slate-900">{money(value)}</bdi></div>)}</div>
+    {premium && projected !== null && <p className="mt-4 rounded-xl bg-emerald-50 p-4 text-sm text-emerald-900">{w.projected} : <bdi className="font-bold">{money(projected)}</bdi></p>}
+    <p className="mt-4 text-xs leading-6 text-slate-500">{w.note}</p>
+  </Card>;
+}
+function MontanteCapitalStep({row}) {
+  const i18n = usePageLanguage();
+  const w = useMontanteCapitalCopy();
+  return <div className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 p-3 sm:grid-cols-2" data-testid="montante-capital-step">{[[w.stake,row.stake_before],[w.profit,row.profit],[w.after,row.bankroll_after],[w.odds,row.combined_odds]].map(([label,value],i)=><p key={label} className="min-w-0 text-xs leading-6 text-slate-500">{label}<bdi className="block break-words font-mono text-sm font-bold text-slate-900">{numeric(value) === null ? "—" : `${format(i18n,value,i === 3 ? 3:2)}${i === 3 ? "":" FCFA"}`}</bdi></p>)}</div>;
+}
+function MontanteSelectionReport() {
+  const i18n = usePageLanguage();
+  const w = useMontanteCapitalCopy();
+  const [report,setReport] = useState(null);
+  const [busy,setBusy] = useState(false);
+  const [failed,setFailed] = useState(false);
+  const requestRef = useRef(null);
+  useEffect(()=>()=>requestRef.current?.abort(),[]);
+  const load = async()=>{
+    if (busy) return;
+    const request = new AbortController(); requestRef.current = request;
+    setBusy(true);setFailed(false);
+    try { const result = await api.get("/admin/montante/selection-report",{signal:request.signal,timeout:20000});
+      if (!request.signal.aborted) setReport(result.data);
+    } catch { if (!request.signal.aborted) setFailed(true); }
+    finally { if (!request.signal.aborted) setBusy(false); }
+  };
+  const stats = report?.selections?.selected;
+  return <Card className="rounded-2xl border-neutral-200 p-5" data-testid="montante-selection-report"><h2 className="text-lg font-bold text-slate-900">{w.report}</h2>
+    <Button onClick={load} disabled={busy} variant="outline" className="mt-3 min-h-11"><RefreshCw className={cn("me-2 h-4 w-4",busy&&"animate-spin")} />{w.load}</Button>
+    {failed&&<p role="alert" className="mt-3 text-sm text-rose-700">{i18n.t("Le service Montante est temporairement indisponible. Réessaie dans un instant.")}</p>}
+    {stats && <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3">{[[w.settled,stats.evaluated],[w.won,stats.wins],[w.lost,stats.losses],[w.void,stats.refunds],[w.pending,stats.pending_or_unresolved],[w.roi,stats.roi_flat_unit === null ? "—":`${format(i18n,100*stats.roi_flat_unit,1)} %`]].map(([label,value])=><p key={label} className="rounded-xl bg-slate-50 p-3 text-xs text-slate-500">{label}<bdi className="mt-2 block font-mono text-lg font-bold text-slate-900">{value}</bdi></p>)}</div>}
+    {report?.pairs?.selected && <div className="mt-3 grid grid-cols-1 gap-3 min-[360px]:grid-cols-3">{[[w.pair,report.pairs.selected.evaluated],[w.pairWins,report.pairs.selected.wins],[w.pairLosses,report.pairs.selected.losses]].map(([label,value])=><p key={label} className="rounded-xl bg-orange-50 p-3 text-xs text-orange-800">{label}<bdi className="mt-1 block text-lg font-bold">{value}</bdi></p>)}</div>}
+    {report?.observations === 0 && <p className="mt-3 text-sm text-slate-500">{w.empty}</p>}
+    <p className="mt-3 text-xs leading-6 text-slate-500">{w.reportNote}</p>
+  </Card>;
 }
 
 function HeroStat({
@@ -627,3 +713,4 @@ function QualitySignals() {
   }, [user?.id, location.pathname]);
   return null;
 }
+
