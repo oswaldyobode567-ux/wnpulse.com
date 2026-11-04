@@ -669,7 +669,7 @@ _TEAM_ALIASES = {"brightonandhovealbion":"brightonhovealbion", "fcbarcelona":"ba
 
 def enrichment_sport(match):
     key = str(match.get("sport_key") or "").lower()
-    return "football" if key.startswith("soccer_") else "tennis" if key.startswith("tennis_") else "basketball" if key.startswith("basketball_") else None
+    return "tennis" if key.startswith("tennis_") else _as_sport(match)
 
 
 def entity_name(name, sport):
@@ -871,36 +871,47 @@ def commons_media(info,entity_id):
     if not isinstance(page,str) or urlparse(page).hostname!="commons.wikimedia.org" or not page.startswith("https://"):return None
     if license_name.startswith("CC") and (not license_url.startswith("https://creativecommons.org/") and not license_url.startswith("http://creativecommons.org/")):return None
     if value("LicenseRestriction") or value("Restrictions"):return None
-    return {"url":url,"provider":"Wikimedia Commons","source_url":page,"author":artist,"license":license_name,"license_url":(license_url or page).replace("http://","https://",1),"entity_id":entity_id,"kind":"portrait","verified_license":True}
+    return {"url":url,"provider":"Wikimedia Commons","source_url":page,"author":artist,"license":license_name,"license_url":(license_url or page).replace("http://","https://",1),"entity_id":entity_id,"kind":"portrait","verified_license":True,"alternatives":[u for u in (info.get("url"),) if isinstance(u,str) and u != url and _media_url(u)]}
+
+
+def _tennis_full_name_match(name,value):
+    def tokens(v):
+        return re.findall(r"[^\W\d_]+",unicodedata.normalize('NFKD',str(v or '')).encode('ascii','ignore').decode().casefold())
+    a,b=tokens(name),tokens(value)
+    if len(a)<2 or len(b)<2 or any(len(t)==1 for t in a+b):return False
+    return a==b or len(a)==2 and len(b)==2 and a==list(reversed(b))
 
 
 async def find_tennis_portrait(db,name):
-    # Initials alone are not enough to identify a person.
+    # Reject surname-only and initials rather than invent a player's identity.
     if len(name.split())<2 or any(len(x.strip('.'))==1 for x in name.split()):return None
-    data=await enrichment_request(db,"wikidata","/w/api.php",{"action":"wbsearchentities","search":name,"language":"en","uselang":"en","type":"item","limit":5,"format":"json"})
-    if data is None:return {"lookup_status":"unavailable"}
-    ids=[r.get("id") for r in data.get("search",[]) if _as_normalize(r.get("label"))==_as_normalize(name) or _as_normalize((r.get("match") or {}).get("text"))==_as_normalize(name)]
+    data=await enrichment_request(db,'wikidata','/w/api.php',{'action':'wbsearchentities','search':name,'language':'en','uselang':'en','type':'item','limit':5,'format':'json'})
+    if data is None:return {'lookup_status':'unavailable'}
+    ids=[r.get('id') for r in data.get('search',[]) if re.fullmatch(r'Q[1-9][0-9]*',str(r.get('id') or ''))]
     if not ids:return None
-    data=await enrichment_request(db,"wikidata","/w/api.php",{"action":"wbgetentities","ids":"|".join(ids),"props":"claims|labels|aliases","languages":"en|fr","format":"json"})
-    if data is None:return {"lookup_status":"unavailable"}
+    data=await enrichment_request(db,'wikidata','/w/api.php',{'action':'wbgetentities','ids':'|'.join(ids),'props':'claims|labels|aliases','languages':'en|fr','format':'json'})
+    if data is None:return {'lookup_status':'unavailable'}
     candidates=[]
-    for entity in data.get("entities",{}).values():
-        if "Q5" not in _wd_values(entity,"P31"):continue
-        if "Q847" not in _wd_values(entity,"P641") and "Q10833314" not in _wd_values(entity,"P106"):continue
-        files=[v for v in _wd_values(entity,"P18") if isinstance(v,str) and v.lower().endswith((".jpg",".jpeg",".png"))]
-        if files:candidates.append((entity.get("id"),files[0]))
-    if len(candidates)!=1:return None
-    entity_id,file=candidates[0]
-    data=await enrichment_request(db,"commons","/w/api.php",{"action":"query","titles":"File:"+file,"prop":"imageinfo","iiprop":"url|extmetadata","iiurlwidth":240,"format":"json"})
-    if data is None:return {"lookup_status":"unavailable"}
-    for page in (data.get("query") or {}).get("pages",{}).values():
-        for info in page.get("imageinfo",[]):
+    for entity in data.get('entities',{}).values():
+        if 'Q5' not in _wd_values(entity,'P31'):continue
+        if 'Q847' not in _wd_values(entity,'P641') and 'Q10833314' not in _wd_values(entity,'P106'):continue
+        names=[v.get('value') for v in (entity.get('labels') or {}).values() if isinstance(v,dict)]
+        names += [v.get('value') for rows in (entity.get('aliases') or {}).values() for v in rows if isinstance(v,dict)]
+        if not any(_tennis_full_name_match(name,value) for value in names):continue
+        files=[v for v in _wd_values(entity,'P18') if isinstance(v,str) and v.lower().endswith(('.jpg','.jpeg','.png'))]
+        if files:candidates.append((entity.get('id'),files[:2]))
+    if len(candidates)!=1:return {'lookup_status':'ambiguous'} if candidates else None
+    entity_id,files=candidates[0]
+    data=await enrichment_request(db,'commons','/w/api.php',{'action':'query','titles':'|'.join('File:'+file for file in files),'prop':'imageinfo','iiprop':'url|extmetadata','iiurlwidth':240,'format':'json'})
+    if data is None:return {'lookup_status':'unavailable'}
+    for page in (data.get('query') or {}).get('pages',{}).values():
+        for info in page.get('imageinfo',[]):
             result=commons_media(info,entity_id)
             if result:return result
     return None
 
 
-async def refresh_media_cache(db,matches):
+async def _legacy_refresh_media_cache(db,matches):
     now=datetime.now(timezone.utc);pending={}
     for match in matches:
         if enrichment_sport(match)!="tennis":continue
@@ -926,19 +937,38 @@ async def refresh_media_cache(db,matches):
 
 
 async def enrich_cached_media(db,matches):
-    # One optional left join; exactly one output per input in the same order.
+    """Cache-only left join. No image/API requests from visitor page loads."""
     if not matches:return matches
-    keys={entity_key(enrichment_sport(m),m.get(side+"_team")) for m in matches for side in ("home","away") if enrichment_sport(m) and m.get(side+"_team")}
+    keys={_visual_key(enrichment_sport(m),m.get(side+"_team")) for m in matches for side in ("home","away") if enrichment_sport(m) and m.get(side+"_team")}
     docs=await db.entity_media.find({"_id":{"$in":list(keys)}}).to_list(length=len(keys)) if keys else []
-    by_key={d["_id"]:d for d in docs};result=[]
+    by_key={d["_id"]:d for d in docs}
+    urls=set()
+    for m in matches:
+        for side in ("home","away"):
+            if _media_url(m.get(side+"_logo")):urls.add(m[side+"_logo"])
+            media=(by_key.get(_visual_key(enrichment_sport(m),m.get(side+"_team"))) or {}).get("media") or {} if enrichment_sport(m) else {}
+            urls.update(u for u in [media.get("url")]+list(media.get("alternatives") or []) if _media_url(u))
+    health=await db.media_health.find({"_id":{"$in":[_media_health_key(u) for u in urls]}}).to_list(length=len(urls)) if urls else []
+    broken={r["_id"] for r in health if r.get("status")=="broken"}
+    result=[]
     for match in matches:
         row=dict(match);sport=enrichment_sport(row)
         for side in ("home","away"):
-            doc=by_key.get(entity_key(sport,row.get(side+"_team"))) if sport and row.get(side+"_team") else None
-            media=(doc or {}).get("media") or {}
-            if media.get("verified_license") and media.get("url"):
-                row[side+"_media"]=media
-                if not row.get(side+"_logo"):row[side+"_logo"]=media["url"]
+            media=((by_key.get(_visual_key(sport,row.get(side+"_team"))) or {}).get("media") or {}) if sport else {}
+            accepted=(sport=="tennis" and _approved_portrait(media)) or (sport!="tennis" and media.get("kind")=="badge" and media.get("provider")=="API-Sports" and media.get("verified_identity") is True)
+            existing=row.get(side+"_logo")
+            candidates=[]
+            if accepted:
+                candidates=[u for u in [media.get("url")]+list(media.get("alternatives") or []) if _media_url(u) and _media_health_key(u) not in broken]
+            if sport!="tennis" and _media_url(existing) and _media_health_key(existing) not in broken:
+                candidates=list(dict.fromkeys([existing]+candidates))
+            if candidates:
+                row[side+"_logo"]=candidates[0]
+                row[side+"_image_candidates"]=list(dict.fromkeys(candidates))[:3]
+                if accepted and candidates[0] in [media.get("url")]+list(media.get("alternatives") or []):
+                    row[side+"_media"]={**media,"url":candidates[0]}
+            elif _media_url(existing) and _media_health_key(existing) in broken:
+                row[side+"_logo"]=None
         result.append(row)
     return result
 
@@ -1100,7 +1130,7 @@ async def refresh_basketball_results(db,matches):
 async def enrichment_cycle(db,matches):
     # Each source is isolated; a denial never cancels another source or clears data.
     report={"started_at":datetime.now(timezone.utc).isoformat()}
-    for name,callback in (("archive",lambda:harvest_score_archive(db)),("openfootball",lambda:refresh_openfootball(db,matches)),("basketball",lambda:refresh_basketball_results(db,matches)),("tennis",lambda:refresh_tennis_history(db)),("portraits",lambda:refresh_media_cache(db,matches))):
+    for name,callback in (("archive",lambda:harvest_score_archive(db)),("openfootball",lambda:refresh_openfootball(db,matches)),("basketball",lambda:refresh_basketball_results(db,matches)),("tennis",lambda:refresh_tennis_history(db))):
         try:report[name]=await asyncio.wait_for(callback(),timeout=120)
         except Exception as exc:report[name]={"status":"unavailable","error_type":type(exc).__name__}
     report["finished_at"]=datetime.now(timezone.utc).isoformat()
@@ -1340,3 +1370,265 @@ async def get_match_insights(db,match):
     except Exception as exc:
         logger.warning('Detailed statistics cache unavailable: %s',type(exc).__name__)
     return result
+
+
+
+# ─── Persistent visual identities v3: independent from forecasts/history ───
+_MEDIA_HOSTS = {'media.api-sports.io','crests.football-data.org','upload.wikimedia.org'}
+_MEDIA_LICENSES = {'CC0','CC0 1.0','Public domain','CC BY 2.0','CC BY 3.0','CC BY 4.0',
+    'CC BY-SA 2.0','CC BY-SA 2.5','CC BY-SA 3.0','CC BY-SA 4.0'}
+# Only equivalences for the same club. Never drop youth/women/reserve qualifiers.
+_MEDIA_QUERIES = {'football':{'parissg':'Paris Saint Germain','psg':'Paris Saint Germain',
+    'intermilan':'Inter','internazionalemilano':'Inter','bayernmunich':'Bayern Munich',
+    'fcbayernmunchen':'Bayern Munich','manutd':'Manchester United','manunited':'Manchester United',
+    'mancity':'Manchester City','wolves':'Wolverhampton Wanderers','atleticomadrid':'Atletico Madrid'},
+    'basketball':{'laclippers':'Los Angeles Clippers','lalakers':'Los Angeles Lakers',
+        'nyknicks':'New York Knicks','gswarriors':'Golden State Warriors','saspurs':'San Antonio Spurs'}}
+_MEDIA_ID_ALIASES={'basketball':{'laclippers':'losangelesclippers','lalakers':'losangeleslakers',
+    'nyknicks':'newyorkknicks','gswarriors':'goldenstatewarriors','saspurs':'sanantoniospurs'},
+    'football':{'inter':'intermilan'}}
+
+
+def _media_identity(name,sport):
+    canonical=entity_name(name,sport)
+    return _MEDIA_ID_ALIASES.get(sport,{}).get(canonical,canonical)
+
+
+def _visual_key(sport,name):
+    return sport+':'+_media_identity(name,sport)
+
+
+def _media_url(value):
+    if not isinstance(value,str) or len(value)>2000:return None
+    try:
+        parsed=urlparse(value)
+        if parsed.scheme!='https' or parsed.hostname not in _MEDIA_HOSTS or parsed.username or parsed.password or parsed.port not in (None,443):return None
+        return value
+    except (ValueError,TypeError):return None
+
+
+def _media_health_key(url):
+    return hashlib.sha256(url.encode()).hexdigest()
+
+
+def _media_limit(name,default,maximum):
+    try:return max(1,min(maximum,int(os.environ.get(name,str(default)))))
+    except (ValueError,TypeError):return default
+
+
+def _approved_portrait(media):
+    return bool(media.get('verified_license') is True and media.get('kind')=='portrait'
+        and media.get('provider')=='Wikimedia Commons' and media.get('author')
+        and media.get('license') in _MEDIA_LICENSES and _media_url(media.get('url'))
+        and re.fullmatch(r'https://commons\.wikimedia\.org/wiki/[^\s]+',str(media.get('source_url') or ''))
+        and re.fullmatch(r'https://(?:creativecommons\.org|commons\.wikimedia\.org)/[^\s]+',str(media.get('license_url') or '')))
+
+
+def _media_jobs(matches,now):
+    jobs={}
+    for match in matches:
+        sport=enrichment_sport(match)
+        kickoff=_display_date(match.get('commence_time'))
+        if not sport or not kickoff or not now-timedelta(days=1)<kickoff<now+timedelta(days=7):continue
+        for side in ('home','away'):
+            name=str(match.get(side+'_team') or '').strip()
+            if len(name)<3:continue
+            key=_visual_key(sport,name)
+            entry=jobs.setdefault(key,{'key':key,'sport':sport,'name':name,'kickoff':kickoff.isoformat(),'existing':[]})
+            url=_media_url(match.get(side+'_logo'))
+            if url and url not in entry['existing']:entry['existing'].append(url)
+    return jobs
+
+
+async def _media_identity_lookup(db,job,old,budget):
+    sport,name=job['sport'],job['name']
+    if not API_SPORTS_KEY:return {'lookup_status':'key_missing'}
+    existing=await db.stats_cache.find_one({'_id':_as_key(sport,name)}) or {}
+    team_id=(old.get('identity') or {}).get('provider_id') or (existing.get('team_id') if existing.get('matched') else None)
+    cached_health=await db.media_health.find_one({'_id':_media_health_key(existing['logo'])}) if _media_url(existing.get('logo')) else {}
+    if team_id and not old.get('image_broken') and (cached_health or {}).get('status')!='broken' and _media_url(existing.get('logo')) and _media_identity(existing.get('name') or name,sport)==_media_identity(name,sport):
+        return {'id':team_id,'name':existing.get('name') or name,'logo':existing['logo']}
+    queries=[]
+    # A stored, verified provider ID is stable across name variations and rebrands.
+    if team_id:queries.append({'id':team_id})
+    query=_MEDIA_QUERIES.get(sport,{}).get(_as_normalize(name),name)
+    queries.append({'search':query})
+    if query!=name:queries.append({'search':name})
+    for params in queries:
+        if budget['used']>=budget['limit']:return {'lookup_status':'deferred'}
+        budget['used']+=1
+        rows=await _as_request(db,sport,'/teams',params)
+        if rows is None:return {'lookup_status':'unavailable'}
+        candidates={}
+        for row in rows:
+            if not isinstance(row,dict):continue
+            team=row.get('team') if isinstance(row.get('team'),dict) else row
+            if not team.get('id'):continue
+            if team_id and str(team.get('id'))==str(team_id) and params.get('id'):
+                candidates[str(team['id'])]=team
+            elif _media_identity(team.get('name'),sport)==_media_identity(name,sport):
+                candidates[str(team['id'])]=team
+        if len(candidates)==1:return next(iter(candidates.values()))
+        if len(candidates)>1:return {'lookup_status':'ambiguous'}
+    return {'lookup_status':'unresolved'}
+
+
+async def refresh_visual_assets(db,matches):
+    """Bounded scheduled work; API-Sports calls share its existing persistent quotas."""
+    now=datetime.now(timezone.utc);jobs=_media_jobs(matches,now)
+    docs=await db.entity_media.find({'_id':{'$in':list(jobs)}}).to_list(length=len(jobs)) if jobs else []
+    cached={row['_id']:row for row in docs}
+    budget={'used':0,'limit':_media_limit('WNPULSE_MEDIA_TEAM_REQUESTS_PER_RUN',8,16)}
+    portraits=_media_limit('WNPULSE_MEDIA_PORTRAITS_PER_RUN',6,16)
+    portrait_jobs=0;updated=0;checked=0;statuses={}
+    # Oldest checked first, with round-robin across sports to avoid football starvation.
+    pending={}
+    for key,job in jobs.items():
+        old=cached.get(key,{})
+        retry=_display_date(old.get('next_check_at'))
+        if retry and retry>now and (old.get('resolver_version')==3 or _approved_portrait(old.get('media') or {})):continue
+        pending.setdefault(job['sport'],[]).append((old.get('checked_at') or '',job['kickoff'],key))
+    for rows in pending.values():rows.sort()
+    order=[]
+    while any(pending.values()):
+        for sport in sorted(pending):
+            if pending[sport]:order.append(pending[sport].pop(0)[2])
+    blocked_sports=set()
+    for key in order:
+        job=jobs[key];sport=job['sport'];old=cached.get(key,{})
+        if checked>=64:break
+        if sport in blocked_sports:continue
+        # Preserve known cached badges; spend search requests on missing entities first.
+        if sport!='tennis' and job['existing']:
+            healthy=[]
+            for url in job['existing']:
+                h=await db.media_health.find_one({'_id':_media_health_key(url)}) or {}
+                if h.get('status')!='broken':healthy.append(url)
+            if healthy and not old.get('image_broken'):
+                await db.entity_media.update_one({'_id':key},{'$set':{'sport':sport,'name':job['name'],
+                    'status':'ready_existing','checked_at':now.isoformat(),
+                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':3}},upsert=True)
+                checked+=1;statuses['ready_existing']=statuses.get('ready_existing',0)+1
+                continue
+        if sport=='tennis':
+            if portrait_jobs>=portraits:continue
+            portrait_jobs+=1
+            media=await find_tennis_portrait(db,job['name'])
+            status=(media or {}).get('lookup_status') or ('ready' if _approved_portrait(media or {}) else 'unresolved')
+            valid=status=='ready'
+            identity={'provider':'Wikidata','provider_id':media.get('entity_id'),'name':job['name']} if valid else old.get('identity')
+        else:
+            if budget['used']>=budget['limit']:continue
+            team=await _media_identity_lookup(db,job,old,budget)
+            status=team.get('lookup_status') or ('ready' if _media_url(team.get('logo')) else 'image_missing')
+            valid=status=='ready'
+            identity={'provider':'API-Sports','provider_id':team.get('id'),'name':team.get('name')} if team.get('id') else old.get('identity')
+            media={'url':team.get('logo'),'provider':'API-Sports','provider_id':team.get('id'),
+                'kind':'badge','verified_identity':True,'rights':'identification_only_provider_terms'} if valid else None
+        if status=='deferred':continue
+        if valid:
+            known_health=await db.media_health.find_one({'_id':_media_health_key(media['url'])}) or {}
+            if known_health.get('status')=='broken':
+                valid=False;status='image_missing'
+        checked+=1;statuses[status]=statuses.get(status,0)+1
+        transient=status in ('unavailable','key_missing')
+        if transient:blocked_sports.add(sport)
+        delay=timedelta(minutes=30) if transient else timedelta(days=30) if valid else timedelta(hours=24)
+        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':3}
+        if identity:fields['identity']=identity
+        if valid:
+            previous=(old.get('media') or {}).get('url')
+            # Same-provider badges may retain one verified old crest as a fallback.
+            if sport!='tennis' and _media_url(previous) and previous!=media['url']:
+                media['alternatives']=[previous]
+            fields['media']=media;fields['image_broken']=False;updated+=1
+            if sport!='tennis':
+                await db.stats_cache.update_one({'_id':_as_key(sport,job['name'])},{'$set':{
+                    'matched':True,'team_id':identity['provider_id'],'name':identity['name'],
+                    'logo':media['url'],'updated_at':now.isoformat()}},upsert=True)
+        # An unavailable source never removes verified old media or official picks.
+        await db.entity_media.update_one({'_id':key},{'$set':fields},upsert=True)
+    health=await refresh_media_health(db,matches,jobs)
+    result={'checked_at':datetime.now(timezone.utc).isoformat(),'catalogue_entities':len(jobs),
+        'checked':checked,'updated':updated,'statuses':statuses,'team_requests_attempted':budget['used'],
+        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':3}
+    await db.enrichment_state.update_one({'_id':'visual_assets'},{'$set':result},upsert=True)
+    return result
+
+
+async def _check_media_url(url):
+    """Strict host allowlist, no arbitrary redirects, no user-supplied URL fetch."""
+    current=_media_url(url)
+    if not current:return 'blocked'
+    try:
+        async with httpx.AsyncClient(timeout=6,follow_redirects=False) as client:
+            for _ in range(2):
+                response=await client.head(current,headers={'User-Agent':'WinPulseMedia/1.0 (https://wnpulse.com; contact@wnpulse.com)'})
+                if response.status_code in (301,302,303,307,308):
+                    from urllib.parse import urljoin
+                    current=_media_url(urljoin(current,response.headers.get('location','')))
+                    if not current:return 'unknown'
+                    continue
+                if response.status_code in (404,410):return 'broken'
+                if response.status_code==200:
+                    mime=response.headers.get('content-type','').split(';')[0].strip().lower()
+                    return 'ready' if mime.startswith('image/') else 'unknown'
+                return 'unknown'
+    except httpx.HTTPError:return 'unknown'
+    return 'unknown'
+
+
+async def refresh_media_health(db,matches,jobs=None):
+    now=datetime.now(timezone.utc);jobs=jobs or _media_jobs(matches,now)
+    docs=await db.entity_media.find({'_id':{'$in':list(jobs)}}).to_list(length=len(jobs)) if jobs else []
+    urls={u for job in jobs.values() for u in job['existing']}
+    for doc in docs:
+        media=doc.get('media') or {}
+        urls.update(u for u in [media.get('url')]+list(media.get('alternatives') or []) if _media_url(u))
+    health=await db.media_health.find({'_id':{'$in':[_media_health_key(u) for u in urls]}}).to_list(length=len(urls)) if urls else []
+    known={d['_id']:d for d in health}
+    due=[(known.get(_media_health_key(u),{}).get('checked_at') or '',u) for u in urls
+         if not _display_date(known.get(_media_health_key(u),{}).get('next_check_at')) or _display_date(known.get(_media_health_key(u),{}).get('next_check_at'))<=now]
+    checked=0;broken=0
+    for _,url in sorted(due)[:_media_limit('WNPULSE_MEDIA_HEALTH_PER_RUN',6,12)]:
+        state=await _check_media_url(url);checked+=1;broken+=int(state=='broken')
+        previous=known.get(_media_health_key(url),{})
+        # A transient failure must not rehabilitate a confirmed 404 nor hide a good asset.
+        effective=previous.get('status','unknown') if state=='unknown' else state
+        delay=timedelta(days=7) if state=='ready' else timedelta(hours=6) if state=='broken' else timedelta(hours=1)
+        await db.media_health.update_one({'_id':_media_health_key(url)},{'$set':{
+            'url':url,'status':effective,'last_check_result':state,'checked_at':now.isoformat(),
+            'next_check_at':(now+delay).isoformat()}},upsert=True)
+        if state=='broken':
+            for key,job in jobs.items():
+                if url in job['existing']:
+                    await db.entity_media.update_one({'_id':key},{'$set':{'next_check_at':now.isoformat(),'image_broken':True}},upsert=True)
+            for doc in docs:
+                if (doc.get('media') or {}).get('url')==url:
+                    await db.entity_media.update_one({'_id':doc['_id']},{'$set':{'next_check_at':now.isoformat(),'image_broken':True}})
+    return {'checked':checked,'confirmed_broken':broken}
+
+
+async def refresh_media_cache(db,matches):
+    # Compatibility export for old optional-module checks; one dedicated scheduler does the work.
+    return await refresh_visual_assets(db,matches)
+
+
+async def media_catalogue_status(db,matches):
+    jobs=_media_jobs(matches,datetime.now(timezone.utc));keys=list(jobs)
+    docs=await db.entity_media.find({'_id':{'$in':keys}}).to_list(length=len(keys)) if keys else []
+    ready={d['_id']:d for d in docs};sports={};missing=[]
+    health=await db.media_health.find({'status':'broken'}).limit(5000).to_list(length=5000)
+    broken={r['_id'] for r in health}
+    for key,job in jobs.items():
+        media=(ready.get(key) or {}).get('media') or {}
+        acceptable=bool(_approved_portrait(media)) if job['sport']=='tennis' else bool(media.get('verified_identity') and media.get('kind')=='badge' and _media_url(media.get('url')))
+        candidates=[u for u in [media.get('url')]+list(media.get('alternatives') or [])+job['existing'] if _media_url(u) and _media_health_key(u) not in broken]
+        available=bool(candidates and (acceptable or job['sport']!='tennis' and job['existing']))
+        group=sports.setdefault(job['sport'],{'total':0,'available':0,'missing':0})
+        group['total']+=1;group['available' if available else 'missing']+=1
+        if not available and len(missing)<100:
+            missing.append({'key':key,'name':job['name'],'sport':job['sport'],'status':ready.get(key,{}).get('status','pending')})
+    return {'resolver_version':3,'sports':sports,'missing_sample':missing,
+        'last_run':{k:v for k,v in (await db.enrichment_state.find_one({'_id':'visual_assets'}) or {}).items() if k!='_id'},
+        'broken_images':len(health),'no_complete_coverage_guarantee':True}
