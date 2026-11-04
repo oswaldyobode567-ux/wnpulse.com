@@ -8283,6 +8283,9 @@ async def _get_hybrid_registry():
     try:
         rows=await asyncio.wait_for(db.hybrid_model_registry.find({"version":"dc-elo-market-3","status":"shadow_ready"}).to_list(length=None),timeout=2)
         models={row["sport_key"]:row for row in rows if row.get("model")}
+        binder = getattr(_optional_prediction_engine, "set_runtime_football_models", None)
+        if callable(binder):
+            binder(models)
         _hybrid_registry_cache.update(loaded=time.monotonic(),models=models)
         return models
     except Exception as exc:
@@ -8444,6 +8447,7 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
         real_stats_map = dict(await get_real_stats_map(db, matches))
         real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        _queue_independent_archive(predictions)
         # Freeze first experimental forecast before kickoff in a separate collection.
         # This never touches official history or the settlement/payment paths.
         operations = []
@@ -8587,6 +8591,7 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
             pred.get("is_finished") or m.get("is_finished") or m.get("completed")
         )
         pred = _discovery_prediction(pred,manifest,paid=is_paid)
+        pred = _dashboard_prediction_view(pred)
         outer = m if is_paid or not pred.get("locked") else _discovery_metadata(m)
         merged.append(_merge_match_prediction(outer, pred))
     return merged
@@ -11177,6 +11182,7 @@ async def _archive_today_combos(data, version):
 
 
 async def _quality_today_data(matches):
+    await _get_hybrid_registry()
     async with _today_quality_lock:
         cache_source = await db.odds_cache.find_one({"_id":"all_matches"},{"updated_at":1})
         source_stamp = ((cache_source or {}).get("updated_at"), _discovery_day())
@@ -12993,7 +12999,8 @@ def _pick_signature(match_id: str, pick: str) -> str:
 
 async def _save_predictions_to_history(matches: List[Dict]):
     try:
-        real_stats_map = await get_real_stats_map(db, matches)
+        real_stats_map = dict(await get_real_stats_map(db, matches))
+        real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
         for p in predictions:
             if not p.get("pick") or not p.get("match_id"):
@@ -13013,6 +13020,13 @@ async def _save_predictions_to_history(matches: List[Dict]):
                 "commence_time": p.get("commence_time"),
                 "pick": p["pick"],
                 "market": p.get("market"),
+                "market_label": p.get("market_label"),
+                "pick_raw": p.get("pick_raw"),
+                "pick_point": p.get("pick_point"),
+                "team": p.get("team"),
+                "evidence_level": p.get("evidence_level"),
+                "uncertainty_level": p.get("uncertainty_level"),
+                "quote_updated_at": p.get("quote_updated_at"),
                 "pick_odds": p.get("pick_odds"),
                 "confidence": p.get("confidence"),
                 "label": p.get("label"),
@@ -13494,7 +13508,7 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     pick = norm(pred.get("pick"))
     market = norm(pred.get("market") or pred.get("market_key"))
     if re.fullmatch(r"syn_(over|under)_\d+",market):market="totals"
-    supported={"h2h","moneyline","ml","syn_home_win","syn_away_win","totals","total","syn_over_25","syn_over_15","btts","syn_btts","double_chance","syn_double_chance","draw_no_bet","syn_draw_no_bet","dnb","spreads","spread","handicap","asian_handicap","syn_clean_sheet_home","syn_clean_sheet_away"}
+    supported={"h2h","moneyline","ml","syn_home_win","syn_away_win","totals","total","team_totals","syn_over_25","syn_over_15","btts","syn_btts","double_chance","syn_double_chance","draw_no_bet","syn_draw_no_bet","dnb","spreads","spread","handicap","asian_handicap","syn_clean_sheet_home","syn_clean_sheet_away"}
     if market not in supported:return None
     point=pred.get('pick_point')
     if point is not None:
@@ -13505,6 +13519,18 @@ def _evaluate_pick_result(pred: Dict, home_score: int, away_score: int) -> Optio
     home = norm(pred.get("home_team"))
     away = norm(pred.get("away_team"))
     total_points = home_score + away_score
+
+    if market == "team_totals":
+        team = norm(pred.get("team"))
+        if team not in (home, away) or point is None:
+            return None
+        goals = home_score if team == home else away_score
+        raw = norm(pred.get("pick_raw"))
+        if raw not in ("over", "under"):
+            return None
+        if goals == point:
+            return "void"
+        return "won" if (goals > point if raw == "over" else goals < point) else "lost"
 
     # 1X2 / Moneyline
     if market in ("h2h", "moneyline", "ml", "syn_home_win", "syn_away_win"):
@@ -13757,7 +13783,7 @@ async def follow_prediction(match_id: str, payload: dict = Depends(get_current_u
     starts = _parse_iso(prediction.get("commence_time") or match.get("commence_time"))
     if not starts or starts <= _discovery_now() or prediction.get("is_live") or prediction.get("is_finished"):
         raise HTTPException(status_code=409, detail="Le suivi s’active avant le début de la rencontre")
-    if prediction.get("market") not in ("h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance"):
+    if prediction.get("market") not in ("h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance", "team_totals"):
         raise HTTPException(status_code=409, detail="Le suivi de ce marché n’est pas encore disponible")
     signature = _pick_signature(match_id, prediction["pick"])
     identity = _follow_identity(user["id"], f"{signature}::{prediction.get('market')}")
@@ -13769,7 +13795,7 @@ async def follow_prediction(match_id: str, payload: dict = Depends(get_current_u
         raise HTTPException(status_code=409, detail="Le résultat de cette sélection est déjà confirmé")
     if await db.followed_predictions.count_documents({"user_id": user["id"], "state": "following"}) >= 200:
         raise HTTPException(status_code=409, detail="Tu peux suivre jusqu’à 200 pronostics à la fois")
-    saved = {key: prediction.get(key) for key in ("pick", "pick_odds", "pick_point", "pick_raw", "best_bookmaker", "market", "market_label", "home_team", "away_team", "sport_title", "commence_time")}
+    saved = {key: prediction.get(key) for key in ("pick", "pick_odds", "pick_point", "pick_raw", "team", "best_bookmaker", "market", "market_label", "home_team", "away_team", "sport_title", "commence_time")}
     saved["home_team"] = saved.get("home_team") or match.get("home_team")
     saved["away_team"] = saved.get("away_team") or match.get("away_team")
     await db.followed_predictions.update_one(
@@ -15824,3 +15850,136 @@ async def _bootstrap_model_startup():
         scheduler.add_job(_scheduled_hybrid_bootstrap, 'interval', hours=6,
             id='hybrid_history_training', replace_existing=True, coalesce=True, max_instances=1)
 
+
+# Independent pilot observations, frozen before kickoff. Not public Track
+# Record certification, not an automatic model-promotion mechanism.
+_independent_archive_task = None
+
+
+def _dashboard_prediction_view(prediction):
+    view = dict(prediction)
+    if isinstance(view.get('multi_market'), dict):
+        model = dict(view['multi_market'])
+        model['analysis_count'] = len(model.get('analysis') or [])
+        model.pop('analysis', None)
+        view['multi_market'] = model
+        # Full lines remain available on the individual match endpoint.
+        view['markets'] = list(model.get('choices') or [])
+    return view
+
+
+def _independent_forecast_records(predictions, captured_at):
+    records = []
+    for prediction in predictions:
+        model = prediction.get('multi_market') or {}
+        kickoff = _parse_iso(prediction.get('commence_time'))
+        if not kickoff or kickoff <= captured_at or not prediction.get('match_id'):
+            continue
+        for candidate in model.get('choices') or []:
+            if not candidate.get('selection_available') or candidate.get('probability_source') != 'dixon_coles_pilot':
+                continue
+            identity = hashlib.sha256(json.dumps([prediction.get('engine_revision'), prediction['match_id'],
+                kickoff.isoformat(), candidate['market'], candidate['pick_raw'], candidate.get('pick_point'), candidate.get('team')]).encode()).hexdigest()
+            records.append({'_id':identity, 'match_id':prediction['match_id'],
+                'commence_time':kickoff.isoformat(), 'captured_at':captured_at.isoformat(),
+                'engine_revision':prediction.get('engine_revision'), 'sport_key':prediction.get('sport_key'),
+                'home_team':prediction.get('home_team'), 'away_team':prediction.get('away_team'),
+                'candidate':copy.deepcopy(candidate), 'state':'pending'})
+    return records
+
+
+def _queue_independent_archive(predictions):
+    global _independent_archive_task
+    if _independent_archive_task and not _independent_archive_task.done():
+        return
+    records = _independent_forecast_records(predictions, datetime.now(timezone.utc))
+    if not records:
+        return
+    async def run():
+        try:
+            await asyncio.wait_for(db.independent_market_forecasts.bulk_write([
+                UpdateOne({'_id':r['_id']}, {'$setOnInsert':{k:v for k,v in r.items() if k!='_id'}}, upsert=True)
+                for r in records[:1000]], ordered=False), timeout=5)
+        except Exception as exc:
+            logging.getLogger('winpulse.independent').warning('Forecast archive deferred: %s', type(exc).__name__)
+    _independent_archive_task = asyncio.create_task(run())
+
+
+def _independent_final_outcome(record, score):
+    if not score or score.get('completed') is not True:
+        return None
+    kickoff = _parse_iso(record.get('commence_time'))
+    observed_kickoff = _parse_iso(score.get('commence_time'))
+    captured = _parse_iso(record.get('captured_at'))
+    if not kickoff or not observed_kickoff or not captured or captured >= kickoff or abs((kickoff-observed_kickoff).total_seconds()) > 60:
+        return None
+    if score.get('home_team') != record.get('home_team') or score.get('away_team') != record.get('away_team'):
+        return None
+    values = {r.get('name'): _settlement_integer(r.get('score')) for r in score.get('scores') or [] if isinstance(r,dict)}
+    home, away = values.get(record['home_team']), values.get(record['away_team'])
+    if home is None or away is None:
+        return None
+    candidate = {**record['candidate'], 'home_team':record['home_team'], 'away_team':record['away_team']}
+    outcome = _evaluate_pick_result(candidate, home, away)
+    if outcome not in ('won', 'lost', 'void'):
+        return None
+    odds = float(candidate['pick_odds'])
+    probabilities = [float(candidate[k])/100 for k in ('estimated_win_probability', 'push_probability', 'estimated_loss_probability')]
+    index = {'won':0, 'void':1, 'lost':2}[outcome]
+    return {'result':outcome, 'final_score':f'{home}-{away}',
+            'unit_return':odds if outcome=='won' else 1. if outcome=='void' else 0.,
+            'brier':sum((p-int(i==index))**2 for i,p in enumerate(probabilities)),
+            'log_loss':-math.log(max(1e-9,probabilities[index]))}
+
+
+async def _settle_independent_forecasts():
+    now = datetime.now(timezone.utc)
+    rows = await db.independent_market_forecasts.find({'state':'pending', 'commence_time':{
+        '$gte':(now-timedelta(days=7)).isoformat(), '$lte':(now-timedelta(hours=2)).isoformat()}
+        }).sort('commence_time', -1).to_list(length=1000)
+    if not rows:
+        return
+    scores = await db.scores_archive.find({'event_id':{'$in':list({r['match_id'] for r in rows})}, 'completed':True}).to_list(length=1000)
+    by_id = {r['event_id']:r for r in scores}
+    operations = []
+    for row in rows:
+        outcome = _independent_final_outcome(row, by_id.get(row['match_id']))
+        if outcome:
+            operations.append(UpdateOne({'_id':row['_id'], 'state':'pending'}, {'$set':{
+                'state':'resolved', 'evaluation':outcome, 'resolved_at':now.isoformat()}}))
+    if operations:
+        await db.independent_market_forecasts.bulk_write(operations, ordered=False)
+
+
+@app.get('/api/admin/independent-model/status')
+async def independent_model_status(payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    report = await db.independent_market_forecasts.aggregate([
+        {'$match':{'state':'resolved'}}, {'$group':{'_id':'$candidate.market', 'n':{'$sum':1},
+            'unit_return':{'$avg':'$evaluation.unit_return'}, 'brier':{'$avg':'$evaluation.brier'},
+            'log_loss':{'$avg':'$evaluation.log_loss'}}}]).to_list(length=20)
+    return {'mode':os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE', 'independent_pilot'),
+        'pending':await db.independent_market_forecasts.count_documents({'state':'pending'}),
+        'resolved':await db.independent_market_forecasts.count_documents({'state':'resolved'}),
+        'by_market':report, 'unit':'Individual market choices; choices within a match are correlated',
+        'automatic_promotion':False, 'performance_improvement_proven':False}
+
+
+async def _scheduled_independent_settlement():
+    try:
+        await asyncio.wait_for(_run_with_scheduler_lease('independent_market_settlement',
+            _settle_independent_forecasts, lease_seconds=180), timeout=120)
+    except Exception as exc:
+        logging.getLogger('winpulse.independent').warning('Forecast settlement deferred: %s', type(exc).__name__)
+
+
+@app.on_event('startup')
+async def _independent_market_startup():
+    try:
+        await db.independent_market_forecasts.create_index([('state',1), ('commence_time',-1)])
+    except Exception:
+        pass
+    if ENABLE_INTERNAL_SCHEDULER:
+        scheduler.add_job(_scheduled_independent_settlement, 'interval', minutes=15,
+            id='independent_market_settlement', replace_existing=True, coalesce=True, max_instances=1,
+            next_run_time=datetime.now(timezone.utc)+timedelta(seconds=45))
