@@ -648,12 +648,17 @@ async def _apisports_football_insights(db, match, cutoff):
 
 
 # ─── Independent enrichment v2 (no odds/cache deletion; no official picks) ───
+def _as_daily_budget(sport):
+    try:return max(1,min(7500,int(os.environ.get("API_SPORTS_"+sport.upper()+"_DAILY_LIMIT","80"))))
+    except (ValueError,TypeError):return 80
+
+
 _ENRICHMENT_SOURCES = {
     "openfootball": ("https://raw.githubusercontent.com", 30, .5),
     "wikidata": ("https://www.wikidata.org", 240, 1.),
     "commons": ("https://commons.wikimedia.org", 120, 1.),
     "tennis": ("https://tennis-api-atp-wta-itf.p.rapidapi.com", 40, 1.),
-    **{"apisports:"+key: (url, 80, 6.1) for key,url in _APISPORTS_BASE.items()},
+    **{"apisports:"+key: (url, _as_daily_budget(key), 6.1) for key,url in _APISPORTS_BASE.items()},
 }
 _enrichment_locks = {}
 _enrichment_next = {}
@@ -712,11 +717,21 @@ async def enrichment_request(db, provider, path, params=None):
         # Share the same counter as the legacy API-Sports worker.
         day=now.strftime("%Y-%m-%d")
         quota_id=(provider+":"+day) if provider.startswith("apisports:") else "enrichment:"+provider+":"+day
+        daily_limit=config[1]
+        if provider.startswith("apisports:"):
+            capabilities=await db.enrichment_state.find_one({"_id":"capabilities"}) or {}
+            verified=(capabilities.get(provider.split(":",1)[1]) or {}).get("daily_limit")
+            daily_limit=min(daily_limit,max(0,int(verified)-20)) if isinstance(verified,int) else min(daily_limit,80)
+        if daily_limit<=0:return None
         try:
-            quota=await db.stats_cache.find_one_and_update({"_id":quota_id,"$or":[{"calls":{"$lt":config[1]}},{"calls":{"$exists":False}}]},
+            quota=await db.stats_cache.find_one_and_update({"_id":quota_id,"$or":[{"calls":{"$lt":daily_limit}},{"calls":{"$exists":False}}]},
                 {"$inc":{"calls":1},"$setOnInsert":{"day":day,"provider":provider}},upsert=True,return_document=True)
-        except DuplicateKeyError:return None
-        if not quota:return None
+        except DuplicateKeyError:
+            await db.enrichment_state.update_one({"_id":status_id},{"$set":{"status":"local_budget_reached","checked_at":now.isoformat(),"local_daily_limit":daily_limit}},upsert=True)
+            return None
+        if not quota:
+            await db.enrichment_state.update_one({"_id":status_id},{"$set":{"status":"local_budget_reached","checked_at":now.isoformat(),"local_daily_limit":daily_limit}},upsert=True)
+            return None
         try:
             async with httpx.AsyncClient(timeout=12,follow_redirects=False) as client:
                 response=await client.get(config[0]+path,params=params or {},headers=headers)
@@ -733,7 +748,9 @@ async def enrichment_request(db, provider, path, params=None):
             data=response.json()
             if not isinstance(data,dict):return None
             if data.get("errors"):
-                await db.enrichment_state.update_one({"_id":status_id},{"$set":{"status":"restricted","checked_at":now.isoformat()}},upsert=True)
+                error_text=json.dumps(data.get("errors"),ensure_ascii=False).lower()
+                restricted="plan_or_season_restricted" if any(t in error_text for t in ("free plan","subscription","season","upgrade")) else "provider_error"
+                await db.enrichment_state.update_one({"_id":status_id},{"$set":{"status":"restricted","restriction":restricted,"checked_at":now.isoformat()}},upsert=True)
                 return None
             return data
         except (httpx.HTTPError,ValueError):
@@ -1089,3 +1106,237 @@ async def enrichment_cycle(db,matches):
     report["finished_at"]=datetime.now(timezone.utc).isoformat()
     await db.enrichment_state.update_one({"_id":"last_cycle"},{"$set":report},upsert=True)
     return report
+
+
+# Detailed 90-minute football observations, separate from scores and odds.
+_DETAIL_LEAGUES = {'soccer_epl':39, 'soccer_france_ligue_one':61,
+    'soccer_germany_bundesliga':78, 'soccer_spain_la_liga':140, 'soccer_italy_serie_a':135}
+_DETAIL_METRICS = {'Corner Kicks':'corners', 'Yellow Cards':'yellow_cards',
+    'Red Cards':'red_cards', 'Total Shots':'shots', 'Shots on Goal':'shots_on_target',
+    'Ball Possession':'possession', 'Fouls':'fouls'}
+
+
+def _detail_number(value, percent=False):
+    if value is None or isinstance(value,bool):return None
+    try:
+        text=str(value).strip()
+        number=float(text.rstrip('%') if percent else text)
+        if not math.isfinite(number) or number<0:return None
+        if percent:return number if number<=100 else None
+        return int(number) if number.is_integer() and number<=200 else None
+    except (ValueError,TypeError):return None
+
+
+def _detail_team(name):
+    # Runtime import avoids the stats_service/prediction_engine import cycle.
+    import prediction_engine
+    return prediction_engine._hybrid_team(name)
+
+
+def _detail_fixture_record(game):
+    fixture, teams, league = game.get('fixture') or {}, game.get('teams') or {}, game.get('league') or {}
+    home, away = teams.get('home') or {}, teams.get('away') or {}
+    date=_display_date(fixture.get('date'))
+    if not date or not fixture.get('id') or not home.get('id') or not away.get('id') or not home.get('name') or not away.get('name'):return None
+    try:
+        fixture_id=int(fixture['id'])
+        if fixture_id<=0 or home['id']==away['id']:return None
+    except (TypeError,ValueError):return None
+    return {'fixture_id':fixture_id, 'league_id':league.get('id'), 'season':league.get('season'),
+        'date':date.isoformat(), 'home_id':home['id'], 'away_id':away['id'],
+        'home_team':home['name'], 'away_team':away['name'], 'status':(fixture.get('status') or {}).get('short'),
+        'referee':fixture.get('referee'), 'home_key':_detail_team(home['name']), 'away_key':_detail_team(away['name'])}
+
+
+def _parse_fixture_statistics(game, payload, observed_at):
+    row=_detail_fixture_record(game)
+    if not row or row['status']!='FT' or not isinstance(payload,list):return None
+    # FT only: never combine extra-time totals with regular-time prices.
+    values={}
+    for item in payload:
+        if not isinstance(item,dict):continue
+        team_id=(item.get('team') or {}).get('id')
+        if team_id not in (row['home_id'],row['away_id']):continue
+        metrics={}
+        for item_stat in item.get('statistics') or []:
+            key=_DETAIL_METRICS.get(item_stat.get('type'))
+            if key:metrics[key]=_detail_number(item_stat.get('value'),key=='possession')
+        if team_id in values:return None
+        values[team_id]=metrics
+    if len(values)!=2 or not any(values[row['home_id']].get(k) is not None and values[row['away_id']].get(k) is not None for k in _DETAIL_METRICS.values()):return None
+    row.update(home=values[row['home_id']],away=values[row['away_id']],
+        observed_at=observed_at.isoformat(),source='API-Football',period='regular_time',
+        complete_metrics=[k for k in _DETAIL_METRICS.values() if values[row['home_id']].get(k) is not None and values[row['away_id']].get(k) is not None])
+    return row
+
+
+async def refresh_detailed_football(db, matches):
+    if not API_SPORTS_KEY:return {'status':'key_missing'}
+    if os.environ.get('WNPULSE_DETAILED_STATS_ENABLED','true').lower() in ('0','false','no'):return {'status':'disabled'}
+    now=datetime.now(timezone.utc);used=0;imported=0;issues=[]
+    limit=max(1,min(24,int(os.environ.get('WNPULSE_DETAILED_STATS_PER_RUN','8'))))
+    targets=[m for m in matches if m.get('sport_key') in _DETAIL_LEAGUES and _display_date(m.get('commence_time'))
+        and now<_display_date(m['commence_time'])<now+timedelta(days=3)]
+    targets.sort(key=lambda m:m['commence_time'])
+    rotor=await db.enrichment_state.find_one({'_id':'detailed_football_cursor'}) or {}
+    if targets:
+        offset=int(rotor.get('offset') or 0)%len(targets)
+        targets=targets[offset:]+targets[:offset]
+        current=str(rotor.get('current_match_id') or '')
+        targets.sort(key=lambda m:str(m.get('id'))!=current)
+        await db.enrichment_state.update_one({'_id':'detailed_football_cursor'},{'$set':{'offset':offset+1,'current_match_id':None}},upsert=True)
+    async def request(path,params):
+        nonlocal used
+        if used>=limit:return None
+        used+=1
+        result=await _as_request(db,'football',path,params)
+        return result
+    async def cached_request(key,path,params,hours):
+        doc=await db.stats_cache.find_one({'_id':key}) or {}
+        at=_display_date(doc.get('checked_at'));retry=_display_date(doc.get('retry_at'))
+        if at and now-at<timedelta(hours=hours):return doc.get('data')
+        if retry and now<retry:return doc.get('data')
+        rows=await request(path,params)
+        if rows is not None:
+            await db.stats_cache.update_one({'_id':key},{'$set':{'data':rows,'checked_at':now.isoformat()}},upsert=True)
+        elif used<limit:
+            await db.stats_cache.update_one({'_id':key},{'$set':{'retry_at':(now+timedelta(hours=6)).isoformat()}},upsert=True)
+        return rows if rows is not None else doc.get('data')
+    for match in targets:
+        if used>=limit:break
+        league=_DETAIL_LEAGUES[match['sport_key']];kickoff=_display_date(match['commence_time'])
+        season=kickoff.year if kickoff.month>=7 else kickoff.year-1
+        coverage=await cached_request(f'detail_coverage:{league}:{season}','/leagues',{'id':league,'season':season},24)
+        if coverage is None:issues.append({'league':league,'reason':'coverage_or_plan_unavailable'});continue
+        seasons=[s for l in coverage for s in l.get('seasons',[]) if s.get('year')==season]
+        covered=any((s.get('coverage') or {}).get('fixtures',{}).get('statistics_fixtures') is True for s in seasons)
+        if not covered:issues.append({'league':league,'reason':'statistics_not_covered'});continue
+        day=kickoff.date().isoformat()
+        fixtures=await cached_request(f'detail_fixtures:{league}:{day}','/fixtures',{'league':league,'season':season,'date':day},6)
+        if fixtures is None:issues.append({'league':league,'reason':'fixtures_or_plan_unavailable'});continue
+        candidates=[]
+        for game in fixtures:
+            row=_detail_fixture_record(game)
+            if row and row['league_id']==league and row['season']==season and row['home_key']==_detail_team(match['home_team']) and row['away_key']==_detail_team(match['away_team']) and abs((_display_date(row['date'])-kickoff).total_seconds())<=5400:
+                candidates.append((game,row))
+        if len(candidates)!=1:continue
+        game,mapping=candidates[0]
+        if str(mapping['status']) in ('CANC','ABD','PST','WO'):continue
+        await db.football_detail_mappings.update_one({'_id':str(match['id'])},{'$set':{**mapping,
+            'odds_match_id':str(match['id']), 'sport_key':match['sport_key'], 'mapped_at':now.isoformat()}},upsert=True)
+        pending={}
+        for team_id in (mapping['home_id'],mapping['away_id']):
+            games=await cached_request(f'detail_history:{league}:{season}:{team_id}','/fixtures',
+                {'league':league,'season':season,'team':team_id,'status':'FT','from':f'{season}-07-01','to':now.date().isoformat()},24)
+            if games is None:issues.append({'league':league,'reason':'history_or_plan_unavailable'});continue
+            valid=[]
+            for old in games:
+                entry=_detail_fixture_record(old)
+                if entry and entry['status']=='FT' and entry['league_id']==league and team_id in (entry['home_id'],entry['away_id']) and _display_date(entry['date'])<now:
+                    valid.append((old,entry))
+            valid.sort(key=lambda pair:pair[1]['date'],reverse=True)
+            for old,entry in valid[:20]:pending[entry['fixture_id']]=old
+        # Rotate already attempted items, so a missing metric cannot starve peers.
+        jobs=[]
+        for fixture_id,old in pending.items():
+            prior=await db.football_fixture_statistics.find_one({'_id':str(fixture_id)})
+            if prior and (set(prior.get('complete_metrics') or [])>=set(_DETAIL_METRICS.values()) or
+                (_display_date(prior.get('observed_at')) and now-_display_date(prior['observed_at'])<timedelta(hours=24))):continue
+            state=await db.stats_cache.find_one({'_id':f'detail_missing:{fixture_id}'}) or {}
+            retry=_display_date(state.get('retry_at'))
+            if not retry or retry<=now:jobs.append(old)
+        jobs.sort(key=lambda game:game['fixture']['date'],reverse=True)
+        for old in jobs:
+            if used>=limit:break
+            fid=old['fixture']['id'];payload=await request('/fixtures/statistics',{'fixture':fid})
+            row=_parse_fixture_statistics(old,payload,datetime.now(timezone.utc)) if payload is not None else None
+            if row:
+                previous=await db.football_fixture_statistics.find_one({'_id':str(fid)}) or {}
+                for side in ('home','away'):
+                    row[side]={**(previous.get(side) or {}),**{k:v for k,v in row[side].items() if v is not None}}
+                row['complete_metrics']=[k for k in _DETAIL_METRICS.values() if row['home'].get(k) is not None and row['away'].get(k) is not None]
+                await db.football_fixture_statistics.update_one({'_id':str(fid)},{'$set':row},upsert=True);imported+=1
+            else:
+                await db.stats_cache.update_one({'_id':f'detail_missing:{fid}'},{'$set':{'retry_at':(now+timedelta(hours=12)).isoformat()}},upsert=True)
+        if used>=limit:
+            await db.enrichment_state.update_one({'_id':'detailed_football_cursor'},{'$set':{'current_match_id':str(match['id'])}},upsert=True)
+    report={'status':'finished','checked_at':datetime.now(timezone.utc).isoformat(),
+        'requests_attempted':used,'fixtures_imported':imported,'issues':issues,'target_matches':len(targets)}
+    await db.enrichment_state.update_one({'_id':'detailed_football'},{'$set':report},upsert=True)
+    return report
+
+
+def _count_distribution(values):
+    # Count-only pilot: no goal data and no prices enter this fit.
+    if len(values)<20:return None
+    mean=sum(values)/len(values)
+    if mean<=0:return None
+    variance=sum((v-mean)**2 for v in values)/(len(values)-1)
+    if variance>mean+.1:
+        r=max(.25,min(1000.,mean*mean/(variance-mean)));p=r/(r+mean)
+        pmf=[math.exp(math.lgamma(k+r)-math.lgamma(r)-math.lgamma(k+1)+r*math.log(p)+k*math.log1p(-p)) for k in range(201)]
+        family='negative_binomial_moments'
+    else:
+        pmf=[math.exp(-mean+k*math.log(mean)-math.lgamma(k+1)) for k in range(201)];family='poisson_counts'
+    if abs(sum(pmf)-1.)>1e-4:return None
+    return {'mean':mean,'variance':variance,'pmf':pmf,'method':family,'sample':len(values)}
+
+
+def _count_pilot(rows, home_id, away_id, metric, cutoff):
+    per_team={home_id:set(),away_id:set()};unique={}
+    for row in rows:
+        date=_display_date(row.get('date'));observed=_display_date(row.get('observed_at'))
+        if not date or not observed or not date<observed<=cutoff or cutoff-date>timedelta(days=365) or row.get('status')!='FT':continue
+        h=_detail_number((row.get('home') or {}).get(metric));a=_detail_number((row.get('away') or {}).get(metric))
+        if h is None or a is None:continue
+        for team_id in per_team:
+            if team_id in (row.get('home_id'),row.get('away_id')):per_team[team_id].add(row.get('fixture_id'))
+        unique[row.get('fixture_id')]=h+a
+    if any(len(sample)<10 for sample in per_team.values()) or len(unique)<20:
+        return {'status':'insufficient_history','sample':len(unique),'required_distinct_fixtures':20,'minimum_per_team':10}
+    distribution=_count_distribution(list(unique.values()))
+    if not distribution:return {'status':'unavailable'}
+    lines=(8.5,9.5,10.5,11.5) if metric=='corners' else (2.5,3.5,4.5,5.5)
+    return {'status':'observational_pilot','sample':len(unique),'mean':round(distribution['mean'],2),
+        'method':distribution['method'],'scope':'pooled_recent_match_totals','metric':metric,
+        'probability_validated':False,'selection_available':False,'uses_bookmaker_probabilities':False,
+        'lines':[{'line':line,'over_probability':round(100*sum(distribution['pmf'][int(line)+1:]),2),
+            'under_probability':round(100*sum(distribution['pmf'][:int(line)+1]),2)} for line in lines]}
+
+
+async def detailed_football_insights(db,match):
+    if match.get('sport_key') not in _DETAIL_LEAGUES:return None
+    mapping=await db.football_detail_mappings.find_one({'_id':str(match.get('id') or match.get('match_id'))})
+    if not mapping:return {'status':'collecting','home':{},'away':{},'count_models':{}}
+    now=datetime.now(timezone.utc);kickoff=_display_date(match.get('commence_time'));cutoff=min(now,kickoff) if kickoff else now
+    rows=await db.football_fixture_statistics.find({'league_id':mapping['league_id'],
+        'date':{'$lt':cutoff.isoformat(),'$gte':(cutoff-timedelta(days=365)).isoformat()},
+        '$or':[{'home_id':{'$in':[mapping['home_id'],mapping['away_id']]}},{'away_id':{'$in':[mapping['home_id'],mapping['away_id']]}}]}).sort('date',-1).to_list(length=100)
+    def summary(team_id):
+        samples=[r for r in rows if team_id in (r['home_id'],r['away_id'])][:20];out={}
+        for metric in _DETAIL_METRICS.values():
+            values=[(r.get('home') if r['home_id']==team_id else r.get('away') or {}).get(metric) for r in samples]
+            values=[v for v in values if v is not None]
+            against=[(r.get('away') if r['home_id']==team_id else r.get('home') or {}).get(metric) for r in samples]
+            against=[v for v in against if v is not None]
+            out[metric]={'mean':round(sum(values)/len(values),2) if values else None,'n':len(values),
+                'against_mean':round(sum(against)/len(against),2) if against else None,'against_n':len(against)}
+        return out
+    models={m:_count_pilot(rows,mapping['home_id'],mapping['away_id'],m,now) for m in ('corners','yellow_cards')} if kickoff and kickoff>now else {}
+    return {'status':'ready' if rows else 'collecting','source':'API-Football',
+        'home':summary(mapping['home_id']),'away':summary(mapping['away_id']),
+        'sample_scope':'up_to_20_recent_matches_same_competition','count_models':models,
+        'updated_at':max((r['observed_at'] for r in rows),default=None),'period':'regular_time',
+        'cards_definition':'yellow_cards_only; not bookmaker booking points',
+        'referee':mapping.get('referee')}
+
+
+_before_detailed_match_insights=get_match_insights
+async def get_match_insights(db,match):
+    result=await _before_detailed_match_insights(db,match)
+    try:
+        detail=await detailed_football_insights(db,match)
+        if detail:result={**result,'detailed_statistics':detail}
+    except Exception as exc:
+        logger.warning('Detailed statistics cache unavailable: %s',type(exc).__name__)
+    return result
