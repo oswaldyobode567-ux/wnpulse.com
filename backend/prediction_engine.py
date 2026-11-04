@@ -26,7 +26,7 @@ MIN_CONFIDENCE = 60.0    # Seuil minimum de score pour publication
 MIN_EDGE = 1.0           # Edge affiche/tri; le filtre Value Bets reste distinct
 MIN_BOOKMAKERS = 1       # Minimum pour analyser un marche disponible
 MIN_BOOKMAKERS_STRONG = 2     # minimum pour une recommandation forte
-MODEL_VERSION = "8.4"
+MODEL_VERSION = "8.5"
 CALIBRATION_MIN_SAMPLE = 30
 
 # ─── Seuils de label et ciblage de "bonnes cotes" ────────────────────────────
@@ -133,7 +133,7 @@ def _outcome_label_fr(market_key: str, outcome_name: str,
         if outcome_name == "Draw":
             return "Match nul"
         return outcome_name
-    if market_key in ("totals", "totals_h1", "totals_h2"):
+    if market_key in ("totals", "totals_h1", "totals_h2", "team_totals"):
         side = "Plus de" if outcome_name.lower() == "over" else "Moins de"
         return f"{side} {point} buts" if point is not None else outcome_name
     if market_key == "spreads":
@@ -323,7 +323,7 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
                 if market_key in ("totals", "totals_h1", "totals_h2", "spreads", "team_totals") and point is None:
                     continue
                 # Handicap opposing sides have opposite points but one shared line.
-                line = abs(point) if market_key == "spreads" else point
+                line = (point if name == home else -point) if market_key == "spreads" else point
                 lines.setdefault((line, description), []).append((name, point, price))
             for (line, description), quotes in lines.items():
                 names = {q[0] for q in quotes}
@@ -1350,12 +1350,14 @@ def _today_quotes(match, market):
                     continue
                 if _today_number(outcome.get("point")) != _today_number(market.get("pick_point")):
                     continue
+                if outcome.get("description") != market.get("team"):
+                    continue
                 price = _today_number(outcome.get("price"))
                 if price and price > 1:
                     previous = quotes.get(key)
                     if not previous or price > previous["odds"]:
                         quotes[key] = {"odds":price, "title":book.get("title") or key,
-                                       "last_update":raw_market.get("last_update") or book.get("last_update")}
+                                       "last_update":outcome.get("_quote_updated_at") or raw_market.get("last_update") or book.get("last_update")}
     return quotes
 
 
@@ -1366,6 +1368,8 @@ def _today_pool(matches):
             continue
         analysis = analyze_match(match)
         for market in analysis.get("markets", []) or []:
+            if market.get("selection_available") is False:
+                continue
             if market.get("source") != "bookmaker" or market.get("synthetic") or market.get("is_combo"):
                 continue
             probability = _today_number(market.get("model_probability"))
@@ -1656,6 +1660,8 @@ _public_analyze_match = analyze_match
 
 def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
     # Keep public historical behaviour until prospective validation of the new model.
+    real_stats_map = dict(real_stats_map or {})
+    real_stats_map.setdefault("__hybrid_models__", _RUNTIME_FOOTBALL_MODELS)
     home, away = match.get("home_team", ""), match.get("away_team", "")
     observed = lookup_real_stats(real_stats_map or {}, home, away)
     public_stats = {}
@@ -1852,7 +1858,7 @@ def hybrid_training_rows(records, as_of=None):
             row["known_at"] = known.isoformat()
         # Only a genuinely pre-match, non-combined 1X2 forecast is a benchmark.
         # Never relabel an already blended public forecast as the market benchmark.
-        baseline_field = "market_probability" if str(record.get("probability_source") or "").startswith("hybrid_") else "model_probability"
+        baseline_field = "market_probability" if str(record.get("probability_source") or "").startswith(("hybrid_", "dixon_coles")) else "model_probability"
         probability = _hybrid_number(record.get(baseline_field))
         published = _hybrid_dt(record.get("created_at"))
         pick = _hybrid_team(record.get("pick") or "")
@@ -2551,4 +2557,249 @@ def _public_hybrid_and_risk(match, result, stats_map):
         "status":"applied" if applied else "market_fallback",
         "reason":"eligible_statistical_model" if applied else "disabled_by_configuration" if mode == "off" else "retrospective_validation_not_met" if mode == "validated" and use_model else shadow.get("reason", "model_not_eligible"),
         "performance_improvement_proven":False}
+    return _independent_football_markets(match, result, stats_map)
+
+
+# Independent football probabilities. Quotes price the selection; they do not
+# determine the score distribution. Experimental until prospective validation.
+_RUNTIME_FOOTBALL_MODELS = {}
+
+
+def set_runtime_football_models(registry):
+    global _RUNTIME_FOOTBALL_MODELS
+    _RUNTIME_FOOTBALL_MODELS = dict(registry or {})
+
+
+def _fresh_football_quotes(match, now):
+    import copy
+    books = []
+    for original in match.get('bookmakers') or []:
+        book = {k:v for k,v in original.items() if k!='markets'}
+        markets = []
+        for market in original.get('markets') or []:
+            outcomes = []
+            for outcome in market.get('outcomes') or []:
+                at = _hybrid_dt(outcome.get('_quote_updated_at') or market.get('last_update') or original.get('last_update'))
+                if at and 0 <= (now-at).total_seconds() <= 21600:
+                    outcomes.append(copy.deepcopy(outcome))
+            if outcomes:
+                markets.append({**market, 'outcomes':outcomes})
+        if markets:
+            books.append({**book, 'markets':markets})
+    return books
+
+
+def _score_market_mass(grid, market, raw, point=None, team=None, home=None, away=None):
+    point = _hybrid_number(point)
+    if point is not None and abs(point*2-round(point*2)) > 1e-8:
+        return None  # quarter stakes require a different settlement contract
+    win = push = loss = 0.
+    for h, a, probability in grid:
+        margin = None
+        if market == 'h2h':
+            yes = h > a if raw == home else a > h if raw == away else h == a if raw == 'Draw' else None
+        elif market == 'btts':
+            yes = (h > 0 and a > 0) if raw == 'Yes' else not (h > 0 and a > 0) if raw == 'No' else None
+        elif market == 'double_chance':
+            yes = h >= a if raw == '1X' else a >= h if raw == 'X2' else h != a if raw == '12' else None
+        elif market == 'draw_no_bet' and raw in (home, away):
+            margin = h-a if raw == home else a-h
+            yes = None
+        elif market == 'spreads' and raw in (home, away) and point is not None:
+            margin = (h-a if raw == home else a-h)+point
+            yes = None
+        elif market in ('totals', 'team_totals') and raw in ('Over', 'Under') and point is not None:
+            goals = h+a if market == 'totals' else h if team == home else a if team == away else None
+            if goals is None:
+                return None
+            margin = goals-point if raw == 'Over' else point-goals
+            yes = None
+        else:
+            return None
+        if margin is not None:
+            if abs(margin) < 1e-9:
+                push += probability
+                continue
+            yes = margin > 0
+        if yes is None:
+            return None
+        if yes:
+            win += probability
+        else:
+            loss += probability
+    total = win+push+loss
+    if total <= 0:
+        return None
+    return {'win': win/total, 'push': push/total, 'loss': loss/total}
+
+
+def _market_evidence(candidate, report=None, model=None, match=None):
+    report, model, match = report or {}, model or {}, match or {}
+    counts = model.get('counts') or {}
+    team_games = min(counts.get(_hybrid_team(match.get('home_team')), 0),
+                     counts.get(_hybrid_team(match.get('away_team')), 0))
+    latest = _hybrid_dt(report.get('latest_fixture_at'))
+    lag = max(0, (datetime.now(timezone.utc)-latest).days) if latest else None
+    fixtures = int(report.get('fixtures') or 0)
+    independent = candidate.get('probability_source') == 'dixon_coles_pilot'
+    if independent and fixtures >= 600 and team_games >= 20 and lag is not None and lag <= 14:
+        evidence = 'rich'
+    elif independent and fixtures >= HYBRID_MIN_FIXTURES and team_games >= 5:
+        evidence = 'partial'
+    else:
+        evidence = 'limited'
+    loss = _hybrid_number(candidate.get('estimated_loss_probability'))
+    uncertainty = 'unassessed' if loss is None else 'contained' if loss <= 28 else 'intermediate' if loss <= 45 else 'high'
+    candidate.update(evidence_level=evidence, uncertainty_level=uncertainty,
+        evidence_fixtures=fixtures if independent else None,
+        evidence_team_games=team_games if independent else None,
+        latest_history_lag_days=lag if independent else None,
+        display_policy_version='evidence-and-uncertainty-2')
+    return candidate
+
+
+def _quote_timestamp_for(match, candidate):
+    stamps = []
+    for book in match.get('bookmakers') or []:
+        if (book.get('title') or book.get('key')) != candidate.get('best_bookmaker'):
+            continue
+        for market in book.get('markets') or []:
+            if market.get('key') != candidate.get('market'):
+                continue
+            for outcome in market.get('outcomes') or []:
+                if outcome.get('name') != candidate.get('pick_raw'):
+                    continue
+                if outcome.get('point') != candidate.get('pick_point') or outcome.get('description') != candidate.get('team'):
+                    continue
+                price = _hybrid_number(outcome.get('price'))
+                if price is None or abs(price-float(candidate.get('pick_odds') or 0)) > .011:
+                    continue
+                at = _hybrid_dt(outcome.get('_quote_updated_at') or market.get('last_update') or book.get('last_update'))
+                if at:
+                    stamps.append(at)
+    return max(stamps) if stamps else None
+
+
+def _diverse_market_choices(markets, limit=6):
+    selected, families = [], set()
+    for item in sorted(markets, key=_market_sort_key, reverse=True):
+        family = item['market']
+        if family in families:
+            continue
+        families.add(family)
+        selected.append(dict(item))
+        if len(selected) >= limit:
+            break
+    return selected
+
+
+def _independent_football_markets(match, result, stats_map):
+    import os
+    report = (stats_map or {}).get('__hybrid_models__', {}).get(str(match.get('sport_key') or '')) or {}
+    # Existing native/market predictions survive every ineligibility path.
+    for item in result.get('markets') or []:
+        _market_evidence(item)
+    _market_evidence(result)
+    mode = os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE', 'independent_pilot')
+    if mode != 'independent_pilot' or os.environ.get('WNPULSE_HYBRID_MODE', 'pilot') != 'pilot':
+        return result
+    kickoff, trained = _hybrid_dt(match.get('commence_time')), _hybrid_dt(report.get('as_of'))
+    now = datetime.now(timezone.utc)
+    if (not str(match.get('sport_key') or '').startswith('soccer_') or not report.get('model')
+        or report.get('version') != HYBRID_VERSION or report.get('status') != 'shadow_ready'
+        or int(report.get('fixtures') or 0) < HYBRID_MIN_FIXTURES
+        or not kickoff or not trained or not trained < now < kickoff or (now-trained).days > 7):
+        return result
+    prediction = _hybrid_grid(report['model'], match.get('home_team'), match.get('away_team'))
+    if not prediction:
+        return result
+    grid, expected_home, expected_away = prediction
+    home, away = match.get('home_team'), match.get('away_team')
+    markets = []
+    # Only paired, genuinely quoted markets enter selectable recommendations.
+    keys = ('h2h', 'totals', 'btts', 'draw_no_bet', 'double_chance', 'spreads', 'team_totals')
+    fresh_books = _fresh_football_quotes(match, now)
+    for key in keys:
+        for candidate in _quoted_market_candidates(key, fresh_books, home, away):
+            mass = _score_market_mass(grid, key, candidate.get('pick_raw'), candidate.get('pick_point'),
+                                      candidate.get('team'), home, away)
+            if not mass:
+                continue
+            at = _quote_timestamp_for(match, candidate)
+            fresh = bool(at and 0 <= (now-at).total_seconds() <= 21600)
+            probability = mass['win']/(1-mass['push']) if mass['push'] < 1 else 0.
+            odds = candidate['pick_odds']
+            candidate.update(market_probability=candidate['model_probability'], sport_probability=100*probability,
+                model_probability=100*probability, confidence=100*probability,
+                estimated_win_probability=100*mass['win'], estimated_loss_probability=100*mass['loss'],
+                probability_basis='conditional_on_no_push' if mass['push'] > 1e-8 else 'unconditional',
+                push_probability=100*mass['push'], expected_return=mass['win']*(odds-1)-mass['loss'],
+                probability_source='dixon_coles_pilot', sport_weight=1., hybrid_applied=True,
+                hybrid_validation='experimental_independent', probability_validated=False,
+                quote_freshness_verified=fresh, quote_updated_at=at.isoformat() if at else None,
+                selection_available=fresh, source='bookmaker', synthetic=False,
+                settlement_supported=True, selection_unit='individual_not_accumulator')
+            candidate['edge'] = round(100*(probability-1/odds), 2)
+            base_score = _wp_score(probability, candidate.get('stability_score', 0), candidate['edge'], candidate['num_books'])
+            candidate['selection_score'] = candidate['wp_score'] = round(.45*base_score + .55*_clamp(50+100*candidate['expected_return']), 1)
+            # Keep internal legacy labels for compatibility, present evidence separately.
+            candidate['label'] = 'safe' if mass['loss'] <= .28 else 'value' if mass['loss'] <= .45 else 'risky'
+            candidate['risk_level'] = candidate['label']
+            candidate['risk_policy_version'] = 'full-payout-distribution-2'
+            for field in ('confidence', 'model_probability', 'estimated_win_probability', 'sport_probability', 'estimated_loss_probability', 'push_probability'):
+                candidate[field] = round(candidate[field], 2)
+            _market_evidence(candidate, report, report['model'], match)
+            markets.append(candidate)
+    # Compute useful analysis even when a bookmaker does not quote that market.
+    theoretical = []
+    lines = [('btts', 'Yes', None, None), ('btts', 'No', None, None),
+             ('double_chance', '1X', None, None), ('double_chance', 'X2', None, None),
+             ('double_chance', '12', None, None), ('draw_no_bet', home, None, None),
+             ('draw_no_bet', away, None, None)]
+    lines += [('totals', side, point, None) for point in (1.5, 2.5, 3.5) for side in ('Over', 'Under')]
+    lines += [('spreads', side, point, None) for side in (home, away) for point in (-1.5, -.5, 0., .5, 1.5)]
+    lines += [('team_totals', side, point, team) for team in (home, away) for point in (.5, 1.5, 2.5) for side in ('Over', 'Under')]
+    for key, raw, point, team in lines:
+        mass = _score_market_mass(grid, key, raw, point, team, home, away)
+        if not mass:
+            continue
+        pick = _outcome_label_fr(key, raw, point)
+        if team:
+            pick = team+' — '+pick
+        quoted = next((x for x in markets if x['market']==key and x['pick_raw']==raw and x.get('pick_point')==point and x.get('team')==team and x.get('selection_available')), None)
+        row = {'market':key, 'market_label':_label_for_market(key), 'pick':pick, 'pick_raw':raw,
+               'pick_point':point, 'team':team, 'estimated_win_probability':round(100*mass['win'],2),
+               'push_probability':round(100*mass['push'],2), 'estimated_loss_probability':round(100*mass['loss'],2),
+               'probability_source':'dixon_coles_pilot', 'probability_validated':False,
+               'analysis_only':quoted is None, 'selection_available':quoted is not None,
+               'pick_odds':quoted['pick_odds'] if quoted else None,
+               'best_bookmaker':quoted['best_bookmaker'] if quoted else None}
+        _market_evidence(row, report, report['model'], match)
+        theoretical.append(row)
+    quoted_fresh = [m for m in markets if m['selection_available']]
+    diverse = _diverse_market_choices(quoted_fresh)
+    result['multi_market'] = {'version':'independent-football-1', 'status':'independent_pilot',
+        'expected_home_goals':round(expected_home,2), 'expected_away_goals':round(expected_away,2),
+        'model_fixtures':report.get('fixtures'), 'trained_at':report.get('as_of'),
+        'latest_fixture_at':report.get('latest_fixture_at'),
+        'performance_improvement_proven':False, 'choices':diverse, 'analysis':theoretical,
+        'quoted_families':len(diverse), 'estimated_families':len({x['market'] for x in theoretical}),
+        'correlated_selections':True, 'quote_collection':match.get('multi_market_quote_status')}
+    if diverse:
+        best = diverse[0]
+        for key, value in best.items():
+            result[key] = value
+        result['markets'] = sorted(markets, key=_market_sort_key, reverse=True)
+        result['recommendations'] = diverse
+        result['public_hybrid'] = {'mode':'independent_pilot', 'status':'applied',
+            'applied_markets':len(markets), 'reason':'sports_score_distribution', 'performance_improvement_proven':False}
+        result['official_track_eligible'] = False  # experimental picks are not certified results
+        result['reasoning'] = {**(result.get('reasoning') or {}),
+            'prediction_method':'independent_score_distribution',
+            'summary':f"Modèle de scores sportif : {expected_home:.2f} buts attendus pour {home}, {expected_away:.2f} pour {away}. La cote sert à comparer le prix proposé ; les probabilités proviennent des scores historiques.",
+            'sports_history_fixtures':report.get('fixtures'),
+            'sports_history_latest':report.get('latest_fixture_at')}
+    else:
+        result['multi_market']['status'] = 'analysis_without_fresh_quotes'
+    result['engine_revision'] = 'independent-multimarket-2026-11-04'
     return result
