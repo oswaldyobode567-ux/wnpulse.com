@@ -393,19 +393,6 @@ function ConfidenceBar({ value, label }) {
   );
 }
 
-function RiskBadge({ label }) {
-  const { t } = useMatchLanguage();
-  const presentation = {
-    safe: ["🟢 SÛR", "bg-green-100 text-green-700 border-green-200"],
-    value: ["🟡 MODÉRÉ", "bg-orange-100 text-orange-700 border-orange-200"],
-    risky: ["🔴 RISQUÉ", "bg-red-100 text-red-700 border-red-200"],
-    unknown: ["Risque non évalué", "bg-slate-100 text-slate-700 border-slate-200"],
-  };
-  const entry = Object.prototype.hasOwnProperty.call(presentation, label) ? presentation[label] : null;
-  if (!entry) return null;
-  return <span className={`inline-flex max-w-full items-center rounded-full border px-2.5 py-1 text-xs font-bold leading-5 ${entry[1]}`}>{t(entry[0])}</span>;
-}
-
 export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const { t, formatDate, formatNumber } = useMatchLanguage();
   const event = match || {};
@@ -415,11 +402,11 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const unavailable = pred.analysis_status === "unavailable" || pred.has_prediction === false || (!pred.pick && !pred.locked);
   const locked = !unavailable && Boolean(pred.locked || (!pred.pick && isFree));
   const teams = [event.home_team, event.away_team];
-  const confidence = finiteNumber(pred.confidence);
+  const confidence = finiteNumber(pred.estimated_win_probability) ?? finiteNumber(pred.confidence);
   const hasConfidence = confidence !== null && confidence >= 0 && confidence <= 100;
   const edge = finiteNumber(pred.edge);
-  const probabilityLabel = t(pred.risk_policy_version ? (pred.probability_basis && pred.probability_basis !== "unconditional" ? "Probabilité hors remboursement" : "Probabilité estimée") : "Confiance du moteur");
-  const qualityText = {strong:"Données : solides", moderate:"Données : partielles", limited:"Données : limitées"}[pred.analysis_quality];
+  const probabilityLabel = t(pred.estimated_win_probability != null ? "Probabilité estimée" : pred.risk_policy_version ? (pred.probability_basis && pred.probability_basis !== "unconditional" ? "Probabilité hors remboursement" : "Probabilité estimée") : "Confiance du moteur");
+
   return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card">
     <Link to={`/app/match/${event.id}`} className="wp-match-link" data-testid="match-card-link">
       <div className="wp-match-meta"><span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
@@ -433,12 +420,13 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
         {pred.best_bookmaker && <p className="wp-bookmaker">{t("chez {{bookmaker}}",{bookmaker:pred.best_bookmaker})}</p>}
       </div> : <div className="wp-pick-panel" data-testid="match-selection-unavailable"><p className="font-semibold text-slate-700">{t("Sélection indisponible")}</p><p className="mt-1 text-sm text-slate-500">{t("Aucune sélection exploitable dans les données reçues pour cette rencontre.")}</p></div>)}
       {locked && <div className="wp-pick-panel wp-pick-locked"><Lock className="h-4 w-4" aria-hidden="true"/><span>{t("Pick verrouillé")}</span><span className="wp-pro-chip">PRO</span></div>}
-      <div className="wp-match-bottom">{!locked && pred.label && <RiskBadge label={pred.label}/>}{hasConfidence && !locked && <span className="wp-confidence" data-testid="match-confidence"><span>{probabilityLabel}</span><bdi>{formatNumber(confidence/100,{style:'percent',maximumFractionDigits:0})}</bdi></span>}</div>
+      <div className="wp-match-bottom">{!locked && pred.label && <PredictionEvidence prediction={pred} compact/>}{hasConfidence && !locked && <span className="wp-confidence" data-testid="match-confidence"><span>{probabilityLabel}</span><bdi>{formatNumber(confidence/100,{style:'percent',maximumFractionDigits:0})}</bdi></span>}</div>
       {hasConfidence && !locked && <ConfidenceBar value={confidence} label={probabilityLabel}/>}
       {!locked && !unavailable && pred.risk_policy_version && <div className="flex flex-wrap items-center gap-2 text-xs leading-5 text-slate-600" data-testid="match-model-evidence">
-        {qualityText && <span className="rounded-full border border-slate-200 px-2 py-0.5">{t(qualityText)}</span>}
+
         {pred.hybrid_applied && <span className="rounded-full border border-orange-200 px-2 py-0.5" title={t("Estimation expérimentale : amélioration des résultats non démontrée.")}>{t(pred.hybrid_validation === "retrospective_only" ? "Hybride · test historique" : "Modèle pilote")}</span>}
       </div>}
+      {!locked && pred.multi_market?.choices?.length > 1 && <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">{pred.multi_market.choices.filter(row=>row.market !== pred.market).slice(0,2).map((row,index)=><div key={index} className="flex min-w-0 items-start justify-between gap-2 text-xs leading-5"><span className="min-w-0 break-words text-slate-600">{translateBetText(row.pick,t,formatNumber,teams)}</span><bdi className="shrink-0 font-mono font-bold text-slate-900">{formatOdds(row.pick_odds,formatNumber)}</bdi></div>)}</div>}
       {edge !== null && edge > 0 && !locked && <p className="wp-edge" data-testid="match-edge">{t("Avantage estimé : {{edge}}",{edge:formatNumber(edge/100,{style:'percent',signDisplay:'always',maximumFractionDigits:1})})}</p>}
       {isFinished && !locked && pred.pick && <div className={`wp-result ${pred.won===true?'wp-result-won':pred.won===false?'wp-result-lost':''}`} data-testid="match-result">{pred.won===true?<><CheckCircle2 className="h-4 w-4"/>{t("GAGNÉ")}</>:pred.won===false?<><XCircle className="h-4 w-4"/>{t("PERDU")}</>:<><Clock className="h-4 w-4"/>{t("En attente")}</>}</div>}
     </Link>
@@ -718,3 +706,71 @@ export function MediaCredits({match}) {
  return <div className="mt-3 border-t border-slate-200 pt-2 text-[11px] leading-5 text-slate-500" data-testid="media-credits"><span className="font-semibold">{words.credits} : </span>{entries.map((row,i)=><span key={row.url} className="break-words">{i>0&&' · '}<a href={row.source_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.name} — {row.author}</a>{' / '}<a href={row.license_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.license}</a> ({words.crop})</span>)}</div>;
 }
 
+
+const MULTI_COPY = {
+  fr: {rich:"Données étoffées",partial:"Données partielles",limited:"Données limitées",contained:"Incertitude contenue",intermediate:"Incertitude intermédiaire",high:"Incertitude élevée",unassessed:"Incertitude non évaluée",title:"Explorer les marchés",intro:"Une analyse par marché, issue du modèle sportif lorsqu’il est disponible.",pilot:"Modèle sportif indépendant · expérimental",market:"Comparaison des cotes · modèle sportif indisponible",win:"Victoire du pari",push:"Remboursement",loss:"Perte du pari",odds:"Cote observée",noQuote:"Analyse uniquement · cote indisponible ou ancienne",all:"Tous",choices:"Options avec cote récente",analysis:"Voir les autres probabilités calculées",note:"Ces choix concernent le même match et sont liés : ils ne constituent pas un combiné. Une estimation élevée ne garantit aucun résultat.",proof:"La qualité des données et l’incertitude du pari sont deux informations différentes. Les estimations du pilote ne sont pas encore validées sur des résultats futurs.",fresh:"Cote relevée",history:"Rencontres historiques",homeGoals:"Buts attendus à domicile",awayGoals:"Buts attendus à l’extérieur",lines:"Autres marchés",empty:"Aucune cote récente supplémentaire pour cette rencontre.",families:{btts:"Les deux équipes marquent",totals:"Total de buts",spreads:"Handicap",draw_no_bet:"Nul remboursé",double_chance:"Double chance",team_totals:"Buts par équipe",h2h:"Résultat"}},
+  en: {rich:"Extensive data",partial:"Partial data",limited:"Limited data",contained:"Contained uncertainty",intermediate:"Intermediate uncertainty",high:"High uncertainty",unassessed:"Uncertainty not assessed",title:"Explore markets",intro:"Market-by-market analysis, from the sports model when available.",pilot:"Independent sports model · experimental",market:"Odds comparison · sports model unavailable",win:"Bet wins",push:"Refund",loss:"Bet loses",odds:"Observed odds",noQuote:"Analysis only · odds missing or outdated",all:"All",choices:"Options with recent odds",analysis:"See other calculated probabilities",note:"These selections concern the same match and are correlated; this is not an accumulator. High estimates do not guarantee results.",proof:"Data quality and bet uncertainty are different. Pilot estimates have not yet been validated on future results.",fresh:"Odds recorded",history:"Historical fixtures",homeGoals:"Expected home goals",awayGoals:"Expected away goals",lines:"Other markets",empty:"No additional recent odds for this fixture.",families:{btts:"Both teams to score",totals:"Total goals",spreads:"Handicap",draw_no_bet:"Draw no bet",double_chance:"Double chance",team_totals:"Team goals",h2h:"Match result"}},
+  es: {rich:"Datos amplios",partial:"Datos parciales",limited:"Datos limitados",contained:"Incertidumbre contenida",intermediate:"Incertidumbre intermedia",high:"Incertidumbre elevada",unassessed:"Incertidumbre no evaluada",title:"Explorar mercados",intro:"Análisis por mercado, basado en el modelo deportivo cuando existe.",pilot:"Modelo deportivo independiente · experimental",market:"Comparación de cuotas · sin modelo deportivo",win:"Apuesta ganada",push:"Reembolso",loss:"Apuesta perdida",odds:"Cuota observada",noQuote:"Solo análisis · cuota ausente o antigua",all:"Todos",choices:"Opciones con cuotas recientes",analysis:"Ver otras probabilidades calculadas",note:"Las selecciones del mismo partido están relacionadas y no forman una combinada. Ningún resultado está garantizado.",proof:"La calidad de datos y la incertidumbre son distintas. El piloto no está validado en resultados futuros.",fresh:"Cuota registrada",history:"Partidos históricos",homeGoals:"Goles esperados local",awayGoals:"Goles esperados visitante",lines:"Otros mercados",empty:"No hay cuotas recientes adicionales.",families:{btts:"Ambos marcan",totals:"Total de goles",spreads:"Hándicap",draw_no_bet:"Empate no válido",double_chance:"Doble oportunidad",team_totals:"Goles por equipo",h2h:"Resultado"}},
+  pt: {rich:"Dados amplos",partial:"Dados parciais",limited:"Dados limitados",contained:"Incerteza contida",intermediate:"Incerteza intermédia",high:"Incerteza elevada",unassessed:"Incerteza não avaliada",title:"Explorar mercados",intro:"Análise por mercado, a partir do modelo desportivo quando disponível.",pilot:"Modelo desportivo independente · experimental",market:"Comparação de odds · sem modelo desportivo",win:"Aposta ganha",push:"Reembolso",loss:"Aposta perdida",odds:"Odd observada",noQuote:"Apenas análise · odd ausente ou antiga",all:"Todos",choices:"Opções com odds recentes",analysis:"Ver outras probabilidades calculadas",note:"As escolhas do mesmo jogo são relacionadas e não formam uma múltipla. Nenhum resultado é garantido.",proof:"A qualidade dos dados e a incerteza são diferentes. O piloto ainda não foi validado em resultados futuros.",fresh:"Odd registada",history:"Jogos históricos",homeGoals:"Golos esperados em casa",awayGoals:"Golos esperados fora",lines:"Outros mercados",empty:"Sem odds recentes adicionais.",families:{btts:"Ambas marcam",totals:"Total de golos",spreads:"Handicap",draw_no_bet:"Empate devolve",double_chance:"Dupla hipótese",team_totals:"Golos por equipa",h2h:"Resultado"}},
+  de: {rich:"Umfangreiche Daten",partial:"Teilweise Daten",limited:"Begrenzte Daten",contained:"Begrenzte Unsicherheit",intermediate:"Mittlere Unsicherheit",high:"Hohe Unsicherheit",unassessed:"Unsicherheit nicht bewertet",title:"Märkte entdecken",intro:"Analyse je Markt aus dem Sportmodell, sofern verfügbar.",pilot:"Unabhängiges Sportmodell · experimentell",market:"Quotenvergleich · Sportmodell nicht verfügbar",win:"Wette gewinnt",push:"Rückzahlung",loss:"Wette verliert",odds:"Beobachtete Quote",noQuote:"Nur Analyse · Quote fehlt oder ist veraltet",all:"Alle",choices:"Optionen mit aktuellen Quoten",analysis:"Weitere berechnete Wahrscheinlichkeiten",note:"Auswahlen zum selben Spiel sind abhängig und keine Kombiwette. Kein Ergebnis ist garantiert.",proof:"Datenqualität und Unsicherheit sind verschieden. Das Pilotmodell ist noch nicht mit zukünftigen Ergebnissen validiert.",fresh:"Quote erfasst",history:"Historische Spiele",homeGoals:"Erwartete Heimtore",awayGoals:"Erwartete Auswärtstore",lines:"Weitere Märkte",empty:"Keine weiteren aktuellen Quoten.",families:{btts:"Beide treffen",totals:"Gesamttore",spreads:"Handicap",draw_no_bet:"Unentschieden zurück",double_chance:"Doppelte Chance",team_totals:"Teamtore",h2h:"Ergebnis"}},
+  ar: {rich:"بيانات موسعة",partial:"بيانات جزئية",limited:"بيانات محدودة",contained:"عدم يقين محدود",intermediate:"عدم يقين متوسط",high:"عدم يقين مرتفع",unassessed:"عدم اليقين غير مقيّم",title:"استكشف الأسواق",intro:"تحليل لكل سوق من النموذج الرياضي عند توفره.",pilot:"نموذج رياضي مستقل · تجريبي",market:"مقارنة المعاملات · النموذج الرياضي غير متاح",win:"فوز الرهان",push:"استرداد",loss:"خسارة الرهان",odds:"المعامل المرصود",noQuote:"تحليل فقط · المعامل مفقود أو قديم",all:"الكل",choices:"خيارات بمعاملات حديثة",analysis:"احتمالات أخرى محسوبة",note:"اختيارات المباراة نفسها مترابطة وليست رهاناً مركباً. لا توجد نتائج مضمونة.",proof:"جودة البيانات وعدم اليقين مختلفان. لم يُتحقق من النموذج التجريبي على نتائج مستقبلية بعد.",fresh:"تاريخ المعامل",history:"المباريات التاريخية",homeGoals:"أهداف المضيف المتوقعة",awayGoals:"أهداف الضيف المتوقعة",lines:"أسواق أخرى",empty:"لا توجد معاملات حديثة إضافية.",families:{btts:"يسجل الفريقان",totals:"مجموع الأهداف",spreads:"الهانديكاب",draw_no_bet:"التعادل يعيد الرهان",double_chance:"فرصة مزدوجة",team_totals:"أهداف الفريق",h2h:"النتيجة"}}
+};
+
+const PROFILE_COPY = {
+  fr: {strong:"Tendance forte",shared:"Scénario partagé",bold:"Choix audacieux",unknown:"Estimation indisponible",hint:"Profil fondé sur la probabilité estimée de gagner le pari. Aucun résultat garanti.",method:"Comprendre le calcul",history:"Rencontres utilisées",updated:"Dernier résultat historique",experimental:"Modèle expérimental : ses performances futures restent à évaluer."},
+  en: {strong:"Strong trend",shared:"Contested outcome",bold:"Bold selection",unknown:"Estimate unavailable",hint:"Profile based on the estimated probability of winning the bet. No guaranteed outcome.",method:"Understand the calculation",history:"Fixtures used",updated:"Latest historical result",experimental:"Experimental model: future performance still needs evaluation."},
+  es: {strong:"Tendencia fuerte",shared:"Escenario disputado",bold:"Selección audaz",unknown:"Estimación no disponible",hint:"Perfil basado en la probabilidad estimada de ganar. Sin resultados garantizados.",method:"Entender el cálculo",history:"Partidos utilizados",updated:"Último resultado histórico",experimental:"Modelo experimental: su rendimiento futuro está por evaluar."},
+  pt: {strong:"Tendência forte",shared:"Cenário disputado",bold:"Escolha ousada",unknown:"Estimativa indisponível",hint:"Perfil baseado na probabilidade estimada de ganhar. Sem resultados garantidos.",method:"Compreender o cálculo",history:"Jogos utilizados",updated:"Último resultado histórico",experimental:"Modelo experimental: o desempenho futuro ainda será avaliado."},
+  de: {strong:"Starke Tendenz",shared:"Offenes Szenario",bold:"Mutige Auswahl",unknown:"Schätzung nicht verfügbar",hint:"Profil nach geschätzter Gewinnwahrscheinlichkeit. Kein Ergebnis garantiert.",method:"Berechnung verstehen",history:"Verwendete Spiele",updated:"Letztes historisches Ergebnis",experimental:"Experimentelles Modell: zukünftige Leistung muss noch bewertet werden."},
+  ar: {strong:"اتجاه قوي",shared:"سيناريو متقارب",bold:"اختيار جريء",unknown:"التقدير غير متاح",hint:"التصنيف مبني على احتمال الفوز المقدر. لا توجد نتيجة مضمونة.",method:"فهم الحساب",history:"المباريات المستخدمة",updated:"آخر نتيجة تاريخية",experimental:"نموذج تجريبي: لا يزال الأداء المستقبلي بحاجة إلى تقييم."}
+};
+
+export function PredictionEvidence({ prediction = {}, compact = false }) {
+  const { language } = useMatchLanguage();
+  const words = PROFILE_COPY[language] || PROFILE_COPY.fr;
+  const probability = finiteNumber(prediction.estimated_win_probability) ?? ((!prediction.probability_basis || prediction.probability_basis === "unconditional") ? finiteNumber(prediction.model_probability ?? prediction.confidence) : null);
+  const profile = probability === null ? "unknown" : probability >= 70 ? "strong" : probability >= 55 ? "shared" : "bold";
+  const cls = profile === "strong" ? "border-teal-200 bg-teal-50 text-teal-900" : profile === "shared" ? "border-indigo-200 bg-indigo-50 text-indigo-900" : profile === "bold" ? "border-amber-200 bg-amber-50 text-amber-900" : "border-slate-200 bg-slate-50 text-slate-600";
+  return <span className={`inline-flex max-w-full rounded-lg border px-2.5 py-1 text-xs font-bold leading-5 ${cls}`} data-testid="prediction-evidence" title={compact ? undefined : words.hint}>{words[profile]}</span>;
+}
+
+export function MultiMarketBoard({ prediction = {} }) {
+  const { language, formatNumber, t } = useMatchLanguage();
+  const w = MULTI_COPY[language] || MULTI_COPY.fr;
+  const [family, setFamily] = useState("all");
+  const profileWords = PROFILE_COPY[language] || PROFILE_COPY.fr;
+  const model = prediction.multi_market;
+  const hasModel = Boolean(model);
+  const seen = new Set();
+  const choices = model?.choices || (prediction.recommendations || prediction.markets || []).filter(item => {
+    if (seen.has(item.market)) return false;
+    seen.add(item.market); return true;
+  }).slice(0, 6);
+  const analysis = Array.isArray(model?.analysis) ? model.analysis : [];
+  const families = [...new Set([...choices,...analysis].map(item=>item.market))];
+  const number = value => finiteNumber(value) === null ? "—" : formatNumber(Number(value), {maximumFractionDigits:1});
+  const percent = value => `${number(value)} %`;
+  const probability = (row, part) => {
+    const explicit = finiteNumber(row[part]);
+    if (explicit !== null) return explicit;
+    if (part === "estimated_win_probability" && (!row.probability_basis || row.probability_basis === "unconditional")) return finiteNumber(row.model_probability ?? row.confidence);
+    return null;
+  };
+  const renderRow = (row, index, theoretical = false) => <article key={`${row.market}:${row.team}:${row.pick}:${row.pick_point}:${index}`} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <div className="flex flex-wrap items-start justify-between gap-2"><span className="text-xs font-bold uppercase tracking-wide text-indigo-700">{w.families[row.market] || row.market_label}</span><PredictionEvidence prediction={row} compact /></div>
+    <h3 className="mt-3 break-words text-base font-extrabold leading-6 text-slate-900">{translateBetText(row.pick,t,formatNumber)}</h3>
+    <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-3 text-center text-xs text-slate-600">{[[w.win, probability(row,"estimated_win_probability")],[w.push, probability(row,"push_probability")],[w.loss, probability(row,"estimated_loss_probability")]].map(([label,value])=><div key={label} className="min-w-0"><span className="block break-words leading-4">{label}</span><bdi className="mt-1 block text-sm font-extrabold text-slate-900">{percent(value)}</bdi></div>)}</div>
+    {row.pick_odds != null && row.selection_available !== false ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3"><span className="text-xs text-slate-500">{w.odds}<strong className="mt-1 block break-words text-slate-700">{row.best_bookmaker}</strong></span><bdi className="font-mono text-2xl font-black text-orange-600">{formatOdds(row.pick_odds,formatNumber)}</bdi></div> : <p className="mt-3 rounded-lg bg-slate-50 p-2 text-xs leading-5 text-slate-600">{w.noQuote}</p>}
+    {!theoretical && <div className="mt-3"><PredictionEvidence prediction={row} /></div>}
+  </article>;
+  return <section className="mb-6 min-w-0 rounded-3xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-4 sm:p-6" data-testid="multi-market-board">
+    <h2 className="text-xl font-extrabold tracking-tight text-slate-900">{w.title}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{w.intro}</p>
+    <span className="mt-3 inline-flex rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs font-bold text-indigo-800">{hasModel ? w.pilot : w.market}</span>
+    {hasModel && <div className="mt-4 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-xs text-slate-500">{[[w.homeGoals,model.expected_home_goals],[w.awayGoals,model.expected_away_goals]].map(([label,value])=><div key={label}><span>{label}</span><bdi className="mt-1 block text-xl font-extrabold text-slate-900">{number(value)}</bdi></div>)}</div>}
+    <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={w.title}>{["all",...families].map(key=><button key={key} type="button" aria-pressed={family===key} onClick={()=>setFamily(key)} className={`min-h-11 max-w-full rounded-xl border px-3 py-2 text-sm font-semibold ${family===key ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-200 bg-white text-slate-700"}`}>{key==="all" ? w.all : w.families[key] || key}</button>)}</div>
+    <h3 className="mt-5 text-sm font-bold text-slate-700">{w.choices}</h3><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">{choices.filter(row=>family==="all" || row.market===family).map((row,i)=>renderRow(row,i))}</div>
+    {!choices.some(row=>family==="all" || row.market===family) && <p className="mt-3 text-sm text-slate-500">{w.empty}</p>}
+    {analysis.length > 0 && <details className="mt-5 rounded-2xl border border-slate-200 bg-white p-3"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.analysis}</summary><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">{analysis.filter(row=>family==="all" || row.market===family).map((row,i)=>renderRow(row,i,true))}</div></details>}
+    {hasModel && <details className="mt-4 border-t border-slate-200 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold text-slate-700">{profileWords.method}</summary><p className="mt-2 text-xs leading-6 text-slate-600">{profileWords.experimental}</p><p className="mt-2 text-xs text-slate-600">{profileWords.history} : {number(model.model_fixtures)}</p>{model.latest_fixture_at && <p className="mt-2 text-xs text-slate-600">{profileWords.updated} : {String(model.latest_fixture_at).slice(0,10)}</p>}</details>}<p className="mt-2 text-xs leading-6 text-slate-600">{w.note}</p>
+  </section>;
+}
