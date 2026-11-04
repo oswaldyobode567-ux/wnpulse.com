@@ -14706,7 +14706,13 @@ _apisports_task = None
 async def _apisports_background(matches):
     async def run():
         try:
-            result = await asyncio.wait_for(refresh_apisports_cache(db, matches), timeout=210)
+            detailed = getattr(_optional_stats_service, "refresh_detailed_football", None)
+            if callable(detailed):
+                try:
+                    await asyncio.wait_for(detailed(db, matches), timeout=100)
+                except Exception as exc:
+                    logging.getLogger("winpulse.stats_service").warning("Detailed football deferred: %s", type(exc).__name__)
+            result = await asyncio.wait_for(refresh_apisports_cache(db, matches), timeout=120)
             logging.getLogger("winpulse.stats_service").info("API-Sports rafraichissement: %s", result)
         finally:
             pass  # Media and history updates do not invalidate official selections.
@@ -15983,3 +15989,28 @@ async def _independent_market_startup():
         scheduler.add_job(_scheduled_independent_settlement, 'interval', minutes=15,
             id='independent_market_settlement', replace_existing=True, coalesce=True, max_instances=1,
             next_run_time=datetime.now(timezone.utc)+timedelta(seconds=45))
+
+
+@app.get('/api/admin/football-statistics/status')
+async def football_statistics_status(payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    day=datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    capabilities=await db.enrichment_state.find_one({'_id':'capabilities'},{'_id':0}) or {}
+    return {'collection':await db.enrichment_state.find_one({'_id':'detailed_football'},{'_id':0}),
+        'provider':await db.enrichment_state.find_one({'_id':'source:apisports:football'},{'_id':0}),
+        'plan':capabilities.get('football'),
+        'daily_usage':await db.stats_cache.find_one({'_id':'apisports:football:'+day},{'_id':0}),
+        'mapped_matches':await db.football_detail_mappings.count_documents({}),
+        'archived_statistics':await db.football_fixture_statistics.count_documents({}),
+        'running':bool(_apisports_task and not _apisports_task.done()),
+        'model_mode':'count_models_observation_only','automatic_promotion':False}
+
+
+@app.post('/api/admin/football-statistics/refresh',status_code=202)
+async def football_statistics_refresh(payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    if _apisports_task and not _apisports_task.done():
+        return {'queued':False,'status':'already_running'}
+    await _scheduled_apisports_refresh()
+    queued=bool(_apisports_task and not _apisports_task.done())
+    return {'queued':queued,'status':'queued' if queued else 'not_started'}
