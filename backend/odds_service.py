@@ -2187,9 +2187,10 @@ async def _budgeted_primary_get(db, client, url, *, params, category):
 
 # Supplemental markets are collected in bounded batches and never replace the
 # all-match catalogue. Every paid call uses the same persistent credit guard.
-_EXTRA_MARKET_COLLECTION_VERSION = 'football-extra-20261105-dc'
-_EXTRA_FOOTBALL_MARKETS = {'double_chance', 'btts', 'draw_no_bet', 'spreads', 'alternate_totals', 'alternate_spreads', 'team_totals'}
-_EXTRA_MARKET_CANONICAL = {'alternate_totals':'totals', 'alternate_spreads':'spreads'}
+_EXTRA_MARKET_COLLECTION_VERSION = 'team-extra-20261105-lines-v3'
+_EXTRA_TEAM_MARKETS = {'totals','spreads','alternate_totals','alternate_spreads','team_totals','alternate_team_totals'}
+_EXTRA_FOOTBALL_MARKETS = {'totals', 'double_chance', 'btts', 'draw_no_bet', 'spreads', 'alternate_totals', 'alternate_spreads', 'team_totals', 'alternate_team_totals'}
+_EXTRA_MARKET_CANONICAL = {'alternate_totals':'totals', 'alternate_spreads':'spreads', 'alternate_team_totals':'team_totals'}
 
 
 def _dc_outcome_code(name,home,away):
@@ -2256,7 +2257,7 @@ async def _enrich_extra_football_markets(db, matches):
     for match in matches:
         event_id = str(match.get('id') or '')
         kickoff = _result_dt(match.get('commence_time'))
-        if not str(match.get('sport_key') or '').startswith('soccer_') or not re.fullmatch(r'[a-f0-9]{32}', event_id) or not kickoff or not now < kickoff <= now+timedelta(hours=horizon):
+        if not str(match.get('sport_key') or '').startswith(('soccer_','basketball_','icehockey_','baseball_','americanfootball_')) or not re.fullmatch(r'[a-f0-9]{32}', event_id) or not kickoff or not now < kickoff <= now+timedelta(hours=horizon):
             result.append(match)
             continue
         cached = await db.scores_cache.find_one({'_id':'extra_odds:'+event_id}) or {}
@@ -2276,7 +2277,15 @@ async def _enrich_extra_football_markets(db, matches):
         return result
     cursor = await db.scores_cache.find_one({'_id':'extra_odds_cursor'}) or {}
     offset = int(cursor.get('offset') or 0) % len(candidates)
-    jobs = (candidates[offset:]+candidates[:offset])[:limit]
+    # Alternate sports in the bounded supplement instead of starving smaller feeds.
+    groups={}
+    for item in candidates:
+        groups.setdefault(str(item[1].get('sport_key') or '').split('_')[0],[]).append(item)
+    ordered=[]
+    while any(groups.values()):
+        for group in sorted(groups):
+            if groups[group]:ordered.append(groups[group].pop(0))
+    jobs = (ordered[offset:]+ordered[:offset])[:limit]
     await db.scores_cache.update_one({'_id':'extra_odds_cursor'}, {'$set':{'offset':offset+len(jobs)}}, upsert=True)
     async with httpx.AsyncClient(timeout=10.) as client:
         for index, match in jobs:
@@ -2288,7 +2297,8 @@ async def _enrich_extra_football_markets(db, matches):
                 listing.raise_for_status()
                 payload = listing.json()
                 available = {m.get('key') for b in payload.get('bookmakers', []) for m in b.get('markets', [])}
-                requested = sorted(available & _EXTRA_FOOTBALL_MARKETS)
+                allowed=_EXTRA_FOOTBALL_MARKETS if sport.startswith('soccer_') else _EXTRA_TEAM_MARKETS
+                requested = sorted(available & allowed)
                 if not requested:
                     result[index]['multi_market_quote_status'] = {'status':'not_available_at_provider', 'updated_at':now.isoformat()}
                     await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{'retry_at':(now+timedelta(hours=4)).isoformat(),'collector_version':_EXTRA_MARKET_COLLECTION_VERSION}}, upsert=True)
@@ -2315,4 +2325,5 @@ async def _enrich_extra_football_markets(db, matches):
                 await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{
                     'retry_at':(now+timedelta(hours=1)).isoformat(), 'collector_version':_EXTRA_MARKET_COLLECTION_VERSION, 'last_error_type':type(exc).__name__}}, upsert=True)
     return result
+
 
