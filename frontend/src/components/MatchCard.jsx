@@ -591,9 +591,10 @@ const LABELS = {
 };
 
 export function badgeUrls(match, side) {
-  const media=match?.[`${side}_media`] || {};
+  const nested=match?.prediction || {};
+  const media=match?.[`${side}_media`] || nested[`${side}_media`] || {};
   const portrait=String(match?.sport_key||'').startsWith('tennis_')&&media.verified_license?media.url:null;
-  const candidates=[portrait,...(Array.isArray(match?.[`${side}_image_candidates`])?match[`${side}_image_candidates`]:[]),match?.[`${side}_logo`],match?.[`${side}_team_logo`],match?.[`${side}_crest`],match?.[`${side}Team`]?.crest,media.url];
+  const candidates=[portrait,...(Array.isArray(match?.[`${side}_image_candidates`])?match[`${side}_image_candidates`]:[]),match?.[`${side}_logo`],match?.[`${side}_team_logo`],match?.[`${side}_crest`],match?.[`${side}Team`]?.crest,media.url,nested[`${side}_logo`],nested[`${side}_team_logo`],...(Array.isArray(nested[`${side}_image_candidates`])?nested[`${side}_image_candidates`]:[])];
   return [...new Set(candidates.filter(value=>{
     if(typeof value!=="string")return false;
     try {const parsed=new URL(value);return parsed.protocol==="https:"&&!parsed.username&&!parsed.password;}catch{return false;}
@@ -612,15 +613,18 @@ export function TeamBadge({ name = "", src, size = "small", kind, fallbackSrcs =
     if(typeof value!=="string")return false;
     try{const url=new URL(value);return url.protocol==="https:"&&!url.username&&!url.password;}catch{return false;}
   });
+  const candidateKey=candidates.join("|");
+  useEffect(()=>{setFailed([]);},[name,sport,candidateKey]);
   const url=candidates.find(value=>!failed.includes(value));
   const portrait=kind==="portrait"||String(sport).startsWith("tennis_");
   const colors=["from-orange-50 to-amber-100 text-orange-500","from-sky-50 to-indigo-100 text-indigo-500","from-emerald-50 to-teal-100 text-teal-600"];
   const color=colors[Array.from(String(name)).reduce((sum,char)=>sum+char.codePointAt(0),0)%colors.length];
-  return <span aria-hidden="true" data-testid="participant-image" data-image-kind={portrait?"portrait":"badge"}
+  const pixels=size==="large"?64:40;
+  return <span style={{width:pixels,height:pixels,minWidth:pixels,flexShrink:0}} aria-hidden="true" data-testid="participant-image" data-image-kind={portrait?"portrait":"badge"}
     className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white shadow-sm ${portrait?"rounded-full":"rounded-2xl"} ${size==="large"?"h-16 w-16 sm:h-20 sm:w-20":"h-10 w-10"}`}>
     {url?<img src={url} alt="" width={size==="large"?80:40} height={size==="large"?80:40} loading="lazy" decoding="async" referrerPolicy="no-referrer"
       onError={()=>setFailed(current=>current.includes(url)?current:[...current,url])}
-      className={`h-full w-full ${portrait?"object-cover":"object-contain p-1.5"}`} style={portrait?{objectPosition:"center 22%"}:undefined}/>
+      className={`h-full w-full ${portrait?"object-cover":"object-contain p-1.5"}`} style={{width:"100%",height:"100%",maxWidth:"100%",objectFit:portrait?"cover":"contain",...(portrait?{objectPosition:"center 22%"}:{padding:4})}}/>
       :<span className={`grid h-full w-full place-items-center bg-gradient-to-br ${color}`} data-testid="participant-image-placeholder">
         <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-3/5 w-3/5">
           {portrait?<><circle cx="16" cy="11" r="5"/><path d="M6 28c0-7 4-11 10-11s10 4 10 11"/></>:<><path d="M16 3 27 7v9c0 6-5 10-11 13C10 26 5 22 5 16V7L16 3Z"/><path d="m16 10 2 4 4 .6-3 3 .7 4.4-3.7-2-3.7 2 .7-4.4-3-3 4-.6 2-4Z"/></>}
@@ -816,5 +820,6 @@ export function DetailedFootballStats({ stats, match }) {
     <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-xs font-semibold text-slate-600">{w.method}</summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.source} : {stats.source||"API-Football"}</p>{stats.updated_at&&<p className="text-xs leading-6 text-slate-500">{w.updated} : {String(stats.updated_at).slice(0,10)}</p>}</details>
   </section>;
 }
+
 
 
