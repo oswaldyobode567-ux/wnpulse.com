@@ -8452,6 +8452,10 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
         except Exception as exc:
             logging.getLogger('winpulse.official').warning('Official primary freeze deferred (%s)',type(exc).__name__)
         _queue_independent_archive(predictions)
+        _queue_model_comparison_archive(predictions)
+        # Comparison arms are private experimental data, never public/Free payloads.
+        for prediction in predictions:
+            prediction.pop('model_comparison', None)
         # Freeze first experimental forecast before kickoff in a separate collection.
         # This never touches official history or the settlement/payment paths.
         operations = []
@@ -16279,3 +16283,149 @@ async def get_public_media_catalogue(response: Response):
             if len(item)>1:items.append(item)
         _public_media_cache.update(at=time.monotonic(),items=items)
         return {'version':1,'items':items}
+
+
+
+# One paired observation per event and protocol, frozen with $setOnInsert.
+_model_comparison_archive_task = None
+
+
+def _model_comparison_records(predictions, captured_at):
+    records=[]
+    for prediction in predictions:
+        pair=prediction.get('model_comparison') or {}
+        kickoff=_parse_iso(prediction.get('commence_time'))
+        captured=_parse_iso(pair.get('captured_at'))
+        trained=_parse_iso(pair.get('training_as_of'))
+        if (not prediction.get('match_id') or not kickoff or not captured or not trained
+            or not trained < captured <= captured_at < kickoff
+            or pair.get('version')!='paired-football-2026-11-05'
+            or not pair.get('baseline') or not pair.get('challenger')):
+            continue
+        identity=hashlib.sha256(json.dumps([pair['version'],str(prediction['match_id']),kickoff.isoformat()]).encode()).hexdigest()
+        records.append({'_id':identity,'protocol':pair['version'],'match_id':str(prediction['match_id']),
+            'commence_time':kickoff.isoformat(),'captured_at':captured.isoformat(),
+            'sport_key':prediction.get('sport_key'),'home_team':prediction.get('home_team'),
+            'away_team':prediction.get('away_team'),'comparison':copy.deepcopy(pair),'state':'pending',
+            'engine_revision':prediction.get('engine_revision')})
+    return records
+
+
+def _queue_model_comparison_archive(predictions):
+    global _model_comparison_archive_task
+    if _model_comparison_archive_task and not _model_comparison_archive_task.done():return
+    records=_model_comparison_records(predictions,datetime.now(timezone.utc))
+    if not records:return
+    async def run():
+        try:
+            await asyncio.wait_for(db.model_comparison_forecasts.bulk_write([
+                UpdateOne({'_id':r['_id']},{'$setOnInsert':{k:v for k,v in r.items() if k!='_id'}},upsert=True)
+                for r in records],ordered=False),timeout=8)
+        except Exception as exc:
+            logging.getLogger('winpulse.comparison').warning('Paired archive deferred (%s)',type(exc).__name__)
+    _model_comparison_archive_task=asyncio.create_task(run())
+
+
+def _model_comparison_outcome(record,score):
+    from prediction_engine import settle_comparison_candidate
+    if not score or score.get('completed') is not True:return None
+    kickoff=_parse_iso(record.get('commence_time'));observed=_parse_iso(score.get('commence_time'))
+    captured=_parse_iso(record.get('captured_at'))
+    if not kickoff or not observed or not captured or captured>=kickoff or abs((observed-kickoff).total_seconds())>60:return None
+    if any(score.get(key)!=record.get(key) for key in ('home_team','away_team')):return None
+    try:
+        values={r.get('name'):_settlement_integer(r.get('score')) for r in score.get('scores') or [] if isinstance(r,dict)}
+    except (TypeError,ValueError,OverflowError):
+        return None
+    home,away=values.get(record['home_team']),values.get(record['away_team'])
+    if home is None or away is None:return None
+    pair=record.get('comparison') or {};evaluated={}
+    for arm in ('baseline','challenger'):
+        evaluated[arm]=settle_comparison_candidate(pair.get(arm) or {},home,away,record['home_team'],record['away_team'])
+    if not all(evaluated.values()):return None
+    identity=lambda row:tuple(row.get(k) for k in ('market','pick_raw','pick_point','team'))
+    evaluated['same_selection']=identity(pair['baseline'])==identity(pair['challenger'])
+    evaluated['paired_net_return_difference']=evaluated['challenger']['unit_return']-evaluated['baseline']['unit_return']
+    evaluated['final_score']=f'{home}-{away}'
+    return evaluated
+
+
+async def _settle_model_comparisons():
+    now=datetime.now(timezone.utc)
+    rows=await db.model_comparison_forecasts.find({'state':'pending',
+        'commence_time':{'$lte':(now-timedelta(hours=2)).isoformat()},
+        '$or':[{'next_check_at':{'$exists':False}},{'next_check_at':{'$lte':now.isoformat()}}]
+        }).sort('commence_time',1).to_list(length=500)
+    if not rows:return
+    scores=await db.scores_archive.find({'event_id':{'$in':list({r['match_id'] for r in rows})},'completed':True}).to_list(length=1000)
+    # Conflicting final scores are deferred, never resolved arbitrarily.
+    by_id={};conflicts=set()
+    for score in scores:
+        key=score.get('event_id')
+        if key in by_id and score.get('scores')!=by_id[key].get('scores'):conflicts.add(key)
+        by_id[key]=score
+    operations=[]
+    for row in rows:
+        outcome=_model_comparison_outcome(row,by_id.get(row['match_id'])) if row['match_id'] not in conflicts else None
+        fields={'checked_at':now.isoformat(),'next_check_at':(now+timedelta(hours=1)).isoformat()}
+        if outcome:fields.update(state='resolved',evaluation=outcome,resolved_at=now.isoformat())
+        operations.append(UpdateOne({'_id':row['_id'],'state':'pending'},{'$set':fields}))
+    if operations:await db.model_comparison_forecasts.bulk_write(operations,ordered=False)
+
+
+def _summarize_model_comparisons(rows):
+    pairs=[r for r in rows if r.get('state')=='resolved' and r.get('evaluation')]
+    report={'matched_events':len(rows),'resolved_pairs':len(pairs),'pending_pairs':len(rows)-len(pairs),
+        'automatic_promotion':False,'performance_improvement_proven':False,'arms':{},
+        'unit':'one unit per arm per event; not a staking strategy'}
+    for arm in ('baseline','challenger'):
+        values=[r['evaluation'][arm] for r in pairs];n=len(values)
+        report['arms'][arm]={'bets':n,'won':sum(v['result']=='won' for v in values),
+            'lost':sum(v['result']=='lost' for v in values),'void':sum(v['result']=='void' for v in values),
+            'roi_percent':round(100*(sum(v['unit_return'] for v in values)/n-1),3) if n else None}
+    differences=[r['evaluation']['paired_net_return_difference'] for r in pairs]
+    report['paired_roi_difference_percentage_points']=round(100*sum(differences)/len(differences),3) if differences else None
+    same=[r for r in pairs if r['evaluation'].get('same_selection')
+        and all('brier' in r['evaluation'][a] and 'log_loss' in r['evaluation'][a] for a in ('baseline','challenger'))]
+    report['same_target_probability_pairs']=len(same)
+    # Compare probability quality only for the identical market/line/outcome.
+    report['same_target_probability_metrics']={a:{k:sum(r['evaluation'][a][k] for r in same)/len(same) if same else None
+        for k in ('brier','log_loss')} for a in ('baseline','challenger')}
+    by_market={}
+    for arm in ('baseline','challenger'):
+        groups={}
+        for row in pairs:groups.setdefault(row['comparison'][arm]['market'],[]).append(row['evaluation'][arm]['unit_return'])
+        by_market[arm]={k:{'bets':len(v),'roi_percent':round(100*(sum(v)/len(v)-1),3)} for k,v in groups.items()}
+    report['by_market']=by_market
+    report['interpretation']='Prospective paired observations only; no automatic certification or model switch.'
+    return report
+
+
+@app.get('/api/admin/prediction-comparison/status')
+async def prediction_comparison_status(days:int=30,payload:dict=Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    days=max(1,min(365,days));cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
+    query={'protocol':'paired-football-2026-11-05','commence_time':{'$gte':cutoff}}
+    total=await db.model_comparison_forecasts.count_documents(query)
+    rows=await db.model_comparison_forecasts.find(query).sort('commence_time',-1).to_list(length=20000)
+    return {**_summarize_model_comparisons(rows),'days':days,'total_records':total,
+        'truncated':total>len(rows),'publication_mode':os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE','independent_pilot')}
+
+
+async def _scheduled_model_comparison_settlement():
+    try:
+        await asyncio.wait_for(_run_with_scheduler_lease('paired_model_settlement',
+            _settle_model_comparisons,lease_seconds=180),timeout=120)
+    except Exception as exc:
+        logging.getLogger('winpulse.comparison').warning('Paired settlement deferred (%s)',type(exc).__name__)
+
+
+@app.on_event('startup')
+async def _paired_comparison_startup():
+    try:
+        await db.model_comparison_forecasts.create_index([('state',1),('next_check_at',1),('commence_time',1)])
+    except Exception:pass
+    if ENABLE_INTERNAL_SCHEDULER:
+        scheduler.add_job(_scheduled_model_comparison_settlement,'interval',minutes=15,
+            id='paired_model_settlement',replace_existing=True,coalesce=True,max_instances=1,
+            next_run_time=datetime.now(timezone.utc)+timedelta(seconds=75))
