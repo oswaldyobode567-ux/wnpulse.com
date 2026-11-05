@@ -1440,8 +1440,89 @@ def _media_jobs(matches,now):
     return jobs
 
 
+# A country directory contains many teams in one official API call.
+# Only exact, unambiguous identities are used; youth/women/reserve teams stay distinct.
+_MEDIA_COUNTRY_GROUPS={
+ 'soccer_epl':('football',('England',)), 'soccer_efl_champ':('football',('England',)),
+ 'soccer_spain_la_liga':('football',('Spain',)), 'soccer_spain_segunda_division':('football',('Spain',)),
+ 'soccer_germany_bundesliga':('football',('Germany',)), 'soccer_germany_bundesliga2':('football',('Germany',)),
+ 'soccer_france_ligue_one':('football',('France',)), 'soccer_france_ligue_two':('football',('France',)),
+ 'soccer_italy_serie_a':('football',('Italy',)), 'soccer_italy_serie_b':('football',('Italy',)),
+ 'soccer_portugal_primeira_liga':('football',('Portugal',)), 'soccer_netherlands_eredivisie':('football',('Netherlands',)),
+ 'basketball_nba':('basketball',('USA','Canada')), 'basketball_ncaab':('basketball',('USA',)),
+ 'basketball_wnba':('basketball',('USA',)), 'icehockey_nhl':('hockey',('USA','Canada')),
+ 'baseball_mlb':('baseball',('USA','Canada'))
+}
+
+
+def _media_country_groups(matches,jobs):
+    groups={}
+    for match in matches:
+        config=_MEDIA_COUNTRY_GROUPS.get(match.get('sport_key'))
+        if not config:continue
+        sport,countries=config
+        for side in ('home','away'):
+            name=match.get(side+'_team')
+            if not name:continue
+            key=_visual_key(sport,name)
+            if key not in jobs:continue
+            for country in countries:groups.setdefault((sport,country),set()).add(key)
+    return groups
+
+
+def _media_directory_index(rows,sport):
+    candidates={}
+    for item in rows:
+        if not isinstance(item,dict):continue
+        team=item.get('team') if isinstance(item.get('team'),dict) else item
+        if not team.get('id') or not team.get('name') or not _media_url(team.get('logo')):continue
+        key=_visual_key(sport,team['name'])
+        candidates.setdefault(key,{})[str(team['id'])]={k:team[k] for k in ('id','name','logo')}
+    return {key:next(iter(teams.values())) for key,teams in candidates.items() if len(teams)==1}
+
+
+async def _media_prefetch_directories(db,matches,jobs,cached,budget,deadline):
+    if not API_SPORTS_KEY:return
+    groups=_media_country_groups(matches,jobs)
+    ids={f'media_directory:{sport}:{country}':(sport,country,keys) for (sport,country),keys in groups.items()}
+    docs=await db.stats_cache.find({'_id':{'$in':list(ids)}}).to_list(length=len(ids)) if ids else []
+    old={doc['_id']:doc for doc in docs};now=datetime.now(timezone.utc);pending=[]
+    def merge(rows,sport,allowed_keys):
+        for key,team in _media_directory_index(rows,sport).items():
+            if key not in allowed_keys or key in budget.setdefault('ambiguous',set()):continue
+            previous=budget['prefetched'].get(key)
+            if previous and str(previous['id'])!=str(team['id']):
+                budget['prefetched'].pop(key,None);budget['ambiguous'].add(key)
+            else:budget['prefetched'][key]=team
+    for identity,(sport,country,keys) in ids.items():
+        doc=old.get(identity,{})
+        if isinstance(doc.get('teams'),list):merge(doc['teams'],sport,keys)
+        missing=[k for k in keys if not jobs[k]['existing'] and not _media_url((cached.get(k,{}).get('media') or {}).get('url'))]
+        retry=_display_date(doc.get('retry_at'))
+        updated=_display_date(doc.get('updated_at'))
+        if missing and not (retry and retry>now) and not (updated and now-updated<timedelta(days=7)):
+            pending.append((doc.get('checked_at') or '',identity,sport,country))
+    # At most two directory calls per cycle, sharing the existing API quota.
+    directory_calls=0
+    for _,identity,sport,country in sorted(pending,key=lambda row:(row[0],row[2],row[3] != "USA",row[3])):
+        if all(key in budget['prefetched'] or jobs[key]['existing'] for key in ids[identity][2]):continue
+        if directory_calls>=2:break
+        if budget['used']>=max(1,budget['limit']-2) or time.monotonic()>deadline-20:break
+        budget['used']+=1;directory_calls+=1
+        try:rows=await asyncio.wait_for(_as_request(db,sport,'/teams',{'country':country}),timeout=15)
+        except Exception:rows=None
+        fields={'checked_at':now.isoformat(),'sport':sport,'country':country}
+        if rows is not None and 0<len(rows)<=8000:
+            index=_media_directory_index(rows,sport);teams=list(index.values());merge(teams,sport,ids[identity][2])
+            fields.update(teams=teams,updated_at=now.isoformat(),retry_at=(now+timedelta(days=7)).isoformat())
+        else:fields['retry_at']=(now+timedelta(hours=6)).isoformat()
+        await db.stats_cache.update_one({'_id':identity},{'$set':fields},upsert=True)
+
+
 async def _media_identity_lookup(db,job,old,budget):
     sport,name=job['sport'],job['name']
+    prefetched=budget.get('prefetched',{}).get(job['key'])
+    if prefetched:return prefetched
     if not API_SPORTS_KEY:return {'lookup_status':'key_missing'}
     existing=await db.stats_cache.find_one({'_id':_as_key(sport,name)}) or {}
     team_id=(old.get('identity') or {}).get('provider_id') or (existing.get('team_id') if existing.get('matched') else None)
@@ -1479,7 +1560,9 @@ async def refresh_visual_assets(db,matches):
     deadline=time.monotonic()+105  # leave time for health checks and a saved progress report
     docs=await db.entity_media.find({'_id':{'$in':list(jobs)}}).to_list(length=len(jobs)) if jobs else []
     cached={row['_id']:row for row in docs}
-    budget={'used':0,'limit':_media_limit('WNPULSE_MEDIA_TEAM_REQUESTS_PER_RUN',8,16)}
+    budget={'used':0,'limit':_media_limit('WNPULSE_MEDIA_TEAM_REQUESTS_PER_RUN',8,16),'prefetched':{}}
+    try:await _media_prefetch_directories(db,matches,jobs,cached,budget,deadline)
+    except Exception as exc:logger.warning('Team directory lookup deferred (%s)',type(exc).__name__)
     portraits=_media_limit('WNPULSE_MEDIA_PORTRAITS_PER_RUN',6,16)
     portrait_jobs=0;updated=0;checked=0;statuses={}
     # Oldest checked first, with round-robin across sports to avoid football starvation.
@@ -1487,7 +1570,7 @@ async def refresh_visual_assets(db,matches):
     for key,job in jobs.items():
         old=cached.get(key,{})
         retry=_display_date(old.get('next_check_at'))
-        if retry and retry>now and (old.get('resolver_version')==4 or _approved_portrait(old.get('media') or {})):continue
+        if key not in budget['prefetched'] and retry and retry>now and (old.get('resolver_version')==5 or _approved_portrait(old.get('media') or {})):continue
         pending.setdefault(job['sport'],[]).append((old.get('checked_at') or '',job['kickoff'],key))
     for rows in pending.values():rows.sort()
     order=[]
@@ -1498,7 +1581,7 @@ async def refresh_visual_assets(db,matches):
     for key in order:
         job=jobs[key];sport=job['sport'];old=cached.get(key,{})
         if checked>=64 or time.monotonic()>=deadline:break
-        if sport in blocked_sports:continue
+        if sport in blocked_sports and key not in budget['prefetched']:continue
         # Preserve known cached badges; spend search requests on missing entities first.
         if sport!='tennis' and job['existing']:
             healthy=[]
@@ -1508,7 +1591,7 @@ async def refresh_visual_assets(db,matches):
             if healthy and not old.get('image_broken'):
                 await db.entity_media.update_one({'_id':key},{'$set':{'sport':sport,'name':job['name'],
                     'status':'ready_existing','checked_at':now.isoformat(),
-                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':4}},upsert=True)
+                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':5}},upsert=True)
                 checked+=1;statuses['ready_existing']=statuses.get('ready_existing',0)+1
                 continue
         if sport=='tennis':
@@ -1523,7 +1606,7 @@ async def refresh_visual_assets(db,matches):
             valid=status=='ready'
             identity={'provider':'Wikidata','provider_id':media.get('entity_id'),'name':job['name']} if valid else old.get('identity')
         else:
-            if budget['used']>=budget['limit']:continue
+            if budget['used']>=budget['limit'] and key not in budget['prefetched']:continue
             try:
                 team=await asyncio.wait_for(_media_identity_lookup(db,job,old,budget),timeout=max(1,min(28,deadline-time.monotonic())))
             except Exception as exc:
@@ -1543,7 +1626,7 @@ async def refresh_visual_assets(db,matches):
         transient=status in ('unavailable','key_missing')
         if transient:blocked_sports.add(sport)
         delay=timedelta(minutes=30) if transient else timedelta(days=30) if valid else timedelta(hours=24)
-        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':4}
+        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':5}
         if identity:fields['identity']=identity
         if valid:
             previous=(old.get('media') or {}).get('url')
@@ -1560,7 +1643,7 @@ async def refresh_visual_assets(db,matches):
     health=await refresh_media_health(db,matches,jobs)
     result={'checked_at':datetime.now(timezone.utc).isoformat(),'catalogue_entities':len(jobs),
         'checked':checked,'updated':updated,'statuses':statuses,'team_requests_attempted':budget['used'],
-        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':4}
+        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':5}
     await db.enrichment_state.update_one({'_id':'visual_assets'},{'$set':result},upsert=True)
     return result
 
@@ -1638,7 +1721,7 @@ async def media_catalogue_status(db,matches):
         group['total']+=1;group['available' if available else 'missing']+=1
         if not available and len(missing)<100:
             missing.append({'key':key,'name':job['name'],'sport':job['sport'],'status':ready.get(key,{}).get('status','pending')})
-    return {'resolver_version':4,'sports':sports,'missing_sample':missing,
+    return {'resolver_version':5,'sports':sports,'missing_sample':missing,
         'last_run':{k:v for k,v in (await db.enrichment_state.find_one({'_id':'visual_assets'}) or {}).items() if k!='_id'},
         'broken_images':len(health),'no_complete_coverage_guarantee':True}
 
@@ -1724,4 +1807,5 @@ async def enrich_match_badges(db,matches):
                 row.pop(side+'_media',None)
         result.append(row)
     return result
+
 
