@@ -4,7 +4,27 @@ import { ArrowLeft, ArrowRight, ArrowUpRight, CheckCircle2, ChevronDown, Chevron
 import AppLayout, { usePageLanguage } from "@/components/AppLayout";
 import { useAuth } from "@/contexts/AuthContext";
 import api from "@/lib/api";
-import { AdminShareProvider, AdminShareToolbar, AdminShareActions } from "@/components/MatchCard";
+import { AdminShareProvider, AdminShareToolbar, AdminShareActions, TeamBadge } from "@/components/MatchCard";
+
+const OFFICIAL_COPY = {
+ fr: "Une rencontre, un choix officiel : la première sélection publiée avant le match. Les alternatives ne comptent pas dans ce bilan.",
+ en: "One match, one official pick: the first selection published before kickoff. Alternatives are excluded from this record.",
+ es: "Un partido, un pronóstico oficial: la primera selección publicada antes del inicio. Las alternativas no cuentan en este balance.",
+ pt: "Um jogo, uma seleção oficial: a primeira publicada antes do início. As alternativas não contam neste balanço.",
+ de: "Ein Spiel, ein offizieller Tipp: die erste vor Spielbeginn veröffentlichte Auswahl. Alternativen zählen nicht in dieser Bilanz.",
+ ar: "مباراة واحدة واختيار رسمي واحد: أول اختيار منشور قبل البداية. لا تُحتسب البدائل في هذا السجل."
+};
+function ResultEncounter({ row }) {
+  if (!row.home_team || !row.away_team) return <span>{row.match || "—"}</span>;
+  return <span className="flex min-w-0 flex-col gap-2">{["home","away"].map(side => {
+    const media=row[`${side}_media`];
+    return <span key={side} className="flex min-w-0 items-center gap-2">
+      <TeamBadge name={row[`${side}_team`]} src={row[`${side}_logo`]} sport={row.sport_key} kind={media?.kind} fallbackSrcs={row[`${side}_image_candidates`]} />
+      <span className="min-w-0 break-words">{row[`${side}_team`]}{media?.kind === "portrait" && <a href={media.source_url} target="_blank" rel="noreferrer" className="block text-[10px] font-normal text-slate-500 underline">{media.author} · {media.license}</a>}</span>
+    </span>;
+  })}</span>;
+}
+
 const SPORTS = [["all", "Tous les sports", "◉"], ["football", "Football", "⚽"], ["basketball", "Basketball", "🏀"], ["tennis", "Tennis", "🎾"], ["hockey", "Hockey", "🏒"], ["baseball", "Baseball", "⚾"], ["mma", "MMA", "🥊"]];
 const RESULTS = {
   won: {
@@ -174,6 +194,7 @@ export default function TrackRecordPage() {
       <div className="flex items-center gap-2 text-sm font-semibold text-slate-500"><History className="h-4 w-4 text-orange-600" />{i18n.t("Track record")}</div>
       <Link to={user ? "/app" : "/"} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:border-orange-300 hover:text-orange-700" data-testid="track-back-dashboard">{user ? <LayoutDashboard className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4 rtl:rotate-180" />}{i18n.t(user ? "Tableau de bord" : "Retour à l’accueil")}</Link>
     </div>
+    <p className="mb-4 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm leading-6 text-slate-700" data-testid="official-track-policy">{OFFICIAL_COPY[i18n.language] || OFFICIAL_COPY.fr}</p>
     <section className="wr-enter relative mb-4 overflow-hidden rounded-2xl bg-slate-950 p-4 text-white sm:p-6 lg:p-8" aria-labelledby="track-heading">
       <div aria-hidden="true" className="pointer-events-none absolute -end-12 -top-24 h-80 w-80 rounded-full bg-orange-500/10 blur-3xl" />
       <div className="relative grid gap-4 lg:gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center">
@@ -205,7 +226,7 @@ export default function TrackRecordPage() {
       <Metric icon={Target} label={i18n.t("Cote moyenne")} value={metric(stats.avg_odds, 2)} sub={i18n.t("Sur les pronostics départagés")} />
       <Metric icon={Flame} label={i18n.t("Série en cours")} value={metric(stats.current_streak)} sub={i18n.t("Victoires consécutives")} />
     </div>
-    {data?.transition_mode && data.note && <div className="mb-5 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-900" data-testid="transition-mode-banner"><Info className="mt-1 h-5 w-5 shrink-0" /><p>{i18n.t(data.note)}</p></div>}
+    {data?.track_policy !== "one_event_first_pre_match_v1" && data?.transition_mode && data.note && <div className="mb-5 flex gap-3 rounded-2xl border border-blue-100 bg-blue-50 p-4 text-sm leading-6 text-blue-900" data-testid="transition-mode-banner"><Info className="mt-1 h-5 w-5 shrink-0" /><p>{i18n.t(data.note)}</p></div>}
     <TrackPerformance sport={sport} />
     <section id="track-journal" className="scroll-mt-24 rounded-2xl border border-slate-200 bg-white shadow-sm" aria-labelledby="track-journal-heading">
       <header className="border-b border-slate-100 p-3 sm:p-5">
@@ -223,7 +244,7 @@ export default function TrackRecordPage() {
           {(index === 0 || displayDate(i18n, row.date) !== displayDate(i18n, visible[index - 1].date)) && <h3 className="border-y border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 sm:px-5" data-testid="track-date-separator">{displayDate(i18n, row.date)}</h3>}
           <ResultCard row={row} />
         </div>)}</div>
-        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900">{row.match || "—"}</p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /><AdminShareActions item={row} isAdmin={Boolean(user?.is_admin)} kind="results" /></td></tr>)}</tbody></table></div>
+        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900"><ResultEncounter row={row} /></p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /><AdminShareActions item={row} isAdmin={Boolean(user?.is_admin)} kind="results" /></td></tr>)}</tbody></table></div>
       </>}
       <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 px-5 py-4"><div aria-live="polite" className="text-sm text-slate-500">{i18n.t("Page {{page}} sur {{total}}", {
             page: currentPage,
@@ -277,7 +298,7 @@ function ResultCard({
       <p className="min-w-0 flex-1 basis-36 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p>
       <ResultBadge status={row.status} />
     </div>
-    <h4 dir="auto" className="break-words font-heading text-sm font-bold leading-5 text-slate-900 sm:text-base sm:leading-6">{row.match || "—"}</h4>
+    <h4 dir="auto" className="break-words font-heading text-sm font-bold leading-5 text-slate-900 sm:text-base sm:leading-6"><ResultEncounter row={row} /></h4>
     <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5">
       <div className="min-w-0">
         <p className="text-xs text-slate-500">{i18n.t("Pronostic")}</p>
@@ -1034,5 +1055,6 @@ function useResultsLanguage() {
     };
   }, []);
 }
+
 
 
