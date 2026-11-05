@@ -867,7 +867,7 @@ def commons_media(info,entity_id):
     # not Wikipedia fair-use files, not an unverified 'CC' flag.
     allowed=license_name in {"CC0","CC0 1.0","Public domain","CC BY 2.0","CC BY 3.0","CC BY 4.0","CC BY-SA 2.0","CC BY-SA 2.5","CC BY-SA 3.0","CC BY-SA 4.0"}
     url=info.get("thumburl") or info.get("url");page=info.get("descriptionurl")
-    if not allowed or not artist or not isinstance(url,str) or urlparse(url).hostname!="upload.wikimedia.org" or not url.startswith("https://"):return None
+    if not allowed or not artist or not isinstance(url,str) or urlparse(url).hostname not in {"upload.wikimedia.org","thumb.wikimedia.org"} or not url.startswith("https://"):return None
     if not isinstance(page,str) or urlparse(page).hostname!="commons.wikimedia.org" or not page.startswith("https://"):return None
     if license_name.startswith("CC") and (not license_url.startswith("https://creativecommons.org/") and not license_url.startswith("http://creativecommons.org/")):return None
     if value("LicenseRestriction") or value("Restrictions"):return None
@@ -1374,7 +1374,7 @@ async def get_match_insights(db,match):
 
 
 # ─── Persistent visual identities v3: independent from forecasts/history ───
-_MEDIA_HOSTS = {'media.api-sports.io','crests.football-data.org','upload.wikimedia.org'}
+_MEDIA_HOSTS = {'media.api-sports.io','crests.football-data.org','upload.wikimedia.org','thumb.wikimedia.org'}
 _MEDIA_LICENSES = {'CC0','CC0 1.0','Public domain','CC BY 2.0','CC BY 3.0','CC BY 4.0',
     'CC BY-SA 2.0','CC BY-SA 2.5','CC BY-SA 3.0','CC BY-SA 4.0'}
 # Only equivalences for the same club. Never drop youth/women/reserve qualifiers.
@@ -1476,6 +1476,7 @@ async def _media_identity_lookup(db,job,old,budget):
 async def refresh_visual_assets(db,matches):
     """Bounded scheduled work; API-Sports calls share its existing persistent quotas."""
     now=datetime.now(timezone.utc);jobs=_media_jobs(matches,now)
+    deadline=time.monotonic()+105  # leave time for health checks and a saved progress report
     docs=await db.entity_media.find({'_id':{'$in':list(jobs)}}).to_list(length=len(jobs)) if jobs else []
     cached={row['_id']:row for row in docs}
     budget={'used':0,'limit':_media_limit('WNPULSE_MEDIA_TEAM_REQUESTS_PER_RUN',8,16)}
@@ -1486,7 +1487,7 @@ async def refresh_visual_assets(db,matches):
     for key,job in jobs.items():
         old=cached.get(key,{})
         retry=_display_date(old.get('next_check_at'))
-        if retry and retry>now and (old.get('resolver_version')==3 or _approved_portrait(old.get('media') or {})):continue
+        if retry and retry>now and (old.get('resolver_version')==4 or _approved_portrait(old.get('media') or {})):continue
         pending.setdefault(job['sport'],[]).append((old.get('checked_at') or '',job['kickoff'],key))
     for rows in pending.values():rows.sort()
     order=[]
@@ -1496,7 +1497,7 @@ async def refresh_visual_assets(db,matches):
     blocked_sports=set()
     for key in order:
         job=jobs[key];sport=job['sport'];old=cached.get(key,{})
-        if checked>=64:break
+        if checked>=64 or time.monotonic()>=deadline:break
         if sport in blocked_sports:continue
         # Preserve known cached badges; spend search requests on missing entities first.
         if sport!='tennis' and job['existing']:
@@ -1507,19 +1508,27 @@ async def refresh_visual_assets(db,matches):
             if healthy and not old.get('image_broken'):
                 await db.entity_media.update_one({'_id':key},{'$set':{'sport':sport,'name':job['name'],
                     'status':'ready_existing','checked_at':now.isoformat(),
-                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':3}},upsert=True)
+                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':4}},upsert=True)
                 checked+=1;statuses['ready_existing']=statuses.get('ready_existing',0)+1
                 continue
         if sport=='tennis':
             if portrait_jobs>=portraits:continue
             portrait_jobs+=1
-            media=await find_tennis_portrait(db,job['name'])
+            try:
+                media=await asyncio.wait_for(find_tennis_portrait(db,job['name']),timeout=max(1,min(42,deadline-time.monotonic())))
+            except Exception as exc:
+                logger.warning('Portrait lookup deferred (%s)',type(exc).__name__)
+                media={'lookup_status':'unavailable'}
             status=(media or {}).get('lookup_status') or ('ready' if _approved_portrait(media or {}) else 'unresolved')
             valid=status=='ready'
             identity={'provider':'Wikidata','provider_id':media.get('entity_id'),'name':job['name']} if valid else old.get('identity')
         else:
             if budget['used']>=budget['limit']:continue
-            team=await _media_identity_lookup(db,job,old,budget)
+            try:
+                team=await asyncio.wait_for(_media_identity_lookup(db,job,old,budget),timeout=max(1,min(28,deadline-time.monotonic())))
+            except Exception as exc:
+                logger.warning('Team image lookup deferred (%s)',type(exc).__name__)
+                team={'lookup_status':'unavailable'}
             status=team.get('lookup_status') or ('ready' if _media_url(team.get('logo')) else 'image_missing')
             valid=status=='ready'
             identity={'provider':'API-Sports','provider_id':team.get('id'),'name':team.get('name')} if team.get('id') else old.get('identity')
@@ -1534,7 +1543,7 @@ async def refresh_visual_assets(db,matches):
         transient=status in ('unavailable','key_missing')
         if transient:blocked_sports.add(sport)
         delay=timedelta(minutes=30) if transient else timedelta(days=30) if valid else timedelta(hours=24)
-        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':3}
+        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':4}
         if identity:fields['identity']=identity
         if valid:
             previous=(old.get('media') or {}).get('url')
@@ -1551,7 +1560,7 @@ async def refresh_visual_assets(db,matches):
     health=await refresh_media_health(db,matches,jobs)
     result={'checked_at':datetime.now(timezone.utc).isoformat(),'catalogue_entities':len(jobs),
         'checked':checked,'updated':updated,'statuses':statuses,'team_requests_attempted':budget['used'],
-        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':3}
+        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':4}
     await db.enrichment_state.update_one({'_id':'visual_assets'},{'$set':result},upsert=True)
     return result
 
@@ -1629,7 +1638,7 @@ async def media_catalogue_status(db,matches):
         group['total']+=1;group['available' if available else 'missing']+=1
         if not available and len(missing)<100:
             missing.append({'key':key,'name':job['name'],'sport':job['sport'],'status':ready.get(key,{}).get('status','pending')})
-    return {'resolver_version':3,'sports':sports,'missing_sample':missing,
+    return {'resolver_version':4,'sports':sports,'missing_sample':missing,
         'last_run':{k:v for k,v in (await db.enrichment_state.find_one({'_id':'visual_assets'}) or {}).items() if k!='_id'},
         'broken_images':len(health),'no_complete_coverage_guarantee':True}
 
@@ -1715,3 +1724,4 @@ async def enrich_match_badges(db,matches):
                 row.pop(side+'_media',None)
         result.append(row)
     return result
+
