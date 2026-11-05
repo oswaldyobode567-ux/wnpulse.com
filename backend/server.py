@@ -34,7 +34,7 @@ from pydantic import BaseModel, EmailStr, Field, StrictBool, StrictInt
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from pymongo import ReturnDocument, UpdateOne
-from pymongo.errors import DuplicateKeyError
+from pymongo.errors import DuplicateKeyError, BulkWriteError
 
 from auth import (
     hash_password, verify_password, create_access_token,
@@ -8447,6 +8447,10 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
         real_stats_map = dict(await get_real_stats_map(db, matches))
         real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
         predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        try:
+            predictions = await _freeze_official_predictions(predictions)
+        except Exception as exc:
+            logging.getLogger('winpulse.official').warning('Official primary freeze deferred (%s)',type(exc).__name__)
         _queue_independent_archive(predictions)
         # Freeze first experimental forecast before kickoff in a separate collection.
         # This never touches official history or the settlement/payment paths.
@@ -12106,13 +12110,11 @@ async def get_track_record_highlights(date: Optional[str] = None, time_zone: str
         "result": {"$in": ["won", "lost", "void", "pending"]},
         "$expr": {"$and": [{"$gte": [event_date, start]}, {"$lt": [event_date, end]}]},
     }
-    projection = {"_id": 0, "signature": 1, "home_team": 1, "away_team": 1, "pick": 1,
-                  "pick_odds": 1, "final_score": 1, "result": 1, "is_combo": 1,
-                  "created_at": 1, "commence_time": 1, "reconciled_at": 1}
+    projection = None
     rows = []
     async for row in db.predictions_history.find(query, projection):
         rows.append(row)
-    return _build_track_record_highlights(rows, selected, zone, max(1, min(limit, 3)), now)
+    return _build_track_record_highlights(_official_history_rows(rows), selected, zone, max(1, min(limit, 3)), now)
 
 
 _track_analytics_cache = {}
@@ -12131,15 +12133,16 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
     cached = _track_analytics_cache.get(cache_key)
     if cached and time.monotonic() - cached["at"] < 120:
         return copy.deepcopy(cached["data"])
-    projection = {"result":1,"sport_key":1,"sport_title":1,"market":1,"pick_odds":1,"model_version":1,"commence_time":1}
+    projection = None
     date_expr = {"$convert":{"input":"$commence_time","to":"date","onError":None,"onNull":None}}
     created_expr = {"$convert":{"input":"$created_at","to":"date","onError":None,"onNull":None}}
-    query = {"result":{"$in":["won","lost","void"]},"$expr":{"$and":[
-        {"$ne":[date_expr,None]},{"$ne":[created_expr,None]},
-        {"$gte":[date_expr,cutoff]},{"$lte":[date_expr,now]},{"$lt":[created_expr,date_expr]}]}}
+    query = {"result":{"$in":["won","lost","void","pending"]},"$expr":{"$and":[
+        {"$ne":[date_expr,None]},{"$gte":[date_expr,cutoff]},{"$lte":[date_expr,now]}]}}
     groups = {"sport":{},"market":{},"odds":{},"model":{}}
     overall = {"won":0,"lost":0,"void":0}
-    async for row in db.predictions_history.find(query, projection).max_time_ms(10000):
+    analytics_rows=await db.predictions_history.find(query).max_time_ms(10000).to_list(length=None)
+    for row in _official_history_rows(analytics_rows):
+        if row.get('result') not in ('won','lost','void'):continue
         kind = _normalize_sport(row)
         if requested != "all" and kind != requested:
             continue
@@ -12204,20 +12207,19 @@ async def get_track_record_public(
 
     resolved_statuses = ["won", "lost", "void"]
 
-    # Historique continu : le Track Record ne doit jamais se "réinitialiser" lors
-    # d'un changement de version du modèle. Tous les pronostics réellement résolus
-    # restent visibles et alimentent les statistiques. Le marqueur
-    # ``official_track_eligible`` reste disponible pour les diagnostics, mais il ne
-    # supprime plus les résultats historiques du Track Record public.
-    resolved_all = await db.predictions_history.find(
-        {"result": {"$in": resolved_statuses}}
-    ).to_list(length=20000)
+    # Resolve the first prematch official pick before filtering results.
+    # Alternative archives remain intact for auditing and model evaluation.
+    history_all = await db.predictions_history.find(
+        {"result": {"$in": ["won","lost","void","pending"]}}
+    ).to_list(length=None)
+    official_all = _official_history_rows(history_all)
+    resolved_all = [r for r in official_all if r.get("result") in resolved_statuses]
     official_graded_count = sum(
         1 for r in resolved_all
         if r.get("official_track_eligible") and r.get("result") in ("won", "lost")
     )
     transition_mode = official_graded_count < 20
-    transition_source = "continuous_history"
+    transition_source = _OFFICIAL_POLICY
 
     for row in resolved_all:
         row["_normalized_sport"] = _normalize_sport(row)
@@ -12353,7 +12355,7 @@ async def get_track_record_public(
 
     # État de conciliation : permet au frontend de signaler immédiatement un
     # Track Record figé sans déclencher de requête fournisseur sur une page publique.
-    pending_docs = await db.predictions_history.find({"result": "pending"}).to_list(length=10000)
+    pending_docs = [r for r in official_all if r.get("result")=="pending"]
     now = datetime.now(timezone.utc)
     overdue_pending = 0
     outside_provider_window = 0
@@ -12406,6 +12408,10 @@ async def get_track_record_public(
     start = (page - 1) * per_page
     page_items = results_desc[start:start + per_page]
 
+    try:
+        page_items = await asyncio.wait_for(enrich_match_badges(db, page_items), timeout=4)
+    except Exception:
+        pass  # optional pictures never hide a published result
     results: List[Dict] = []
     for r in page_items:
         try:
@@ -12421,6 +12427,13 @@ async def get_track_record_public(
 
         results.append({
             "id": r.get("signature"),
+            "match_id": r.get("match_id"),
+            "home_team": r.get("home_team"), "away_team": r.get("away_team"),
+            "sport_key": r.get("sport_key"),
+            **{field:r.get(field) for side in ("home","away") for field in
+               (side+"_logo",side+"_image_candidates",side+"_media")},
+            "market": r.get("market"), "market_label": r.get("market_label"),
+            "track_policy": _OFFICIAL_POLICY,
             # Date réelle du match, pas date de réconciliation.
             "date": r.get("commence_time") or r.get("created_at"),
             "reconciled_at": r.get("reconciled_at"),
@@ -12451,11 +12464,10 @@ async def get_track_record_public(
         "available_labels": ["safe", "value", "risky"],
         "transition_mode": transition_mode,
         "transition_source": transition_source,
-        "note": (
-            "Le Track Record conserve l'historique continu de tous les pronostics réellement "
-            "résolus, même après un changement de version du moteur. Les gains, pertes et "
-            "remboursements passés ne sont jamais masqués."
-        ) if transition_mode else None,
+        "note": "Une rencontre, un seul choix officiel : première publication avant le match. Les autres analyses restent archivées séparément, sans sélectionner les gagnants après coup.",
+        "track_policy": _OFFICIAL_POLICY,
+        "archive_rows": len(history_all),
+        "official_events": len(official_all),
     }
 
 
@@ -13043,68 +13055,146 @@ def _pick_signature(match_id: str, pick: str) -> str:
     return hashlib.md5(f"{match_id}::{pick}".encode()).hexdigest()
 
 
+_OFFICIAL_POLICY = "one_event_first_pre_match_v1"
+_OFFICIAL_ARCHIVE_FIELDS = (
+    "match_id","home_team","away_team","sport_title","sport_key","commence_time","pick","market","market_label",
+    "pick_raw","pick_point","team","pick_odds","confidence","label","model_probability","estimated_win_probability",
+    "wp_score","selection_score","stability_score","dominance_score","num_books","edge","model_version",
+    "market_probability","sport_probability","sport_weight","public_hybrid","analysis_quality","risk_policy_version",
+    "estimated_loss_probability","engine_revision","best_bookmaker","probability_basis","push_probability",
+    "is_combo","official_track_eligible","expected_return","probability_source","evidence_level","uncertainty_level","quote_updated_at")
+
+
+def _official_event_key(row):
+    identity=str(row.get("match_id") or row.get("id") or "").strip()
+    if identity:return "event:"+hashlib.sha256(json.dumps([row.get("sport_key"),identity]).encode()).hexdigest()
+    return _official_fixture_key(row)
+
+
+def _official_fixture_key(row):
+    stamp=_parse_iso(row.get("commence_time"))
+    if not stamp or not row.get("home_team") or not row.get("away_team"):return None
+    def name(value):return ''.join(c for c in unicodedata.normalize('NFKD',str(value)).casefold() if c.isalnum() and not unicodedata.combining(c))
+    return "fixture:"+hashlib.sha256(json.dumps([row.get("sport_key") or row.get("sport_title"),name(row['home_team']),name(row['away_team']),stamp.astimezone(timezone.utc).replace(second=0,microsecond=0).isoformat()]).encode()).hexdigest()
+
+
+def _official_capture(row):
+    return _parse_iso(row.get("official_frozen_at") or row.get("created_at"))
+
+
+def _official_eligible(row):
+    if not isinstance(row,dict) or not str(row.get("pick") or '').strip() or row.get("is_combo"):return False
+    source=str(row.get("source") or '').lower()
+    if not row.get("is_primary_official") and (source.startswith(('montante','shadow','observed')) or row.get('analysis_only')):return False
+    start=_parse_iso(row.get("commence_time"));captured=_official_capture(row)
+    return bool(start and captured and captured<start and _official_event_key(row))
+
+
+def _official_history_rows(rows):
+    """Select before any result/sport/risk filter. Never rank by won/lost/odds."""
+    eligible=[]
+    for raw in rows:
+        row=dict(raw)
+        # A Montante may have archived the same signature with another quote.
+        # Preserve that raw archive; use the official frozen quote for this ledger.
+        snapshot=row.get('official_snapshot')
+        if row.get('is_primary_official') and isinstance(snapshot,dict):
+            for field in _OFFICIAL_ARCHIVE_FIELDS:
+                if field in snapshot:row[field]=snapshot[field]
+        if _official_eligible(row):eligible.append(row)
+    # Union same ID and exact same fixture to handle duplicate provider IDs or schedule updates.
+    parent=list(range(len(eligible)));seen={}
+    def root(i):
+        while parent[i]!=i:parent[i]=parent[parent[i]];i=parent[i]
+        return i
+    for i,row in enumerate(eligible):
+        for key in (_official_event_key(row),_official_fixture_key(row)):
+            if not key:continue
+            if key in seen:parent[root(i)]=root(seen[key])
+            else:seen[key]=i
+    groups={}
+    for i,row in enumerate(eligible):groups.setdefault(root(i),[]).append(row)
+    selected=[]
+    for group in groups.values():
+        # Explicit primary exists only after atomic pre-match freezing (or honest legacy adoption).
+        primary=[r for r in group if r.get("is_primary_official")]
+        chosen=min(primary or group,key=lambda r:(_official_capture(r),str(r.get("signature") or r.get("_id") or '')))
+        chosen["track_policy"]=_OFFICIAL_POLICY
+        selected.append(chosen)
+    return selected
+
+
+async def _freeze_official_predictions(predictions):
+    """Atomic per-event registry; linked history stays compatible with score settlement."""
+    now=datetime.now(timezone.utc)
+    candidates={_official_event_key(p):p for p in predictions if p.get('match_id') and p.get('pick') and not p.get('is_combo')}
+    if not candidates:return predictions
+    registered=await db.official_prediction_registry.find({'_id':{'$in':list(candidates)}}).to_list(length=len(candidates))
+    registry={r['_id']:r for r in registered}
+    missing={key:p for key,p in candidates.items() if key not in registry}
+    if missing:
+        ids=[p['match_id'] for p in missing.values()]
+        legacy=await db.predictions_history.find({'match_id':{'$in':ids}}).to_list(length=None)
+        first={_official_event_key(r):r for r in _official_history_rows(legacy)}
+        writes=[]
+        for key,p in missing.items():
+            start=_parse_iso(p.get('commence_time'));prior=first.get(key)
+            if not prior and (not start or now>=start):continue  # no retroactive official pick
+            frozen={field:(prior or p).get(field) for field in _OFFICIAL_ARCHIVE_FIELDS}
+            frozen.update(signature=(prior or {}).get('signature') or _pick_signature(str((prior or p)['match_id']),(prior or p)['pick']),
+                official_frozen_at=(_official_capture(prior).isoformat() if prior else now.isoformat()),
+                created_at=(prior or {}).get('created_at') or now.isoformat(),
+                official_event_id=key,is_primary_official=True,track_policy=_OFFICIAL_POLICY,
+                result=(prior or {}).get('result','pending'))
+            frozen['is_combo']=False
+            frozen['official_track_eligible']=bool(frozen.get('official_track_eligible'))
+            frozen['probability_basis']=frozen.get('probability_basis') or 'unconditional'
+            # Existing archives keep their original result and publication; no regrading here.
+            if prior:
+                for field in ('reconciled_at','final_score'):frozen[field]=prior.get(field)
+            writes.append(UpdateOne({'_id':key},{'$setOnInsert':{'prediction':frozen,'registered_at':now.isoformat(),
+                'legacy_adoption':bool(prior),'policy':_OFFICIAL_POLICY}},upsert=True))
+        if writes:
+            try:
+                await db.official_prediction_registry.bulk_write(writes,ordered=False)
+            except BulkWriteError as exc:
+                # Concurrent insert can lose the unique _id race; read the winner below.
+                details=exc.details or {}
+                if details.get('writeConcernErrors') or not details.get('writeErrors') or any(e.get('code')!=11000 for e in details['writeErrors']):raise
+        registered=await db.official_prediction_registry.find({'_id':{'$in':list(candidates)}}).to_list(length=len(candidates))
+        registry={r['_id']:r for r in registered}
+    history=[];linked=[]
+    for key,record in registry.items():
+        if record.get('history_linked_at'):continue
+        frozen=record['prediction'];signature=frozen['signature']
+        history.append(UpdateOne({'signature':signature},{'$setOnInsert':{k:v for k,v in frozen.items() if k not in ('official_event_id','is_primary_official','official_frozen_at','track_policy')},
+            '$set':{**{k:frozen[k] for k in ('official_event_id','is_primary_official','official_frozen_at','track_policy')},
+                    'official_snapshot':{k:frozen.get(k) for k in _OFFICIAL_ARCHIVE_FIELDS}}},upsert=True))
+        linked.append(UpdateOne({'_id':key},{'$set':{'history_linked_at':now.isoformat()}}))
+    if history:
+        await db.predictions_history.bulk_write(history,ordered=False)
+        await db.official_prediction_registry.bulk_write(linked,ordered=False)
+    result=[]
+    for p in predictions:
+        record=registry.get(_official_event_key(p));row=dict(p)
+        if record:
+            frozen=record['prediction']
+            for field in _OFFICIAL_ARCHIVE_FIELDS:
+                if field not in ('match_id','home_team','away_team','sport_key','sport_title','commence_time'):
+                    row[field]=frozen.get(field)
+            row.update(is_primary_official=True,official_frozen_at=frozen['official_frozen_at'],
+                official_event_id=frozen['official_event_id'],track_policy=_OFFICIAL_POLICY)
+        result.append(row)
+    return result
+
+
 async def _save_predictions_to_history(matches: List[Dict]):
     try:
-        real_stats_map = dict(await get_real_stats_map(db, matches))
-        real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
-        predictions = analyze_all(matches, real_stats_map=real_stats_map)
-        for p in predictions:
-            if not p.get("pick") or not p.get("match_id"):
-                continue
-            sig = _pick_signature(p["match_id"], p["pick"])
-            existing = await db.predictions_history.find_one({"signature": sig})
-            if existing:
-                continue
-
-            await db.predictions_history.insert_one({
-                "signature": sig,
-                "match_id": p["match_id"],
-                "home_team": p.get("home_team"),
-                "away_team": p.get("away_team"),
-                "sport_title": p.get("sport_title"),
-                "sport_key": p.get("sport_key"),
-                "commence_time": p.get("commence_time"),
-                "pick": p["pick"],
-                "market": p.get("market"),
-                "market_label": p.get("market_label"),
-                "pick_raw": p.get("pick_raw"),
-                "pick_point": p.get("pick_point"),
-                "team": p.get("team"),
-                "evidence_level": p.get("evidence_level"),
-                "uncertainty_level": p.get("uncertainty_level"),
-                "quote_updated_at": p.get("quote_updated_at"),
-                "pick_odds": p.get("pick_odds"),
-                "confidence": p.get("confidence"),
-                "label": p.get("label"),
-                "model_probability": p.get("model_probability"),
-                "estimated_win_probability": p.get("estimated_win_probability"),
-                "wp_score": p.get("wp_score"),
-                "selection_score": p.get("selection_score"),
-                "stability_score": p.get("stability_score"),
-                "dominance_score": p.get("dominance_score"),
-                "num_books": p.get("num_books"),
-                "edge": p.get("edge"),
-                "model_version": p.get("model_version", MODEL_VERSION),
-                "market_probability": p.get("market_probability"),
-                "sport_probability": p.get("sport_probability"),
-                "sport_weight": p.get("sport_weight"),
-                "public_hybrid": p.get("public_hybrid"),
-                "analysis_quality": p.get("analysis_quality"),
-                "risk_policy_version": p.get("risk_policy_version"),
-                "estimated_loss_probability": p.get("estimated_loss_probability"),
-                "engine_revision": p.get("engine_revision"),
-                "best_bookmaker": p.get("best_bookmaker"),
-                "probability_basis": p.get("probability_basis", "unconditional"),
-                "push_probability": p.get("push_probability"),
-                "expected_return": p.get("expected_return"),
-                "probability_source": p.get("probability_source"),
-                "is_combo": p.get("is_combo", False),
-                "official_track_eligible": bool(p.get("official_track_eligible", False)),
-                "result": "pending",
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            })
-    except Exception:
-        pass
+        real_stats_map=dict(await get_real_stats_map(db,matches))
+        real_stats_map['__hybrid_models__']=await _get_hybrid_registry()
+        await _freeze_official_predictions(analyze_all(matches,real_stats_map=real_stats_map))
+    except Exception as exc:
+        logging.getLogger('winpulse.official').warning('Official archive deferred (%s)',type(exc).__name__)
 
 
 def _find_current_h2h_odds(match: Dict, pick_text: str, home: str, away: str) -> Optional[float]:
@@ -16146,7 +16236,8 @@ async def _visual_assets_startup():
     if ENABLE_INTERNAL_SCHEDULER:
         scheduler.add_job(_scheduled_visual_assets,'interval',minutes=_visual_assets_minutes(),
             id='visual_assets_v3',replace_existing=True,coalesce=True,max_instances=1,
-            next_run_time=datetime.now(timezone.utc)+timedelta(seconds=45))
+            next_run_time=datetime.now(timezone.utc)+timedelta(seconds=45),misfire_grace_time=300)
+        _queue_visual_assets()
 
 
 @app.on_event('shutdown')
@@ -16155,4 +16246,5 @@ async def _visual_assets_shutdown():
         _visual_assets_task.cancel()
         try:await _visual_assets_task
         except asyncio.CancelledError:pass
+
 
