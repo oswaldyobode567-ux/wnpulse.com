@@ -16179,6 +16179,7 @@ async def _run_visual_assets():
         report.get('checked'),report.get('updated'),report.get('statuses'))
     invalidate=getattr(_optional_stats_service,'invalidate_badge_presentation_cache',None)
     if callable(invalidate):invalidate()
+    _public_media_cache['at']=0.
     # Only presentation is updated. Do not invalidate or recompute official picks.
     try:
         async with _prediction_cache_lock:
@@ -16248,3 +16249,33 @@ async def _visual_assets_shutdown():
         except asyncio.CancelledError:pass
 
 
+
+
+# Public image-only catalogue v5: no bookmaker calls, no prediction recalculation.
+_public_media_cache = {"at":0.,"items":[]}
+_public_media_lock = asyncio.Lock()
+
+@app.get('/api/media/catalogue')
+async def get_public_media_catalogue(response: Response):
+    response.headers['Cache-Control']='public, max-age=30'
+    async with _public_media_lock:
+        if time.monotonic()-_public_media_cache['at']<30:
+            return {"version":1,"items":_public_media_cache['items']}
+        matches=list(_prediction_cache.get('matches') or [])
+        if not matches:
+            fields=('id','match_id','sport_key','home_team','away_team','home_logo','away_logo','home_team_logo','away_team_logo','home_media','away_media','home_image_candidates','away_image_candidates')
+            doc=await asyncio.wait_for(db.odds_cache.find_one({'_id':'all_matches'}, {**{'data.'+key:1 for key in fields},'_id':0}),timeout=3) or {}
+            matches=doc.get('data') if isinstance(doc.get('data'),list) else []
+        try:matches=await asyncio.wait_for(enrich_match_badges(db,matches),timeout=4)
+        except Exception as exc:logging.getLogger('winpulse.media').warning('Public media cache deferred (%s)',type(exc).__name__)
+        items=[]
+        for match in matches[:3000]:
+            item={'match_id':str(match.get('id') or match.get('match_id') or '')}
+            if not item['match_id']:continue
+            for side in ('home','away'):
+                for suffix in ('_logo','_team_logo','_media','_image_candidates'):
+                    field=side+suffix
+                    if match.get(field):item[field]=match[field]
+            if len(item)>1:items.append(item)
+        _public_media_cache.update(at=time.monotonic(),items=items)
+        return {'version':1,'items':items}
