@@ -1227,10 +1227,13 @@ export function MatchCataloguePage() {
   const translationRef = useRef(t);
   translationRef.current = t;
   const navigate = useNavigate();
-  const { matches, loading, lastUpdate, refresh } = useRealtimeMatches();
+  const { matches: sourceMatches, loading, lastUpdate, refresh } = useRealtimeMatches();
+  const participantMedia=useDashboardMedia();
+  const matches=useMemo(()=>sourceMatches.map(match=>attachDashboardMedia(match,participantMedia)),[sourceMatches,participantMedia]);
   const pickCounts = useMemo(() => getAvailablePickCounts(matches), [matches]);
   const picksLoading = loading && pickCounts.total === 0;
-  const [topPicks,    setTopPicks]   = useState([]);
+  const [sourceTopPicks, setTopPicks] = useState([]);
+  const topPicks=useMemo(()=>sourceTopPicks.map(match=>attachDashboardMedia(match,participantMedia)),[sourceTopPicks,participantMedia]);
   const [topLoading,  setTopLoading] = useState(true);
   const [topError, setTopError] = useState(false);
   const [topRetry, setTopRetry] = useState(0);
@@ -1495,7 +1498,7 @@ export function MatchCataloguePage() {
               : topError ? <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-center" role="alert"><p className="text-sm leading-6 text-slate-700">{t("Impossible de charger les sélections à la une.")}</p><Button type="button" variant="outline" className="mt-3 min-h-11" onClick={() => { setTopLoading(true); setTopRetry(value => value + 1); }}>{t("Réessayer")}</Button></div>
                 : visibleTopPicks.length === 0 ? <p className="py-3 text-sm leading-6 text-slate-500">{hasSearch ? t("Aucune sélection à la une pour cette recherche.") : t("Aucune sélection à la une pour le moment.")}</p>
                   : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{visibleTopPicks.slice(0,3).map(prediction => <MatchCard key={prediction.match_id || prediction.id}
-                    match={{ id: prediction.match_id || prediction.id, home_team: prediction.home_team, away_team: prediction.away_team, sport_title: prediction.sport_title, sport_key: prediction.sport_key, commence_time: prediction.commence_time, prediction }}
+                    match={{ ...prediction, id: prediction.match_id || prediction.id, prediction }}
                     isAdmin={isAdmin} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} />)}</div>}
             <Link to="/app/top" className="mt-3 inline-flex min-h-11 items-center gap-1 text-sm font-semibold text-orange-600 hover:underline">{t("Tout voir")}<ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" /></Link>
           </div>
@@ -1711,6 +1714,41 @@ function ExperienceHome(){
 }
 function HomeSectionTitle({title,to}){const w=useExperienceCopy();return <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-xl font-extrabold tracking-tight text-slate-900">{title}</h2><Link to={to} className="inline-flex min-h-11 items-center gap-1 text-sm font-bold text-orange-700">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link></div>;}
 function ExperienceTool({to,title,text,icon:Icon}){const w=useExperienceCopy();return <Link to={to} className="group flex min-w-0 flex-col rounded-3xl border border-slate-200 bg-white p-5 shadow-sm transition-all hover:border-orange-300 hover:shadow-md sm:p-6"><span className="mb-4 grid h-12 w-12 place-items-center rounded-2xl bg-orange-50 text-orange-600"><Icon className="h-6 w-6"/></span><h2 className="text-lg font-extrabold text-slate-900">{title}</h2><p className="mt-2 flex-1 text-sm leading-6 text-slate-500">{text}</p><span className="mt-5 inline-flex min-h-11 items-center gap-2 text-sm font-bold text-orange-700">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></span></Link>;}
+
+// Images have their own cache; loading a crest must never refresh a prediction.
+const PARTICIPANT_MEDIA_FIELDS = ["home_logo","away_logo","home_team_logo","away_team_logo","home_media","away_media","home_image_candidates","away_image_candidates"];
+export function attachDashboardMedia(match, catalogue) {
+  const identity=String(match?.match_id || match?.id || "");
+  const entry=catalogue[identity];
+  if(!entry)return match;
+  const result={...match};
+  for(const field of PARTICIPANT_MEDIA_FIELDS)if(entry[field] != null)result[field]=entry[field];
+  return result;
+}
+function useDashboardMedia() {
+  const [catalogue,setCatalogue]=useState({});
+  useEffect(()=>{
+    let active=true,pending=false,lastAttempt=0;
+    const controller=new AbortController();
+    const load=async()=>{
+      if(!active||pending||document.visibilityState==="hidden"||Date.now()-lastAttempt<30000)return;
+      lastAttempt=Date.now();pending=true;
+      try{
+        const response=await api.get("/media/catalogue",{signal:controller.signal,timeout:10000});
+        if(active&&Array.isArray(response.data?.items)){
+          const next={};for(const row of response.data.items)if(row.match_id)next[String(row.match_id)]=row;
+          setCatalogue(next);
+        }
+      }catch{/* Keep existing source images; optional media never blocks match cards. */}
+      finally{pending=false;}
+    };
+    load();const timer=setInterval(load,60000);
+    document.addEventListener("visibilitychange",load);window.addEventListener("focus",load);
+    return()=>{active=false;controller.abort();clearInterval(timer);document.removeEventListener("visibilitychange",load);window.removeEventListener("focus",load);};
+  },[]);
+  return catalogue;
+}
+
 export default function DashboardPage(){return <AppLayout><ExperienceHome/></AppLayout>;}
 export function ExplorePage(){const w=useExperienceCopy();useExperienceEvent('explore');return <AppLayout><div className="mx-auto max-w-6xl space-y-6 px-4 py-7 sm:px-6"><header className="rounded-3xl bg-slate-950 p-6 text-white sm:p-9"><p className="text-xs font-bold uppercase tracking-widest text-orange-300">WinPulse</p><h1 className="mt-3 text-3xl font-extrabold">{w.explore}</h1><p className="mt-3 text-sm leading-6 text-slate-300">{w.exploreIntro}</p></header><div className="grid gap-4 sm:grid-cols-2"><ExperienceTool to="/app/combines" title={w.combos} text={w.comboIntro} icon={Layers}/><ExperienceTool to="/app/montante" title={w.montante} text={w.montanteText} icon={TrendingUp}/><ExperienceTool to="/app/value-bets" title={w.value} text={w.valueText} icon={Activity}/><ExperienceTool to="/app/live" title={w.live} text={w.liveText} icon={Radio}/></div><p className="text-xs leading-6 text-slate-500">{w.note}</p><ExperienceAdminSummary/><EngineObservationPanel/></div></AppLayout>;}
 export function CombinationsHubPage(){const w=useExperienceCopy();useExperienceEvent('combos');return <AppLayout><div className="mx-auto max-w-6xl space-y-6 px-4 py-7 sm:px-6"><header className="rounded-3xl bg-slate-950 p-6 text-white sm:p-9"><Link to="/app/explorer" className="inline-flex min-h-11 items-center text-sm text-orange-300">← {w.explore}</Link><h1 className="mt-3 text-3xl font-extrabold sm:text-4xl">{w.combos}</h1><p className="mt-3 max-w-2xl text-sm leading-6 text-slate-300">{w.comboIntro}</p></header><div className="grid gap-4 md:grid-cols-3"><ExperienceTool to="/app/combines/recommandations" title={w.recommendations} text={w.recommendationsText} icon={Layers}/><ExperienceTool to="/app/combines/personnaliser" title={w.personal} text={w.personalText} icon={SlidersHorizontal}/><ExperienceTool to="/app/builder" title={w.builder} text={w.builderText} icon={Bookmark}/></div><p className="rounded-2xl bg-orange-50 p-4 text-sm leading-6 text-orange-900">{w.note}</p></div></AppLayout>;}
@@ -1723,3 +1761,4 @@ function EngineObservationPanel(){
  const r=report?.prospective||{};const number=v=>v!==null&&v!==undefined&&Number.isFinite(Number(v))?i18n.formatNumber(Number(v),{maximumFractionDigits:4}):'—';
  return <details className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="engine-observation"><summary className="flex min-h-11 cursor-pointer items-center gap-2 font-bold text-slate-900"><Activity className="h-4 w-4 text-orange-600"/>{w.modelAudit}</summary><p className="mt-3 text-sm leading-6 text-slate-600">{w.modelNote}</p><div className="mt-4 grid gap-3 sm:grid-cols-3">{[[w.modelSamples,r.settled_matches],[w.modelBase,r.baseline_brier],[w.modelTest,r.hybrid_brier]].map(([label,value],index)=><div key={index} className="rounded-xl bg-slate-50 p-3"><p className="font-mono text-xl font-bold text-slate-900">{number(value)}</p><p className="mt-1 text-xs leading-5 text-slate-500">{label}</p></div>)}</div><p className="mt-3 text-xs leading-6 text-slate-500">{w.modelMetric}</p></details>;
 }
+
