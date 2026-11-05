@@ -670,7 +670,7 @@ _TEAM_ALIASES = {"brightonandhovealbion":"brightonhovealbion", "fcbarcelona":"ba
 
 def enrichment_sport(match):
     key = str(match.get("sport_key") or "").lower()
-    return "tennis" if key.startswith("tennis_") else _as_sport(match)
+    return "tennis" if key.startswith("tennis_") else "mma" if key.startswith("mma_") else _as_sport(match)
 
 
 def entity_name(name, sport):
@@ -883,11 +883,12 @@ def _tennis_full_name_match(name,value):
     return a==b or len(a)==2 and len(b)==2 and a==list(reversed(b))
 
 
-async def find_tennis_portrait(db,name):
+async def find_athlete_portrait(db,name,sport="tennis"):
     # Reject surname-only and initials rather than invent a player's identity.
     if len(name.split())<2 or any(len(x.strip('.'))==1 for x in name.split()):return None
     data=await enrichment_request(db,'wikidata','/w/api.php',{'action':'wbsearchentities','search':name,'language':'en','uselang':'en','type':'item','limit':5,'format':'json'})
     if data is None:return {'lookup_status':'unavailable'}
+    search_names={r.get('id'):r.get('label') for r in data.get('search',[]) if isinstance(r,dict)}
     ids=[r.get('id') for r in data.get('search',[]) if re.fullmatch(r'Q[1-9][0-9]*',str(r.get('id') or ''))]
     if not ids:return None
     data=await enrichment_request(db,'wikidata','/w/api.php',{'action':'wbgetentities','ids':'|'.join(ids),'props':'claims|labels|aliases','languages':'en|fr','format':'json'})
@@ -895,8 +896,9 @@ async def find_tennis_portrait(db,name):
     candidates=[]
     for entity in data.get('entities',{}).values():
         if 'Q5' not in _wd_values(entity,'P31'):continue
-        if 'Q847' not in _wd_values(entity,'P641') and 'Q10833314' not in _wd_values(entity,'P106'):continue
-        names=[v.get('value') for v in (entity.get('labels') or {}).values() if isinstance(v,dict)]
+        sport_ids,occupations=({'Q847'},{'Q10833314'}) if sport=='tennis' else ({'Q114466'},{'Q11607585','Q18085211'}) if sport=='mma' else (set(),set())
+        if not sport_ids.intersection(_wd_values(entity,'P641')) and not occupations.intersection(_wd_values(entity,'P106')):continue
+        names=[search_names.get(entity.get('id'))]+[v.get('value') for v in (entity.get('labels') or {}).values() if isinstance(v,dict)]
         names += [v.get('value') for rows in (entity.get('aliases') or {}).values() for v in rows if isinstance(v,dict)]
         if not any(_tennis_full_name_match(name,value) for value in names):continue
         files=[v for v in _wd_values(entity,'P18') if isinstance(v,str) and v.lower().endswith(('.jpg','.jpeg','.png'))]
@@ -910,6 +912,10 @@ async def find_tennis_portrait(db,name):
             result=commons_media(info,entity_id)
             if result:return result
     return None
+
+
+async def find_tennis_portrait(db,name):
+    return await find_athlete_portrait(db,name,'tennis')
 
 
 async def _legacy_refresh_media_cache(db,matches):
@@ -1547,49 +1553,74 @@ def _sportsdb_identity(name):
     return _as_normalize(_SPORTSDB_ID_QUERIES.get(normalized,normalized)).translate(str.maketrans({'æ':'ae','ø':'o','ł':'l','đ':'d'}))
 
 
-def _sportsdb_football_identity(name,rows):
+_SPORTSDB_TEAM_SPORTS={
+    'football':('Soccer','football'), 'basketball':('Basketball','basketball'),
+    'hockey':('Ice Hockey','hockey'), 'baseball':('Baseball','baseball'),
+    'american_football':('American Football','american-football'),
+}
+
+def _sportsdb_team_identity(name,rows,sport):
+    config=_SPORTSDB_TEAM_SPORTS.get(sport)
+    if not config:return None
+    sport_name,namespace=config
+    normalize=(lambda value:_sportsdb_identity(value)) if sport=="football" else (lambda value:_media_identity(value,sport))
     matches={}
-    expected=_sportsdb_identity(name)
+    expected=normalize(name)
     for row in rows or []:
-        if not isinstance(row,dict) or row.get('strSport')!='Soccer':continue
+        if not isinstance(row,dict) or row.get('strSport')!=sport_name:continue
         names=[row.get('strTeam')]+re.split(r'[,;|]',str(row.get('strAlternate') or ''))
-        if not any(_sportsdb_identity(value)==expected for value in names if value):continue
+        if not any(normalize(value)==expected for value in names if value):continue
         # Preserve category qualifiers; a substring search is not an identity check.
         gender=str(row.get('strGender') or '').casefold()
         if gender=='female' and not re.search(r'\b(women|ladies|wfc|feminin)\b',str(name).casefold()):continue
         identity=str(row.get('idAPIfootball') or '')
         if not re.fullmatch(r'[1-9][0-9]{0,6}',identity):continue
         matches[identity]={'provider':'API-Sports','provider_id':int(identity),'kind':'badge',
-            'url':f'https://media.api-sports.io/football/teams/{identity}.png',
+            'url':f'https://media.api-sports.io/{namespace}/teams/{identity}.png',
             'verified_identity':True,'identity_provider':'TheSportsDB',
             'identity_provider_id':str(row.get('idTeam') or ''),
             'identity_verification':'exact_name_foreign_id','rights':'identification_only_provider_terms'}
     return next(iter(matches.values())) if len(matches)==1 else None
 
 
+def _sportsdb_football_identity(name,rows):
+    return _sportsdb_team_identity(name,rows,'football')
+
+
 async def _refresh_sportsdb_football_ids(db,jobs,cached,deadline):
     if os.environ.get('WNPULSE_FREE_ID_LOOKUP_ENABLED','true').lower() in ('false','0','no'):return
     now=datetime.now(timezone.utc);used=0
-    order=sorted(jobs.values(),key=lambda job:(job.get('priority',2),cached.get(job['key'],{}).get('sportsdb_checked_at') or '',job['kickoff']))
+    # Round-robin sport order prevents hundreds of football teams starving other sports.
+    groups={}
+    for job in jobs.values():
+        if job['sport'] in _SPORTSDB_TEAM_SPORTS:
+            groups.setdefault(job['sport'],[]).append(job)
+    for rows in groups.values():
+        rows.sort(key=lambda job:(job.get('priority',2),cached.get(job['key'],{}).get('sportsdb_checked_at') or '',job['kickoff']))
+    order=[]
+    while any(groups.values()):
+        for sport in sorted(groups):
+            if groups[sport]:order.append(groups[sport].pop(0))
     for job in order:
-        if job['sport']!='football' or job['existing']:continue
+        if job['existing']:continue
         old=cached.get(job['key'],{})
         if (old.get('media') or {}).get('verified_identity') and not old.get('image_broken'):continue
         retry=_display_date(old.get('sportsdb_retry_at'))
         if retry and retry>now:continue
         if used>=8 or time.monotonic()>deadline-50:break
         used+=1
-        query=_SPORTSDB_ID_QUERIES.get(_as_normalize(job['name']),job['name'])
+        query=_SPORTSDB_ID_QUERIES.get(_as_normalize(job['name']),job['name']) if job['sport']=='football' else job['name']
         try:
-            lookup_id=_SPORTSDB_ID_LOOKUP.get(_as_normalize(job['name']))
+            lookup_id=_SPORTSDB_ID_LOOKUP.get(_as_normalize(job['name'])) if job['sport']=='football' else None
             path='/api/v1/json/123/lookupteam.php' if lookup_id else '/api/v1/json/123/searchteams.php'
             data=await asyncio.wait_for(enrichment_request(db,'sportsdb_ids',path,{'id':lookup_id} if lookup_id else {'t':query}),timeout=12)
         except Exception:data=None
         fields={'sportsdb_checked_at':now.isoformat(),'sportsdb_retry_at':(now+timedelta(hours=6 if data is None else 24)).isoformat()}
-        media=_sportsdb_football_identity(job['name'],(data or {}).get('teams'))
+        media=_sportsdb_team_identity(job['name'],(data or {}).get('teams'),job['sport'])
+        if media and await _check_media_url(media['url'])!='ready':media=None
         if media:
-            fields.update(media=media,sport='football',name=job['name'],status='ready',image_broken=False,
-                resolver_version=6,checked_at=now.isoformat(),next_check_at=(now+timedelta(days=30)).isoformat())
+            fields.update(media=media,sport=job['sport'],name=job['name'],status='ready',image_broken=False,
+                resolver_version=7,checked_at=now.isoformat(),next_check_at=(now+timedelta(days=30)).isoformat())
         await db.entity_media.update_one({'_id':job['key']},{'$set':fields},upsert=True)
         cached.setdefault(job['key'],{}).update(fields)
         if data is None:break  # provider backoff is shared; do not hammer it for every team
@@ -2119,7 +2150,7 @@ async def refresh_visual_assets(db,matches):
     for key,job in jobs.items():
         old=cached.get(key,{})
         retry=_display_date(old.get('next_check_at'))
-        if key not in budget['prefetched'] and retry and retry>now and (old.get('resolver_version')==6 or _approved_portrait(old.get('media') or {})):continue
+        if key not in budget['prefetched'] and retry and retry>now and (old.get('resolver_version')==7 or _approved_portrait(old.get('media') or {})):continue
         pending.setdefault(job['sport'],[]).append((old.get('checked_at') or '',job['kickoff'],key))
     for rows in pending.values():rows.sort()
     order=[]
@@ -2132,7 +2163,7 @@ async def refresh_visual_assets(db,matches):
         if checked>=64 or time.monotonic()>=deadline:break
         if sport in blocked_sports and key not in budget['prefetched']:continue
         # Preserve known cached badges; spend search requests on missing entities first.
-        if sport!='tennis' and job['existing']:
+        if sport not in ('tennis','mma') and job['existing']:
             healthy=[]
             for url in job['existing']:
                 h=await db.media_health.find_one({'_id':_media_health_key(url)}) or {}
@@ -2140,14 +2171,14 @@ async def refresh_visual_assets(db,matches):
             if healthy and not old.get('image_broken'):
                 await db.entity_media.update_one({'_id':key},{'$set':{'sport':sport,'name':job['name'],
                     'status':'ready_existing','checked_at':now.isoformat(),
-                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':6}},upsert=True)
+                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':7}},upsert=True)
                 checked+=1;statuses['ready_existing']=statuses.get('ready_existing',0)+1
                 continue
-        if sport=='tennis':
+        if sport in ('tennis','mma'):
             if portrait_jobs>=portraits:continue
             portrait_jobs+=1
             try:
-                media=await asyncio.wait_for(find_tennis_portrait(db,job['name']),timeout=max(1,min(42,deadline-time.monotonic())))
+                media=await asyncio.wait_for(find_athlete_portrait(db,job['name'],sport),timeout=max(1,min(42,deadline-time.monotonic())))
             except Exception as exc:
                 logger.warning('Portrait lookup deferred (%s)',type(exc).__name__)
                 media={'lookup_status':'unavailable'}
@@ -2175,15 +2206,15 @@ async def refresh_visual_assets(db,matches):
         transient=status in ('unavailable','key_missing')
         if transient:blocked_sports.add(sport)
         delay=timedelta(minutes=30) if transient else timedelta(days=30) if valid else timedelta(hours=24)
-        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':6}
+        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':7}
         if identity:fields['identity']=identity
         if valid:
             previous=(old.get('media') or {}).get('url')
             # Same-provider badges may retain one verified old crest as a fallback.
-            if sport!='tennis' and _media_url(previous) and previous!=media['url']:
+            if sport not in ('tennis','mma') and _media_url(previous) and previous!=media['url']:
                 media['alternatives']=[previous]
             fields['media']=media;fields['image_broken']=False;updated+=1
-            if sport!='tennis':
+            if sport not in ('tennis','mma'):
                 await db.stats_cache.update_one({'_id':_as_key(sport,job['name'])},{'$set':{
                     'matched':True,'team_id':identity['provider_id'],'name':identity['name'],
                     'logo':media['url'],'updated_at':now.isoformat()}},upsert=True)
@@ -2192,7 +2223,7 @@ async def refresh_visual_assets(db,matches):
     health=await refresh_media_health(db,matches,jobs)
     result={'checked_at':datetime.now(timezone.utc).isoformat(),'catalogue_entities':len(jobs),
         'checked':checked,'updated':updated,'statuses':statuses,'team_requests_attempted':budget['used'],
-        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':6}
+        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':7}
     await db.enrichment_state.update_one({'_id':'visual_assets'},{'$set':result},upsert=True)
     return result
 
@@ -2263,14 +2294,16 @@ async def media_catalogue_status(db,matches):
     broken={r['_id'] for r in health}
     for key,job in jobs.items():
         media=(ready.get(key) or {}).get('media') or {}
-        acceptable=bool(_approved_portrait(media)) if job['sport']=='tennis' else bool(media.get('verified_identity') and media.get('kind')=='badge' and _media_url(media.get('url')))
+        acceptable=bool(_approved_portrait(media)) if job['sport'] in ('tennis','mma') else bool(media.get('verified_identity') and media.get('kind')=='badge' and _media_url(media.get('url')))
         candidates=[u for u in [media.get('url')]+list(media.get('alternatives') or [])+job['existing'] if _media_url(u) and _media_health_key(u) not in broken]
-        available=bool(candidates and (acceptable or job['sport']!='tennis' and job['existing']))
+        available=bool(candidates and (acceptable or job['sport'] not in ('tennis','mma') and job['existing']))
         group=sports.setdefault(job['sport'],{'total':0,'available':0,'missing':0})
         group['total']+=1;group['available' if available else 'missing']+=1
         if not available and len(missing)<100:
             missing.append({'key':key,'name':job['name'],'sport':job['sport'],'status':ready.get(key,{}).get('status','pending')})
-    return {'resolver_version':6,'sports':sports,'missing_sample':missing,
+    for group in sports.values():
+        group['coverage_percent']=round(100*group['available']/group['total'],1) if group['total'] else 0
+    return {'resolver_version':7,'sports':sports,'missing_sample':missing,
         'last_run':{k:v for k,v in (await db.enrichment_state.find_one({'_id':'visual_assets'}) or {}).items() if k!='_id'},
         'broken_images':len(health),'no_complete_coverage_guarantee':True}
 
@@ -2329,8 +2362,8 @@ async def enrich_match_badges(db,matches):
             def add(url):
                 if _media_url(url) and _media_health_key(url) not in cache['broken'] and url not in candidates:candidates.append(url)
             media=(cache['media'].get(_visual_key(sport,name),{}).get('media') or {}) if sport and name else {}
-            approved=(sport=='tennis' and _approved_portrait(media)) or (sport!='tennis' and media.get('kind')=='badge' and media.get('provider')=='API-Sports' and media.get('verified_identity') is True)
-            if sport=='tennis' and approved:
+            approved=(sport in ('tennis','mma') and _approved_portrait(media)) or (sport not in ('tennis','mma') and media.get('kind')=='badge' and media.get('provider')=='API-Sports' and media.get('verified_identity') is True)
+            if sport in ('tennis','mma') and approved:
                 add(media.get('url'))
                 for url in media.get('alternatives') or []:add(url)
             else:
@@ -2361,6 +2394,7 @@ async def enrich_match_badges(db,matches):
                 row.pop(side+'_media',None)
         result.append(row)
     return result
+
 
 
 
