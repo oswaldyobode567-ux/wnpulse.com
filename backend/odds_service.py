@@ -2187,8 +2187,25 @@ async def _budgeted_primary_get(db, client, url, *, params, category):
 
 # Supplemental markets are collected in bounded batches and never replace the
 # all-match catalogue. Every paid call uses the same persistent credit guard.
-_EXTRA_FOOTBALL_MARKETS = {'btts', 'draw_no_bet', 'spreads', 'alternate_totals', 'alternate_spreads', 'team_totals'}
+_EXTRA_MARKET_COLLECTION_VERSION = 'football-extra-20261105-dc'
+_EXTRA_FOOTBALL_MARKETS = {'double_chance', 'btts', 'draw_no_bet', 'spreads', 'alternate_totals', 'alternate_spreads', 'team_totals'}
 _EXTRA_MARKET_CANONICAL = {'alternate_totals':'totals', 'alternate_spreads':'spreads'}
+
+
+def _dc_outcome_code(name,home,away):
+    """Canonicalize only explicit equivalent labels; never infer an unknown side."""
+    import re
+    clean=lambda value:re.sub(r'\s+',' ',str(value or '').strip()).casefold()
+    value=clean(name)
+    codes={'1x':'1X','x1':'1X','x2':'X2','2x':'X2','12':'12','21':'12',
+        '1/x':'1X','x/1':'1X','x/2':'X2','2/x':'X2','1/2':'12','2/1':'12'}
+    if value in codes:return codes[value]
+    for code,left,right in [('1X',home,'Draw'),('X2','Draw',away),('12',home,away),
+        ('1X','Home','Draw'),('X2','Draw','Away'),('12','Home','Away')]:
+        if not left or not right:continue
+        for separator in (' or ',' / ','/',' ou '):
+            if value in (clean(str(left)+separator+str(right)),clean(str(right)+separator+str(left))):return code
+    return None
 
 
 def _merge_market_quotes(base, extra):
@@ -2209,8 +2226,11 @@ def _merge_market_quotes(base, extra):
                 for outcome in market.get('outcomes') or []:
                     if not isinstance(outcome, dict):
                         continue
-                    identity = (outcome.get('name'), outcome.get('point'), outcome.get('description'))
                     row = copy.deepcopy(outcome)
+                    if key=='double_chance':
+                        code=_dc_outcome_code(row.get('name'),base.get('home_team'),base.get('away_team'))
+                        if code:row['name']=code
+                    identity = (row.get('name'), row.get('point'), row.get('description'))
                     row['_quote_updated_at'] = row.get('_quote_updated_at') or market.get('last_update') or owner.get('last_update')
                     old = out['outcomes'].get(identity)
                     prior = _result_dt((old or {}).get('_quote_updated_at'))
@@ -2248,7 +2268,8 @@ async def _enrich_extra_football_markets(db, matches):
             'updated_at':at.isoformat() if valid else None}
         result.append(merged)
         retry = _result_dt(cached.get('retry_at'))
-        if (not at or (now-at).total_seconds() >= 10800) and (not retry or retry <= now):
+        upgrade = cached.get('collector_version') != _EXTRA_MARKET_COLLECTION_VERSION
+        if (upgrade or not at or (now-at).total_seconds() >= 10800) and (upgrade or not retry or retry <= now):
             candidates.append((len(result)-1, merged))
     limit = max(0, min(30, int(os.environ.get('WNPULSE_EXTRA_MARKETS_MAX_EVENTS', '12'))))
     if not candidates or not limit:
@@ -2270,7 +2291,7 @@ async def _enrich_extra_football_markets(db, matches):
                 requested = sorted(available & _EXTRA_FOOTBALL_MARKETS)
                 if not requested:
                     result[index]['multi_market_quote_status'] = {'status':'not_available_at_provider', 'updated_at':now.isoformat()}
-                    await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{'retry_at':(now+timedelta(hours=4)).isoformat()}}, upsert=True)
+                    await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{'retry_at':(now+timedelta(hours=4)).isoformat(),'collector_version':_EXTRA_MARKET_COLLECTION_VERSION}}, upsert=True)
                     continue
                 response = await _budgeted_primary_get(db, client, base+'/odds', params={
                     'apiKey':ODDS_API_KEY, 'regions':_regions_for_sport(sport),
@@ -2284,7 +2305,7 @@ async def _enrich_extra_football_markets(db, matches):
                 result[index]['multi_market_quote_status'] = {'status':'refreshed', 'updated_at':now.isoformat(), 'requested_markets':requested}
                 await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{
                     'fetched_at':now.isoformat(), 'retry_at':(now+timedelta(hours=3)).isoformat(),
-                    'data':data}}, upsert=True)
+                    'collector_version':_EXTRA_MARKET_COLLECTION_VERSION, 'data':data}}, upsert=True)
             except PrimaryBudgetError as exc:
                 result[index]['multi_market_quote_status'] = {'status':exc.code}
                 break
@@ -2292,5 +2313,6 @@ async def _enrich_extra_football_markets(db, matches):
                 # Existing prices survive 401/403/422/429, timeouts and malformed data.
                 result[index]['multi_market_quote_status'] = {'status':'provider_unavailable'}
                 await db.scores_cache.update_one({'_id':'extra_odds:'+event_id}, {'$set':{
-                    'retry_at':(now+timedelta(hours=1)).isoformat(), 'last_error_type':type(exc).__name__}}, upsert=True)
+                    'retry_at':(now+timedelta(hours=1)).isoformat(), 'collector_version':_EXTRA_MARKET_COLLECTION_VERSION, 'last_error_type':type(exc).__name__}}, upsert=True)
     return result
+
