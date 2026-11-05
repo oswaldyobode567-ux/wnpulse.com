@@ -724,7 +724,11 @@ export function MediaCredits({match}) {
  const {language}=usePageLanguage();const words=SPORT_INSIGHT_COPY[language]||SPORT_INSIGHT_COPY.fr;
  const entries=['home','away'].map(side=>({...(match?.[`${side}_media`]||{}),name:match?.[`${side}_team`],displayed:badgeUrl(match,side)})).filter(row=>row.verified_license&&row.kind==='portrait'&&row.url===row.displayed&&row.author&&row.license&&/^https:\/\/commons\.wikimedia\.org\//.test(row.source_url||'')&&/^https:\/\/(?:creativecommons\.org|commons\.wikimedia\.org)\//.test(row.license_url||''));
  if(!entries.length)return null;
- return <div className="mt-3 border-t border-slate-200 pt-2 text-[11px] leading-5 text-slate-500" data-testid="media-credits"><span className="font-semibold">{words.credits} : </span>{entries.map((row,i)=><span key={row.url} className="break-words">{i>0&&' · '}<a href={row.source_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.name} — {row.author}</a>{' / '}<a href={row.license_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.license}</a> ({words.crop})</span>)}</div>;
+ const label={fr:"Images et sources",en:"Images and sources",es:"Imágenes y fuentes",pt:"Imagens e fontes",de:"Bilder und Quellen",ar:"الصور والمصادر"}[language] || "Images and sources";
+ return <details className="mt-2 text-xs leading-5 text-slate-500" data-testid="media-credits">
+   <summary className="w-fit cursor-pointer rounded-md px-1 py-1 text-[11px] underline decoration-slate-300 underline-offset-4 focus-visible:outline focus-visible:outline-2 focus-visible:outline-orange-500">{label}</summary>
+   <div className="mt-2 space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-3"><p className="font-semibold">{words.credits}</p>{entries.map(row=><p key={row.url} className="break-words"><a href={row.source_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.name} — {row.author}</a>{" · "}<a href={row.license_url} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">{row.license}</a>{" · "}{words.crop}</p>)}</div>
+ </details>;
 }
 
 
@@ -820,6 +824,7 @@ export function DetailedFootballStats({ stats, match }) {
     <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-xs font-semibold text-slate-600">{w.method}</summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.source} : {stats.source||"API-Football"}</p>{stats.updated_at&&<p className="text-xs leading-6 text-slate-500">{w.updated} : {String(stats.updated_at).slice(0,10)}</p>}</details>
   </section>;
 }
+
 
 
 
