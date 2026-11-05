@@ -7714,17 +7714,18 @@ function ResultNotificationsProvider({ children }) {
   return <ResultNotificationsContext.Provider value={value}>{children}{uid && <ResultNotificationsDialog />}</ResultNotificationsContext.Provider>;
 }
 
-export function FollowPickButton({ matchId, pick, market, disabled = false }) {
+export function FollowPickButton({ matchId, pick, market, disabled = false, compact = false }) {
   const state = useContext(ResultNotificationsContext);
   const { t } = useNotificationLanguage();
-  if (!state?.uid || !matchId || !pick || disabled || (market && !["h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance"].includes(market))) return null;
+  if (!state?.uid || !matchId || !pick) return null;
+  const unsupported = Boolean(market && !["h2h", "totals", "spreads", "btts", "draw_no_bet", "double_chance", "team_totals"].includes(market));
   const followed = state.follows.find(row => row.match_id === String(matchId) && row.pick === pick);
   const busy = state.loading || state.busy.has(`follow:${matchId}`) || (followed && state.busy.has(`unfollow:${followed.id}`));
-  return <button type="button" data-testid="follow-pick" disabled={Boolean(busy || followed?.state === "resolved")} aria-pressed={Boolean(followed)} onClick={async event => {
+  return <button type="button" data-testid="follow-pick" disabled={Boolean(busy || (!followed && (disabled || unsupported)))} title={!followed && unsupported ? t("Le suivi de ce marché n’est pas encore disponible") : !followed && disabled ? t("Le suivi s’active avant le début de la rencontre") : undefined} aria-pressed={Boolean(followed)} onClick={async event => {
     event.preventDefault(); event.stopPropagation();
     const ok = followed ? await state.unfollow(followed.id) : await state.follow(String(matchId));
     if (ok) toast.success(t(followed ? "Suivi arrêté" : "Pronostic suivi"));
-  }} className={`mt-3 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold leading-6 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 disabled:opacity-60 ${followed ? "border-orange-200 bg-orange-50 text-orange-700" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:text-orange-700"}`}>
+  }} className={`${compact ? "" : "mt-3"} inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold leading-6 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 disabled:cursor-not-allowed disabled:opacity-60 ${followed ? "border-orange-200 bg-orange-50 text-orange-700" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:text-orange-700"}`}>
     {busy ? <Loader2 className="h-4 w-4 shrink-0 animate-spin motion-reduce:animate-none" aria-hidden="true" /> : followed ? <Check className="h-4 w-4 shrink-0" aria-hidden="true" /> : <BellPlus className="h-4 w-4 shrink-0" aria-hidden="true" />}
     {t(followed ? "Pronostic suivi" : "Suivre ce pronostic")}
   </button>;
@@ -8539,3 +8540,4 @@ export function AppearanceSwitcher() {
  if (!context) return null;
  return <label htmlFor={id} className="wp-appearance"><span aria-hidden="true">◐</span><span className="sr-only">{words[0]}</span><select id={id} aria-label={words[0]} value={context.preference} onChange={event=>context.change(event.target.value)} data-testid="appearance-switcher">{["light","dark","system"].map((value,index)=><option key={value} value={value}>{words[index+1]}</option>)}</select></label>;
 }
+
