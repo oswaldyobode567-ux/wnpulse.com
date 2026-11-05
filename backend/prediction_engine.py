@@ -1,5 +1,5 @@
 """
-WNPulse Prediction Engine v8.6.1 — double chance and prospective comparison
+WNPulse Prediction Engine v8.6.2 — double chance and prospective comparison
 - Preserve every fixture in analyze_all; quality ranking never filters the cache.
 - Use all unique quoted operators, with exact quote provenance.
 - Compare identical lines; distinguish overlapping outcomes and refunded bets.
@@ -306,7 +306,18 @@ def _dc_outcome_code(name,home,away):
     return None
 
 
-def _quoted_market_candidates(market_key, bookmakers, home, away):
+# Equivalent full-time lines only. Periods, corners and cards are NOT goals.
+_MARKET_ALIASES={'alternate_totals':'totals','alternate_spreads':'spreads',
+    'alternate_team_totals':'team_totals'}
+_SUPPORTED_QUOTED_MARKETS=('h2h','totals','spreads','btts','draw_no_bet',
+    'double_chance','team_totals','h2h_h1','totals_h1','totals_h2')
+
+
+def _canonical_market_key(key):
+    return _MARKET_ALIASES.get(key,key)
+
+
+def _quoted_market_candidates(market_key, bookmakers, home, away, sport_key=None):
     """Compare identical lines only. Overlapping DC outcomes use same-book 1X2 or all three DC quotes.
     Never normalize overlapping outcomes to sum to one.
 
@@ -314,6 +325,8 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
     only when this bookmaker also supplies a complete 1X2 reference.
     """
     import math
+    market_key=_canonical_market_key(market_key)
+    if market_key not in _SUPPORTED_QUOTED_MARKETS:return []
     groups = {}
     for book in bookmakers:
         book_id = str(book.get("key") or book.get("title") or "").casefold()
@@ -327,7 +340,7 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
                     h2h = {k: (1/v)/margin for k, v in quotes.items()}
                     break
         for market in book.get("markets", []) or []:
-            if market.get("key") != market_key:
+            if _canonical_market_key(market.get("key")) != market_key:
                 continue
             lines = {}
             if market_key == "double_chance" and any(_dc_outcome_code(o.get("name"),home,away) is None for o in market.get("outcomes",[]) or []):
@@ -347,7 +360,13 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
                 lines.setdefault((line, description), []).append((name, point, price))
             for (line, description), quotes in lines.items():
                 names = {q[0] for q in quotes}
-                expected = {"Over", "Under"} if market_key in ("totals", "totals_h1", "totals_h2", "team_totals") else {"Yes", "No"} if market_key == "btts" else None if market_key == "double_chance" else {home, away} if market_key in ("spreads", "draw_no_bet") else None
+                expected = None
+                if market_key in ("totals","totals_h1","totals_h2","team_totals"):
+                    expected={"Over","Under"}
+                elif market_key == "btts":
+                    expected={"Yes","No"}
+                elif market_key in ("spreads","draw_no_bet"):
+                    expected={home,away}
                 if len(names) != len(quotes) or (expected is not None and names != expected):
                     continue
                 if market_key == "double_chance" and (not names or not names <= {"1X", "X2", "12"}):
@@ -405,6 +424,8 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
         count = len(values)
         score = _wp_score(probability, stability, edge, count)
         pick = _outcome_label_fr(market_key, name, point)
+        if market_key in ('totals','team_totals','totals_h1','totals_h2') and str(sport_key or '').startswith(('basketball_','baseball_','americanfootball_')):
+            pick=pick.replace(' buts',' points')
         if description:
             pick = f"{description} — {pick}"
         push = statistics.median(entry["push"].values()) if entry["push"] else None
@@ -568,20 +589,20 @@ def _market_sort_key(x: Dict) -> Tuple[float, float, float, float]:
 def _top_recommendations(market_results: List[Dict], limit: int = 4) -> List[Dict]:
     """Retourne plusieurs propositions reelles, sans fabriquer de marche."""
     ordered = sorted(market_results, key=_market_sort_key, reverse=True)
-    out = []
-    seen = set()
-    for item in ordered:
-        key = (
-            item.get("market"),
-            item.get("pick_raw"),
-            item.get("pick_point"),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(dict(item))
-        if len(out) >= limit:
-            break
+    out=[];seen=set();families=set()
+    if limit<=0:return out
+    def identity(item):
+        return (item.get('market'),item.get('pick_raw'),item.get('pick_point'),item.get('team'))
+    # First choice remains the actual highest-ranked candidate. Later rows
+    # expose the best different families before filling any spare slots.
+    for diversify in (True,False):
+        for item in ordered:
+            key=identity(item);family=item.get('market')
+            if key in seen or (diversify and family in families):continue
+            seen.add(key);families.add(family);out.append(dict(item))
+            if len(out)>=limit:break
+        if len(out)>=limit:break
+
     for i, item in enumerate(out):
         item["rank"] = i + 1
         item["is_primary_candidate"] = i == 0
@@ -646,16 +667,13 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
     for bm in bookmakers:
         for m in bm.get("markets", []):
             if m.get("key"):
-                market_keys.add(m["key"])
+                market_keys.add(_canonical_market_key(m["key"]))
 
     market_results = []
-    for mk in [
-        "h2h", "totals", "spreads", "btts", "draw_no_bet",
-        "double_chance", "h2h_h1", "totals_h1", "totals_h2", "team_totals",
-    ]:
+    for mk in _SUPPORTED_QUOTED_MARKETS:
         if mk not in market_keys:
             continue
-        market_results.extend(_quoted_market_candidates(mk, bookmakers, home, away))
+        market_results.extend(_quoted_market_candidates(mk, bookmakers, home, away, sport_key=sport_key))
 
     # IMPORTANT : _synthetic_markets n'est volontairement plus ajoute a
     # market_results. Une cote derivee d'une formule maison ne constitue pas
@@ -710,6 +728,9 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
         "away_team": away,
         "commence_time": match.get("commence_time"),
         "pick": best["pick"],
+        "pick_raw": best.get("pick_raw"),
+        "pick_point": best.get("pick_point"),
+        "team": best.get("team"),
         "pick_odds": best["pick_odds"],
         "confidence": best["confidence"],
         "model_probability": best.get("model_probability", best["confidence"]),
@@ -758,10 +779,23 @@ def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
 
 
 def analyze_all(matches: List[Dict], real_stats_map: Optional[Dict] = None) -> List[Dict]:
-    return [
-        analyze_match(m, real_stats_map=real_stats_map)
-        for m in matches
-    ]
+    import logging
+    predictions=[]
+    for match in matches:
+        try:
+            predictions.append(analyze_match(match,real_stats_map=real_stats_map))
+        except Exception as exc:
+            # One bad event must not empty the entire prediction cache.
+            row=match if isinstance(match,dict) else {}
+            logging.getLogger('winpulse.prediction').warning('Event analysis deferred id=%s type=%s',row.get('id'),type(exc).__name__)
+            predictions.append({
+                'match_id':row.get('id'),'sport_key':row.get('sport_key'),
+                'sport_title':row.get('sport_title'),'home_team':row.get('home_team'),
+                'away_team':row.get('away_team'),'commence_time':row.get('commence_time'),
+                'pick':None,'pick_odds':None,'confidence':None,'markets':[],
+                'recommendations':[],'has_prediction':False,'analysis_status':'unavailable',
+                'unavailable_reason':'event_analysis_failed','official_track_eligible':False})
+    return predictions
 
 
 def find_value_bets(matches: List[Dict], min_edge: float = 3.0, limit: int = 30) -> List[Dict]:
@@ -1690,6 +1724,7 @@ _public_analyze_match = analyze_match
 
 def analyze_match(match: Dict, real_stats_map: Optional[Dict] = None) -> Dict:
     # Keep public historical behaviour until prospective validation of the new model.
+    match=_prediction_match_view(match)
     real_stats_map = dict(real_stats_map or {})
     real_stats_map.setdefault("__hybrid_models__", _RUNTIME_FOOTBALL_MODELS)
     home, away = match.get("home_team", ""), match.get("away_team", "")
@@ -2569,7 +2604,7 @@ def _public_hybrid_and_risk(match, result, stats_map):
     if markets:
         markets.sort(key=_market_sort_key, reverse=True)
         best = markets[0]
-        for key in ("pick", "pick_raw", "pick_point", "pick_odds", "market", "market_label", "confidence",
+        for key in ("pick", "pick_raw", "pick_point", "team", "pick_odds", "market", "market_label", "confidence",
                     "model_probability", "estimated_win_probability", "edge", "expected_return", "selection_score",
                     "wp_score", "num_books", "best_bookmaker", "stability_score", "probability_source",
                     "probability_validated", "probability_basis", "push_probability", "label", "risk_level",
@@ -2593,6 +2628,7 @@ def _public_hybrid_and_risk(match, result, stats_map):
     published = baseline if os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE', 'independent_pilot') == 'shadow' else challenger
     if pair:
         published['model_comparison'] = pair
+    published['market_coverage']=_market_coverage(match,published)
     return published
 
 
@@ -2700,7 +2736,7 @@ def _quote_timestamp_for(match, candidate):
         if (book.get('title') or book.get('key')) != candidate.get('best_bookmaker'):
             continue
         for market in book.get('markets') or []:
-            if market.get('key') != candidate.get('market'):
+            if _canonical_market_key(market.get('key')) != candidate.get('market'):
                 continue
             for outcome in market.get('outcomes') or []:
                 name=_dc_outcome_code(outcome.get('name'),match.get('home_team'),match.get('away_team')) if candidate.get('market')=='double_chance' else outcome.get('name')
@@ -2909,3 +2945,35 @@ def settle_comparison_candidate(candidate, home_score, away_score, home, away):
             out['brier']=sum((p-int(i==index))**2 for i,p in enumerate(vector))
             out['log_loss']=-math.log(max(1e-9,vector[index]))
     return out
+
+
+
+def _market_coverage(match,prediction):
+    received={_canonical_market_key(m.get('key')) for b in match.get('bookmakers') or []
+        for m in b.get('markets') or [] if m.get('key')}
+    analyzed={m.get('market') for m in prediction.get('markets') or [] if m.get('market')}
+    supported=set(_SUPPORTED_QUOTED_MARKETS)
+    return {'version':'market-coverage-20261105',
+        'received':sorted(received),'analyzed':sorted(analyzed),
+        'not_received':sorted(supported-received),
+        'received_without_eligible_candidate':sorted((received & supported)-analyzed),
+        'unsupported_received':sorted(received-supported),
+        'selected_market':prediction.get('market'),
+        'selection_policy':'highest_existing_score_no_market_quota',
+        'complete_provider_coverage_guaranteed':False}
+
+
+def _prediction_match_view(match):
+    if not isinstance(match,dict):return {}
+    row=dict(match);books=[]
+    source=match.get('bookmakers')
+    for book in source if isinstance(source,(list,tuple)) else []:
+        if not isinstance(book,dict):continue
+        markets=[];raw=book.get('markets')
+        for market in raw if isinstance(raw,(list,tuple)) else []:
+            if not isinstance(market,dict):continue
+            outcomes=market.get('outcomes')
+            markets.append({**market,'outcomes':[o for o in outcomes if isinstance(o,dict)] if isinstance(outcomes,(list,tuple)) else []})
+        books.append({**book,'markets':markets})
+    row['bookmakers']=books
+    return row
