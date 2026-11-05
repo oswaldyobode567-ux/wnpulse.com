@@ -430,7 +430,7 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
       {edge !== null && edge > 0 && !locked && <p className="wp-edge" data-testid="match-edge">{t("Avantage estimé : {{edge}}",{edge:formatNumber(edge/100,{style:'percent',signDisplay:'always',maximumFractionDigits:1})})}</p>}
       {isFinished && !locked && pred.pick && <div className={`wp-result ${pred.won===true?'wp-result-won':pred.won===false?'wp-result-lost':''}`} data-testid="match-result">{pred.won===true?<><CheckCircle2 className="h-4 w-4"/>{t("GAGNÉ")}</>:pred.won===false?<><XCircle className="h-4 w-4"/>{t("PERDU")}</>:<><Clock className="h-4 w-4"/>{t("En attente")}</>}</div>}
     </Link>
-    <div className="wp-match-actions"><Link to={`/app/match/${event.id}`} className="wp-analysis-link">{t("Voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true"/></Link>{!locked && <FollowPickButton matchId={event.id} pick={pred.pick} market={pred.market} disabled={isFinished||isLive}/>}</div>
+    <div className="mt-3 grid min-w-0 gap-2" data-testid="match-card-actions"><Link to={`/app/match/${event.id}`} className="wp-analysis-link">{t("Voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true"/></Link>{!locked && pred.pick && <FollowPickButton matchId={event.id || event.match_id} pick={pred.pick} market={pred.market} compact disabled={isFinished||isLive}/>}</div>
     {locked && <div className="wp-upgrade-action">{typeof onUpgrade==='function'?<button type="button" onClick={eventClick=>{eventClick.stopPropagation();onUpgrade();}} data-testid="match-upgrade">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></button>:<Link to="/app/abonnement" data-testid="match-upgrade-link">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link>}</div>}
     {isAdmin && !locked && !unavailable && <AdminShareActions isAdmin={isAdmin} item={{...event,prediction:pred}}/>}
     <MediaCredits match={event}/>
@@ -824,6 +824,7 @@ export function DetailedFootballStats({ stats, match }) {
     <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-xs font-semibold text-slate-600">{w.method}</summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.source} : {stats.source||"API-Football"}</p>{stats.updated_at&&<p className="text-xs leading-6 text-slate-500">{w.updated} : {String(stats.updated_at).slice(0,10)}</p>}</details>
   </section>;
 }
+
 
 
 
