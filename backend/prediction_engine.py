@@ -1,5 +1,5 @@
 """
-WNPulse Prediction Engine v8.3
+WNPulse Prediction Engine v8.6.1 — double chance and prospective comparison
 - Preserve every fixture in analyze_all; quality ranking never filters the cache.
 - Use all unique quoted operators, with exact quote provenance.
 - Compare identical lines; distinguish overlapping outcomes and refunded bets.
@@ -290,8 +290,25 @@ def _wp_score(probability: float, stability: float, edge: float,
     return round(_clamp(score), 1)
 
 
+def _dc_outcome_code(name,home,away):
+    """Canonicalize only explicit equivalent labels; never infer an unknown side."""
+    import re
+    clean=lambda value:re.sub(r'\s+',' ',str(value or '').strip()).casefold()
+    value=clean(name)
+    codes={'1x':'1X','x1':'1X','x2':'X2','2x':'X2','12':'12','21':'12',
+        '1/x':'1X','x/1':'1X','x/2':'X2','2/x':'X2','1/2':'12','2/1':'12'}
+    if value in codes:return codes[value]
+    for code,left,right in [('1X',home,'Draw'),('X2','Draw',away),('12',home,away),
+        ('1X','Home','Draw'),('X2','Draw','Away'),('12','Home','Away')]:
+        if not left or not right:continue
+        for separator in (' or ',' / ','/',' ou '):
+            if value in (clean(str(left)+separator+str(right)),clean(str(right)+separator+str(left))):return code
+    return None
+
+
 def _quoted_market_candidates(market_key, bookmakers, home, away):
-    """Compare identical lines only. Overlapping DC outcomes use same-book 1X2.
+    """Compare identical lines only. Overlapping DC outcomes use same-book 1X2 or all three DC quotes.
+    Never normalize overlapping outcomes to sum to one.
 
     DNB probabilities are conditional on no draw. EV includes the refund mass
     only when this bookmaker also supplies a complete 1X2 reference.
@@ -313,10 +330,13 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
             if market.get("key") != market_key:
                 continue
             lines = {}
+            if market_key == "double_chance" and any(_dc_outcome_code(o.get("name"),home,away) is None for o in market.get("outcomes",[]) or []):
+                continue
             for outcome in market.get("outcomes", []) or []:
                 price = _hybrid_number(outcome.get("price"))
                 point = _hybrid_number(outcome.get("point"))
                 name = outcome.get("name")
+                if market_key == "double_chance":name=_dc_outcome_code(name,home,away)
                 description = outcome.get("description") if market_key == "team_totals" else None
                 if not name or price is None or price <= 1:
                     continue
@@ -327,8 +347,10 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
                 lines.setdefault((line, description), []).append((name, point, price))
             for (line, description), quotes in lines.items():
                 names = {q[0] for q in quotes}
-                expected = {"Over", "Under"} if market_key in ("totals", "totals_h1", "totals_h2", "team_totals") else {"Yes", "No"} if market_key == "btts" else {"1X", "X2", "12"} if market_key == "double_chance" else {home, away} if market_key in ("spreads", "draw_no_bet") else None
+                expected = {"Over", "Under"} if market_key in ("totals", "totals_h1", "totals_h2", "team_totals") else {"Yes", "No"} if market_key == "btts" else None if market_key == "double_chance" else {home, away} if market_key in ("spreads", "draw_no_bet") else None
                 if len(names) != len(quotes) or (expected is not None and names != expected):
+                    continue
+                if market_key == "double_chance" and (not names or not names <= {"1X", "X2", "12"}):
                     continue
                 if market_key in ("h2h", "h2h_h1") and names not in ({home, away}, {home, away, "Draw"}):
                     continue
@@ -341,10 +363,18 @@ def _quoted_market_candidates(market_key, bookmakers, home, away):
                     push = None
                     basis = "unconditional"
                     if market_key == "double_chance":
-                        if not h2h:
-                            continue
-                        coverage = {"1X": (home, "Draw"), "X2": ("Draw", away), "12": (home, away)}[name]
-                        probability = sum(h2h[n] for n in coverage)
+                        if h2h:
+                            coverage = {"1X": (home, "Draw"), "X2": ("Draw", away), "12": (home, away)}[name]
+                            probability = sum(h2h[n] for n in coverage)
+                        elif names == {"1X", "X2", "12"}:
+                            # Each 1X2 outcome is covered twice. This is a market
+                            # estimate under proportional margin, not an independent model.
+                            dc = {n: 2*(1/p)/margin for n, _, p in quotes}
+                            if any(not 0 < v < 1 for v in dc.values()):
+                                continue
+                            probability = dc[name]
+                        else:
+                            continue  # incomplete quotes with no baseline: no invented probability
                     else:
                         probability = (1/price)/margin
                         if market_key == "draw_no_bet":
@@ -2557,7 +2587,13 @@ def _public_hybrid_and_risk(match, result, stats_map):
         "status":"applied" if applied else "market_fallback",
         "reason":"eligible_statistical_model" if applied else "disabled_by_configuration" if mode == "off" else "retrospective_validation_not_met" if mode == "validated" and use_model else shadow.get("reason", "model_not_eligible"),
         "performance_improvement_proven":False}
-    return _independent_football_markets(match, result, stats_map)
+    baseline = copy.deepcopy(result)
+    challenger = _independent_football_markets(match, copy.deepcopy(result), stats_map)
+    pair = _paired_forecast_snapshot(match, baseline, challenger)
+    published = baseline if os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE', 'independent_pilot') == 'shadow' else challenger
+    if pair:
+        published['model_comparison'] = pair
+    return published
 
 
 # Independent football probabilities. Quotes price the selection; they do not
@@ -2667,7 +2703,8 @@ def _quote_timestamp_for(match, candidate):
             if market.get('key') != candidate.get('market'):
                 continue
             for outcome in market.get('outcomes') or []:
-                if outcome.get('name') != candidate.get('pick_raw'):
+                name=_dc_outcome_code(outcome.get('name'),match.get('home_team'),match.get('away_team')) if candidate.get('market')=='double_chance' else outcome.get('name')
+                if name != candidate.get('pick_raw'):
                     continue
                 if outcome.get('point') != candidate.get('pick_point') or outcome.get('description') != candidate.get('team'):
                     continue
@@ -2701,7 +2738,7 @@ def _independent_football_markets(match, result, stats_map):
         _market_evidence(item)
     _market_evidence(result)
     mode = os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE', 'independent_pilot')
-    if mode != 'independent_pilot' or os.environ.get('WNPULSE_HYBRID_MODE', 'pilot') != 'pilot':
+    if mode not in ('independent_pilot', 'shadow') or os.environ.get('WNPULSE_HYBRID_MODE', 'pilot') != 'pilot':
         return result
     kickoff, trained = _hybrid_dt(match.get('commence_time')), _hybrid_dt(report.get('as_of'))
     now = datetime.now(timezone.utc)
@@ -2803,3 +2840,72 @@ def _independent_football_markets(match, result, stats_map):
         result['multi_market']['status'] = 'analysis_without_fresh_quotes'
     result['engine_revision'] = 'independent-multimarket-2026-11-04'
     return result
+
+
+
+# Paired prospective observation: one frozen choice per arm, never a promotion.
+MODEL_COMPARISON_VERSION = 'paired-football-2026-11-05'
+
+
+def _paired_forecast_snapshot(match, baseline, challenger):
+    import copy
+    now = datetime.now(timezone.utc)
+    kickoff = _hybrid_dt(match.get('commence_time'))
+    model = challenger.get('multi_market') or {}
+    if (not kickoff or kickoff <= now or not match.get('id')
+        or model.get('status') != 'independent_pilot' or not model.get('choices')
+        or baseline.get('is_live') or baseline.get('is_finished')):
+        return None
+    fields = ('market', 'pick', 'pick_raw', 'pick_point', 'team', 'pick_odds',
+        'best_bookmaker', 'estimated_win_probability', 'estimated_loss_probability',
+        'push_probability', 'confidence', 'probability_basis', 'probability_source',
+        'market_probability', 'quote_updated_at')
+    def freeze(candidate):
+        odds = _hybrid_number(candidate.get('pick_odds'))
+        if not candidate.get('pick') or not candidate.get('market') or not odds or odds <= 1:
+            return None
+        quote_at=_quote_timestamp_for(match,candidate)
+        if not quote_at or not 0 <= (now-quote_at).total_seconds() <= 21600:
+            return None
+        snapshot={key:copy.deepcopy(candidate.get(key)) for key in fields}
+        snapshot['quote_updated_at']=quote_at.isoformat()
+        return snapshot
+    left, right = freeze(baseline), freeze(model['choices'][0])
+    if not left or not right:
+        return None
+    return {'version':MODEL_COMPARISON_VERSION, 'captured_at':now.isoformat(),
+        'baseline':left, 'challenger':right,
+        'baseline_definition':'existing_public_hybrid_before_independent_override',
+        'challenger_definition':'independent_score_distribution',
+        'training_as_of':model.get('trained_at'), 'performance_improvement_proven':False,
+        'automatic_promotion':False}
+
+
+def settle_comparison_candidate(candidate, home_score, away_score, home, away):
+    """Exact score settlement for binary and push markets; no quarter lines."""
+    import math
+    if (isinstance(home_score,bool) or isinstance(away_score,bool)
+        or not isinstance(home_score,int) or not isinstance(away_score,int)
+        or min(home_score,away_score)<0):
+        return None
+    odds = _hybrid_number(candidate.get('pick_odds'))
+    if not odds or odds <= 1:
+        return None
+    mass = _score_market_mass([(home_score,away_score,1.)], candidate.get('market'),
+        candidate.get('pick_raw'), candidate.get('pick_point'), candidate.get('team'), home, away)
+    if mass is None:
+        return None
+    outcome = 'won' if mass['win'] else 'void' if mass['push'] else 'lost'
+    out = {'result':outcome, 'unit_return':odds if outcome=='won' else 1. if outcome=='void' else 0.}
+    probability = _hybrid_number(candidate.get('estimated_win_probability'))
+    loss = _hybrid_number(candidate.get('estimated_loss_probability'))
+    push = _hybrid_number(candidate.get('push_probability'))
+    if probability is not None and 0 <= probability <= 100:
+        if push is None and candidate.get('probability_basis') in (None,'unconditional'):
+            push=0.
+        if push is not None and loss is None:loss=100-probability-push
+        if push is not None and loss is not None and min(probability,push,loss)>=0 and abs(probability+push+loss-100)<.15:
+            vector=[probability/100,push/100,loss/100];index={'won':0,'void':1,'lost':2}[outcome]
+            out['brier']=sum((p-int(i==index))**2 for i,p in enumerate(vector))
+            out['log_loss']=-math.log(max(1e-9,vector[index]))
+    return out
