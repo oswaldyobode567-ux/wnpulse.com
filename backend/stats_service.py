@@ -654,6 +654,7 @@ def _as_daily_budget(sport):
 
 
 _ENRICHMENT_SOURCES = {
+    "sportsdb_ids": ("https://www.thesportsdb.com", 600, 2.5),
     "openfootball": ("https://raw.githubusercontent.com", 30, .5),
     "wikidata": ("https://www.wikidata.org", 240, 1.),
     "commons": ("https://commons.wikimedia.org", 120, 1.),
@@ -1434,7 +1435,9 @@ def _media_jobs(matches,now):
             name=str(match.get(side+'_team') or '').strip()
             if len(name)<3:continue
             key=_visual_key(sport,name)
-            entry=jobs.setdefault(key,{'key':key,'sport':sport,'name':name,'kickoff':kickoff.isoformat(),'existing':[]})
+            entry=jobs.setdefault(key,{'key':key,'sport':sport,'name':name,'kickoff':kickoff.isoformat(),'existing':[],'priority':2})
+            priority=0 if 'uefa_europa' in str(match.get('sport_key')) and kickoff.date()==now.date() else 1 if kickoff.date()==now.date() else 2
+            entry['priority']=min(entry['priority'],priority)
             url=_media_url(match.get(side+'_logo'))
             if url and url not in entry['existing']:entry['existing'].append(url)
     return jobs
@@ -1519,6 +1522,550 @@ async def _media_prefetch_directories(db,matches,jobs,cached,budget,deadline):
         await db.stats_cache.update_one({'_id':identity},{'$set':fields},upsert=True)
 
 
+# Identity data only: never reuse unlicensed SportsDB artwork.
+_SPORTSDB_ID_LOOKUP={'brightonandhovealbion':'133619','brightonhovealbion':'133619',
+    'fccopenhagen':'133898','fcmidtjylland':'133891','hearts':'133643','hapoelbeersheva':'134799','sinttruiden':'135461','sksturmgraz':'137743',
+    'unionsaintgilloise':'138141'}
+_SPORTSDB_ID_QUERIES={
+ 'oficrete':'OFI','mjallbyaif':'Mjällby','redstarbelgrade':'Crvena Zvezda','hearts':'Heart of Midlothian','ferencvarostc':'Ferencvaros','salzburg':'Red Bull Salzburg','tsghoffenheim':'Hoffenheim',
+ 'pfclevskisofia':'Levski Sofia','necnijmegen':'NEC Nijmegen','omonoiafc':'Omonia Nicosia',
+ 'besiktasjk':'Besiktas','sksturmgraz':'Sturm Graz','nkcelje':'Celje','agfaarhus':'AGF Aarhus',
+ 'scbraga':'Braga','fcmidtjylland':'Midtjylland','atalantabc':'Atalanta','fckairat':'Kairat Almaty',
+ 'fcthun':'Thun','kupskuopio':'KuPS','lincolnredimpsfc':'Lincoln Red Imps','interclubdescaldes':"Inter Club Escaldes",
+ 'scfreiburg':'Freiburg','asmonaco':'Monaco','fcnordsjaelland':'Nordsjaelland',
+ 'brightonandhovealbion':'Brighton Hove Albion','brightonhovealbion':'Brighton Hove Albion',
+ 'fccopenhagen':'Copenhagen','fciberia1999':'Iberia 1999','fclugano':'Lugano',
+ 'fkkaunozalgiris':'Kauno Zalgiris','fctwenteenschede':'Twente','pafosfc':'Pafos',
+ 'fkjablonec':'Jablonec','kfegnatia':'Egnatia','panathinaikosfc':'Panathinaikos',
+ 'pfccskasofia':'CSKA Sofia','sinttruiden':'Sint-Truiden','skbrann':'Brann',
+ 'fkboracbanjaluka':'Borac Banja Luka',
+ 'fcararatarmenia':'Ararat Armenia','hapoelbeersheva':'Hapoel Beer Sheva'}
+
+
+def _sportsdb_identity(name):
+    normalized=_as_normalize(name).translate(str.maketrans({'æ':'ae','ø':'o','ł':'l','đ':'d'}))
+    return _as_normalize(_SPORTSDB_ID_QUERIES.get(normalized,normalized)).translate(str.maketrans({'æ':'ae','ø':'o','ł':'l','đ':'d'}))
+
+
+def _sportsdb_football_identity(name,rows):
+    matches={}
+    expected=_sportsdb_identity(name)
+    for row in rows or []:
+        if not isinstance(row,dict) or row.get('strSport')!='Soccer':continue
+        names=[row.get('strTeam')]+re.split(r'[,;|]',str(row.get('strAlternate') or ''))
+        if not any(_sportsdb_identity(value)==expected for value in names if value):continue
+        # Preserve category qualifiers; a substring search is not an identity check.
+        gender=str(row.get('strGender') or '').casefold()
+        if gender=='female' and not re.search(r'\b(women|ladies|wfc|feminin)\b',str(name).casefold()):continue
+        identity=str(row.get('idAPIfootball') or '')
+        if not re.fullmatch(r'[1-9][0-9]{0,6}',identity):continue
+        matches[identity]={'provider':'API-Sports','provider_id':int(identity),'kind':'badge',
+            'url':f'https://media.api-sports.io/football/teams/{identity}.png',
+            'verified_identity':True,'identity_provider':'TheSportsDB',
+            'identity_provider_id':str(row.get('idTeam') or ''),
+            'identity_verification':'exact_name_foreign_id','rights':'identification_only_provider_terms'}
+    return next(iter(matches.values())) if len(matches)==1 else None
+
+
+async def _refresh_sportsdb_football_ids(db,jobs,cached,deadline):
+    if os.environ.get('WNPULSE_FREE_ID_LOOKUP_ENABLED','true').lower() in ('false','0','no'):return
+    now=datetime.now(timezone.utc);used=0
+    order=sorted(jobs.values(),key=lambda job:(job.get('priority',2),cached.get(job['key'],{}).get('sportsdb_checked_at') or '',job['kickoff']))
+    for job in order:
+        if job['sport']!='football' or job['existing']:continue
+        old=cached.get(job['key'],{})
+        if (old.get('media') or {}).get('verified_identity') and not old.get('image_broken'):continue
+        retry=_display_date(old.get('sportsdb_retry_at'))
+        if retry and retry>now:continue
+        if used>=8 or time.monotonic()>deadline-50:break
+        used+=1
+        query=_SPORTSDB_ID_QUERIES.get(_as_normalize(job['name']),job['name'])
+        try:
+            lookup_id=_SPORTSDB_ID_LOOKUP.get(_as_normalize(job['name']))
+            path='/api/v1/json/123/lookupteam.php' if lookup_id else '/api/v1/json/123/searchteams.php'
+            data=await asyncio.wait_for(enrichment_request(db,'sportsdb_ids',path,{'id':lookup_id} if lookup_id else {'t':query}),timeout=12)
+        except Exception:data=None
+        fields={'sportsdb_checked_at':now.isoformat(),'sportsdb_retry_at':(now+timedelta(hours=6 if data is None else 24)).isoformat()}
+        media=_sportsdb_football_identity(job['name'],(data or {}).get('teams'))
+        if media:
+            fields.update(media=media,sport='football',name=job['name'],status='ready',image_broken=False,
+                resolver_version=6,checked_at=now.isoformat(),next_check_at=(now+timedelta(days=30)).isoformat())
+        await db.entity_media.update_one({'_id':job['key']},{'$set':fields},upsert=True)
+        cached.setdefault(job['key'],{}).update(fields)
+        if data is None:break  # provider backoff is shared; do not hammer it for every team
+
+
+# Curated ID seeds are generated from exact-name foreign IDs, not guessed URLs.
+_VERIFIED_FOOTBALL_IDS = {
+  "acmilan": {
+    "id": 489,
+    "source_id": "133667"
+  },
+  "agfaarhus": {
+    "id": 406,
+    "source_id": "133899"
+  },
+  "ajax": {
+    "id": 194,
+    "source_id": "133772"
+  },
+  "anderlecht": {
+    "id": 554,
+    "source_id": "133776"
+  },
+  "araratarmenia": {
+    "id": 3683,
+    "source_id": "137892"
+  },
+  "asmonaco": {
+    "id": 91,
+    "source_id": "133823"
+  },
+  "atalanta": {
+    "id": 499,
+    "source_id": "134782"
+  },
+  "atalantabc": {
+    "id": 499,
+    "source_id": "134782"
+  },
+  "azalkmaar": {
+    "id": 201,
+    "source_id": "133767"
+  },
+  "bayerleverkusen": {
+    "id": 168,
+    "source_id": "133666"
+  },
+  "benfica": {
+    "id": 211,
+    "source_id": "134108"
+  },
+  "besiktas": {
+    "id": 549,
+    "source_id": "133794"
+  },
+  "besiktasjk": {
+    "id": 549,
+    "source_id": "133794"
+  },
+  "boracbanjaluka": {
+    "id": 3364,
+    "source_id": "137938"
+  },
+  "bournemouth": {
+    "id": 35,
+    "source_id": "134301"
+  },
+  "braga": {
+    "id": 217,
+    "source_id": "134098"
+  },
+  "brann": {
+    "id": 319,
+    "source_id": "134571"
+  },
+  "brightonandhovealbion": {
+    "id": 51,
+    "source_id": "133619"
+  },
+  "brightonhovealbion": {
+    "id": 51,
+    "source_id": "133619"
+  },
+  "celje": {
+    "id": 4360,
+    "source_id": "134318"
+  },
+  "celtavigo": {
+    "id": 538,
+    "source_id": "133937"
+  },
+  "celtic": {
+    "id": 247,
+    "source_id": "133647"
+  },
+  "copenhagen": {
+    "id": 400,
+    "source_id": "133898"
+  },
+  "crvenazvezda": {
+    "id": 598,
+    "source_id": "133987"
+  },
+  "crystalpalace": {
+    "id": 52,
+    "source_id": "133632"
+  },
+  "cskasofia": {
+    "id": 853,
+    "source_id": "134088"
+  },
+  "dinamozagreb": {
+    "id": 620,
+    "source_id": "133961"
+  },
+  "egnatia": {
+    "id": 3327,
+    "source_id": "140667"
+  },
+  "fcararatarmenia": {
+    "id": 3683,
+    "source_id": "137892"
+  },
+  "fccopenhagen": {
+    "id": 400,
+    "source_id": "133898"
+  },
+  "fciberia1999": {
+    "id": 3502,
+    "source_id": "138046"
+  },
+  "fckairat": {
+    "id": 664,
+    "source_id": "134602"
+  },
+  "fclugano": {
+    "id": 606,
+    "source_id": "136037"
+  },
+  "fcmidtjylland": {
+    "id": 397,
+    "source_id": "133891"
+  },
+  "fcnordsjaelland": {
+    "id": 398,
+    "source_id": "133890"
+  },
+  "fcnordsjælland": {
+    "id": 398,
+    "source_id": "133890"
+  },
+  "fcthun": {
+    "id": 1012,
+    "source_id": "134394"
+  },
+  "fctwenteenschede": {
+    "id": 415,
+    "source_id": "133774"
+  },
+  "ferencvaros": {
+    "id": 651,
+    "source_id": "134620"
+  },
+  "ferencvarostc": {
+    "id": 651,
+    "source_id": "134620"
+  },
+  "fkboracbanjaluka": {
+    "id": 3364,
+    "source_id": "137938"
+  },
+  "fkjablonec": {
+    "id": 1122,
+    "source_id": "134395"
+  },
+  "fkkaunozalgiris": {
+    "id": 3872,
+    "source_id": "137992"
+  },
+  "freiburg": {
+    "id": 160,
+    "source_id": "133653"
+  },
+  "gent": {
+    "id": 631,
+    "source_id": "133781"
+  },
+  "getafe": {
+    "id": 546,
+    "source_id": "133731"
+  },
+  "hajduksplit": {
+    "id": 608,
+    "source_id": "134019"
+  },
+  "hapoelbeersheva": {
+    "id": 563,
+    "source_id": "134799"
+  },
+  "heartofmidlothian": {
+    "id": 254,
+    "source_id": "133643"
+  },
+  "hearts": {
+    "id": 254,
+    "source_id": "133643"
+  },
+  "hoffenheim": {
+    "id": 167,
+    "source_id": "133657"
+  },
+  "iberia1999": {
+    "id": 3502,
+    "source_id": "138046"
+  },
+  "interclubdescaldes": {
+    "id": 3342,
+    "source_id": "137792"
+  },
+  "interclubescaldes": {
+    "id": 3342,
+    "source_id": "137792"
+  },
+  "jablonec": {
+    "id": 1122,
+    "source_id": "134395"
+  },
+  "jagielloniabialystok": {
+    "id": 336,
+    "source_id": "135297"
+  },
+  "jagielloniabiałystok": {
+    "id": 336,
+    "source_id": "135297"
+  },
+  "juventus": {
+    "id": 496,
+    "source_id": "133676"
+  },
+  "kairatalmaty": {
+    "id": 664,
+    "source_id": "134602"
+  },
+  "kaunozalgiris": {
+    "id": 3872,
+    "source_id": "137992"
+  },
+  "kfegnatia": {
+    "id": 3327,
+    "source_id": "140667"
+  },
+  "kups": {
+    "id": 1165,
+    "source_id": "134018"
+  },
+  "kupskuopio": {
+    "id": 1165,
+    "source_id": "134018"
+  },
+  "lechpoznan": {
+    "id": 347,
+    "source_id": "134010"
+  },
+  "levskisofia": {
+    "id": 646,
+    "source_id": "134085"
+  },
+  "lillestrom": {
+    "id": 321,
+    "source_id": "134569"
+  },
+  "lillestrøm": {
+    "id": 321,
+    "source_id": "134569"
+  },
+  "lincolnredimps": {
+    "id": 667,
+    "source_id": "140040"
+  },
+  "lincolnredimpsfc": {
+    "id": 667,
+    "source_id": "140040"
+  },
+  "lugano": {
+    "id": 606,
+    "source_id": "136037"
+  },
+  "lyon": {
+    "id": 80,
+    "source_id": "133713"
+  },
+  "marseille": {
+    "id": 81,
+    "source_id": "133707"
+  },
+  "midtjylland": {
+    "id": 397,
+    "source_id": "133891"
+  },
+  "mjallby": {
+    "id": 2240,
+    "source_id": "134164"
+  },
+  "mjallbyaif": {
+    "id": 2240,
+    "source_id": "134164"
+  },
+  "monaco": {
+    "id": 91,
+    "source_id": "133823"
+  },
+  "necnijmegen": {
+    "id": 413,
+    "source_id": "133760"
+  },
+  "nkcelje": {
+    "id": 4360,
+    "source_id": "134318"
+  },
+  "nordsjaelland": {
+    "id": 398,
+    "source_id": "133890"
+  },
+  "ofi": {
+    "id": 1124,
+    "source_id": "133743"
+  },
+  "oficrete": {
+    "id": 1124,
+    "source_id": "133743"
+  },
+  "omonianicosia": {
+    "id": 3402,
+    "source_id": "133986"
+  },
+  "omonoiafc": {
+    "id": 3402,
+    "source_id": "133986"
+  },
+  "pafos": {
+    "id": 3403,
+    "source_id": "137928"
+  },
+  "pafosfc": {
+    "id": 3403,
+    "source_id": "137928"
+  },
+  "panathinaikos": {
+    "id": 617,
+    "source_id": "133746"
+  },
+  "panathinaikosfc": {
+    "id": 617,
+    "source_id": "133746"
+  },
+  "pfccskasofia": {
+    "id": 853,
+    "source_id": "134088"
+  },
+  "pfclevskisofia": {
+    "id": 646,
+    "source_id": "134085"
+  },
+  "realsociedad": {
+    "id": 548,
+    "source_id": "133724"
+  },
+  "redbullsalzburg": {
+    "id": 571,
+    "source_id": "133970"
+  },
+  "redstarbelgrade": {
+    "id": 598,
+    "source_id": "133987"
+  },
+  "rigafc": {
+    "id": 10124,
+    "source_id": "137984"
+  },
+  "salzburg": {
+    "id": 571,
+    "source_id": "133970"
+  },
+  "scbraga": {
+    "id": 217,
+    "source_id": "134098"
+  },
+  "scfreiburg": {
+    "id": 160,
+    "source_id": "133653"
+  },
+  "sinttruiden": {
+    "id": 735,
+    "source_id": "135461"
+  },
+  "skbrann": {
+    "id": 319,
+    "source_id": "134571"
+  },
+  "sksturmgraz": {
+    "id": 637,
+    "source_id": "137743"
+  },
+  "spartaprague": {
+    "id": 628,
+    "source_id": "134007"
+  },
+  "sturmgraz": {
+    "id": 637,
+    "source_id": "137743"
+  },
+  "sunderland": {
+    "id": 746,
+    "source_id": "133603"
+  },
+  "thun": {
+    "id": 1012,
+    "source_id": "134394"
+  },
+  "torreense": {
+    "id": 4799,
+    "source_id": "143720"
+  },
+  "trabzonspor": {
+    "id": 998,
+    "source_id": "133796"
+  },
+  "tsghoffenheim": {
+    "id": 167,
+    "source_id": "133657"
+  },
+  "twente": {
+    "id": 415,
+    "source_id": "133774"
+  },
+  "unionsaintgilloise": {
+    "id": 1393,
+    "source_id": "138141"
+  },
+  "universitateacraiova": {
+    "id": 632,
+    "source_id": "138188"
+  },
+  "viktoriaplzen": {
+    "id": 567,
+    "source_id": "134015"
+  }
+}
+
+
+def _verified_seed_media(name):
+    row=_VERIFIED_FOOTBALL_IDS.get(_as_normalize(name))
+    if not row:return None
+    return {'provider':'API-Sports','provider_id':row['id'],'kind':'badge',
+        'url':f"https://media.api-sports.io/football/teams/{row['id']}.png",'verified_identity':True,
+        'identity_provider':'TheSportsDB','identity_provider_id':row['source_id'],
+        'identity_verification':'exact_name_foreign_id','rights':'identification_only_provider_terms'}
+
+
+def _global_fd_crests(documents):
+    candidates={}
+    for doc in documents:
+        if not str(doc.get('_id','')).startswith('fd_teams_'):continue
+        profiles=doc.get('profiles') or {}
+        aliases={}
+        for alias,identity in (doc.get('data') or {}).items():
+            if len(alias)>=5:aliases.setdefault(str(identity),[]).append(alias)
+        for identity,team in profiles.items():
+            if not isinstance(team,dict) or not _media_url(team.get('crest')):continue
+            for name in [team.get('name')]+aliases.get(str(identity),[]):
+                if not name:continue
+                key=_media_identity(name,'football')
+                candidates.setdefault(key,{})[str(identity)]=team['crest']
+    return {key:next(iter(rows.values())) for key,rows in candidates.items() if len(rows)==1}
+
+
 async def _media_identity_lookup(db,job,old,budget):
     sport,name=job['sport'],job['name']
     prefetched=budget.get('prefetched',{}).get(job['key'])
@@ -1560,6 +2107,8 @@ async def refresh_visual_assets(db,matches):
     deadline=time.monotonic()+105  # leave time for health checks and a saved progress report
     docs=await db.entity_media.find({'_id':{'$in':list(jobs)}}).to_list(length=len(jobs)) if jobs else []
     cached={row['_id']:row for row in docs}
+    try:await _refresh_sportsdb_football_ids(db,jobs,cached,deadline)
+    except Exception as exc:logger.warning('Free identity source deferred (%s)',type(exc).__name__)
     budget={'used':0,'limit':_media_limit('WNPULSE_MEDIA_TEAM_REQUESTS_PER_RUN',8,16),'prefetched':{}}
     try:await _media_prefetch_directories(db,matches,jobs,cached,budget,deadline)
     except Exception as exc:logger.warning('Team directory lookup deferred (%s)',type(exc).__name__)
@@ -1570,7 +2119,7 @@ async def refresh_visual_assets(db,matches):
     for key,job in jobs.items():
         old=cached.get(key,{})
         retry=_display_date(old.get('next_check_at'))
-        if key not in budget['prefetched'] and retry and retry>now and (old.get('resolver_version')==5 or _approved_portrait(old.get('media') or {})):continue
+        if key not in budget['prefetched'] and retry and retry>now and (old.get('resolver_version')==6 or _approved_portrait(old.get('media') or {})):continue
         pending.setdefault(job['sport'],[]).append((old.get('checked_at') or '',job['kickoff'],key))
     for rows in pending.values():rows.sort()
     order=[]
@@ -1591,7 +2140,7 @@ async def refresh_visual_assets(db,matches):
             if healthy and not old.get('image_broken'):
                 await db.entity_media.update_one({'_id':key},{'$set':{'sport':sport,'name':job['name'],
                     'status':'ready_existing','checked_at':now.isoformat(),
-                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':5}},upsert=True)
+                    'next_check_at':(now+timedelta(days=7)).isoformat(),'resolver_version':6}},upsert=True)
                 checked+=1;statuses['ready_existing']=statuses.get('ready_existing',0)+1
                 continue
         if sport=='tennis':
@@ -1626,7 +2175,7 @@ async def refresh_visual_assets(db,matches):
         transient=status in ('unavailable','key_missing')
         if transient:blocked_sports.add(sport)
         delay=timedelta(minutes=30) if transient else timedelta(days=30) if valid else timedelta(hours=24)
-        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':5}
+        fields={'sport':sport,'name':job['name'],'checked_at':now.isoformat(),'next_check_at':(now+delay).isoformat(),'status':status,'resolver_version':6}
         if identity:fields['identity']=identity
         if valid:
             previous=(old.get('media') or {}).get('url')
@@ -1643,7 +2192,7 @@ async def refresh_visual_assets(db,matches):
     health=await refresh_media_health(db,matches,jobs)
     result={'checked_at':datetime.now(timezone.utc).isoformat(),'catalogue_entities':len(jobs),
         'checked':checked,'updated':updated,'statuses':statuses,'team_requests_attempted':budget['used'],
-        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':5}
+        'portrait_lookups':portrait_jobs,'health':health,'resolver_version':6}
     await db.enrichment_state.update_one({'_id':'visual_assets'},{'$set':result},upsert=True)
     return result
 
@@ -1721,7 +2270,7 @@ async def media_catalogue_status(db,matches):
         group['total']+=1;group['available' if available else 'missing']+=1
         if not available and len(missing)<100:
             missing.append({'key':key,'name':job['name'],'sport':job['sport'],'status':ready.get(key,{}).get('status','pending')})
-    return {'resolver_version':5,'sports':sports,'missing_sample':missing,
+    return {'resolver_version':6,'sports':sports,'missing_sample':missing,
         'last_run':{k:v for k,v in (await db.enrichment_state.find_one({'_id':'visual_assets'}) or {}).items() if k!='_id'},
         'broken_images':len(health),'no_complete_coverage_guarantee':True}
 
@@ -1746,7 +2295,7 @@ async def _badge_projected_read(collection,query,projection,limit):
 async def enrich_match_badges(db,matches):
     """Keep each fixture and available crest even when another cache source times out."""
     if not matches:return matches
-    codes={COMPETITION_MAP[m.get('sport_key')] for m in matches if m.get('sport_key') in COMPETITION_MAP}
+    codes=set(COMPETITION_MAP.values()) if any(_as_sport(m)=='football' for m in matches) else set()
     stat_ids={'fd_teams_'+code for code in codes}
     stat_ids.update(_as_key(_as_sport(m),m.get(side+'_team')) for m in matches for side in ('home','away') if _as_sport(m) and m.get(side+'_team'))
     media_ids={_visual_key(enrichment_sport(m),m.get(side+'_team')) for m in matches for side in ('home','away') if enrichment_sport(m) and m.get(side+'_team')}
@@ -1770,6 +2319,7 @@ async def enrich_match_badges(db,matches):
             if len(cache[field])>5000:
                 cache[field]={k:v for k,v in cache[field].items() if k in ids}
         if health is not None:cache['broken']={doc['_id'] for doc in health}
+    global_crests=_global_fd_crests(cache['stats'].values())
     result=[]
     for match in matches:
         row=dict(match);sport=enrichment_sport(row)
@@ -1792,8 +2342,12 @@ async def enrich_match_badges(db,matches):
                 provider_sport=_as_sport(row)
                 stored=cache['stats'].get(_as_key(provider_sport,name),{}) if provider_sport and name else {}
                 if stored.get('matched'):add(stored.get('logo'))
-                team_id=_find_team_id(fd.get('data',{}),name or '')
-                add((fd.get('profiles',{}).get(str(team_id)) or {}).get('crest'))
+                if sport=='football':
+                    add(global_crests.get(_media_identity(name,'football')))
+                    seed=_verified_seed_media(name)
+                    if seed:
+                        add(seed['url'])
+                        if not approved:media=seed;approved=True
             if candidates:
                 row[side+'_logo']=candidates[0];row[side+'_image_candidates']=candidates[:4]
                 if approved and candidates[0] in [media.get('url')]+list(media.get('alternatives') or []):
@@ -1807,5 +2361,6 @@ async def enrich_match_badges(db,matches):
                 row.pop(side+'_media',None)
         result.append(row)
     return result
+
 
 
