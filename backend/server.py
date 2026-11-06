@@ -16348,7 +16348,7 @@ def _model_comparison_records(predictions, captured_at):
         trained=_parse_iso(pair.get('training_as_of'))
         if (not prediction.get('match_id') or not kickoff or not captured or not trained
             or not trained < captured <= captured_at < kickoff
-            or pair.get('version')!='paired-football-probability-20261106'
+            or pair.get('version')!='paired-football-probability-floor115-20261106'
             or not pair.get('baseline') or not pair.get('challenger')):
             continue
         identity=hashlib.sha256(json.dumps([pair['version'],str(prediction['match_id']),kickoff.isoformat()]).encode()).hexdigest()
@@ -16454,7 +16454,7 @@ def _summarize_model_comparisons(rows):
 async def prediction_comparison_status(days:int=30,payload:dict=Depends(get_current_user_payload)):
     await _require_admin(payload)
     days=max(1,min(365,days));cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-    query={'protocol':'paired-football-probability-20261106','commence_time':{'$gte':cutoff}}
+    query={'protocol':'paired-football-probability-floor115-20261106','commence_time':{'$gte':cutoff}}
     total=await db.model_comparison_forecasts.count_documents(query)
     rows=await db.model_comparison_forecasts.find(query).sort('commence_time',-1).to_list(length=20000)
     return {**_summarize_model_comparisons(rows),'days':days,'total_records':total,
