@@ -407,7 +407,7 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const edge = finiteNumber(pred.edge);
   const probabilityLabel = t(pred.estimated_win_probability != null ? "Probabilité estimée" : pred.risk_policy_version ? (pred.probability_basis && pred.probability_basis !== "unconditional" ? "Probabilité hors remboursement" : "Probabilité estimée") : "Confiance du moteur");
 
-  return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card">
+  return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card" data-navigation-match-id={event.id || event.match_id}>
     <Link to={`/app/match/${event.id}`} className="wp-match-link" data-testid="match-card-link">
       <div className="wp-match-meta"><span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
         {isLive ? <span className="wp-live-label"><Radio className="h-3 w-3" aria-hidden="true" />{t("LIVE")}</span> : <time dateTime={event.commence_time || undefined}>{formatDate(event.commence_time, {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>}
@@ -824,6 +824,7 @@ export function DetailedFootballStats({ stats, match }) {
     <details className="mt-3 border-t border-slate-100 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-xs font-semibold text-slate-600">{w.method}</summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.source} : {stats.source||"API-Football"}</p>{stats.updated_at&&<p className="text-xs leading-6 text-slate-500">{w.updated} : {String(stats.updated_at).slice(0,10)}</p>}</details>
   </section>;
 }
+
 
 
 
