@@ -1,4 +1,4 @@
-import { MatchInsights, TeamBadge, badgeUrl, badgeUrls, MediaCredits, MarketQuotes, PredictionEvidence, MultiMarketBoard } from "@/components/MatchCard";
+import { MatchInsights, TeamBadge, badgeUrl, badgeUrls, MediaCredits, MarketQuotes, PredictionEvidence, MultiMarketBoard, marketWinProbability } from "@/components/MatchCard";
 import { useEffect, useRef, useState } from "react";
 import { useParams, Link, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
@@ -253,12 +253,12 @@ export default function MatchDetailPage() {
                 {i18n.bet(p.pick)}
                 <span className="text-slate-500 text-xl font-mono font-semibold ms-2">@ {i18n.tx(p.pick_odds)}</span>
               </div>
-            </div>  <PredictionEvidence prediction={p} />
+            </div>  <PredictionEvidence prediction={p} official />
           </div>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-4 pt-4 border-t border-slate-200/60">
             <Stat label={i18n.t("Bookmakers")} value={p.num_books} />
             <Stat label={i18n.t("Écart estimé")} value={readableNumber(i18n, p.edge, " points")} />
-            <Stat label={i18n.t("Estimation du moteur")} value={readableNumber(i18n, p.estimated_win_probability ?? p.model_probability ?? p.confidence, " %")} />
+            <Stat label={i18n.t("Estimation du moteur")} value={readableNumber(i18n, marketWinProbability(p), " %")} />
             <Stat label={i18n.t("Cote optimale")} value={p.pick_odds} mono />
           </div>
           {i18n.tx(isAdmin && <div className="mt-4 pt-4 border-t border-slate-200/60 flex items-center justify-between gap-2">
