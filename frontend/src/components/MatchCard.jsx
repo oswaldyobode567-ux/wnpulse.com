@@ -402,10 +402,10 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const unavailable = pred.analysis_status === "unavailable" || pred.has_prediction === false || (!pred.pick && !pred.locked);
   const locked = !unavailable && Boolean(pred.locked || (!pred.pick && isFree));
   const teams = [event.home_team, event.away_team];
-  const confidence = finiteNumber(pred.estimated_win_probability) ?? finiteNumber(pred.confidence);
+  const confidence = marketWinProbability(pred);
   const hasConfidence = confidence !== null && confidence >= 0 && confidence <= 100;
   const edge = finiteNumber(pred.edge);
-  const probabilityLabel = t(pred.estimated_win_probability != null ? "Probabilité estimée" : pred.risk_policy_version ? (pred.probability_basis && pred.probability_basis !== "unconditional" ? "Probabilité hors remboursement" : "Probabilité estimée") : "Confiance du moteur");
+  const probabilityLabel = t("Probabilité estimée");
 
   return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card" data-navigation-match-id={event.id || event.match_id}>
     <Link to={`/app/match/${event.id}`} className="wp-match-link" data-testid="match-card-link">
@@ -758,22 +758,22 @@ const PROFILE_COPY = {
   ar: {strong:"اتجاه قوي",shared:"سيناريو متقارب",bold:"اختيار جريء",unknown:"التقدير غير متاح",hint:"التصنيف مبني على احتمال الفوز المقدر. لا توجد نتيجة مضمونة.",method:"فهم الحساب",history:"المباريات المستخدمة",updated:"آخر نتيجة تاريخية",experimental:"نموذج تجريبي: لا يزال الأداء المستقبلي بحاجة إلى تقييم."}
 };
 
-export function PredictionEvidence({ prediction = {}, compact = false }) {
-  const { language } = useMatchLanguage();
+export function PredictionEvidence({ prediction = {}, compact = false, official = false }) {
+  const { language, formatNumber } = useMatchLanguage();
   const words = PROFILE_COPY[language] || PROFILE_COPY.fr;
-  const probability = finiteNumber(prediction.estimated_win_probability) ?? ((!prediction.probability_basis || prediction.probability_basis === "unconditional") ? finiteNumber(prediction.model_probability ?? prediction.confidence) : null);
+  const probability = marketWinProbability(prediction);
   const profile = probability === null ? "unknown" : probability >= 70 ? "strong" : probability >= 55 ? "shared" : "bold";
   const cls = profile === "strong" ? "border-emerald-300 bg-gradient-to-r from-emerald-100 to-teal-100 text-emerald-950 shadow-sm shadow-emerald-100" : profile === "shared" ? "border-amber-300 bg-gradient-to-r from-amber-100 to-orange-100 text-amber-950 shadow-sm shadow-amber-100" : profile === "bold" ? "border-rose-300 bg-gradient-to-r from-rose-100 to-fuchsia-100 text-rose-950 shadow-sm shadow-rose-100" : "border-slate-300 bg-slate-100 text-slate-700";
-  return <span className={`inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-extrabold leading-5 ${cls}`} data-testid="prediction-evidence" title={compact ? undefined : words.hint}><span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-current opacity-80" />{words[profile]}</span>;
+  return <span className={`inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-extrabold leading-5 ${cls}`} data-testid="prediction-evidence" title={compact ? undefined : words.hint}><span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-current opacity-80" />{official && <span>{({fr:"Estimation publiée",en:"Published estimate",es:"Estimación publicada",pt:"Estimativa publicada",de:"Veröffentlichte Schätzung",ar:"التقدير المنشور"})[language] || "Published estimate"} · </span>}<span>{words[profile]}{official && probability!==null ? ` · ${formatNumber(probability,{maximumFractionDigits:1})} %` : ""}</span></span>;
 }
 
 const MARKET_DETAIL_COPY={
- fr:{best:"Estimation la plus élevée",scope:"Parmi résultat, double chance et total de buts. Une estimation ne garantit pas un gain.",archived:"Analyses conservées avant le coup d’envoi. Ces probabilités et cotes ne sont pas une mise à jour en direct.",alternative:"Alternative — hors bilan officiel"},
- en:{best:"Highest estimated probability",scope:"Among match result, double chance and total goals. Estimates do not guarantee a win.",archived:"Pre-match analyses preserved. These probabilities and odds are not live updates.",alternative:"Alternative — excluded from official record"},
- es:{best:"Mayor probabilidad estimada",scope:"Entre resultado, doble oportunidad y total de goles. Sin garantía de acierto.",archived:"Análisis previos al inicio conservados; no son actualizaciones en directo.",alternative:"Alternativa — fuera del balance oficial"},
- pt:{best:"Maior probabilidade estimada",scope:"Entre resultado, dupla hipótese e total de golos. Sem garantia de acerto.",archived:"Análises anteriores ao início preservadas; não são atualizações ao vivo.",alternative:"Alternativa — fora do histórico oficial"},
- de:{best:"Höchste geschätzte Wahrscheinlichkeit",scope:"Unter Ergebnis, doppelter Chance und Toranzahl. Keine Gewinngarantie.",archived:"Gespeicherte Vorab-Analysen; keine Live-Aktualisierung der Quoten oder Wahrscheinlichkeiten.",alternative:"Alternative — nicht Teil der offiziellen Bilanz"},
- ar:{best:"أعلى احتمال تقديري",scope:"بين النتيجة والفرصة المزدوجة ومجموع الأهداف. لا ضمان للفوز.",archived:"تحليلات محفوظة قبل البداية وليست تحديثات مباشرة للاحتمالات والأسعار.",alternative:"بديل خارج السجل الرسمي"}
+ fr:{best:"Estimation la plus élevée",scope:"Parmi toutes les probabilités calculées pour résultat, double chance et total de buts, avec ou sans cote disponible. Ce repère ne remplace pas le choix officiel et ne garantit pas un gain.",archived:"Analyses conservées avant le coup d’envoi. Ces probabilités et cotes ne sont pas une mise à jour en direct.",alternative:"Alternative — hors bilan officiel"},
+ en:{best:"Highest estimated probability",scope:"Across all calculated match result, double chance and total goal probabilities, with or without available odds. This does not replace the official pick or guarantee a win.",archived:"Pre-match analyses preserved. These probabilities and odds are not live updates.",alternative:"Alternative — excluded from official record"},
+ es:{best:"Mayor probabilidad estimada",scope:"Entre todas las probabilidades calculadas de resultado, doble oportunidad y goles, con o sin cuota. No sustituye el pronóstico oficial ni garantiza acierto.",archived:"Análisis previos al inicio conservados; no son actualizaciones en directo.",alternative:"Alternativa — fuera del balance oficial"},
+ pt:{best:"Maior probabilidade estimada",scope:"Entre todas as probabilidades calculadas de resultado, dupla hipótese e golos, com ou sem odd. Não substitui a seleção oficial nem garante acerto.",archived:"Análises anteriores ao início preservadas; não são atualizações ao vivo.",alternative:"Alternativa — fora do histórico oficial"},
+ de:{best:"Höchste geschätzte Wahrscheinlichkeit",scope:"Unter allen berechneten Ergebnis-, Doppelchance- und Torwahrscheinlichkeiten, mit oder ohne Quote. Ersetzt den offiziellen Tipp nicht; keine Gewinngarantie.",archived:"Gespeicherte Vorab-Analysen; keine Live-Aktualisierung der Quoten oder Wahrscheinlichkeiten.",alternative:"Alternative — nicht Teil der offiziellen Bilanz"},
+ ar:{best:"أعلى احتمال تقديري",scope:"بين كل احتمالات النتيجة والفرصة المزدوجة والأهداف المحسوبة، مع سعر متاح أو بدونه. لا يستبدل الاختيار الرسمي ولا يضمن الفوز.",archived:"تحليلات محفوظة قبل البداية وليست تحديثات مباشرة للاحتمالات والأسعار.",alternative:"بديل خارج السجل الرسمي"}
 };
 export function marketWinProbability(row) {
   const explicit=finiteNumber(row.estimated_win_probability);
@@ -785,7 +785,7 @@ export function marketWinProbability(row) {
   return push!==null && push>=0 && push<=100 ? raw*(1-push/100) : null;
 }
 export function preferredDetailChoice(choices) {
-  return choices.filter(row=>["h2h","double_chance","totals"].includes(row.market) && !row.synthetic && !row.analysis_only && row.selection_available!==false && finiteNumber(row.pick_odds)>1 && marketWinProbability(row)!==null)
+  return choices.filter(row=>["h2h","double_chance","totals"].includes(row.market) && marketWinProbability(row)!==null)
     .reduce((best,row)=>!best || marketWinProbability(row)>marketWinProbability(best)?row:best,null);
 }
 
@@ -805,10 +805,12 @@ export function MultiMarketBoard({ prediction = {}, match = {} }) {
     if(seen.has(key))return false;
     seen.add(key);return true;
   });
-  const preferred=preferredDetailChoice(baseChoices);
-  const choices=preferred?[preferred,...baseChoices.filter(row=>row!==preferred)]:baseChoices;
+  const calculated=Array.isArray(model?.analysis)?model.analysis:[];
+  const preferred=preferredDetailChoice([...baseChoices,...calculated]);
+  const sameLine=(a,b)=>a && b && a.market===b.market && a.pick===b.pick && a.pick_point===b.pick_point && a.team===b.team;
+  const choices=preferred?[preferred,...baseChoices.filter(row=>!sameLine(row,preferred))]:baseChoices;
   const shareItem=row=>({...match,prediction:{...row,is_alternative:true,status:row.alternative_result_confirmed?row.result:"pending",won:undefined,locked:false}});
-  const analysis = Array.isArray(model?.analysis) ? model.analysis : [];
+  const analysis = calculated.filter(row=>!sameLine(row,preferred));
   const families = [...new Set([...choices,...analysis].map(item=>item.market))];
   const number = value => finiteNumber(value) === null ? "—" : formatNumber(Number(value), {maximumFractionDigits:1});
   const percent = value => `${number(value)} %`;
@@ -834,7 +836,7 @@ export function MultiMarketBoard({ prediction = {}, match = {} }) {
     <span className="mt-3 inline-flex rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs font-bold text-indigo-800">{hasModel ? w.pilot : w.market}</span>
     {hasModel && <div className="mt-4 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-xs text-slate-500">{[[w.homeGoals,model.expected_home_goals],[w.awayGoals,model.expected_away_goals]].map(([label,value])=><div key={label}><span>{label}</span><bdi className="mt-1 block text-xl font-extrabold text-slate-900">{number(value)}</bdi></div>)}</div>}
     <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={w.title}>{["all",...families].map(key=><button key={key} type="button" aria-pressed={family===key} onClick={()=>setFamily(key)} className={`min-h-11 max-w-full rounded-xl border px-3 py-2 text-sm font-semibold ${family===key ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-200 bg-white text-slate-700"}`}>{key==="all" ? w.all : w.families[key] || key}</button>)}</div>
-    <h3 className="mt-5 text-sm font-bold text-slate-700">{w.choices}</h3><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">{choices.filter(row=>family==="all" || row.market===family).map((row,i)=>renderRow(row,i))}</div>
+    <h3 className="mt-5 text-sm font-bold text-slate-700">{preferred && (preferred.analysis_only || preferred.selection_available===false || !(finiteNumber(preferred.pick_odds)>1)) ? w.analysis : w.choices}</h3><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">{choices.filter(row=>family==="all" || row.market===family).map((row,i)=>renderRow(row,i))}</div>
     {!choices.some(row=>family==="all" || row.market===family) && <p className="mt-3 text-sm text-slate-500">{w.empty}</p>}
     {analysis.length > 0 && <details className="mt-5 rounded-2xl border border-slate-200 bg-white p-3"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.analysis}</summary><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">{analysis.filter(row=>family==="all" || row.market===family).map((row,i)=>renderRow(row,i,true))}</div></details>}
     {hasModel && <details className="mt-4 border-t border-slate-200 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold text-slate-700">{profileWords.method}</summary><p className="mt-2 text-xs leading-6 text-slate-600">{profileWords.experimental}</p><p className="mt-2 text-xs text-slate-600">{profileWords.history} : {number(model.model_fixtures)}</p>{model.latest_fixture_at && <p className="mt-2 text-xs text-slate-600">{profileWords.updated} : {String(model.latest_fixture_at).slice(0,10)}</p>}</details>}<p className="mt-2 text-xs leading-6 text-slate-600">{w.note}</p>
