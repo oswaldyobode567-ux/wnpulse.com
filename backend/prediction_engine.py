@@ -2885,7 +2885,7 @@ def _independent_football_markets(match, result, stats_map):
 
 
 # Paired prospective observation: one frozen choice per arm, never a promotion.
-MODEL_COMPARISON_VERSION = 'paired-football-probability-20261106'
+MODEL_COMPARISON_VERSION = 'paired-football-probability-floor115-20261106'
 
 
 def _paired_forecast_snapshot(match, baseline, challenger):
@@ -2985,14 +2985,14 @@ def _prediction_match_view(match):
 
 
 
-PRIMARY_POLICY_VERSION='probability-first-20261106'
+PRIMARY_POLICY_VERSION='probability-first-floor115-20261106'
 
 
 def _primary_config():
     import os
-    odds=_hybrid_number(os.environ.get('WNPULSE_PRIMARY_PREFERRED_MIN_ODDS','1.35'))
+    odds=_hybrid_number(os.environ.get('WNPULSE_PRIMARY_PREFERRED_MIN_ODDS','1.15'))
     probability=_hybrid_number(os.environ.get('WNPULSE_PRIMARY_PREFERRED_MIN_WIN_PERCENT','60'))
-    return (max(MIN_ODDS,min(2.,odds if odds is not None else 1.35)),
+    return (max(MIN_ODDS,min(2.,odds if odds is not None else 1.15)),
             max(50.,min(90.,probability if probability is not None else 60.)))
 
 
