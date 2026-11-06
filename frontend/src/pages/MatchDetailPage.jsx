@@ -220,6 +220,7 @@ export default function MatchDetailPage() {
           </div>
         </Card>
         <div className="wp-detail-grid"><aside className="wp-detail-pick" id="match-prediction">
+        {!locked && <PrimarySelectionNotice prediction={p} language={i18n.language}/>}
         {/* Prediction summary */}
         {i18n.tx(!p.pick && !p.locked ? <Card className="mb-6 p-5 text-sm text-slate-600" data-testid="prediction-unavailable">{freeWords.unavailable}</Card> : locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -765,3 +766,21 @@ function DecisionReport({
  </section>;
 }
 
+
+
+
+export function PrimarySelectionNotice({prediction,language='fr'}) {
+  const frozen=prediction?.selection_context?.latest_candidate_differs;
+  const fallback=prediction?.primary_selection?.fallback_used;
+  if(!frozen&&!fallback)return null;
+  const words={
+    fr:["Choix officiel conservé","Ce pronostic a été enregistré avant le match. Les alternatives peuvent évoluer ; le choix publié reste conservé pour un suivi transparent.","Préférences non réunies","Aucun choix ne remplit toutes les préférences de probabilité et de cote. Ce pari reste le meilleur candidat disponible selon le classement ; sa réussite n’est pas garantie."],
+    en:["Official selection preserved","This prediction was recorded before kickoff. Alternatives can change; the published choice is preserved for a transparent record.","Preferences not fully met","No selection meets every probability and odds preference. This is the best available ranked candidate; success is not guaranteed."],
+    es:["Selección oficial conservada","Este pronóstico se registró antes del partido. Las alternativas pueden cambiar; se conserva la selección publicada para un seguimiento transparente.","Preferencias no satisfechas","Ninguna selección cumple todas las preferencias de probabilidad y cuota. Esta es la mejor opción disponible según la clasificación; no hay garantía de acierto."],
+    pt:["Seleção oficial preservada","Este prognóstico foi registado antes do jogo. As alternativas podem mudar; a escolha publicada é preservada para um histórico transparente.","Preferências não satisfeitas","Nenhuma seleção cumpre todas as preferências de probabilidade e odd. Esta é a melhor opção disponível na classificação; não há garantia de acerto."],
+    de:["Offizielle Auswahl beibehalten","Dieser Tipp wurde vor Spielbeginn gespeichert. Alternativen können sich ändern; die veröffentlichte Auswahl bleibt für eine transparente Historie erhalten.","Präferenzen nicht vollständig erfüllt","Keine Auswahl erfüllt alle Wahrscheinlichkeits- und Quotenpräferenzen. Dies ist der bestplatzierte verfügbare Tipp; ein Erfolg ist nicht garantiert."],
+    ar:["تم حفظ الاختيار الرسمي","سُجل هذا التوقع قبل بداية المباراة. قد تتغير البدائل، بينما يُحفظ الاختيار المنشور لضمان سجل شفاف.","لم تتحقق جميع التفضيلات","لا يحقق أي اختيار جميع تفضيلات الاحتمال والسعر. هذا هو أفضل اختيار متاح حسب الترتيب، ولا توجد نتيجة مضمونة."]
+  }[language]||["Official selection preserved","The published selection is preserved for a transparent record.","Preferences not fully met","This is the best available ranked candidate, without a guarantee of success."];
+  const index=frozen?0:2;
+  return <div role="note" className="mb-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900" data-testid="primary-selection-notice"><p className="font-bold">{words[index]}</p><p className="mt-1">{words[index+1]}</p></div>;
+}
