@@ -486,13 +486,14 @@ export function buildShareMessages(items, kind, words, helpers) {
     const status = String(p.status || item.status || "").toLowerCase();
     const result = ["won","lost","void"].includes(status) ? words[status] : p.won === true ? words.won : p.won === false ? words.lost : words.pending;
     return [ `${index + 1}. ${shareClean(item.match || teams.filter(Boolean).join(" vs ")) || words.unavailable}`,
+      p.is_alternative ? (MARKET_DETAIL_COPY[helpers.language] || MARKET_DETAIL_COPY.fr).alternative : null,
       field(words.competition, item.league || item.sport_title || item.sport), field(words.date,date),
       field(words.market, p.market_label || p.market_key ? translateBetText(p.market_label || p.market_key,t,formatNumber,teams) : words.unavailable),
       field(words.pick,translateBetText(p.pick,t,formatNumber,teams)),
       field(words.odds, odds !== null && odds > 1 ? formatNumber(odds,{minimumFractionDigits:2,maximumFractionDigits:2}) : words.unavailable),
       field(words.risk, words[p.label] || words.unavailable),
       confidence !== null && confidence >= 0 && confidence <= 100 ? field(words.confidence,`${formatNumber(confidence,{maximumFractionDigits:0})}%`) : null,
-      field(words.bookmaker,p.best_bookmaker), kind === "results" ? field(words.result,result) : null,
+      field(words.bookmaker,p.best_bookmaker), kind === "results" || p.is_alternative ? field(words.result,result) : null,
     ].filter(Boolean).join("\n");
   });
   // Whole selections stay together. A long batch becomes separate, explicitly numbered messages.
@@ -557,7 +558,7 @@ export function AdminShareProvider({isAdmin,items=[],kind="picks",children}) {
     clear(){setSelection([]);},open(item){setIndividual(item);setBulkOpen(false);},openBulk(){if(selected.length){setIndividual(null);setBulkOpen(true);}}
   };
   const preview=individual ? [individual] : bulkOpen ? selected : [];
-  return <AdminShareContext.Provider value={context}>{children}{permitted && preview.length>0 && <ShareComposer key={JSON.stringify(preview.map(shareItemKey))} items={preview} kind={kind} onClose={()=>{setIndividual(null);setBulkOpen(false);}} />}</AdminShareContext.Provider>;
+  return <AdminShareContext.Provider value={context}>{children}{permitted && preview.length>0 && <ShareComposer key={JSON.stringify(preview.map(shareItemKey))} items={preview} kind={kind==="picks" && preview.every(item=>(item.prediction||item).is_alternative && (item.prediction||item).alternative_result_confirmed)?"results":kind} onClose={()=>{setIndividual(null);setBulkOpen(false);}} />}</AdminShareContext.Provider>;
 }
 export function AdminShareToolbar() {
   const context=useContext(AdminShareContext),words=useAdminShareLanguage();
@@ -766,18 +767,47 @@ export function PredictionEvidence({ prediction = {}, compact = false }) {
   return <span className={`inline-flex max-w-full items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-extrabold leading-5 ${cls}`} data-testid="prediction-evidence" title={compact ? undefined : words.hint}><span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-current opacity-80" />{words[profile]}</span>;
 }
 
-export function MultiMarketBoard({ prediction = {} }) {
+const MARKET_DETAIL_COPY={
+ fr:{best:"Estimation la plus élevée",scope:"Parmi résultat, double chance et total de buts. Une estimation ne garantit pas un gain.",archived:"Analyses conservées avant le coup d’envoi. Ces probabilités et cotes ne sont pas une mise à jour en direct.",alternative:"Alternative — hors bilan officiel"},
+ en:{best:"Highest estimated probability",scope:"Among match result, double chance and total goals. Estimates do not guarantee a win.",archived:"Pre-match analyses preserved. These probabilities and odds are not live updates.",alternative:"Alternative — excluded from official record"},
+ es:{best:"Mayor probabilidad estimada",scope:"Entre resultado, doble oportunidad y total de goles. Sin garantía de acierto.",archived:"Análisis previos al inicio conservados; no son actualizaciones en directo.",alternative:"Alternativa — fuera del balance oficial"},
+ pt:{best:"Maior probabilidade estimada",scope:"Entre resultado, dupla hipótese e total de golos. Sem garantia de acerto.",archived:"Análises anteriores ao início preservadas; não são atualizações ao vivo.",alternative:"Alternativa — fora do histórico oficial"},
+ de:{best:"Höchste geschätzte Wahrscheinlichkeit",scope:"Unter Ergebnis, doppelter Chance und Toranzahl. Keine Gewinngarantie.",archived:"Gespeicherte Vorab-Analysen; keine Live-Aktualisierung der Quoten oder Wahrscheinlichkeiten.",alternative:"Alternative — nicht Teil der offiziellen Bilanz"},
+ ar:{best:"أعلى احتمال تقديري",scope:"بين النتيجة والفرصة المزدوجة ومجموع الأهداف. لا ضمان للفوز.",archived:"تحليلات محفوظة قبل البداية وليست تحديثات مباشرة للاحتمالات والأسعار.",alternative:"بديل خارج السجل الرسمي"}
+};
+export function marketWinProbability(row) {
+  const explicit=finiteNumber(row.estimated_win_probability);
+  if(explicit!==null && explicit>=0 && explicit<=100)return explicit;
+  const raw=finiteNumber(row.model_probability ?? row.confidence);
+  if(raw===null || raw<0 || raw>100)return null;
+  if(!row.probability_basis || row.probability_basis==="unconditional")return raw;
+  const push=finiteNumber(row.push_probability);
+  return push!==null && push>=0 && push<=100 ? raw*(1-push/100) : null;
+}
+export function preferredDetailChoice(choices) {
+  return choices.filter(row=>["h2h","double_chance","totals"].includes(row.market) && !row.synthetic && !row.analysis_only && row.selection_available!==false && finiteNumber(row.pick_odds)>1 && marketWinProbability(row)!==null)
+    .reduce((best,row)=>!best || marketWinProbability(row)>marketWinProbability(best)?row:best,null);
+}
+
+export function MultiMarketBoard({ prediction = {}, match = {} }) {
+  const { user } = useAuth();
   const { language, formatNumber, t } = useMatchLanguage();
   const w = MULTI_COPY[language] || MULTI_COPY.fr;
   const [family, setFamily] = useState("all");
   const profileWords = PROFILE_COPY[language] || PROFILE_COPY.fr;
   const model = prediction.multi_market;
   const hasModel = Boolean(model);
+  const detailWords=MARKET_DETAIL_COPY[language] || MARKET_DETAIL_COPY.fr;
   const seen = new Set();
-  const choices = model?.choices || (prediction.recommendations || prediction.markets || []).filter(item => {
-    if (seen.has(item.market)) return false;
-    seen.add(item.market); return true;
-  }).slice(0, 6);
+  const baseChoices=[...(Array.isArray(model?.choices)?model.choices:[]),...(Array.isArray(prediction.recommendations)?prediction.recommendations:[]),...(Array.isArray(prediction.markets)?prediction.markets:[])].filter(item=>{
+    if(!item || !item.pick)return false;
+    const key=JSON.stringify([item.market,item.pick,item.pick_point,item.team]);
+    if(seen.has(key))return false;
+    seen.add(key);return true;
+  });
+  const preferred=preferredDetailChoice(baseChoices);
+  const choices=preferred?[preferred,...baseChoices.filter(row=>row!==preferred)]:baseChoices;
+  const shareItem=row=>({...match,prediction:{...row,is_alternative:true,status:row.alternative_result_confirmed?row.result:"pending",won:undefined,locked:false}});
   const analysis = Array.isArray(model?.analysis) ? model.analysis : [];
   const families = [...new Set([...choices,...analysis].map(item=>item.market))];
   const number = value => finiteNumber(value) === null ? "—" : formatNumber(Number(value), {maximumFractionDigits:1});
@@ -788,15 +818,19 @@ export function MultiMarketBoard({ prediction = {} }) {
     if (part === "estimated_win_probability" && (!row.probability_basis || row.probability_basis === "unconditional")) return finiteNumber(row.model_probability ?? row.confidence);
     return null;
   };
-  const renderRow = (row, index, theoretical = false) => <article key={`${row.market}:${row.team}:${row.pick}:${row.pick_point}:${index}`} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+  const renderRow = (row, index, theoretical = false) => <article key={`${row.market}:${row.team}:${row.pick}:${row.pick_point}:${index}`} data-testid="market-choice" className={`min-w-0 rounded-2xl border bg-white p-4 shadow-sm ${row===preferred?"border-orange-400 ring-2 ring-orange-100":"border-slate-200"}`}>
+    {row===preferred && <div className="mb-3 rounded-xl bg-orange-50 p-3" data-testid="preferred-market-choice"><p className="text-sm font-extrabold text-orange-800">{detailWords.best}</p><p className="mt-1 text-xs leading-5 text-orange-900">{detailWords.scope}</p></div>}
     <div className="flex flex-wrap items-start justify-between gap-2"><span className="text-xs font-bold uppercase tracking-wide text-indigo-700">{w.families[row.market] || row.market_label}</span><PredictionEvidence prediction={row} compact /></div>
     <h3 className="mt-3 break-words text-base font-extrabold leading-6 text-slate-900">{translateBetText(row.pick,t,formatNumber)}</h3>
     <div className="mt-3 grid grid-cols-3 gap-2 rounded-xl bg-slate-50 p-3 text-center text-xs text-slate-600">{[[w.win, probability(row,"estimated_win_probability")],[w.push, probability(row,"push_probability")],[w.loss, probability(row,"estimated_loss_probability")]].map(([label,value])=><div key={label} className="min-w-0"><span className="block break-words leading-4">{label}</span><bdi className="mt-1 block text-sm font-extrabold text-slate-900">{percent(value)}</bdi></div>)}</div>
     {row.pick_odds != null && row.selection_available !== false ? <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-slate-100 pt-3"><span className="text-xs text-slate-500">{w.odds}<strong className="mt-1 block break-words text-slate-700">{row.best_bookmaker}</strong></span><bdi className="font-mono text-2xl font-black text-orange-600">{formatOdds(row.pick_odds,formatNumber)}</bdi></div> : <p className="mt-3 rounded-lg bg-slate-50 p-2 text-xs leading-5 text-slate-600">{w.noQuote}</p>}
     {!theoretical && <div className="mt-3"><PredictionEvidence prediction={row} /></div>}
+    {user?.is_admin && !theoretical && row.selection_available!==false && finiteNumber(row.pick_odds)>1 && <AdminShareActions isAdmin={true} item={shareItem(row)} kind={row.alternative_result_confirmed?"results":"picks"}/>}
   </article>;
-  return <section className="mb-6 min-w-0 rounded-3xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-4 sm:p-6" data-testid="multi-market-board">
-    <h2 className="text-xl font-extrabold tracking-tight text-slate-900">{w.title}</h2><p className="mt-2 text-sm leading-6 text-slate-600">{w.intro}</p>
+  return <AdminShareProvider isAdmin={Boolean(user?.is_admin)} items={choices.filter(row=>row.selection_available!==false && finiteNumber(row.pick_odds)>1).map(shareItem)}><section className="mb-6 min-w-0 rounded-3xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-4 sm:p-6" data-testid="multi-market-board">
+    <h2 className="text-xl font-extrabold tracking-tight text-slate-900">{w.title}</h2>
+    {prediction.analysis_snapshot?.archived && <p className="my-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900" data-testid="archived-market-analysis">{detailWords.archived}</p>}
+    <AdminShareToolbar/><p className="mt-2 text-sm leading-6 text-slate-600">{w.intro}</p>
     <span className="mt-3 inline-flex rounded-full border border-indigo-200 bg-white px-3 py-1 text-xs font-bold text-indigo-800">{hasModel ? w.pilot : w.market}</span>
     {hasModel && <div className="mt-4 grid grid-cols-2 gap-3 rounded-2xl bg-white p-4 text-xs text-slate-500">{[[w.homeGoals,model.expected_home_goals],[w.awayGoals,model.expected_away_goals]].map(([label,value])=><div key={label}><span>{label}</span><bdi className="mt-1 block text-xl font-extrabold text-slate-900">{number(value)}</bdi></div>)}</div>}
     <div className="mt-4 flex flex-wrap gap-2" role="group" aria-label={w.title}>{["all",...families].map(key=><button key={key} type="button" aria-pressed={family===key} onClick={()=>setFamily(key)} className={`min-h-11 max-w-full rounded-xl border px-3 py-2 text-sm font-semibold ${family===key ? "border-indigo-600 bg-indigo-600 text-white" : "border-slate-200 bg-white text-slate-700"}`}>{key==="all" ? w.all : w.families[key] || key}</button>)}</div>
@@ -804,7 +838,7 @@ export function MultiMarketBoard({ prediction = {} }) {
     {!choices.some(row=>family==="all" || row.market===family) && <p className="mt-3 text-sm text-slate-500">{w.empty}</p>}
     {analysis.length > 0 && <details className="mt-5 rounded-2xl border border-slate-200 bg-white p-3"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.analysis}</summary><div className="mt-3 grid min-w-0 gap-3 sm:grid-cols-2">{analysis.filter(row=>family==="all" || row.market===family).map((row,i)=>renderRow(row,i,true))}</div></details>}
     {hasModel && <details className="mt-4 border-t border-slate-200 pt-3"><summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold text-slate-700">{profileWords.method}</summary><p className="mt-2 text-xs leading-6 text-slate-600">{profileWords.experimental}</p><p className="mt-2 text-xs text-slate-600">{profileWords.history} : {number(model.model_fixtures)}</p>{model.latest_fixture_at && <p className="mt-2 text-xs text-slate-600">{profileWords.updated} : {String(model.latest_fixture_at).slice(0,10)}</p>}</details>}<p className="mt-2 text-xs leading-6 text-slate-600">{w.note}</p>
-  </section>;
+  </section></AdminShareProvider>;
 }
 
 
