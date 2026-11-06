@@ -1,5 +1,5 @@
 """
-WNPulse Prediction Engine v8.6.2 — double chance and prospective comparison
+WNPulse Prediction Engine v8.7 — probability-first primary choice — double chance and prospective comparison
 - Preserve every fixture in analyze_all; quality ranking never filters the cache.
 - Use all unique quoted operators, with exact quote provenance.
 - Compare identical lines; distinguish overlapping outcomes and refunded bets.
@@ -588,7 +588,7 @@ def _market_sort_key(x: Dict) -> Tuple[float, float, float, float]:
 
 def _top_recommendations(market_results: List[Dict], limit: int = 4) -> List[Dict]:
     """Retourne plusieurs propositions reelles, sans fabriquer de marche."""
-    ordered = sorted(market_results, key=_market_sort_key, reverse=True)
+    ordered = _primary_order(market_results)
     out=[];seen=set();families=set()
     if limit<=0:return out
     def identity(item):
@@ -2398,7 +2398,7 @@ def observed_model_forecast(match,registry,now=None):
 
 # Public activation is a bounded pilot, not a claim of established superiority.
 # Missing/stale models always retain the existing market selections and fixtures.
-PUBLIC_HYBRID_REVISION = "hybrid-bootstrap-2026-11-04"
+PUBLIC_HYBRID_REVISION = "probability-first-2026-11-06"
 
 # Explicit same-club aliases only. No fuzzy matching across clubs or teams.
 _BOOTSTRAP_ALIAS_GROUPS = {
@@ -2601,14 +2601,18 @@ def _public_hybrid_and_risk(match, result, stats_map):
             if market.get(key) is not None:
                 market[key] = round(market[key],1)
         market["selection_score"] = market["wp_score"] = _wp_score(p,market.get("stability_score",0),edge,market.get("num_books",0))
+    for candidate in markets:
+        quote_at=_quote_timestamp_for(match,candidate)
+        age=(datetime.now(timezone.utc)-quote_at).total_seconds() if quote_at else None
+        candidate['quote_status']='fresh' if age is not None and 0<=age<=21600 else 'stale' if age is not None else 'unknown'
     if markets:
         markets.sort(key=_market_sort_key, reverse=True)
-        best = markets[0]
+        best = _choose_primary(markets)
         for key in ("pick", "pick_raw", "pick_point", "team", "pick_odds", "market", "market_label", "confidence",
                     "model_probability", "estimated_win_probability", "edge", "expected_return", "selection_score",
                     "wp_score", "num_books", "best_bookmaker", "stability_score", "probability_source",
                     "probability_validated", "probability_basis", "push_probability", "label", "risk_level",
-                    "analysis_quality", "estimated_loss_probability", "risk_reason", "risk_policy_version",
+                    "analysis_quality", "estimated_loss_probability", "risk_reason", "risk_policy_version", "quote_status",
                     "risk_is_estimated", "quote_freshness_verified", "model_market_disagreement",
                     "market_probability", "sport_probability", "sport_weight", "hybrid_applied", "hybrid_validation"):
             result[key] = best.get(key)
@@ -2629,6 +2633,7 @@ def _public_hybrid_and_risk(match, result, stats_map):
     if pair:
         published['model_comparison'] = pair
     published['market_coverage']=_market_coverage(match,published)
+    _describe_primary_policy(published)
     return published
 
 
@@ -2755,7 +2760,7 @@ def _quote_timestamp_for(match, candidate):
 
 def _diverse_market_choices(markets, limit=6):
     selected, families = [], set()
-    for item in sorted(markets, key=_market_sort_key, reverse=True):
+    for item in _primary_order(markets):
         family = item['market']
         if family in families:
             continue
@@ -2809,7 +2814,7 @@ def _independent_football_markets(match, result, stats_map):
                 push_probability=100*mass['push'], expected_return=mass['win']*(odds-1)-mass['loss'],
                 probability_source='dixon_coles_pilot', sport_weight=1., hybrid_applied=True,
                 hybrid_validation='experimental_independent', probability_validated=False,
-                quote_freshness_verified=fresh, quote_updated_at=at.isoformat() if at else None,
+                quote_freshness_verified=fresh, quote_status='fresh' if fresh else 'stale', quote_updated_at=at.isoformat() if at else None,
                 selection_available=fresh, source='bookmaker', synthetic=False,
                 settlement_supported=True, selection_unit='individual_not_accumulator')
             candidate['edge'] = round(100*(probability-1/odds), 2)
@@ -2874,13 +2879,13 @@ def _independent_football_markets(match, result, stats_map):
             'sports_history_latest':report.get('latest_fixture_at')}
     else:
         result['multi_market']['status'] = 'analysis_without_fresh_quotes'
-    result['engine_revision'] = 'independent-multimarket-2026-11-04'
+    result['engine_revision'] = 'independent-probability-first-2026-11-06'
     return result
 
 
 
 # Paired prospective observation: one frozen choice per arm, never a promotion.
-MODEL_COMPARISON_VERSION = 'paired-football-2026-11-05'
+MODEL_COMPARISON_VERSION = 'paired-football-probability-20261106'
 
 
 def _paired_forecast_snapshot(match, baseline, challenger):
@@ -2977,3 +2982,80 @@ def _prediction_match_view(match):
         books.append({**book,'markets':markets})
     row['bookmakers']=books
     return row
+
+
+
+PRIMARY_POLICY_VERSION='probability-first-20261106'
+
+
+def _primary_config():
+    import os
+    odds=_hybrid_number(os.environ.get('WNPULSE_PRIMARY_PREFERRED_MIN_ODDS','1.35'))
+    probability=_hybrid_number(os.environ.get('WNPULSE_PRIMARY_PREFERRED_MIN_WIN_PERCENT','60'))
+    return (max(MIN_ODDS,min(2.,odds if odds is not None else 1.35)),
+            max(50.,min(90.,probability if probability is not None else 60.)))
+
+
+def _absolute_win_probability(candidate):
+    # Winning is different from avoiding a loss or winning conditional on refund.
+    raw=_hybrid_number(candidate.get('estimated_win_probability'))
+    if raw is not None and 0<=raw<=100:return raw
+    probability=_hybrid_number(candidate.get('model_probability',candidate.get('confidence')))
+    if probability is None or not 0<=probability<=100:return None
+    basis=candidate.get('probability_basis') or 'unconditional'
+    if basis=='unconditional':return probability
+    refund=_hybrid_number(candidate.get('push_probability'))
+    if refund is not None and 0<=refund<=100:return probability*(1-refund/100)
+    return None
+
+
+def _choose_primary(candidates):
+    if not candidates:return None
+    eligible=[c for c in candidates if not c.get('synthetic') and not c.get('analysis_only')
+        and c.get('selection_available') is not False
+        and (_hybrid_number(c.get('pick_odds')) or 0)>1]
+    if not eligible:return max(candidates,key=_market_sort_key)
+    # Reject an explicitly stale offer if any non-stale offer exists. A missing
+    # timestamp is not silently reclassified as verified fresh.
+    fresh=[c for c in eligible if c.get('quote_status')!='stale']
+    eligible=fresh or eligible
+    measured=[c for c in eligible if _absolute_win_probability(c) is not None]
+    if not measured:return max(eligible,key=_market_sort_key)
+    floor,min_probability=_primary_config()
+    preferred=[c for c in measured if float(c['pick_odds'])>=floor and _absolute_win_probability(c)>=min_probability]
+    pool=preferred or measured
+    best_probability=max(_absolute_win_probability(c) for c in pool)
+    # Within a narrow two-point band, favor supporting market evidence before
+    # price value. This is a ranking tolerance, not a confidence interval.
+    close=[c for c in pool if _absolute_win_probability(c)>=best_probability-2.]
+    def evidence(c):
+        quality={'strong':2,'moderate':1,'limited':0}.get(c.get('analysis_quality'),
+            2 if int(c.get('num_books') or 0)>=5 else 1 if int(c.get('num_books') or 0)>=2 else 0)
+        stability=_hybrid_number(c.get('stability_score')) or 0.
+        expected=_hybrid_number(c.get('expected_return'))
+        return (quality,min(int(c.get('num_books') or 0),5),stability,
+            _absolute_win_probability(c),expected if expected is not None else -999.,_market_sort_key(c))
+    return max(close,key=evidence)
+
+
+def _primary_order(candidates):
+    ordered=sorted(candidates,key=_market_sort_key,reverse=True)
+    chosen=_choose_primary(ordered)
+    if chosen is None:return ordered
+    return [chosen]+[c for c in ordered if c is not chosen]
+
+
+def _describe_primary_policy(result):
+    floor,min_probability=_primary_config()
+    probability=_absolute_win_probability(result)
+    odds=_hybrid_number(result.get('pick_odds'))
+    result['selection_policy_version']=PRIMARY_POLICY_VERSION
+    result['primary_selection']={'policy':PRIMARY_POLICY_VERSION,
+        'objective':'estimated_win_probability_first_with_odds_preference',
+        'preferred_min_odds':floor,'preferred_min_win_percent':min_probability,
+        'estimated_win_probability':round(probability,2) if probability is not None else None,
+        'quote_status':result.get('quote_status','unknown'),
+        'preferred_conditions_met':bool(probability is not None and probability>=min_probability and odds is not None and odds>=floor and result.get('quote_status')!='stale'),
+        'fallback_used':bool(result.get('pick') and not (probability is not None and probability>=min_probability and odds is not None and odds>=floor and result.get('quote_status')!='stale')),
+        'probability_is_estimated':True,'guaranteed_win':False}
+    return result
