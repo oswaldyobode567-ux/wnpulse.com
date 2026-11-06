@@ -409,11 +409,15 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
 
   return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card" data-navigation-match-id={event.id || event.match_id}>
     <Link to={`/app/match/${event.id}`} className="wp-match-link" data-testid="match-card-link">
-      <div className="wp-match-meta"><span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
-        <span className="flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1">
-          <time data-testid="match-start-time" className="whitespace-nowrap" dateTime={event.commence_time || pred.commence_time || undefined}>{formatDate(event.commence_time || pred.commence_time, {day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"})}</time>
-          {isLive ? <span className="wp-live-label"><Radio className="h-3 w-3" aria-hidden="true" />{t("LIVE")}</span> : isFinished ? <span className="rounded-full bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600">{t("TERMINÉ")}</span> : null}
-        </span>
+      <div className="wp-match-meta">
+        <div className="wp-match-competition-row">
+          <span className="wp-competition"><bdi>{event.sport_title}</bdi></span>
+          {isLive ? <span className="wp-live-label"><Radio className="h-3 w-3" aria-hidden="true" />{t("LIVE")}</span> : isFinished ? <span className="shrink-0 rounded-full bg-slate-100 px-2 py-1 text-[11px] font-bold text-slate-600">{t("TERMINÉ")}</span> : null}
+        </div>
+        <time data-testid="match-start-time" className="wp-match-start" dateTime={event.commence_time || pred.commence_time || undefined}>
+          <span data-testid="match-start-date">{formatDate(event.commence_time || pred.commence_time, {day:"2-digit",month:"2-digit"})}</span>
+          <strong data-testid="match-start-hour"><bdi>{formatDate(event.commence_time || pred.commence_time, {hour:"2-digit",minute:"2-digit"})}</bdi></strong>
+        </time>
       </div>
       <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} fallbackSrcs={badgeUrls(event,side)} sport={event.sport_key} kind={event[`${side}_media`]?.kind} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
       {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && <div className="wp-match-score" data-testid="match-score"><bdi>{formatScore(pred.score_home,formatNumber)} — {formatScore(pred.score_away,formatNumber)}</bdi>{isFinished && <span>{t("TERMINÉ")}</span>}</div>}
