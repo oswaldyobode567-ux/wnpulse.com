@@ -1,11 +1,11 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation, Link } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, Link } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
 import WhatsAppWidget from "@/components/WhatsAppWidget";
 import PageTracker from "@/components/PageTracker";
 import AppLayout, { LanguageProvider, LanguageSwitcher, useLanguage, usePageLanguage, FollowedPicksPage, ExperienceProvider, useExperienceCopy, useExperiencePreferences } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
-import { Component, Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, CalendarDays, CheckCircle2, Clock, Info, Layers, Lock, Play, Radar, RefreshCw, RotateCcw, ShieldCheck, Sparkles, Target, XCircle } from "lucide-react";
 import api from "@/lib/api";
 import { Button } from "@/components/ui/button";
@@ -552,6 +552,7 @@ export default function App() {
     <AuthProvider>
       <ExperienceProvider>
       <BrowserRouter>
+        <NavigationPositionMemory />
         <PublicLanguageBar />
         <RouteBoundary><Suspense fallback={<RouteLoading />}><Routes>
           <Route path="/" element={<LandingPage />} />
@@ -714,3 +715,93 @@ function QualitySignals() {
   return null;
 }
 
+
+
+
+// Session-only navigation memory. No prediction or account data is persisted.
+export function NavigationPositionMemory() {
+  const location=useLocation(), navigationType=useNavigationType();
+  const {user}=useAuth();const previous=useRef(null);
+  useLayoutEffect(()=>{
+    const owner=String(user?.id || 'guest');
+    const storageKey='wnpulse:navigation:v1:'+owner;
+    const url=location.pathname+location.search;
+    const identity=String(location.key || 'default')+'|'+url;
+    const now=Date.now();let state={entries:{},urls:{}};
+    try{const raw=JSON.parse(sessionStorage.getItem(storageKey)||'null');if(raw&&raw.entries&&raw.urls)state=raw;}catch{}
+    const from=previous.current;previous.current=url;
+    const stored=(navigationType==='POP'?state.entries[identity]:null) ||
+      (from?.startsWith('/app/match/')&&!location.pathname.startsWith('/app/match/')?state.urls[url]:null);
+    const target=stored&&Number.isFinite(stored.y)&&stored.y>=0&&now-stored.at<21600000?stored:null;
+    let active=true,restoring=Boolean(target),frame=0,timer=0,observer=null,resize=null,settledAt=0;
+    let latest=target || {x:0,y:0,at:now,url};
+    const priorMode=window.history.scrollRestoration;window.history.scrollRestoration='manual';
+    const oldBehavior=document.documentElement.style.scrollBehavior;document.documentElement.style.scrollBehavior='auto';
+    const persist=snapshot=>{
+      try{
+        state.entries[identity]=snapshot;state.urls[url]=snapshot;
+        for(const name of ['entries','urls']){
+          const rows=Object.entries(state[name]).filter(([,v])=>v&&Date.now()-v.at<21600000).sort((a,b)=>b[1].at-a[1].at).slice(0,40);
+          state[name]=Object.fromEntries(rows);
+        }
+        sessionStorage.setItem(storageKey,JSON.stringify(state));
+      }catch{}
+    };
+    const capture=clicked=>{
+      if(restoring||!active)return;
+      const cards=[...document.querySelectorAll('[data-navigation-match-id]')];
+      const anchor=clicked?.getBoundingClientRect?clicked:cards.find(node=>{const r=node.getBoundingClientRect();return r.bottom>0&&r.top<window.innerHeight;});
+      latest={x:window.scrollX||0,y:window.scrollY||0,at:Date.now(),url,
+        anchor:anchor?{id:anchor.getAttribute('data-navigation-match-id'),occurrence:cards.filter(node=>node.getAttribute('data-navigation-match-id')===anchor.getAttribute('data-navigation-match-id')).indexOf(anchor),offset:anchor.getBoundingClientRect().top}:null};
+      persist(latest);
+    };
+    const stopRestore=()=>{
+      restoring=false;observer?.disconnect();resize?.disconnect();window.clearTimeout(timer);
+      document.documentElement.style.scrollBehavior=oldBehavior;
+    };
+    const interrupted=()=>{if(restoring){stopRestore();capture();}};
+    const restore=()=>{
+      if(!active||!restoring)return;
+      const matches=target.anchor?[...document.querySelectorAll('[data-navigation-match-id]')].filter(node=>node.getAttribute('data-navigation-match-id')===target.anchor.id):[];
+      const anchor=matches[target.anchor?.occurrence||0]||matches[0];
+      if(target.anchor&&!anchor)return;
+      const y=anchor?Math.max(0,window.scrollY+anchor.getBoundingClientRect().top-target.anchor.offset):target.y;
+      const height=Math.max(document.documentElement.scrollHeight,document.body?.scrollHeight||0);
+      if(!anchor&&height-window.innerHeight<y-2)return;
+      window.scrollTo(target.x||0,y);
+      if(Math.abs(window.scrollY-y)<=3){
+        if(!settledAt)settledAt=Date.now();
+        if(Date.now()-settledAt>=500){stopRestore();capture(anchor);}
+      }else settledAt=0;
+    };
+    const scheduleRestore=()=>{if(!frame)frame=window.requestAnimationFrame(()=>{frame=0;restore();});};
+    const onScroll=()=>{if(!restoring&&!frame)frame=window.requestAnimationFrame(()=>{frame=0;capture();});};
+    const onClick=event=>{
+      if(event.button!==0||event.metaKey||event.ctrlKey||event.shiftKey||event.altKey)return;
+      const link=event.target?.closest?.('a[href]');if(!link)return;
+      capture(link.closest('[data-navigation-match-id]'));
+    };
+    if(target){
+      observer=new MutationObserver(scheduleRestore);observer.observe(document.body,{childList:true,subtree:true});
+      if(typeof ResizeObserver!=='undefined'){resize=new ResizeObserver(scheduleRestore);resize.observe(document.body);}
+      const deadline=Date.now()+10000;
+      const boundedTick=()=>{
+        if(!active||!restoring)return;
+        if(Date.now()>deadline){window.scrollTo(target.x||0,target.y);stopRestore();capture();return;}
+        restore();if(restoring)timer=window.setTimeout(boundedTick,100);
+      };
+      boundedTick();
+    }else if(!location.hash){window.scrollTo(0,0);document.documentElement.style.scrollBehavior=oldBehavior;}
+    window.addEventListener('scroll',onScroll,{passive:true});
+    document.addEventListener('click',onClick,true);window.addEventListener('pagehide',capture);
+    for(const event of ['wheel','touchstart','pointerdown','keydown'])window.addEventListener(event,interrupted,{passive:true});
+    return()=>{
+      if(!restoring)persist(latest);active=false;window.cancelAnimationFrame(frame);window.clearTimeout(timer);
+      observer?.disconnect();resize?.disconnect();document.documentElement.style.scrollBehavior=oldBehavior;
+      window.history.scrollRestoration=priorMode;
+      window.removeEventListener('scroll',onScroll);document.removeEventListener('click',onClick,true);window.removeEventListener('pagehide',capture);
+      for(const event of ['wheel','touchstart','pointerdown','keydown'])window.removeEventListener(event,interrupted);
+    };
+  },[location.key,location.pathname,location.search,location.hash,navigationType,user?.id]);
+  return null;
+}
