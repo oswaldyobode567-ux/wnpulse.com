@@ -82,6 +82,14 @@ function displayPercent(i18n, value) {
   const number = numeric(value);
   return number === null || number < 0 || number > 100 ? "—" : `${displayNumber(i18n, number, 1)} %`;
 }
+function ResultKickoff({ row }) {
+  const i18n=useResultsLanguage();
+  const value=row.commence_time || row.date;
+  const known=row.kickoff_time_known!==false && typeof value==="string" && /T\d{2}:\d{2}/.test(value) && Number.isFinite(new Date(value).getTime());
+  const label={fr:"Heure locale",en:"Local time",es:"Hora local",pt:"Hora local",de:"Ortszeit",ar:"الوقت المحلي"}[i18n.language] || "Local time";
+  return <time data-testid="track-kickoff-time" dateTime={known?value:undefined} className="inline-flex items-center gap-1.5 text-xs font-bold tabular-nums text-slate-700"><Clock className="h-3.5 w-3.5" aria-hidden="true"/><span>{known?i18n.formatPattern(value,"HH:mm"):"—"}</span><span className="text-[10px] font-normal text-slate-500">{label}</span></time>;
+}
+
 function displayDate(i18n, value) {
   return i18n.formatPattern(value, "DD/MM/YYYY") || "—";
 }
@@ -244,7 +252,7 @@ export default function TrackRecordPage() {
           {(index === 0 || displayDate(i18n, row.date) !== displayDate(i18n, visible[index - 1].date)) && <h3 className="border-y border-slate-200 bg-slate-50 px-3 py-2 text-xs font-bold text-slate-600 sm:px-5" data-testid="track-date-separator">{displayDate(i18n, row.date)}</h3>}
           <ResultCard row={row} />
         </div>)}</div>
-        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}</td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900"><ResultEncounter row={row} /></p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /><AdminShareActions item={row} isAdmin={Boolean(user?.is_admin)} kind="results" /></td></tr>)}</tbody></table></div>
+        <div className="hidden overflow-x-auto lg:block"><table className="w-full text-start text-sm"><caption className="sr-only">{i18n.t("Le journal des résultats")}</caption><thead className="border-b border-slate-100 bg-slate-50/80 text-xs uppercase tracking-wide text-slate-500"><tr>{["Date", "Rencontre", "Pronostic", "Cote", "Résultat"].map(title => <th scope="col" key={title} className="px-5 py-4 text-start font-bold">{i18n.t(title)}</th>)}</tr></thead><tbody className="divide-y divide-slate-100" data-testid="results-table">{visible.map((row, index) => <tr key={row.id || index} className="hover:bg-slate-50/60"><td className="whitespace-nowrap px-4 py-3 font-mono text-xs text-slate-500">{displayDate(i18n, row.date)}<div className="mt-1"><ResultKickoff row={row}/></div></td><td className="min-w-[230px] max-w-sm px-4 py-3"><p className="break-words text-sm font-bold leading-5 text-slate-900"><ResultEncounter row={row} /></p><p className="mt-1 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p></td><td className="max-w-xs px-4 py-3"><p className="break-words text-sm font-bold leading-6 text-orange-700">{i18n.bet(row.pick) || "—"}</p><RiskBadge label={row.label} /></td><td className="px-4 py-3 font-mono text-base font-extrabold text-slate-900">{displayNumber(i18n, row.odds, 2)}</td><td className="px-4 py-3"><ResultBadge status={row.status} /><AdminShareActions item={row} isAdmin={Boolean(user?.is_admin)} kind="results" /></td></tr>)}</tbody></table></div>
       </>}
       <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 px-5 py-4"><div aria-live="polite" className="text-sm text-slate-500">{i18n.t("Page {{page}} sur {{total}}", {
             page: currentPage,
@@ -297,6 +305,7 @@ function ResultCard({
     <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
       <p className="min-w-0 flex-1 basis-36 break-words text-xs leading-5 text-slate-500">{i18n.t(sportName(row.sport))} · {row.league || "—"}</p>
       <ResultBadge status={row.status} />
+      <div className="basis-full"><ResultKickoff row={row}/></div>
     </div>
     <h4 dir="auto" className="break-words font-heading text-sm font-bold leading-5 text-slate-900 sm:text-base sm:leading-6"><ResultEncounter row={row} /></h4>
     <div className="mt-2.5 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3 rounded-lg bg-slate-50 px-3 py-2.5">
