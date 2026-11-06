@@ -11783,6 +11783,19 @@ async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_
         if archived_entry:
             match = {**archived_entry["match"], "id":archived_entry["match_id"], "archived":True}
     if not match:
+        archived = await db.official_prediction_registry.find_one({"prediction.match_id": str(match_id)})
+        if archived:
+            stored = copy.deepcopy(archived.get("prediction") or {})
+            _restore_market_analysis(stored, archived.get("market_analysis_snapshot"), datetime.now(timezone.utc))
+            confirmed = await db.predictions_history.find_one({"signature": stored.get("signature"),
+                "result": {"$in": ["won", "lost", "void"]}})
+            if confirmed:
+                stored.update(is_finished=True, is_live=False, result=confirmed["result"],
+                    won=True if confirmed["result"] == "won" else False if confirmed["result"] == "lost" else None)
+            match = {**{k: stored.get(k) for k in ("match_id", "home_team", "away_team", "sport_key", "sport_title", "commence_time")},
+                "id": str(match_id), "archived": True, "is_finished": bool(confirmed)}
+            archived_entry = {"prediction": stored, "match": match}
+    if not match:
         raise HTTPException(
             status_code=404,
             detail=f"Match introuvable (id={match_id}, {len(matches)} matchs en cache)",
@@ -11794,6 +11807,10 @@ async def get_single_match(match_id: str, payload: Optional[dict] = Depends(get_
     )
     prediction = _apply_calibration([prediction], snapshot["calibration"])[0] if prediction else {}
     paid = await _has_paid_access(payload)
+    if paid and prediction.get("analysis_snapshot"):
+        confirmed_result = await db.predictions_history.find_one({"match_id":str(match_id),
+            "is_primary_official":True,"result":{"$in":["won","lost","void"]}})
+        _annotate_alternative_results(prediction,confirmed_result)
     manifest = await _discovery_manifest(snapshot) if not paid else {}
     prediction = _discovery_prediction(prediction,manifest,paid=paid)
     outer = match if paid or not prediction.get("locked") else _discovery_metadata(match)
@@ -12470,6 +12487,8 @@ async def get_track_record_public(
             "track_policy": _OFFICIAL_POLICY,
             # Date réelle du match, pas date de réconciliation.
             "date": r.get("commence_time") or r.get("created_at"),
+            "commence_time": r.get("commence_time"),
+            "kickoff_time_known": bool(r.get("commence_time")),
             "reconciled_at": r.get("reconciled_at"),
             "sport": r.get("_normalized_sport", "unknown"),
             "league": r.get("sport_title", ""),
@@ -13159,14 +13178,71 @@ def _official_history_rows(rows):
     return selected
 
 
+def _annotate_alternative_results(prediction, confirmed):
+    """Read-only grading from a confirmed official final score; never add track rows."""
+    snapshot=prediction.get("analysis_snapshot") or {}
+    if not snapshot.get("prematch") or not confirmed or confirmed.get("result") not in {"won","lost","void"} or not confirmed.get("reconciled_at"):
+        return prediction
+    score=re.fullmatch(r"(\d+)-(\d+)",str(confirmed.get("final_score") or ""))
+    if not score:
+        return prediction
+    home,away=map(int,score.groups())
+    model=prediction.get("multi_market") or {}
+    for rows in (prediction.get("markets"),prediction.get("recommendations"),model.get("choices")):
+        for choice in rows if isinstance(rows,list) else []:
+            if choice.get("market") not in {"h2h","double_chance","totals"}:
+                continue
+            outcome=_evaluate_pick_result({**prediction,**choice},home,away)
+            if outcome in {"won","lost","void"}:
+                choice.update(result=outcome,alternative_result_confirmed=True,
+                    alternative_result_basis="confirmed_final_score",final_score=confirmed["final_score"])
+    return prediction
+
+
+def _market_analysis_snapshot(prediction, now):
+    kickoff = _parse_iso(prediction.get("commence_time"))
+    if not kickoff or now >= kickoff:
+        return None
+    snapshot = {"captured_at": now.isoformat(), "commence_time": kickoff.isoformat()}
+    for field in ("markets", "recommendations"):
+        if isinstance(prediction.get(field), list) and prediction[field]:
+            snapshot[field] = copy.deepcopy(prediction[field][:200])
+    model = prediction.get("multi_market")
+    if isinstance(model, dict) and (model.get("choices") or model.get("analysis")):
+        snapshot["multi_market"] = copy.deepcopy(model)
+        for field in ("choices", "analysis"):
+            if isinstance(snapshot["multi_market"].get(field), list):
+                snapshot["multi_market"][field] = snapshot["multi_market"][field][:200]
+    return snapshot if any(k in snapshot for k in ("markets", "recommendations", "multi_market")) else None
+
+
+def _restore_market_analysis(prediction, snapshot, now):
+    if not isinstance(snapshot, dict):
+        return prediction
+    captured = _parse_iso(snapshot.get("captured_at"))
+    kickoff = _parse_iso(snapshot.get("commence_time"))
+    if not captured or not kickoff or captured >= kickoff:
+        return prediction
+    started = now >= kickoff
+    restored = False
+    for field in ("markets", "recommendations", "multi_market"):
+        if snapshot.get(field) and (started or not prediction.get(field)):
+            prediction[field] = copy.deepcopy(snapshot[field])
+            restored = True
+    if restored:
+        prediction["analysis_snapshot"] = {"captured_at": snapshot["captured_at"],
+            "prematch": True, "archived": started, "live_estimate": False}
+    return prediction
+
+
 async def _freeze_official_predictions(predictions):
     """Atomic per-event registry; linked history stays compatible with score settlement."""
     now=datetime.now(timezone.utc)
-    candidates={_official_event_key(p):p for p in predictions if p.get('match_id') and p.get('pick') and not p.get('is_combo')}
+    candidates={_official_event_key(p):p for p in predictions if p.get('match_id') and not p.get('is_combo')}
     if not candidates:return predictions
     registered=await db.official_prediction_registry.find({'_id':{'$in':list(candidates)}}).to_list(length=len(candidates))
     registry={r['_id']:r for r in registered}
-    missing={key:p for key,p in candidates.items() if key not in registry}
+    missing={key:p for key,p in candidates.items() if key not in registry and p.get('pick')}
     if missing:
         ids=[p['match_id'] for p in missing.values()]
         legacy=await db.predictions_history.find({'match_id':{'$in':ids}}).to_list(length=None)
@@ -13210,9 +13286,16 @@ async def _freeze_official_predictions(predictions):
         await db.predictions_history.bulk_write(history,ordered=False)
         await db.official_prediction_registry.bulk_write(linked,ordered=False)
     result=[]
+    analysis_updates=[]
     for p in predictions:
         record=registry.get(_official_event_key(p));row=dict(p)
         if record:
+            analysis_snapshot=_market_analysis_snapshot(p, now)
+            if analysis_snapshot:
+                record['market_analysis_snapshot']=analysis_snapshot
+                analysis_updates.append(UpdateOne({'_id':_official_event_key(p)},
+                    {'$set':{'market_analysis_snapshot':analysis_snapshot}}))
+            _restore_market_analysis(row,record.get('market_analysis_snapshot'),now)
             frozen=record['prediction']
             computed={k:p.get(k) for k in ('pick','market','pick_raw','pick_point','team','pick_odds','estimated_win_probability','selection_policy_version')}
             contract=lambda source:tuple(source.get(k) for k in ('market','pick_raw','pick_point','team','pick'))
@@ -13226,6 +13309,11 @@ async def _freeze_official_predictions(predictions):
             row.update(is_primary_official=True,official_frozen_at=frozen['official_frozen_at'],
                 official_event_id=frozen['official_event_id'],track_policy=_OFFICIAL_POLICY)
         result.append(row)
+    if analysis_updates:
+        try:
+            await db.official_prediction_registry.bulk_write(analysis_updates,ordered=False)
+        except Exception as exc:
+            logging.getLogger('winpulse.official').warning('Alternative snapshot deferred (%s)',type(exc).__name__)
     return result
 
 
