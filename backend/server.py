@@ -13066,7 +13066,8 @@ _OFFICIAL_ARCHIVE_FIELDS = (
     "wp_score","selection_score","stability_score","dominance_score","num_books","edge","model_version",
     "market_probability","sport_probability","sport_weight","public_hybrid","analysis_quality","risk_policy_version",
     "estimated_loss_probability","engine_revision","best_bookmaker","probability_basis","push_probability",
-    "is_combo","official_track_eligible","expected_return","probability_source","evidence_level","uncertainty_level","quote_updated_at")
+    "is_combo","official_track_eligible","expected_return","probability_source","evidence_level","uncertainty_level","quote_updated_at",
+    "selection_policy_version","primary_selection","quote_status")
 
 
 def _official_event_key(row):
@@ -13183,6 +13184,12 @@ async def _freeze_official_predictions(predictions):
         record=registry.get(_official_event_key(p));row=dict(p)
         if record:
             frozen=record['prediction']
+            computed={k:p.get(k) for k in ('pick','market','pick_raw','pick_point','team','pick_odds','estimated_win_probability','selection_policy_version')}
+            contract=lambda source:tuple(source.get(k) for k in ('market','pick_raw','pick_point','team','pick'))
+            row['selection_context']={'official_choice_frozen':True,'frozen_at':frozen.get('official_frozen_at'),
+                'latest_candidate_differs':contract(p)!=contract(frozen),
+                'latest_candidate':computed if contract(p)!=contract(frozen) else None,
+                'reason':'official_history_not_rewritten','frozen_policy':frozen.get('selection_policy_version')}
             for field in _OFFICIAL_ARCHIVE_FIELDS:
                 if field not in ('match_id','home_team','away_team','sport_key','sport_title','commence_time'):
                     row[field]=frozen.get(field)
@@ -16299,7 +16306,7 @@ def _model_comparison_records(predictions, captured_at):
         trained=_parse_iso(pair.get('training_as_of'))
         if (not prediction.get('match_id') or not kickoff or not captured or not trained
             or not trained < captured <= captured_at < kickoff
-            or pair.get('version')!='paired-football-2026-11-05'
+            or pair.get('version')!='paired-football-probability-20261106'
             or not pair.get('baseline') or not pair.get('challenger')):
             continue
         identity=hashlib.sha256(json.dumps([pair['version'],str(prediction['match_id']),kickoff.isoformat()]).encode()).hexdigest()
@@ -16405,7 +16412,7 @@ def _summarize_model_comparisons(rows):
 async def prediction_comparison_status(days:int=30,payload:dict=Depends(get_current_user_payload)):
     await _require_admin(payload)
     days=max(1,min(365,days));cutoff=(datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
-    query={'protocol':'paired-football-2026-11-05','commence_time':{'$gte':cutoff}}
+    query={'protocol':'paired-football-probability-20261106','commence_time':{'$gte':cutoff}}
     total=await db.model_comparison_forecasts.count_documents(query)
     rows=await db.model_comparison_forecasts.find(query).sort('commence_time',-1).to_list(length=20000)
     return {**_summarize_model_comparisons(rows),'days':days,'total_records':total,
@@ -16429,3 +16436,4 @@ async def _paired_comparison_startup():
         scheduler.add_job(_scheduled_model_comparison_settlement,'interval',minutes=15,
             id='paired_model_settlement',replace_existing=True,coalesce=True,max_instances=1,
             next_run_time=datetime.now(timezone.utc)+timedelta(seconds=75))
+
