@@ -10305,11 +10305,40 @@ async def _montante_get() -> Optional[Dict]:
     return doc
 
 
-async def _montante_save(state: Dict, reset: bool = False) -> Dict:
+async def _montante_archive(state: Optional[Dict], reason: str = "terminal") -> None:
+    """Idempotent durable cycle snapshot, with no expiration policy."""
+    if not state or not state.get("id"):
+        return
+    archive = copy.deepcopy(state)
+    archive["_id"] = str(state["id"])
+    archive["archived_at"] = datetime.now(timezone.utc).isoformat()
+    archive["archive_reason"] = reason
+    archive["archived_terminal"] = state.get("status") in {"FAILED", "COMPLETED"}
+    try:
+        await db.montante_archives.update_one(
+            {"_id": archive["_id"], "archived_terminal": {"$ne": True}},
+            {"$set": archive}, upsert=True,
+        )
+    except DuplicateKeyError:
+        # A completed snapshot already owns this cycle ID: never overwrite it.
+        pass
+
+
+async def _montante_save(state: Dict, reset: bool = False, previous: Optional[Dict] = None) -> Dict:
     state = dict(state)
     state["_id"] = MONTANTE_DOC_ID
     if reset:
-        await db.montantes.replace_one({"_id": MONTANTE_DOC_ID}, state, upsert=True)
+        # A failed archive must prevent replacement of the previous cycle.
+        await _montante_archive(previous, "restarted")
+        if previous:
+            saved = await db.montantes.find_one_and_replace(previous, state, return_document=ReturnDocument.AFTER)
+            if not saved:
+                raise HTTPException(status_code=409, detail="La série a évolué. Actualise avant de la relancer.")
+        else:
+            try:
+                await db.montantes.insert_one(state)
+            except DuplicateKeyError:
+                raise HTTPException(status_code=409, detail="Une série vient déjà d’être créée. Actualise la page.")
         return _montante_public(state)
     values = {k: v for k, v in state.items() if k != "_id"}
     saved = await db.montantes.find_one_and_update(
@@ -10317,7 +10346,10 @@ async def _montante_save(state: Dict, reset: bool = False) -> Dict:
          "current_picks": state.get("current_picks") or []},
         {"$set": values}, return_document=ReturnDocument.AFTER,
     )
-    return _montante_public(saved) if saved else _montante_public(await _montante_get() or state)
+    actual = saved or await _montante_get()
+    if actual and actual.get("status") in {"FAILED", "COMPLETED"}:
+        await _montante_archive(actual)
+    return _montante_public(actual)
 
 
 async def _montante_commit_settlement(state: Dict, expected_day: int) -> Dict:
@@ -10326,7 +10358,10 @@ async def _montante_commit_settlement(state: Dict, expected_day: int) -> Dict:
          "current_picks": (state.get("history") or [{}])[-1].get("picks") or []},
         {"$set": {k: v for k, v in state.items() if k != "_id"}}, return_document=ReturnDocument.AFTER,
     )
-    return _montante_public(saved) if saved else _montante_public(await _montante_get() or state)
+    actual = saved or await _montante_get()
+    if actual and actual.get("status") in {"FAILED", "COMPLETED"}:
+        await _montante_archive(actual)
+    return _montante_public(actual)
 
 
 async def _montante_view_for_payload(state: Optional[Dict], payload: dict) -> Dict:
@@ -11055,14 +11090,9 @@ async def start_montante(
         raise HTTPException(status_code=400, detail="initial_bankroll doit être positif")
     state = montante_selector.create(days=days, initial_bankroll=initial_bankroll)
     previous = await _montante_get()
-    if previous and previous.get("id"):
-        archive = copy.deepcopy(previous)
-        archive["_id"] = str(previous["id"])
-        archive["archived_at"] = datetime.now(timezone.utc).isoformat()
-        await db.montante_archives.replace_one({"_id": archive["_id"]}, archive, upsert=True)
     state["current_picks"] = []
     state["waiting_reason"] = "Sélection des meilleurs picks du jour..."
-    state = await _montante_save(state, reset=True)
+    state = await _montante_save(state, reset=True, previous=previous)
     state = await _montante_prepare_next_day(state)
     return await _montante_view_for_payload(state, payload)
 
@@ -15217,15 +15247,27 @@ async def experience_summary(payload: dict = Depends(get_current_user_payload)):
     return {"days": 30, "events": totals[0] if totals else {}, "note": "Navigation counts only. These are neither unique visitors nor confirmed payments."}
 
 @app.get("/api/montante/archives")
-async def montante_archived_series(payload: dict = Depends(get_current_user_payload)):
+async def montante_archived_series(
+    payload: dict = Depends(get_current_user_payload),
+    page: int = Query(1, ge=1, le=100000),
+    limit: int = Query(5, ge=1, le=20),
+):
     await _experience_user(payload)
-    docs = await db.montante_archives.find({}).sort("archived_at", -1).limit(10).to_list(length=10)
-    # Reuse the existing access policy: Free never receives archived Pro picks.
-    return {"items": [await _montante_view_for_payload(doc, payload) for doc in docs], "limit": 10}
+    active = await _montante_get()
+    if active and active.get("status") in {"FAILED", "COMPLETED"}:
+        await _montante_archive(active)
+    query = {"id": {"$ne": active["id"]}} if active and active.get("status") == "ACTIVE" and active.get("id") else {}
+    docs = await db.montante_archives.find(query).sort([("archived_at", -1), ("_id", -1)]).skip((page - 1) * limit).limit(limit + 1).to_list(length=limit + 1)
+    return {"items": [await _montante_view_for_payload(doc, payload) for doc in docs[:limit]],
+            "page": page, "limit": limit, "has_more": len(docs) > limit}
 
 
 @app.on_event("startup")
 async def _experience_indexes():
+    try:
+        await db.montante_archives.create_index([("archived_at", -1), ("_id", -1)])
+    except Exception:
+        logging.getLogger("winpulse.montante").warning("Montante archive index unavailable")
     try:
         await db.experience_daily.create_index("expires_at", expireAfterSeconds=0)
     except Exception:
