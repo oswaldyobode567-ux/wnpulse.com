@@ -5,7 +5,7 @@ import MatchCard, { AdminShareProvider, AdminShareToolbar, TeamBadge, badgeUrl, 
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Link, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import {
   Trophy,  ChevronRight, Activity, 
   Sparkles, Radio,  CheckCircle2, XCircle,
@@ -1285,7 +1285,7 @@ export function MatchCataloguePage() {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const [refreshing,  setRefreshing] = useState(false);
   // Open the nearest day by default; other dates remain available without a long wall of cards.
-  const [openDays, setOpenDays] = useState({});
+  const [openDays, setOpenDays] = useDashboardViewState("open-days", {});
   const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
   const isFree = subscriptionTier === "free" && !user?.is_admin;
   const isAdmin = Boolean(user?.is_admin);
@@ -1518,7 +1518,7 @@ export function MatchCataloguePage() {
 }
 function DaySection({ dayKey, today, matches, isAdmin, isFree, onUpgrade, showAllMatches, expanded, onToggle }) {
   const { t, formatDate, formatNumber } = useDashboardLanguage();
-  const [showAllLeagues, setShowAllLeagues] = useState(false);
+  const [showAllLeagues, setShowAllLeagues] = useDashboardViewState(`day:${dayKey}:all-leagues`, false);
   const groups = groupByLeague(matches);
   const visibleGroups = showAllLeagues || showAllMatches ? groups : groups.slice(0, 4);
   const isToday = dayKey === today;
@@ -1550,7 +1550,7 @@ function DaySection({ dayKey, today, matches, isAdmin, isFree, onUpgrade, showAl
         </div>
     </header>
     <div id={`day-content-${dayKey}`} hidden={!expanded} className={`space-y-3 sm:space-y-4 border-s-2 ps-1 sm:ps-4 ${isToday ? "border-orange-300" : "border-slate-200"}`}>
-      {expanded && visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
+      {expanded && visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} dayKey={dayKey} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
       {expanded && !showAllMatches && groups.length > 4 && <button type="button" onClick={() => setShowAllLeagues(value => !value)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold leading-6 text-orange-700 hover:border-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="day-show-more">{t(showAllLeagues ? "Réduire cette journée" : "Voir tous les championnats de cette journée")}<span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs">{formatNumber(groups.length)}</span></button>}
     </div>
   </section>;
@@ -1565,10 +1565,10 @@ function getLeagueEmoji(name = "") {
   if (n.includes("mma") || n.includes("ufc")) return "🥊";
   return "⚽";
 }
-function LeagueSection({ league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false }) {
+function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false }) {
   const { t, formatNumber } = useDashboardLanguage();
-  const [expanded, setExpanded] = useState(true);
-  const [expandedAll, setExpandedAll] = useState(false);
+  const [expanded, setExpanded] = useDashboardViewState(`league:${dayKey}:${league}:open`,true);
+  const [expandedAll, setExpandedAll] = useDashboardViewState(`league:${dayKey}:${league}:all`,false);
   const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
   return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-2 sm:p-4" data-testid="dashboard-league">
@@ -1695,7 +1695,7 @@ function ExperienceHome(){
  const counts=getAvailablePickCounts(matches);const paid=experiencePaid(user);
  return <div className="wp-home mx-auto min-w-0 max-w-7xl px-4 py-6 sm:px-6 sm:py-8" data-testid="experience-home">
    <section className="wp-home-hero"><StadiumBackdrop/><div className="wp-hero-shade" aria-hidden="true"/><div className="wp-hero-content"><p className="wp-eyebrow">WinPulse / {i18n.formatDate(new Date(now),{day:'numeric',month:'long'})}</p><h1>{w.hello}</h1><p className="wp-hero-intro">{w.homeIntro}</p><div className="wp-hero-links"><Link to="/app/aujourdhui" className="wp-primary-button">{w.allMatches}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link><Link to="/app/suivi" className="wp-quiet-button">{w.follow}<Bookmark className="h-4 w-4"/></Link></div></div>
-     {featured&&<div className="min-w-0 space-y-3" data-testid="featured-pick-actions"><Link to={`/app/match/${featured.id}`} className="wp-featured-match" data-testid="premium-featured-match"><div className="wp-featured-meta"><span>{w.upcoming}</span><time dateTime={featured.commence_time}>{i18n.formatDate(featured.commence_time,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</time></div><p className="wp-featured-league">{featured.sport_title}</p><div className="wp-featured-teams">{[['home',featured.home_team],['away',featured.away_team]].map(([side,name])=><div key={side}><TeamBadge name={name} src={badgeUrl(featured,side)} kind={featured[`${side}_media`]?.kind} size="large"/><strong><bdi>{name}</bdi></strong></div>)}<span aria-hidden="true">VS</span></div><div className="wp-featured-pick"><div><small>{i18n.bet(featured.prediction.market_label || 'Pronostic')}</small><strong><bdi>{i18n.bet(featured.prediction.pick)}</bdi></strong></div><bdi>{Number.isFinite(Number(featured.prediction.pick_odds))&&Number(featured.prediction.pick_odds)>1?i18n.formatNumber(Number(featured.prediction.pick_odds),{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</bdi></div><span className="wp-featured-open">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></span></Link><FollowPickButton matchId={featured.id || featured.match_id} pick={featured.prediction.pick} market={featured.prediction.market} compact disabled={Boolean(featured.is_live || featured.is_finished || featured.prediction.is_live || featured.prediction.is_finished)}/></div>}
+     {featured&&<div className="min-w-0 space-y-3" data-testid="featured-pick-actions" data-navigation-match-id={featured.id || featured.match_id}><Link to={`/app/match/${featured.id}`} className="wp-featured-match" data-testid="premium-featured-match"><div className="wp-featured-meta"><span>{w.upcoming}</span><time dateTime={featured.commence_time}>{i18n.formatDate(featured.commence_time,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</time></div><p className="wp-featured-league">{featured.sport_title}</p><div className="wp-featured-teams">{[['home',featured.home_team],['away',featured.away_team]].map(([side,name])=><div key={side}><TeamBadge name={name} src={badgeUrl(featured,side)} kind={featured[`${side}_media`]?.kind} size="large"/><strong><bdi>{name}</bdi></strong></div>)}<span aria-hidden="true">VS</span></div><div className="wp-featured-pick"><div><small>{i18n.bet(featured.prediction.market_label || 'Pronostic')}</small><strong><bdi>{i18n.bet(featured.prediction.pick)}</bdi></strong></div><bdi>{Number.isFinite(Number(featured.prediction.pick_odds))&&Number(featured.prediction.pick_odds)>1?i18n.formatNumber(Number(featured.prediction.pick_odds),{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</bdi></div><span className="wp-featured-open">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></span></Link><FollowPickButton matchId={featured.id || featured.match_id} pick={featured.prediction.pick} market={featured.prediction.market} compact disabled={Boolean(featured.is_live || featured.is_finished || featured.prediction.is_live || featured.prediction.is_finished)}/></div>}
    </section>
    {featured&&<MediaCredits match={featured}/>}
    <div className="wp-overview-strip">{[[loading?'—':counts.total,w.selections,Layers],[loading?'—':upcoming.length,w.upcoming,CalendarDays],[follows?.loading?'—':rows.filter(r=>r.state!=='resolved').length,w.follow,Bookmark]].map(([value,label,Icon],i)=><div key={i}><span className="wp-overview-icon"><Icon className="h-5 w-5" aria-hidden="true"/></span><div><strong>{value}</strong><p>{label}</p></div></div>)}</div>
@@ -1763,3 +1763,25 @@ function EngineObservationPanel(){
 }
 
 
+
+
+
+export function useDashboardViewState(name,initial) {
+  const {user}=useAuth();const location=useLocation();
+  const key=`wnpulse:list-view:v1:${user?.id||'guest'}:${location.pathname}${location.search}:${name}`;
+  const read=()=>{
+    try{const saved=JSON.parse(sessionStorage.getItem(key)||'null');
+      if(saved&&Date.now()-saved.at<21600000&&typeof saved.value===typeof initial&&
+        (typeof initial!=='object'||saved.value!==null&&!Array.isArray(saved.value)))return saved.value;
+    }catch{}
+    return initial;
+  };
+  const [state,setState]=useState(()=>({key,value:read()}));
+  const value=state.key===key?state.value:read();
+  useEffect(()=>{try{sessionStorage.setItem(state.key,JSON.stringify({at:Date.now(),value:state.value}));}catch{}},[state]);
+  const update=next=>setState(previous=>{
+    const current=previous.key===key?previous.value:read();
+    return {key,value:typeof next==='function'?next(current):next};
+  });
+  return [value,update];
+}
