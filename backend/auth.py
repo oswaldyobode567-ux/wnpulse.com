@@ -8,7 +8,9 @@ import jwt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
-JWT_SECRET = os.environ.get("JWT_SECRET", "change-me")
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
+if not JWT_SECRET or JWT_SECRET.lower() in {"change-me", "changeme", "secret", "your-secret-key"}:
+    raise RuntimeError("Configure JWT_SECRET with a private random secret before starting the API.")
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRE_HOURS = 24 * 30  # 30 days
 
@@ -38,7 +40,9 @@ def create_access_token(user_id: str, email: str) -> str:
 
 def decode_token(token: str) -> Optional[dict]:
     try:
-        return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        payload = jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGORITHM],
+                             options={"require": ["exp", "iat", "sub"]})
+        return payload if isinstance(payload.get("sub"), str) and payload["sub"].strip() else None
     except jwt.PyJWTError:
         return None
 
