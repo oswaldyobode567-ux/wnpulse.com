@@ -309,6 +309,7 @@ export default function MontantePage() {
                     v0: i18n.tx(numeric(row.pick_count) ?? list(row.picks).length)
                   })}</p>)}</div></details>))}</div>)}</Card>
       </>)}
+      <CycleArchives key={authKey} revision={`${data?.id}-${data?.status}-${data?.current_day}`} />
       <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{i18n.t("Les petites cotes ne re\xE7oivent aucun bonus. Le s\xE9lecteur compare la probabilit\xE9 estim\xE9e, l\u2019accord entre les sources et leur nombre. Ce score de classement n\u2019est pas une probabilit\xE9.")}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
     </div>
     <PaymentModal isOpen={payOpen} targetTier="PRO" onClose={() => {
@@ -389,4 +390,46 @@ function PickCard({
         })}</p>)}
     {i18n.tx(pick.match_id && <Link to={`/app/match/${encodeURIComponent(String(pick.match_id))}`} className="mt-4 inline-flex items-center gap-1 text-xs font-bold text-orange-700 hover:text-orange-900">{i18n.t("Voir l\u2019analyse du match")}<ArrowRight className="h-3.5 w-3.5" /></Link>)}
   </div></Card>;
+}
+
+// Separate archive requests cannot block the active series or its controls.
+function CycleArchives({ revision }) {
+  const i18n = usePageLanguage();
+  const [page, setPage] = useState(1);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const request = new AbortController();
+    setLoading(true); setError(false); setResult(null);
+    api.get("/montante/archives", { params: { page, limit: 5 }, signal: request.signal, timeout: 30000 })
+      .then(r => { if (!request.signal.aborted) setResult(r.data); })
+      .catch(() => { if (!request.signal.aborted) setError(true); })
+      .finally(() => { if (!request.signal.aborted) setLoading(false); });
+    return () => request.abort();
+  }, [page, revision, retry]);
+  return <Card className="overflow-hidden rounded-2xl border-neutral-200">
+    <div className="border-b border-neutral-100 p-5"><h2 className="font-heading text-lg font-bold">{i18n.t("Cycles précédents")}</h2>
+      <p className="mt-1 text-sm text-slate-500">{i18n.t("Chaque série conserve ses étapes, ses matchs et son résultat, même après un échec.")}</p></div>
+    <div className="space-y-3 p-4 sm:p-5" aria-live="polite">
+      {loading && <p>{i18n.t("Chargement…")}</p>}
+      {error && <div role="alert"><p>{i18n.t("Impossible de charger les anciennes séries.")}</p><Button onClick={() => setRetry(n => n + 1)}>{i18n.t("Réessayer")}</Button></div>}
+      {!loading && !error && !result?.items?.length && <p className="text-sm text-slate-500">{i18n.t("Aucun cycle archivé pour le moment.")}</p>}
+      {list(result?.items).map(cycle => <details key={cycle.id} className="rounded-xl border border-slate-200 p-4">
+        <summary className="cursor-pointer space-y-1 text-sm"><strong className="break-all">{cycle.id}</strong>
+          <p>{i18n.t(cycle.status === "COMPLETED" ? "Objectif atteint" : cycle.status === "FAILED" ? "Série arrêtée" : "Série relancée")} · {dateLabel(i18n, cycle.archived_at)}</p>
+          <p>{list(cycle.history).length} {i18n.t("étapes enregistrées")}</p></summary>
+        <div className="mt-4 space-y-4">
+          {list(cycle.history).map((step, index) => <section key={index} className="rounded-xl bg-slate-50 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2"><strong>{i18n.t("Étape")} {step.day}</strong><ResultBadge status={step.status} /></div>
+            <p className="mb-2 text-sm">{i18n.t("Capital théorique après étape")} : {format(i18n, step.bankroll_after, 0)} FCFA</p>
+            {cycle.picks_locked ? <p className="text-sm text-slate-500">{i18n.t("Détails réservés aux abonnés")}</p> : list(step.picks).map((pick, n) => <p key={n} className="mb-2 break-words text-sm leading-relaxed"><strong>{pick.home_team} vs {pick.away_team}</strong><br />{i18n.bet(str(pick.pick))} · {i18n.t("Cote")} {format(i18n, pick.odds, 2)}<br />{dateLabel(i18n, pick.start_time)}</p>)}
+          </section>)}
+          {list(cycle.current_picks).length > 0 && <div><p className="mb-2 font-semibold">{i18n.t("Dernières sélections enregistrées")}</p>{list(cycle.current_picks).map((pick, n) => <p key={n} className="mb-2 break-words text-sm">{pick.home_team} vs {pick.away_team} · {i18n.bet(str(pick.pick))} · {pick.odds}</p>)}</div>}
+        </div>
+      </details>)}
+      <div className="flex flex-wrap items-center justify-between gap-3"><Button disabled={loading || page === 1} onClick={() => setPage(n => n - 1)}>{i18n.t("Précédent")}</Button><span className="text-sm">{page}</span><Button disabled={loading || !result?.has_more} onClick={() => setPage(n => n + 1)}>{i18n.t("Suivant")}</Button></div>
+    </div>
+  </Card>;
 }
