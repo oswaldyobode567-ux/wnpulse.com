@@ -296,7 +296,7 @@ export default function MatchDetailPage() {
           <FollowPickButton matchId={matchId} pick={p.pick} market={p.market} disabled={p.is_live || p.is_finished} />
           <Button className="h-auto min-h-11 w-full whitespace-normal bg-orange-600 px-4 py-3 text-white hover:bg-orange-700 sm:w-auto" onClick={()=>{discoveryEvent("upgrade_click", "match_detail");setPayState({isOpen:true,tier:"PRO"});}}>{freeWords.cta}</Button>
         </Card>}
-        {!locked && <MultiMarketBoard prediction={p} />}
+        {!locked && <MultiMarketBoard prediction={p} match={data} />}
         {/* AI Analysis */}
         {i18n.tx(!locked && <Card className="bg-white border-slate-200 p-6 mb-6" data-testid="ai-analysis-card">
           <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
