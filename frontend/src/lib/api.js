@@ -1,7 +1,8 @@
 import axios from "axios";
 
-const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
-export const API = `${BACKEND_URL}/api`;
+// Keep existing Vercel REACT_APP_BACKEND_URL; VITE_BACKEND_URL is also supported.
+const BACKEND_URL = (import.meta.env.REACT_APP_BACKEND_URL || import.meta.env.VITE_BACKEND_URL || "https://wnpulsecom-production.up.railway.app").trim().replace(/\/+$/, "");
+export const API = BACKEND_URL.endsWith("/api") ? BACKEND_URL : `${BACKEND_URL}/api`;
 
 const api = axios.create({ baseURL: API });
 
