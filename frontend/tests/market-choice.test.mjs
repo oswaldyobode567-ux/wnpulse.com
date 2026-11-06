@@ -9,10 +9,11 @@ test('highest absolute probability among result, double chance and totals comes 
  const chance={market:'double_chance',estimated_win_probability:85,pick_odds:1.25};
  assert.equal(context.preferredDetailChoice([handicap,total,chance]),chance);
 });
-test('unavailable and theoretical quotes cannot be featured as picks',()=>{
- const real={market:'h2h',confidence:65,pick_odds:1.7};
- for(const flags of [{selection_available:false},{analysis_only:true},{synthetic:true}])
-  assert.equal(context.preferredDetailChoice([{market:'totals',confidence:99,pick_odds:1.2,...flags},real]),real);
+test('93.7 percent calculated total outranks 81.3 percent quoted total',()=>{
+ const quoted={market:'totals',estimated_win_probability:81.3,pick_odds:2.6};
+ const calculated={market:'totals',estimated_win_probability:93.7,analysis_only:true,selection_available:false};
+ assert.equal(context.preferredDetailChoice([quoted,calculated]),calculated);
+ assert.equal(calculated.pick_odds,undefined);
 });
 test('unknown conditional probabilities are not ranked as absolute win probabilities',()=>{
  const real={market:'h2h',confidence:70,pick_odds:1.7};
