@@ -362,7 +362,7 @@ function MontantePage() {
       </>)}
       <section className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="montante-personal-pause"><h2 className="text-base font-bold text-slate-900">{experienceWords.follow}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{experienceWords.pauseHint}</p>{experience.preferences.montante_paused&&<p className="mt-3 font-semibold text-amber-800">{experienceWords.paused}</p>}<button type="button" disabled={experience.busy||experience.loading||experience.failed} onClick={()=>experience.save({montante_paused:!experience.preferences.montante_paused})} className="mt-4 min-h-11 rounded-xl border border-orange-200 bg-orange-50 px-4 text-sm font-bold text-orange-800 disabled:opacity-50">{experience.preferences.montante_paused?experienceWords.resume:experienceWords.pause}</button>{experience.failed&&<p role="alert" className="mt-2 text-sm text-rose-700">{experienceWords.error}<button type="button" onClick={experience.retry} className="ms-3 min-h-11 px-3 font-bold">↻</button></p>}</section>
       {isAdmin && <MontanteSelectionReport />}
-      <MontanteArchives />
+      <MontanteArchives key={authKey} revision={`${data?.id}-${data?.status}-${data?.current_day}`} />
       <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{capitalWords.policy}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
     </div>
   </AppLayout>;
@@ -665,11 +665,47 @@ function LocalizedToaster() {
 
 
 
-function MontanteArchives(){
- const {user}=useAuth();const i18n=usePageLanguage();const w=useExperienceCopy();const [open,setOpen]=useState(false);const [data,setData]=useState(null);const [failed,setFailed]=useState(false);const [retry,setRetry]=useState(0);
- useEffect(()=>{setData(null);setFailed(false);if(!open)return;const controller=new AbortController();api.get('/montante/archives',{signal:controller.signal,timeout:15000}).then(r=>{if(!controller.signal.aborted)setData(r.data);}).catch(()=>{if(!controller.signal.aborted)setFailed(true);});return()=>controller.abort();},[open,retry,user?.id,user?.subscription,user?.subscription_tier]);
- return <details onToggle={event=>setOpen(event.currentTarget.open)} className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="montante-archives"><summary className="flex min-h-11 cursor-pointer items-center gap-2 text-sm font-bold text-slate-900"><Layers className="h-4 w-4 text-orange-600"/>{w.montante} · {w.results} · 10</summary>{failed?<div role="alert" className="mt-3 text-sm text-amber-800">{w.error}<button type="button" onClick={()=>setRetry(v=>v+1)} className="ms-3 min-h-11 font-bold">↻</button></div>:!data?<p className="p-4 text-sm">…</p>:<div className="mt-3 space-y-3">{!data.items?.length?<p className="text-sm text-slate-500">{w.noResults}</p>:data.items.map(series=><article key={series.id} className="rounded-xl bg-slate-50 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="text-xs text-slate-500">{i18n.formatDate(series.started_at,{day:'2-digit',month:'short',year:'numeric'})}</span><span className="text-xs font-bold text-slate-700">{series.status==='FAILED'?w.lost:series.status==='COMPLETED'?w.won:w.pending}</span></div><div className="mt-3 flex flex-wrap gap-2">{(series.history||[]).map((row,index)=><ResultBadge key={index} status={row.status}/>)}</div></article>)}</div>}</details>;
+function MontanteArchives({ revision }) {
+  const i18n = usePageLanguage();
+  const [page, setPage] = useState(1);
+  const [result, setResult] = useState(null);
+  const [error, setError] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    const request = new AbortController();
+    setLoading(true); setError(false); setResult(null);
+    api.get("/montante/archives", { params: { page, limit: 5 }, signal: request.signal, timeout: 30000 })
+      .then(r => { if (!request.signal.aborted) setResult(r.data); })
+      .catch(() => { if (!request.signal.aborted) setError(true); })
+      .finally(() => { if (!request.signal.aborted) setLoading(false); });
+    return () => request.abort();
+  }, [page, revision, retry]);
+  return <Card className="overflow-hidden rounded-2xl border-neutral-200">
+    <div className="border-b border-neutral-100 p-5"><h2 className="font-heading text-lg font-bold">{i18n.t("Cycles précédents")}</h2>
+      <p className="mt-1 text-sm text-slate-500">{i18n.t("Chaque série conserve ses étapes, ses matchs et son résultat, même après un échec.")}</p></div>
+    <div className="space-y-3 p-4 sm:p-5" aria-live="polite">
+      {loading && <p>{i18n.t("Chargement…")}</p>}
+      {error && <div role="alert"><p>{i18n.t("Impossible de charger les anciennes séries.")}</p><Button onClick={() => setRetry(n => n + 1)}>{i18n.t("Réessayer")}</Button></div>}
+      {!loading && !error && !result?.items?.length && <p className="text-sm text-slate-500">{i18n.t("Aucun cycle archivé pour le moment.")}</p>}
+      {list(result?.items).map(cycle => <details key={cycle.id} className="rounded-xl border border-slate-200 p-4">
+        <summary className="cursor-pointer space-y-1 text-sm"><strong className="break-all">{cycle.id}</strong>
+          <p>{i18n.t(cycle.status === "COMPLETED" ? "Objectif atteint" : cycle.status === "FAILED" ? "Série arrêtée" : "Série relancée")} · {dateLabel(i18n, cycle.archived_at)}</p>
+          <p>{list(cycle.history).length} {i18n.t("étapes enregistrées")}</p></summary>
+        <div className="mt-4 space-y-4">
+          {list(cycle.history).map((step, index) => <section key={index} className="rounded-xl bg-slate-50 p-3">
+            <div className="mb-2 flex items-center justify-between gap-2"><strong>{i18n.t("Étape")} {step.day}</strong><ResultBadge status={step.status} /></div>
+            <p className="mb-2 text-sm">{i18n.t("Capital théorique après étape")} : {format(i18n, step.bankroll_after, 0)} FCFA</p>
+            {cycle.picks_locked ? <p className="text-sm text-slate-500">{i18n.t("Détails réservés aux abonnés")}</p> : list(step.picks).map((pick, n) => <p key={n} className="mb-2 break-words text-sm leading-relaxed"><strong>{pick.home_team} vs {pick.away_team}</strong><br />{i18n.bet(str(pick.pick))} · {i18n.t("Cote")} {format(i18n, pick.odds, 2)}<br />{dateLabel(i18n, pick.start_time)}</p>)}
+          </section>)}
+          {list(cycle.current_picks).length > 0 && <div><p className="mb-2 font-semibold">{i18n.t("Dernières sélections enregistrées")}</p>{list(cycle.current_picks).map((pick, n) => <p key={n} className="mb-2 break-words text-sm">{pick.home_team} vs {pick.away_team} · {i18n.bet(str(pick.pick))} · {pick.odds}</p>)}</div>}
+        </div>
+      </details>)}
+      <div className="flex flex-wrap items-center justify-between gap-3"><Button disabled={loading || page === 1} onClick={() => setPage(n => n - 1)}>{i18n.t("Précédent")}</Button><span className="text-sm">{page}</span><Button disabled={loading || !result?.has_more} onClick={() => setPage(n => n + 1)}>{i18n.t("Suivant")}</Button></div>
+    </div>
+  </Card>;
 }
+
 
 function RouteLoading(){const w=useExperienceCopy();return <div role="status" className="grid min-h-[65vh] place-items-center bg-neutral-50 p-6"><div className="text-center"><RefreshCw className="mx-auto h-7 w-7 animate-spin text-orange-600 motion-reduce:animate-none"/><p className="mt-4 text-sm font-bold text-slate-600">WinPulse · {w.open}…</p></div></div>;}
 class RouteErrorBoundary extends Component {
