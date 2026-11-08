@@ -871,7 +871,17 @@ function EligibleMatches() {
     missing_or_invalid_identity_odds_time:"Identité, cote ou horaire non vérifiable",
     synthetic_combo_finished_or_analysis_only:"Analyse théorique ou marché non jouable",
     refund_distribution_unavailable:"Remboursement non estimable",
-    extreme_unvalidated_model_disagreement:"Écart non validé entre le modèle et le marché"};
+    extreme_unvalidated_model_disagreement:"Écart non validé entre le modèle et le marché",
+    official_price_not_available_in_verified_sources:"Cote proposée absente des sources récentes vérifiées",
+    missing_identity_pick_or_odds:"Rencontre, choix ou cote manquants",
+    market_sport_settlement_not_verified:"Règles de règlement non vérifiées pour ce sport et ce marché",
+    incomplete_payout_distribution:"Probabilités de gain, perte et remboursement incomplètes",
+    missing_team_total_identity:"Équipe du marché de buts non identifiée",
+    missing_teams:"Équipes manquantes",selection_identity_not_verified:"Choix non retrouvé dans le marché fourni",
+    started_or_too_close:"Match commencé ou trop proche du coup d’envoi",
+    unexpected_refund_mass:"Probabilité de remboursement incohérente",
+    unsupported_line:"Seuil du pari non pris en charge",unsupported_market:"Marché non pris en charge",
+    unsupported_probability_provenance:"Origine de la probabilité non vérifiable"};
   const filterRows = rows => list(rows).filter(row=>`${row.home_team} ${row.away_team} ${row.sport_title} ${row.pick}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
   const renderRows = (rows, historical=false) => <div className="mt-4 grid gap-3 lg:grid-cols-2">{filterRows(rows).map((row,index)=><article key={`${row.event_id||row.match_id}-${index}`} className="min-w-0 rounded-xl border border-slate-200 p-4">
     <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-bold text-slate-500">#{row.rank||index+1} · {str(row.sport_title)}</span><Badge className={row.published ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}>{i18n.t(row.published ? "Paire publiée" : historical ? "Admissible à la sélection" : row.proposed ? "Proposé actuellement" : "Autre candidat actuel")}</Badge></div>
@@ -890,7 +900,7 @@ function EligibleMatches() {
       <p className="mt-2 text-xs leading-5 text-slate-500">{i18n.t("Cotes de moins de 30 minutes, au moins trois sources, probabilité estimée minimale de 70 %. Les 40 premiers sont comparés pour former une paire. Une estimation élevée ne garantit pas le résultat.")}</p>
       {!list(report.items).length && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900" data-testid="eligibility-empty-reason">{i18n.t("Aucun candidat ne passe tous les contrôles actuels. Cela ne signifie pas qu’aucun match n’était admissible lors de la publication.")}</div>}
       {renderRows(report.items)}
-      <details className="mt-4 rounded-xl border border-slate-200 p-3" open={!list(report.items).length}><summary className="cursor-pointer text-sm font-semibold">{i18n.t("Comprendre les exclusions actuelles")}</summary><p className="mt-2 text-sm">{report.diagnostic?.matches_received||0} {i18n.t("matchs en cache")} · {report.diagnostic?.events_in_selection_window||0} {i18n.t("dans la fenêtre de sélection")}</p>
+      <details className="mt-4 rounded-xl border border-slate-200 p-3" open={!list(report.items).length}><summary className="cursor-pointer text-sm font-semibold">{i18n.t("Comprendre les exclusions actuelles")}</summary><p className="mt-2 text-sm">{report.diagnostic?.matches_received||0} {i18n.t("matchs en cache")} · {report.diagnostic?.events_in_selection_window||0} {i18n.t("dans la fenêtre de sélection")} · {report.diagnostic?.events_with_recent_sources||0} {i18n.t("avec au moins trois sources récentes")}</p>
       <p className="mt-1 text-xs text-slate-500">{i18n.t("Dernier cache général")} : {dateLabel(i18n,report.diagnostic?.odds_cache_updated_at)} · {i18n.t("Dernier contrôle ciblé")} : {dateLabel(i18n,report.quote_refresh?.checked_at)}</p>
       <ul className="mt-2 space-y-1 text-sm text-slate-600">{Object.entries(report.diagnostic?.rejections||{}).sort((a,b)=>b[1]-a[1]).map(([reason,count])=><li key={reason}>{count} · {i18n.t(reasons[reason]||"Autre contrôle de cohérence non satisfait")}</li>)}</ul><p className="mt-2 text-xs text-slate-500">{i18n.t("Les exclusions comptent les marchés contrôlés, pas des matchs distincts. L’actualisation ciblée vérifie au maximum deux compétitions par passage, sous le plafond de crédits existant.")}</p></details>
       {list(report.published_picks).length>0 && <section className="mt-6" data-testid="published-montante-picks"><h3 className="text-base font-bold text-slate-900">{i18n.t("Paire publiée · conservée")}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{i18n.t("Ces choix restent ceux de la montante, même si les cotes ont vieilli depuis leur sélection.")}</p>{renderRows(report.published_picks.map(row=>({...row,published:true})),true)}</section>}
