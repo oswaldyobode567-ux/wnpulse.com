@@ -42,7 +42,7 @@ from auth import (
 )
 from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
-    fetch_live_scores,
+    fetch_live_scores, fetch_combat_results, evaluate_combat_result, is_combat_prediction,
     fetch_odds_api_io_scores_map, diagnose_sport_key,
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
@@ -10492,7 +10492,7 @@ async def _montante_resolve_from_event_score(pick: Dict) -> Optional[Dict]:
         if not start or not other or abs((start-other).total_seconds()) > 900:
             continue
         parts = re.fullmatch(r"(\d+)-(\d+)", str(row.get("final_score") or ""))
-        if parts:
+        if parts and not row.get("combat_outcome"):
             scores.add((int(parts[1]), int(parts[2])))
     if len(scores) != 1:
         return None
@@ -10895,6 +10895,26 @@ async def _montante_linked_prediction_doc(pick: Dict) -> Optional[Dict]:
     return None
 
 
+async def _settle_combat_predictions(predictions):
+    combat = [p for p in predictions if is_combat_prediction(p) and p.get("result") == "pending"]
+    if not combat: return 0
+    try:
+        rows = await asyncio.wait_for(fetch_combat_results(db, combat), timeout=35)
+    except asyncio.TimeoutError:
+        return 0
+    count = 0
+    for pred in combat:
+        outcome = evaluate_combat_result(pred, rows)
+        if not outcome: continue
+        query = {"_id": pred["_id"]} if pred.get("_id") is not None else {"signature": pred["signature"]}
+        query["result"] = "pending"
+        values = {**outcome, "reconciled_at": datetime.now(timezone.utc).isoformat(), "settlement_diagnostic": "confirmed_combat_winner"}
+        written = await db.predictions_history.update_one(query, {"$set": values})
+        count += int(written.modified_count)
+        pred.update(values)
+    return count
+
+
 async def _montante_sync_current_results(*, force_provider: bool = False) -> tuple[Dict, Dict]:
     """Synchronise uniquement les 1–2 picks de la Montante courante.
 
@@ -10964,9 +10984,12 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
         }
 
         if pending_docs:
+            diagnostic["combat_updated"] = await _settle_combat_predictions(pending_docs)
+            diagnostic["updated"] += diagnostic["combat_updated"]
+            pending_docs = [p for p in pending_docs if p.get("result") == "pending"]
             classic_docs = [
                 doc for doc in pending_docs
-                if not str(doc.get("match_id") or "").startswith("oaio-")
+                if not str(doc.get("match_id") or "").startswith("oaio-") and not is_combat_prediction(doc)
             ]
             oaio_docs = [
                 doc for doc in pending_docs
@@ -11006,6 +11029,7 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
                     oaio_scores_map = {}
 
             for pred in pending_docs:
+                if is_combat_prediction(pred): continue
                 try:
                     match_id = str(pred.get("match_id") or "")
                     home_score = away_score = None
@@ -13640,8 +13664,8 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
             result["montante"] = {"status": "ERROR", "progressed": False, "detail": str(exc)}
         return result
 
-    now = datetime.now(timezone.utc)
-    classic_pending = [p for p in pending if not str(p.get("match_id") or "").startswith("oaio-")]
+    combat_updated = await _settle_combat_predictions(pending)
+    classic_pending = [p for p in pending if not str(p.get("match_id") or "").startswith("oaio-") and not is_combat_prediction(p)]
     recent_classic=[p for p in classic_pending if _parse_iso(p.get("commence_time")) and now-timedelta(days=3)<=_parse_iso(p["commence_time"])<now]
     archive_keys=sorted({str(p.get('sport_key')) for p in classic_pending if p.get('sport_key')})
     required_sport_keys = sorted({
@@ -13682,7 +13706,7 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     pending.sort(key=lambda row: 0 if (scores_by_match.get(str(row.get("match_id"))) or {}).get("completed") is True else 1)
     check_updates=[]
 
-    updated = 0
+    updated = combat_updated
     recovered_by_team_time = 0
     recovered_by_secondary = 0
     no_score = 0
@@ -13692,6 +13716,10 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     errors = 0
 
     for pred in pending:
+        if is_combat_prediction(pred):
+            check_updates.append(UpdateOne({"_id":pred["_id"]},{"$set":{"settlement_checked_at":run_at,
+                "settlement_diagnostic":"confirmed_combat_winner" if pred.get("result") != "pending" else "combat_final_outcome_unavailable"}}))
+            continue
         match_id = str(pred.get("match_id") or "")
         commence_dt = _parse_iso(pred.get("commence_time"))
         age_days = ((now - commence_dt).total_seconds() / 86400.0) if commence_dt else None
@@ -13802,7 +13830,7 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
         "ok": True,
         "batch_limit":300,"duration_seconds":round(time.monotonic()-started,2),
         "checked": len(pending),
-        "updated": updated,
+        "updated": updated, "combat_updated": combat_updated,
         "pending_remaining": pending_remaining,
         "required_sport_keys": required_sport_keys,
         "scores_available": len(scores),
