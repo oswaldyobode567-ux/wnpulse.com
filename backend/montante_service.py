@@ -44,6 +44,7 @@ class MontanteService:
         self.min_lead_minutes = max(1, int(min_lead_minutes))
         self.last_diagnostic: Dict[str, Any] = {}
         self.last_observation: Dict[str, Any] = {}
+        self.last_eligible: List[Dict[str, Any]] = []
         self.state: Optional[Dict[str, Any]] = None
 
     @staticmethod
@@ -114,7 +115,8 @@ class MontanteService:
             current = by_event.get(item["event_id"])
             if current is None or self._rank(item) > self._rank(current):
                 by_event[item["event_id"]] = item
-        pool = sorted(by_event.values(), key=self._rank, reverse=True)[:40]
+        self.last_eligible = self._clone(sorted(by_event.values(), key=self._rank, reverse=True))
+        pool = self.last_eligible[:40]
         self.last_diagnostic["eligible"] = len(by_event)
         pairs = []
         for a, b in combinations(pool, 2):
