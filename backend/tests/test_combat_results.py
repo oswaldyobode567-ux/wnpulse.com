@@ -34,4 +34,13 @@ class Combat(unittest.TestCase):
  def test_conflicting_final_sources_remain_pending(self):
   rows=self.parse();other=copy.deepcopy(rows[0]);other['winner']='Jonny Parsons';rows.append(other)
   self.assertIsNone(self.ns['evaluate_combat_result'](self.pred,rows))
+ def test_verified_ko_romanisation_matches_turman_bout(self):
+  self.bout['competitors'][0]['athlete']['displayName']='Seokhyeon Ko'
+  self.bout['competitors'][1]['athlete']['displayName']='Wellington Turman'
+  self.pred.update(home_team='Seok Hyun Ko',away_team='Wellington Turman',pick='Seok Hyun Ko')
+  self.assertEqual(self.grade()['result'],'won')
+ def test_verified_alias_does_not_relax_opponent_check(self):
+  self.bout['competitors'][0]['athlete']['displayName']='Seokhyeon Ko'
+  self.pred.update(home_team='Seok Hyun Ko',pick='Seok Hyun Ko',away_team='Wrong Fighter')
+  self.assertIsNone(self.grade())
 if __name__=='__main__':unittest.main()
