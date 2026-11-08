@@ -10479,6 +10479,34 @@ def _montante_norm_text(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+async def _montante_resolve_from_event_score(pick: Dict) -> Optional[Dict]:
+    linked = await _montante_linked_prediction_doc(pick)
+    if not linked or linked.get("result") != "pending" or not linked.get("match_id"):
+        return None
+    rows = await db.predictions_history.find({"match_id": linked["match_id"],
+        "result": {"$in": ["won", "lost", "void"]},
+        "reconciled_at": {"$exists": True}, "final_score": {"$exists": True}}).limit(50).to_list(length=50)
+    scores = set()
+    for row in rows:
+        start, other = _parse_iso(linked.get("commence_time")), _parse_iso(row.get("commence_time"))
+        if not start or not other or abs((start-other).total_seconds()) > 900:
+            continue
+        parts = re.fullmatch(r"(\d+)-(\d+)", str(row.get("final_score") or ""))
+        if parts:
+            scores.add((int(parts[1]), int(parts[2])))
+    if len(scores) != 1:
+        return None
+    home, away = next(iter(scores))
+    result = _evaluate_pick_result(linked, home, away)
+    if not result:
+        return None
+    values = {"result": result, "final_score": f"{home}-{away}",
+        "reconciled_at": datetime.now(timezone.utc).isoformat(),
+        "reconciliation_source": "confirmed_event_history"}
+    await db.predictions_history.update_one({"_id": linked["_id"], "result": "pending"}, {"$set": values})
+    return await db.predictions_history.find_one({"_id": linked["_id"], "result": {"$in": ["won", "lost", "void"]}})
+
+
 async def _montante_find_resolved_prediction(pick: Dict) -> Optional[Dict]:
     """Retrouve le résultat d'un pick Montante sans dépendre d'un libellé strict.
 
@@ -10553,7 +10581,7 @@ async def _montante_find_resolved_prediction(pick: Dict) -> Optional[Dict]:
         # A market can have opposite selections: never resolve by market alone.
 
 
-    return None
+    return await _montante_resolve_from_event_score(pick)
 
 
 async def _montante_reconcile(state: Dict) -> Dict:
@@ -10664,7 +10692,7 @@ async def _montante_reconcile(state: Dict) -> Dict:
             state["current_picks"] = []
             state["waiting_reason"] = "Jour gagné. Recherche des picks du prochain jour."
         return await _montante_commit_settlement(state, expected_day)
-    return state
+    return await _montante_save(state)
 
 
 def _montante_selection_fields() -> List[str]:
@@ -10702,7 +10730,8 @@ async def _montante_prepare_next_day(state: Dict) -> Dict:
             return await _montante_publish_selection(state)
 
 
-async def _montante_choose_pair(state: Dict) -> Dict:
+async def _montante_choose_pair(state: Dict, preview: bool = False) -> Dict:
+    selector = copy.copy(montante_selector)
     matches = await fetch_all_matches(db)
     now = datetime.now(timezone.utc)
     diagnostic = {"generated_at": now.isoformat(), "day": state.get("current_day"), "window_hours": 72, "matches_received": len(matches),
@@ -10719,6 +10748,8 @@ async def _montante_choose_pair(state: Dict) -> Dict:
         state["diagnostic"] = diagnostic
         state["waiting_reason"] = "Les cotes sont trop anciennes : attente d’un flux actualisé pour vérifier deux matchs."
         state["updated_at"] = now.isoformat()
+        if preview:
+            return {"generated_at": now.isoformat(), "items": [], "diagnostic": diagnostic, "reason": state["waiting_reason"]}
         return await _montante_publish_selection(state)
     stats = dict(await get_real_stats_map(db, matches) or {})
     stats["__hybrid_models__"] = await _get_hybrid_registry()
@@ -10741,12 +10772,20 @@ async def _montante_choose_pair(state: Dict) -> Dict:
         candidate["_bookmakers"] = raw.get("bookmakers", [])
         candidate["_odds_snapshot_at"] = status.get("updated_at")
         candidates.append(candidate)
-    selected = montante_selector.select_daily_picks(candidates, limit=2)
-    diagnostic.update(montante_selector.last_diagnostic)
+    selected = selector.select_daily_picks(candidates, limit=2)
+    diagnostic.update(selector.last_diagnostic)
     diagnostic["predictions_generated"] = len(predictions)
     state["diagnostic"] = diagnostic
-    state["selection_version"] = montante_selector.VERSION
+    state["selection_version"] = selector.VERSION
     state["updated_at"] = now.isoformat()
+    if preview:
+        proposed = {(p["match_id"], p["pick"]) for p in selected}
+        published = {(p.get("match_id"), p.get("pick")) for p in state.get("current_picks") or []}
+        return {"generated_at": now.isoformat(), "diagnostic": diagnostic,
+            "selection_unchanged": True, "items": [{**row, "rank": index+1,
+                "pair_search_pool": index < 40, "proposed": (row["match_id"], row["pick"]) in proposed,
+                "published": (row["match_id"], row["pick"]) in published}
+                for index, row in enumerate(selector.last_eligible)]}
     if len(selected) != 2:
         state["current_picks"] = []
         state["selection_summary"] = None
@@ -10770,13 +10809,13 @@ async def _montante_choose_pair(state: Dict) -> Dict:
                 "probability_basis": "unconditional", "probability_source": item["probability_source"],
                 "probability_validated": item["probability_validated"], "expected_return": item["expected_return"],
                 "team": item.get("team"),
-                "model_version": MODEL_VERSION, "selector_version": montante_selector.VERSION,
+                "model_version": MODEL_VERSION, "selector_version": selector.VERSION,
                 "is_combo": False, "official_track_eligible": False, "result": "pending",
                 "created_at": now.isoformat(), "source": "montante"}}, upsert=True,
         )
     state["current_picks"] = selected
     state["waiting_reason"] = None
-    state["selection_summary"] = montante_selector.pair_summary(selected)
+    state["selection_summary"] = selector.pair_summary(selected)
     state["selection_summary"]["published_at"] = now.isoformat()
     state["last_settlement_check"] = {"day": int(state.get("current_day", 1)), "checked_at": now.isoformat(),
         "statuses": ["PENDING", "PENDING"], "details": [{"slot": i+1, "match_id": p["match_id"],
@@ -10788,7 +10827,7 @@ async def _montante_choose_pair(state: Dict) -> Dict:
         try:
             captured = datetime.now(timezone.utc)
             if all(captured < _parse_iso(p["start_time"]) for p in selected):
-                observation = copy.deepcopy(montante_selector.last_observation)
+                observation = copy.deepcopy(selector.last_observation)
                 observation.update(montante_id=state["id"], day=state["current_day"],
                     captured_at=captured.isoformat(), selected=copy.deepcopy(selected))
                 # Signature also handles a fully void attempt on the same step.
@@ -10954,12 +10993,14 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
                 except Exception:
                     diagnostic["errors"] += 1
                     scores = []
+            live_cache = await db.scores_cache.find_one({"_id": "live_scores"}) or {}
+            scores = _merge_final_result_caches(scores, live_cache.get("data") or [])
             scores_by_match = {str(s.get("id")): s for s in scores if s.get("id")}
 
             oaio_scores_map = {}
             if oaio_docs:
                 try:
-                    oaio_scores_map = await fetch_odds_api_io_scores_map(db)
+                    oaio_scores_map = await fetch_odds_api_io_scores_map(db, priority_matches=oaio_docs)
                 except Exception:
                     diagnostic["errors"] += 1
                     oaio_scores_map = {}
@@ -11008,7 +11049,7 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
                         continue
 
                     await db.predictions_history.update_one(
-                        {"signature": pred["signature"]},
+                        {"signature": pred["signature"], "result": "pending"},
                         {"$set": {
                             "result": result_value,
                             "final_score": f"{home_score}-{away_score}",
@@ -11041,6 +11082,22 @@ async def _montante_sync_current_results(*, force_provider: bool = False) -> tup
         return state, diagnostic
 
 
+_montante_result_task = None
+
+
+def _queue_montante_results():
+    global _montante_result_task
+    if _montante_result_task and not _montante_result_task.done():
+        return False
+    async def run():
+        try:
+            await _scheduled_montante_result_sync()
+        except Exception as exc:
+            logging.getLogger("winpulse.montante").warning("Targeted result sync failed (%s)", type(exc).__name__)
+    _montante_result_task = asyncio.create_task(run())
+    return True
+
+
 @app.get("/api/montante")
 async def get_montante(payload: dict = Depends(get_current_user_payload)):
     state = await _montante_get()
@@ -11053,16 +11110,19 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     #    une Montante, sans dépendre uniquement du scheduler.
     state = await _montante_reconcile(state)
     if state.get("status") == "ACTIVE" and state.get("current_picks") and _montante_provider_check_due(state):
-        try:
-            state, _ = await asyncio.wait_for(_montante_sync_current_results(force_provider=False), timeout=6)
-        except Exception:
-            # L'affichage reste disponible même si le fournisseur de scores est indisponible.
-            state = await _montante_get() or state
+        _queue_montante_results()
 
     if state.get("status") == "ACTIVE" and not state.get("current_picks"):
         state = await _montante_prepare_next_day(state)
 
     return await _montante_view_for_payload(state, payload)
+
+
+@app.get("/api/montante/candidates")
+async def montante_candidates(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    state = await _montante_get() or {"history": [], "current_picks": []}
+    return await _montante_choose_pair(copy.deepcopy(state), preview=True)
 
 
 @app.get("/api/admin/montante/selection-report")
@@ -13615,9 +13675,11 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
         archived=await db.scores_archive.find({'event_id':{'$in':missing},'completed':True}).limit(300).to_list(length=300)
         for row in archived:
             item={**row,'id':row['event_id'],'_from_archive':True};scores.append(item);scores_by_match[str(item['id'])]=item
-    try:oaio_scores_map=await asyncio.wait_for(fetch_odds_api_io_scores_map(db),timeout=40)
-    except asyncio.TimeoutError:
-        saved=await db.scores_cache.find_one({'_id':'secondary_results'}) or {};oaio_scores_map=saved.get('data') or {}
+    saved=await db.scores_cache.find_one({'_id':'secondary_results'}) or {}
+    oaio_scores_map=saved.get('data') or {}
+    secondary_refreshed=False
+    # Rows with a confirmed primary score settle before any secondary network call.
+    pending.sort(key=lambda row: 0 if (scores_by_match.get(str(row.get("match_id"))) or {}).get("completed") is True else 1)
     check_updates=[]
 
     updated = 0
@@ -13640,6 +13702,12 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
             home_score = away_score = None
             reconciliation_source = "unknown"
 
+            if not secondary_refreshed and not (scores_by_match.get(match_id) or {}).get("completed"):
+                secondary_refreshed = True
+                try:
+                    oaio_scores_map = await asyncio.wait_for(fetch_odds_api_io_scores_map(db), timeout=20)
+                except asyncio.TimeoutError:
+                    pass
             if match_id.startswith("oaio-"):
                 numeric_id = match_id[len("oaio-"):]
                 entry = oaio_scores_map.get(numeric_id)
@@ -15152,7 +15220,7 @@ async def startup_event():
         scheduler.add_job(_scheduled_apisports_refresh, "interval", minutes=30, id="apisports_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_football_stats_refresh, "interval", minutes=30,
                           id="football_stats_refresh", replace_existing=True, coalesce=True, max_instances=1)
-        scheduler.add_job(_scheduled_reconcile, "interval", minutes=15, id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
+        scheduler.add_job(_scheduled_reconcile, "interval", minutes=5, id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
         # Synchronisation dédiée Montante : uniquement 1–2 picks actifs, donc bien
         # plus légère que la réconciliation générale du Track Record.
         scheduler.add_job(

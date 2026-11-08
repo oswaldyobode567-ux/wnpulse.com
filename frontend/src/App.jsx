@@ -361,6 +361,7 @@ function MontantePage() {
                   })}</p>)}</div></details>))}</div>)}</Card>
       </>)}
       <section className="rounded-2xl border border-slate-200 bg-white p-5" data-testid="montante-personal-pause"><h2 className="text-base font-bold text-slate-900">{experienceWords.follow}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{experienceWords.pauseHint}</p>{experience.preferences.montante_paused&&<p className="mt-3 font-semibold text-amber-800">{experienceWords.paused}</p>}<button type="button" disabled={experience.busy||experience.loading||experience.failed} onClick={()=>experience.save({montante_paused:!experience.preferences.montante_paused})} className="mt-4 min-h-11 rounded-xl border border-orange-200 bg-orange-50 px-4 text-sm font-bold text-orange-800 disabled:opacity-50">{experience.preferences.montante_paused?experienceWords.resume:experienceWords.pause}</button>{experience.failed&&<p role="alert" className="mt-2 text-sm text-rose-700">{experienceWords.error}<button type="button" onClick={experience.retry} className="ms-3 min-h-11 px-3 font-bold">↻</button></p>}</section>
+      {isAdmin && <EligibleMatches />}
       {isAdmin && <MontanteSelectionReport />}
       <MontanteArchives key={authKey} revision={`${data?.id}-${data?.status}-${data?.current_day}`} />
       <details className="rounded-2xl border border-orange-100 bg-orange-50/50 p-4"><summary className="flex cursor-pointer items-center gap-2 text-sm font-semibold text-slate-700"><Info className="h-4 w-4 text-orange-600" />{i18n.t("Ce que la s\xE9lection permet de comprendre")}</summary><div className="mt-3 space-y-2 text-xs leading-relaxed text-slate-500"><p>{capitalWords.policy}</p><p>{i18n.t("Les deux matchs doivent \xEAtre distincts, avec des \xE9quipes diff\xE9rentes, des march\xE9s complets et des cotes r\xE9centes. Cette v\xE9rification ne supprime pas l\u2019incertitude sportive.")}</p><p>{i18n.t("Les probabilit\xE9s viennent du moteur existant, souvent du consensus des cotes. L\u2019efficacit\xE9 de ce nouveau filtrage devra \xEAtre mesur\xE9e sur des r\xE9sultats futurs, pas uniquement sur les gagnants d\xE9j\xE0 connus.")}</p><p>{i18n.t("Une seule s\xE9lection perdante arr\xEAte la s\xE9rie. Aucun pari ni aucune montante ne garantit un r\xE9sultat.")}</p></div></details>
@@ -840,4 +841,32 @@ export function NavigationPositionMemory() {
     };
   },[location.key,location.pathname,location.search,location.hash,navigationType,user?.id]);
   return null;
+}
+
+function EligibleMatches() {
+  const i18n = usePageLanguage();
+  const [report, setReport] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const load = async () => {
+    setBusy(true); setError("");
+    try { const response = await api.get("/montante/candidates", {timeout:45000}); setReport(response.data); }
+    catch { setError(i18n.t("Impossible de vérifier les candidats. Réessaie.")); }
+    finally { setBusy(false); }
+  };
+  return <Card className="rounded-2xl border-neutral-200 p-4 sm:p-6" data-testid="eligible-matches">
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold text-slate-900">{i18n.t("Matchs éligibles · Admin")}</h2><p className="mt-1 text-sm leading-6 text-slate-600">{i18n.t("Tous les matchs qui passent les mêmes contrôles que la montante, avec un meilleur choix par rencontre. Cette consultation ne remplace pas la paire publiée.")}</p></div>
+    <Button disabled={busy} onClick={load}>{i18n.t(busy ? "Vérification…" : "Voir les candidats")}</Button></div>
+    {error && <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>}
+    {report && <><p className="mt-4 text-sm text-slate-600">{list(report.items).length} {i18n.t("matchs éligibles")} · {dateLabel(i18n,report.generated_at)}</p>
+      <p className="mt-2 text-xs leading-5 text-slate-500">{i18n.t("Les 40 premiers entrent dans la comparaison des paires : le classement, les équipes distinctes et la diversité des compétitions départagent les candidats. Éligible ne signifie pas gagnant garanti.")}</p>
+      {!list(report.items).length && <p className="mt-4 text-sm text-slate-600">{report.reason || i18n.t("Aucun match ne respecte actuellement tous les critères.")}</p>}
+      <div className="mt-4 grid gap-3 lg:grid-cols-2">{list(report.items).map(row=><article key={row.event_id} className="min-w-0 rounded-xl border border-slate-200 p-4">
+        <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-bold text-slate-500">#{row.rank} · {str(row.sport_title)}</span><Badge className={row.published ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}>{i18n.t(row.published ? "Paire publiée" : row.proposed ? "Proposé actuellement" : "Autre candidat")}</Badge></div>
+        <h3 className="mt-2 break-words text-base font-bold text-slate-900">{str(row.home_team)} vs {str(row.away_team)}</h3>
+        <p className="mt-1 text-xs text-slate-500">{dateLabel(i18n,row.start_time)}</p><p className="mt-3 break-words font-semibold text-orange-700">{i18n.bet(str(row.pick))} · {format(i18n,row.odds,2)}</p>
+        <p className="mt-2 text-sm text-slate-600">{i18n.t("Probabilité estimée")} : {format(i18n,row.model_probability*100,1)} % · {i18n.t("Sources")} : {row.num_books}</p>
+        <p className="mt-1 text-xs text-slate-500">{i18n.t("Score de classement")} : {format(i18n,row.selection_score,1)} · {i18n.t(row.pair_search_pool ? "Comparé pour la paire" : "Hors des 40 premiers")}</p>
+      </article>)}</div></>}
+  </Card>;
 }
