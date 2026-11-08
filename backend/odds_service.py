@@ -2346,7 +2346,12 @@ _combat_results_lock = asyncio.Lock()
 
 def _combat_name(value):
     text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
-    return re.sub(r"[^a-z0-9]", "", text)
+    key = re.sub(r"[^a-z0-9]", "", text)
+    # Verified romanisations of ESPN athlete 4701954 (UFC welterweight).
+    # Both opponent and card time must still match; no general fuzzy matching.
+    aliases = {"seokhyunko": "seokhyeonko", "seokhyonko": "seokhyeonko",
+               "koseokhyeon": "seokhyeonko"}
+    return aliases.get(key, key)
 
 
 def is_combat_prediction(pred):
