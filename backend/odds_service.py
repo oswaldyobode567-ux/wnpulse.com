@@ -1559,7 +1559,7 @@ async def fetch_scores_for_sport(sport_key: str, days_from: int = 3, db=None) ->
         return []
 
 
-async def fetch_odds_api_io_scores_map(db=None) -> Dict[str, Dict]:
+async def fetch_odds_api_io_scores_map(db=None, priority_matches=None) -> Dict[str, Dict]:
     """Verified final scores, four rotating leagues per run, bounded parallelism."""
     if not ODDS_API_IO_KEY:return {}
     async with _secondary_result_lock:
@@ -1568,10 +1568,20 @@ async def fetch_odds_api_io_scores_map(db=None) -> Dict[str, Dict]:
         else:state=dict(_secondary_result_memory)
         data=dict(state.get("data") or {});checked=state.get("checked") or {}
         leagues=[(slug,"football") for slug in ODDS_API_IO_LEAGUES]+[(slug,"ice-hockey") for slug in ODDS_API_IO_HOCKEY_LEAGUES]+[(slug,"basketball") for slug in ODDS_API_IO_BASKETBALL_LEAGUES]
+        # Prioritisation changes polling order only; score identity checks stay strict.
+        def priority(slug):
+            ignored = {"international", "clubs", "league", "group", "the", "a", "b"}
+            tokens = set(re.findall(r"[a-z0-9]+", slug.lower())) - ignored
+            return max((len(tokens.intersection(set(re.findall(r"[a-z0-9]+", str(row.get("sport_title") or "").lower())) - ignored))
+                for row in priority_matches or []), default=0)
         jobs=[]
         for slug,sport in leagues:
             key=sport+":"+slug;stamp=_result_dt(checked.get(key))
-            if not stamp or now-stamp>=timedelta(minutes=30):jobs.append((checked.get(key) or "",key,slug,sport))
+            minutes = 2 if priority(slug) else 30
+            if not stamp or now-stamp>=timedelta(minutes=minutes):jobs.append((checked.get(key) or "",key,slug,sport))
+        # At most two targeted leagues and at least two rotation slots.
+        targeted = sorted([job for job in jobs if priority(job[2])], key=lambda job:(-priority(job[2]),job[0]))[:2]
+        chosen = targeted + [job for job in sorted(jobs) if job not in targeted][:4-len(targeted)]
         semaphore=asyncio.Semaphore(2)
         async def one(job):
             _,key,slug,sport=job;checked[key]=now.isoformat()
@@ -1587,7 +1597,7 @@ async def fetch_odds_api_io_scores_map(db=None) -> Dict[str, Dict]:
                 hs,aws=scores.get("home"),scores.get("away")
                 if not _result_valid_number(hs) or not _result_valid_number(aws):continue
                 data[str(evt['id'])]={"status":evt['status'],"home_score":int(hs),"away_score":int(aws),"home_team":evt.get('home'),"away_team":evt.get('away'),"commence_time":evt['date'],"sport":sport,"sport_title":(evt.get('league') or {}).get('name') if isinstance(evt.get('league'),dict) else str(evt.get('league') or '')}
-        await asyncio.gather(*(one(job) for job in sorted(jobs)[:4]))
+        await asyncio.gather(*(one(job) for job in chosen))
         # Keep verified historical results for recovery, bounded to 180 days.
         data={k:v for k,v in data.items() if _result_dt(v.get('commence_time')) and _result_dt(v['commence_time'])>now-timedelta(days=180)}
         state={"data":data,"checked":checked,"updated_at":now.isoformat()}
