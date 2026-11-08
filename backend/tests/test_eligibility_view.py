@@ -48,6 +48,16 @@ class Eligibility(unittest.TestCase):
   self.assertIn('else:merged.append(row)',fn)
   self.assertIn('jobs[:2]',fn);self.assertIn('category="odds"',fn)
   self.assertNotIn('delete_',fn)
+ def test_analysis_copy_removes_old_quotes_without_touching_catalogue(self):
+  service=MontanteService()
+  old=self.book(age=180);old['key']='old'
+  rows=[{'id':'a','bookmakers':[old,self.book()]}];before=copy.deepcopy(rows)
+  result=service.fresh_analysis_matches(rows)
+  self.assertEqual(rows,before);self.assertEqual(len(result),1)
+  self.assertEqual([b['key'] for b in result[0]['bookmakers']],['a'])
+ def test_empty_quote_match_is_kept_in_analysis_copy(self):
+  result=MontanteService().fresh_analysis_matches([{'id':'a','bookmakers':[self.book(age=180)]}])
+  self.assertEqual(result[0]['id'],'a');self.assertEqual(result[0]['bookmakers'],[])
  def test_candidate_routes_remain_admin_only(self):
   tree=ast.parse((ROOT/'server.py').read_text())
   for name in ('montante_candidates','refresh_montante_candidate_quotes'):
