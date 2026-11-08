@@ -93,6 +93,27 @@ class MontanteService:
             return {"status": "NONE", "message": "Aucune montante active."}
         return self._clone(self.state)
 
+    def fresh_analysis_matches(self, matches):
+        # Local analysis input only: the shared catalogue and frozen picks are untouched.
+        now = datetime.now(timezone.utc)
+        result = []
+        for original in matches:
+            row = self._clone(original)
+            books = []
+            for book in row.get("bookmakers") or []:
+                markets = []
+                for market in book.get("markets") or []:
+                    outcomes = []
+                    for outcome in market.get("outcomes") or []:
+                        stamp = self._dt(outcome.get("_quote_updated_at") or market.get("last_update") or book.get("last_update"))
+                        if stamp and 0 <= (now-stamp).total_seconds() <= self.max_odds_age_minutes*60:
+                            outcomes.append(outcome)
+                    if outcomes:markets.append({**market,"outcomes":outcomes})
+                if markets:books.append({**book,"markets":markets})
+            row["bookmakers"] = books
+            result.append(row)
+        return result
+
     def select_daily_picks(
         self, matches: Iterable[Dict[str, Any]], limit: Optional[int] = None
     ) -> List[Dict[str, Any]]:

@@ -10748,7 +10748,9 @@ async def _montante_choose_pair(state: Dict, preview: bool = False) -> Dict:
     diagnostic["odds_cache_hard_stale"] = status.get("hard_stale")
     stats = dict(await get_real_stats_map(db, matches) or {})
     stats["__hybrid_models__"] = await _get_hybrid_registry()
-    predictions = analyze_all(matches, real_stats_map=stats)
+    analysis_matches = selector.fresh_analysis_matches(matches)
+    diagnostic["events_with_recent_sources"] = sum(len(m.get("bookmakers") or []) >= MONTANTE_MIN_BOOKS for m in analysis_matches)
+    predictions = analyze_all(analysis_matches, real_stats_map=stats)
     raw_by_id = {str(m.get("id") or m.get("match_id")): m for m in matches if isinstance(m, dict)}
     previously_used = {str(p.get("match_id")) for h in state.get("history", []) for p in h.get("picks", []) if p.get("match_id")}
     candidates = []
