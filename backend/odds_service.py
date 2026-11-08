@@ -2337,3 +2337,115 @@ async def _enrich_extra_football_markets(db, matches):
     return result
 
 
+
+
+# UFC results are not supplied by The Odds API /scores. Keep outcomes separate
+# from numeric scores: a winner flag is never a fictional 1-0 or a round total.
+_combat_results_lock = asyncio.Lock()
+
+
+def _combat_name(value):
+    text = unicodedata.normalize("NFKD", str(value or "")).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]", "", text)
+
+
+def is_combat_prediction(pred):
+    return str(pred.get("sport_key") or "").startswith("mma_")
+
+
+def _parse_ufc_results(payload, now):
+    rows = []
+    for event in payload.get("events", []) if isinstance(payload, dict) else []:
+        for bout in event.get("competitions", []):
+            status = (bout.get("status") or {}).get("type") or {}
+            start = _result_dt(bout.get("date") or event.get("date"))
+            competitors = bout.get("competitors") or []
+            if status.get("completed") is not True or status.get("state") != "post" or not start or start > now or len(competitors) != 2:
+                continue
+            names = [str((c.get("athlete") or {}).get("displayName") or (c.get("athlete") or {}).get("fullName") or "") for c in competitors]
+            winners = [index for index,c in enumerate(competitors) if c.get("winner") is True]
+            if len(winners) != 1 or not all(names) or len({_combat_name(n) for n in names}) != 2:
+                continue  # No contest/draw/cancellation require an explicit supported outcome.
+            if not bout.get("id") or not event.get("id"):
+                continue
+            rows.append({"event_id": str(event["id"]), "bout_id": str(bout["id"]),
+                "commence_time": start.isoformat(), "fighters": names, "winner": names[winners[0]],
+                "completed": True, "source": "espn_ufc", "confirmed_at": now.isoformat(),
+                "source_url": "https://www.espn.com/mma/fightcenter/_/id/" + str(event["id"])})
+    return rows
+
+
+def evaluate_combat_result(pred, rows):
+    if not is_combat_prediction(pred) or str(pred.get("market") or "").lower() not in ("h2h", "moneyline", "ml"):
+        return None
+    start = _result_dt(pred.get("commence_time") or pred.get("start_time"))
+    fighters = {_combat_name(pred.get("home_team")), _combat_name(pred.get("away_team"))}
+    pick = _combat_name(pred.get("pick_raw") or pred.get("pick"))
+    if not start or len(fighters) != 2 or "" in fighters or pick not in fighters:
+        return None
+    matches = []
+    for row in rows:
+        date = _result_dt(row.get("commence_time"))
+        if row.get("completed") is not True or not date or abs((date-start).total_seconds()) > 18*3600:
+            continue
+        if {_combat_name(n) for n in row.get("fighters") or []} != fighters:
+            continue
+        winner = _combat_name(row.get("winner"))
+        if winner in fighters:
+            matches.append(("won" if pick == winner else "lost", row))
+    if not matches or len({result for result,row in matches}) != 1:
+        return None
+    result, row = matches[0]
+    return {"result": result, "combat_outcome": dict(row), "reconciliation_source": "espn_ufc_confirmed_winner"}
+
+
+async def fetch_combat_results(db, predictions):
+    """Free public UFC fallback, cached per UTC date, six requests maximum/run.
+
+    Not a guaranteed or comprehensive MMA feed; exact pair + card-time matching
+    only. All historical final outcomes stay cached; unavailable data stays pending.
+    """
+    now = datetime.now(timezone.utc)
+    dates = set()
+    for pred in predictions:
+        start = _result_dt(pred.get("commence_time") or pred.get("start_time"))
+        if not is_combat_prediction(pred) or not start or not now-timedelta(days=180) <= start <= now:
+            continue
+        for delta in (-1,0,1):
+            day = start + timedelta(days=delta)
+            if day.date() <= now.date(): dates.add(day.strftime("%Y%m%d"))
+    if not dates: return []
+    async with _combat_results_lock:
+        keys = ["combat_ufc:"+day for day in dates]
+        saved = await db.scores_cache.find({"_id": {"$in": keys}}).to_list(length=len(keys))
+        cache = {row["_id"]:row for row in saved}
+        jobs = []
+        for day in dates:
+            old = cache.get("combat_ufc:"+day) or {}
+            checked = _result_dt(old.get("checked_at"))
+            ttl = 300 if day >= (now-timedelta(days=2)).strftime("%Y%m%d") else 86400
+            if not checked or (now-checked).total_seconds() >= ttl:
+                jobs.append((old.get("checked_at") or "", day))
+        # Most recent unqueried cards first; then rotate older dates via cache.
+        jobs.sort(key=lambda job: (job[0], -int(job[1])))
+        semaphore = asyncio.Semaphore(2)
+        async def one(day):
+            identity = "combat_ufc:"+day
+            async with semaphore:
+                try:
+                    async with httpx.AsyncClient(timeout=8.) as client:
+                        response = await client.get("https://site.api.espn.com/apis/site/v2/sports/mma/ufc/scoreboard", params={"dates":day,"limit":1000})
+                        response.raise_for_status()
+                        payload = response.json()
+                    if not isinstance(payload,dict) or not isinstance(payload.get("events"),list): return
+                    rows = _parse_ufc_results(payload, now)
+                    merged = {r["bout_id"]:r for r in (cache.get(identity) or {}).get("data") or []}
+                    merged.update({r["bout_id"]:r for r in rows})
+                    value = {"checked_at":now.isoformat(),"data":list(merged.values()),"source":"espn_ufc"}
+                    await db.scores_cache.update_one({"_id":identity},{"$set":value},upsert=True)
+                    cache[identity] = value
+                except Exception as exc:
+                    logger.warning("UFC final results unavailable for %s (%s)", day, type(exc).__name__)
+        await asyncio.gather(*(one(day) for _,day in jobs[:6]))
+        unique = {row["bout_id"]:row for cached in cache.values() for row in cached.get("data") or []}
+        return list(unique.values())
