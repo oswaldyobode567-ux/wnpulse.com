@@ -848,25 +848,53 @@ function EligibleMatches() {
   const [report, setReport] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [search, setSearch] = useState("");
   const load = async () => {
     setBusy(true); setError("");
-    try { const response = await api.get("/montante/candidates", {timeout:45000}); setReport(response.data); }
+    try { const response = await api.get("/montante/candidates", {timeout:60000}); setReport(response.data); }
     catch { setError(i18n.t("Impossible de vérifier les candidats. Réessaie.")); }
     finally { setBusy(false); }
   };
+  const refreshQuotes = async () => {
+    setBusy(true); setError("");
+    try { await api.post("/montante/candidates/refresh");setNotice(i18n.t("Actualisation limitée lancée. Recharge la liste dans quelques instants. La paire publiée reste inchangée.")); }
+    catch { setError(i18n.t("Impossible de lancer l’actualisation des cotes.")); }
+    finally { setBusy(false); }
+  };
+  const reasons = {stale_or_undated_sources:"Moins de trois sources datées de moins de 30 minutes",
+    insufficient_fresh_complete_sources:"Sources ou marchés complets insuffisants",
+    unconditional_win_probability_below_threshold:"Probabilité estimée sous le minimum",
+    sources_too_disperse:"Désaccord trop important entre les sources",
+    negative_expected_return:"Valeur estimée insuffisante au prix proposé",
+    odds_outside_range:"Cote hors de la plage admise",
+    missing_or_invalid_identity_odds_time:"Identité, cote ou horaire non vérifiable",
+    synthetic_combo_finished_or_analysis_only:"Analyse théorique ou marché non jouable",
+    refund_distribution_unavailable:"Remboursement non estimable",
+    extreme_unvalidated_model_disagreement:"Écart non validé entre le modèle et le marché"};
+  const filterRows = rows => list(rows).filter(row=>`${row.home_team} ${row.away_team} ${row.sport_title} ${row.pick}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase()));
+  const renderRows = (rows, historical=false) => <div className="mt-4 grid gap-3 lg:grid-cols-2">{filterRows(rows).map((row,index)=><article key={`${row.event_id||row.match_id}-${index}`} className="min-w-0 rounded-xl border border-slate-200 p-4">
+    <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-bold text-slate-500">#{row.rank||index+1} · {str(row.sport_title)}</span><Badge className={row.published ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}>{i18n.t(row.published ? "Paire publiée" : historical ? "Admissible à la sélection" : row.proposed ? "Proposé actuellement" : "Autre candidat actuel")}</Badge></div>
+    <h3 className="mt-2 break-words text-base font-bold text-slate-900">{str(row.home_team)} vs {str(row.away_team)}</h3><p className="mt-1 text-xs text-slate-500">{dateLabel(i18n,row.start_time)}</p>
+    <p className="mt-3 break-words font-semibold text-orange-700">{i18n.bet(str(row.pick))} · {format(i18n,row.odds,2)}</p>
+    <p className="mt-2 text-sm text-slate-600">{i18n.t("Probabilité estimée")} : {format(i18n,row.model_probability*100,1)} % · {i18n.t("Sources")} : {row.num_books}</p>
+    <p className="mt-1 text-xs text-slate-500">{i18n.t("Score de classement")} : {format(i18n,row.selection_score,1)}{historical ? ` · ${i18n.t("Cotes et critères du moment de la sélection")}` : ` · ${i18n.t(row.pair_search_pool ? "Comparé pour la paire" : "Hors des 40 premiers")}`}</p>
+  </article>)}</div>;
   return <Card className="rounded-2xl border-neutral-200 p-4 sm:p-6" data-testid="eligible-matches">
-    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold text-slate-900">{i18n.t("Matchs éligibles · Admin")}</h2><p className="mt-1 text-sm leading-6 text-slate-600">{i18n.t("Tous les matchs qui passent les mêmes contrôles que la montante, avec un meilleur choix par rencontre. Cette consultation ne remplace pas la paire publiée.")}</p></div>
-    <Button disabled={busy} onClick={load}>{i18n.t(busy ? "Vérification…" : "Voir les candidats")}</Button></div>
-    {error && <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>}
-    {report && <><p className="mt-4 text-sm text-slate-600">{list(report.items).length} {i18n.t("matchs éligibles")} · {dateLabel(i18n,report.generated_at)}</p>
-      <p className="mt-2 text-xs leading-5 text-slate-500">{i18n.t("Les 40 premiers entrent dans la comparaison des paires : le classement, les équipes distinctes et la diversité des compétitions départagent les candidats. Éligible ne signifie pas gagnant garanti.")}</p>
-      {!list(report.items).length && <p className="mt-4 text-sm text-slate-600">{report.reason || i18n.t("Aucun match ne respecte actuellement tous les critères.")}</p>}
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">{list(report.items).map(row=><article key={row.event_id} className="min-w-0 rounded-xl border border-slate-200 p-4">
-        <div className="flex flex-wrap justify-between gap-2"><span className="text-xs font-bold text-slate-500">#{row.rank} · {str(row.sport_title)}</span><Badge className={row.published ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"}>{i18n.t(row.published ? "Paire publiée" : row.proposed ? "Proposé actuellement" : "Autre candidat")}</Badge></div>
-        <h3 className="mt-2 break-words text-base font-bold text-slate-900">{str(row.home_team)} vs {str(row.away_team)}</h3>
-        <p className="mt-1 text-xs text-slate-500">{dateLabel(i18n,row.start_time)}</p><p className="mt-3 break-words font-semibold text-orange-700">{i18n.bet(str(row.pick))} · {format(i18n,row.odds,2)}</p>
-        <p className="mt-2 text-sm text-slate-600">{i18n.t("Probabilité estimée")} : {format(i18n,row.model_probability*100,1)} % · {i18n.t("Sources")} : {row.num_books}</p>
-        <p className="mt-1 text-xs text-slate-500">{i18n.t("Score de classement")} : {format(i18n,row.selection_score,1)} · {i18n.t(row.pair_search_pool ? "Comparé pour la paire" : "Hors des 40 premiers")}</p>
-      </article>)}</div></>}
+    <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-lg font-bold text-slate-900">{i18n.t("Matchs éligibles · Admin")}</h2><p className="mt-1 text-sm leading-6 text-slate-600">{i18n.t("Candidats actuels et liste conservée lors de la publication. La consultation ne remplace pas la paire en cours.")}</p></div>
+    <div className="flex flex-wrap gap-2"><Button disabled={busy} onClick={load}>{i18n.t(busy ? "Vérification…" : "Voir les candidats")}</Button><Button variant="outline" disabled={busy} onClick={refreshQuotes}>{i18n.t("Actualiser les cotes")}</Button></div></div>
+    {error && <p role="alert" className="mt-3 text-sm text-rose-700">{error}</p>}{notice && <p role="status" className="mt-3 text-sm text-slate-600">{notice}</p>}
+    {report && <>
+      <label className="mt-4 block text-sm font-semibold text-slate-700">{i18n.t("Rechercher une équipe, une compétition ou un choix")}<input value={search} onChange={e=>setSearch(e.target.value)} className="mt-2 min-h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-base font-normal" /></label>
+      <h3 className="mt-5 text-base font-bold text-slate-900" data-testid="current-eligible-count">{list(report.items).length} {i18n.t("éligibles maintenant")}</h3><p className="mt-1 text-xs text-slate-500">{dateLabel(i18n,report.generated_at)}</p>
+      <p className="mt-2 text-xs leading-5 text-slate-500">{i18n.t("Cotes de moins de 30 minutes, au moins trois sources, probabilité estimée minimale de 70 %. Les 40 premiers sont comparés pour former une paire. Une estimation élevée ne garantit pas le résultat.")}</p>
+      {!list(report.items).length && <div className="mt-3 rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm leading-6 text-amber-900" data-testid="eligibility-empty-reason">{i18n.t("Aucun candidat ne passe tous les contrôles actuels. Cela ne signifie pas qu’aucun match n’était admissible lors de la publication.")}</div>}
+      {renderRows(report.items)}
+      <details className="mt-4 rounded-xl border border-slate-200 p-3" open={!list(report.items).length}><summary className="cursor-pointer text-sm font-semibold">{i18n.t("Comprendre les exclusions actuelles")}</summary><p className="mt-2 text-sm">{report.diagnostic?.matches_received||0} {i18n.t("matchs en cache")} · {report.diagnostic?.events_in_selection_window||0} {i18n.t("dans la fenêtre de sélection")}</p>
+      <p className="mt-1 text-xs text-slate-500">{i18n.t("Dernier cache général")} : {dateLabel(i18n,report.diagnostic?.odds_cache_updated_at)} · {i18n.t("Dernier contrôle ciblé")} : {dateLabel(i18n,report.quote_refresh?.checked_at)}</p>
+      <ul className="mt-2 space-y-1 text-sm text-slate-600">{Object.entries(report.diagnostic?.rejections||{}).sort((a,b)=>b[1]-a[1]).map(([reason,count])=><li key={reason}>{count} · {i18n.t(reasons[reason]||"Autre contrôle de cohérence non satisfait")}</li>)}</ul><p className="mt-2 text-xs text-slate-500">{i18n.t("Les exclusions comptent les marchés contrôlés, pas des matchs distincts. L’actualisation ciblée vérifie au maximum deux compétitions par passage, sous le plafond de crédits existant.")}</p></details>
+      {list(report.published_picks).length>0 && <section className="mt-6" data-testid="published-montante-picks"><h3 className="text-base font-bold text-slate-900">{i18n.t("Paire publiée · conservée")}</h3><p className="mt-1 text-xs leading-5 text-slate-500">{i18n.t("Ces choix restent ceux de la montante, même si les cotes ont vieilli depuis leur sélection.")}</p>{renderRows(report.published_picks.map(row=>({...row,published:true})),true)}</section>}
+      {report.selection_snapshot && <section className="mt-6" data-testid="selection-eligibility-snapshot"><h3 className="text-base font-bold text-slate-900">{i18n.t("Admissibles au moment de la sélection")} · {list(report.selection_snapshot.items).length}</h3><p className="mt-1 text-sm text-slate-600">{dateLabel(i18n,report.selection_snapshot.captured_at)} · {i18n.t(report.selection_snapshot.same_cycle ? "Cette série" : "Série précédente")}</p><p className="mt-2 text-xs leading-5 text-slate-500">{i18n.t("Liste historique : ces matchs ne sont pas présentés comme encore jouables ni admissibles actuellement.")}</p>{!report.selection_snapshot.complete && <p className="mt-2 text-xs text-amber-800">{i18n.t("Ancien enregistrement partiel : tous les candidats de cette sélection n’étaient pas conservés.")}</p>}{renderRows(report.selection_snapshot.items,true)}</section>}
+    </>}
   </Card>;
 }

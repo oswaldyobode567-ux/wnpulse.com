@@ -2454,3 +2454,56 @@ async def fetch_combat_results(db, predictions):
         await asyncio.gather(*(one(day) for _,day in jobs[:6]))
         unique = {row["bout_id"]:row for cached in cache.values() for row in cached.get("data") or []}
         return list(unique.values())
+
+
+async def refresh_montante_quote_window(db):
+    """Two rotating sports, two core markets, one region, every 20 minutes.
+
+    Uses the existing global/category credit reservations. Merge only: no event
+    or existing market is deleted and old outcome timestamps remain old.
+    """
+    now = datetime.now(timezone.utc)
+    cache = await db.odds_cache.find_one({"_id":"all_matches"}) or {}
+    matches = cache.get("data") or []
+    keys = set()
+    for row in matches:
+        start = _result_dt(row.get("commence_time"))
+        key = str(row.get("sport_key") or "")
+        if re.fullmatch(r"[a-z0-9_]+",key) and "minor_leagues" not in key and start and now+timedelta(minutes=5) <= start <= now+timedelta(hours=72):
+            keys.add(key)
+    rotation = await db.scores_cache.find_one({"_id":"montante_quote_rotation"}) or {}
+    checked = dict(rotation.get("checked") or {})
+    jobs = [key for key in keys if not _result_dt(checked.get(key)) or (now-_result_dt(checked[key])).total_seconds() >= 1200]
+    jobs.sort(key=lambda key:(checked.get(key) or "",key))
+    incoming = {}; errors = 0
+    async with httpx.AsyncClient(timeout=10.) as client:
+        for key in jobs[:2]:
+            checked[key] = now.isoformat()
+            try:
+                response = await _budgeted_primary_get(db,client,f"{ODDS_API_BASE}/sports/{key}/odds",category="odds",
+                    params={"apiKey":ODDS_API_KEY,"regions":"eu","markets":"h2h,totals","oddsFormat":"decimal","dateFormat":"iso"})
+                response.raise_for_status();rows=response.json()
+                if not isinstance(rows,list):raise ValueError("invalid_odds_list")
+                incoming.update({str(row["id"]):row for row in rows if isinstance(row,dict) and row.get("id")})
+            except PrimaryBudgetError:
+                break  # Global 90,000-credit ceiling and pacing remain authoritative.
+            except Exception as exc:
+                errors += 1
+                logger.warning("Montante quote window unavailable (%s)",type(exc).__name__)
+    merged = []; updated = 0
+    for row in matches:
+        fresh = incoming.get(str(row.get("id")))
+        if fresh and fresh.get("home_team")==row.get("home_team") and fresh.get("away_team")==row.get("away_team"):
+            item = _merge_market_quotes(row,fresh)
+            if _result_dt(fresh.get("commence_time")):item["commence_time"]=fresh["commence_time"]
+            merged.append(item);updated += 1
+        else:merged.append(row)
+    written = None
+    if updated:
+        written = await db.odds_cache.update_one({"_id":"all_matches","updated_at":cache.get("updated_at"),
+            "montante_quotes_updated_at":cache.get("montante_quotes_updated_at")},
+            {"$set":{"data":merged,"montante_quotes_updated_at":now.isoformat()}})
+    report = {"checked":checked,"checked_at":now.isoformat(),"sports_requested":jobs[:2],
+        "updated_events":updated if written and written.modified_count else 0,"events_preserved":len(matches),"errors":errors}
+    await db.scores_cache.update_one({"_id":"montante_quote_rotation"},{"$set":report},upsert=True)
+    return report

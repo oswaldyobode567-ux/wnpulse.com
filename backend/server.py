@@ -42,7 +42,7 @@ from auth import (
 )
 from odds_service import (
     fetch_all_matches, refresh_matches_worker, fetch_all_scores,
-    fetch_live_scores, fetch_combat_results, evaluate_combat_result, is_combat_prediction,
+    refresh_montante_quote_window, fetch_live_scores, fetch_combat_results, evaluate_combat_result, is_combat_prediction,
     fetch_odds_api_io_scores_map, diagnose_sport_key,
     probe_odds_api_io_event, probe_odds_api_io_league_sample,
     get_odds_cache_status, ODDS_API_IO_LEAGUES,
@@ -8723,6 +8723,7 @@ async def get_data_status():
 
     return {
         "odds_updated_at": cached.get("updated_at"),
+        "targeted_quotes_updated_at": cached.get("montante_quotes_updated_at"),
         "count": cached.get("count", 0),
         "by_sport": by_sport,
     }
@@ -10737,20 +10738,14 @@ async def _montante_choose_pair(state: Dict, preview: bool = False) -> Dict:
     diagnostic = {"generated_at": now.isoformat(), "day": state.get("current_day"), "window_hours": 72, "matches_received": len(matches),
                   "criteria": {"min_probability": MONTANTE_MIN_CONFIDENCE, "min_odds": MONTANTE_MIN_ODDS,
                                "max_odds": MONTANTE_MAX_ODDS, "minimum_sources": MONTANTE_MIN_BOOKS,
-                               "minimum_stability": MONTANTE_MIN_STABILITY, "required_matches": 2}}
+                               "minimum_stability": MONTANTE_MIN_STABILITY, "required_matches": 2,
+                               "max_quote_age_minutes": MONTANTE_MAX_ODDS_AGE_MINUTES}}
     try:
         status = await get_odds_cache_status(db)
     except Exception:
         status = {}
     diagnostic["odds_cache_updated_at"] = status.get("updated_at")
     diagnostic["odds_cache_hard_stale"] = status.get("hard_stale")
-    if status.get("hard_stale") is True:
-        state["diagnostic"] = diagnostic
-        state["waiting_reason"] = "Les cotes sont trop anciennes : attente d’un flux actualisé pour vérifier deux matchs."
-        state["updated_at"] = now.isoformat()
-        if preview:
-            return {"generated_at": now.isoformat(), "items": [], "diagnostic": diagnostic, "reason": state["waiting_reason"]}
-        return await _montante_publish_selection(state)
     stats = dict(await get_real_stats_map(db, matches) or {})
     stats["__hybrid_models__"] = await _get_hybrid_registry()
     predictions = analyze_all(matches, real_stats_map=stats)
@@ -10775,6 +10770,7 @@ async def _montante_choose_pair(state: Dict, preview: bool = False) -> Dict:
     selected = selector.select_daily_picks(candidates, limit=2)
     diagnostic.update(selector.last_diagnostic)
     diagnostic["predictions_generated"] = len(predictions)
+    diagnostic["events_in_selection_window"] = len(candidates)
     state["diagnostic"] = diagnostic
     state["selection_version"] = selector.VERSION
     state["updated_at"] = now.isoformat()
@@ -10829,7 +10825,8 @@ async def _montante_choose_pair(state: Dict, preview: bool = False) -> Dict:
             if all(captured < _parse_iso(p["start_time"]) for p in selected):
                 observation = copy.deepcopy(selector.last_observation)
                 observation.update(montante_id=state["id"], day=state["current_day"],
-                    captured_at=captured.isoformat(), selected=copy.deepcopy(selected))
+                    captured_at=captured.isoformat(), selected=copy.deepcopy(selected),
+                    eligible_events=copy.deepcopy(selector.last_eligible), diagnostic=copy.deepcopy(diagnostic))
                 # Signature also handles a fully void attempt on the same step.
                 observation_id = state["id"] + ":" + str(state["current_day"]) + ":" + "|".join(p["history_signature"] for p in selected)
                 await db.montante_selection_observations.update_one({"_id":observation_id},
@@ -11142,11 +11139,65 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
     return await _montante_view_for_payload(state, payload)
 
 
+def _montante_candidate_snapshot(observation, state, now):
+    if not observation:return None
+    complete = isinstance(observation.get("eligible_events"),list)
+    source = observation.get("eligible_events") if complete else observation.get("contenders") or observation.get("selected") or []
+    current = {(str(p.get("match_id")),p.get("pick")) for p in state.get("current_picks") or []}
+    seen = set();items = []
+    for row in source:
+        event = str(row.get("event_id") or row.get("match_id") or "")
+        if not event or event in seen:continue
+        seen.add(event)
+        start = _parse_iso(row.get("start_time"))
+        items.append({**row,"rank":len(items)+1,"published":(str(row.get("match_id")),row.get("pick")) in current,
+            "historical":True,"started":bool(start and start<=now)})
+    return {"captured_at":observation.get("captured_at"),"montante_id":observation.get("montante_id"),
+        "day":observation.get("day"),"same_cycle":observation.get("montante_id")==state.get("id"),
+        "complete":complete,"items":items}
+
+
 @app.get("/api/montante/candidates")
 async def montante_candidates(payload: dict = Depends(get_current_user_payload)):
     await _require_admin(payload)
     state = await _montante_get() or {"history": [], "current_picks": []}
-    return await _montante_choose_pair(copy.deepcopy(state), preview=True)
+    report = await _montante_choose_pair(copy.deepcopy(state), preview=True)
+    history = await db.montante_selection_observations.find({"montante_id":state.get("id")}).sort("captured_at",-1).limit(1).to_list(length=1) if state.get("id") else []
+    if not history:
+        history = await db.montante_selection_observations.find({}).sort("captured_at",-1).limit(1).to_list(length=1)
+    report["selection_snapshot"] = _montante_candidate_snapshot(history[0] if history else None,state,datetime.now(timezone.utc))
+    report["published_picks"] = state.get("current_picks") or []
+    report["quote_refresh"] = await db.scores_cache.find_one({"_id":"montante_quote_rotation"},{"_id":0,"checked":0}) or {}
+    report["quote_refresh_running"] = bool(_montante_quote_task and not _montante_quote_task.done())
+    return report
+
+
+_montante_quote_task = None
+
+
+async def _scheduled_montante_quote_refresh():
+    async def run():
+        return await asyncio.wait_for(refresh_montante_quote_window(db),timeout=40)
+    return await _run_with_scheduler_lease("montante_quote_window",run,lease_seconds=90)
+
+
+def _queue_montante_quote_refresh():
+    global _montante_quote_task
+    if _montante_quote_task and not _montante_quote_task.done():return False
+    async def run():
+        try:return await _scheduled_montante_quote_refresh()
+        except Exception as exc:
+            logging.getLogger("winpulse.montante").warning("Quote window refresh failed (%s)",type(exc).__name__)
+            return {"status":"unavailable"}
+    _montante_quote_task=asyncio.create_task(run())
+    return True
+
+
+@app.post("/api/montante/candidates/refresh",status_code=202)
+async def refresh_montante_candidate_quotes(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    return {"queued":_queue_montante_quote_refresh(),"maximum_sports":2,"interval_minutes":20,
+        "global_credit_ceiling":90000,"selection_unchanged":True}
 
 
 @app.get("/api/admin/montante/selection-report")
@@ -15222,6 +15273,7 @@ async def startup_event():
 
     # Recovery is queued; API readiness does not wait on external scores.
     _queue_track_results()
+    if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
         await asyncio.wait_for(db.predictions_history.create_index([('result',1),('settlement_checked_at',1),('commence_time',-1)]),timeout=5)
     except Exception:pass
@@ -15248,6 +15300,8 @@ async def startup_event():
         scheduler.add_job(_scheduled_apisports_refresh, "interval", minutes=30, id="apisports_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_football_stats_refresh, "interval", minutes=30,
                           id="football_stats_refresh", replace_existing=True, coalesce=True, max_instances=1)
+        scheduler.add_job(_scheduled_montante_quote_refresh,"interval",minutes=20,id="montante_quote_window",
+            replace_existing=True,coalesce=True,max_instances=1)
         scheduler.add_job(_scheduled_reconcile, "interval", minutes=5, id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
         # Synchronisation dédiée Montante : uniquement 1–2 picks actifs, donc bien
         # plus légère que la réconciliation générale du Track Record.

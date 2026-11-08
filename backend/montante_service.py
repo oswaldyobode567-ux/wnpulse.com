@@ -362,6 +362,7 @@ class MontanteService:
             self._reject("missing_team_total_identity"); return None
         now = datetime.now(timezone.utc)
         values, prices, updates, books = [], [], [], set()
+        fresh_books = set()
         raw_books = match.get("_bookmakers", match.get("bookmakers", []))
         for book in raw_books if isinstance(raw_books, list) else []:
             if not isinstance(book, dict):
@@ -376,9 +377,13 @@ class MontanteService:
                 updated = self._dt(data.get("last_update") or book.get("last_update"))
                 if updated is None or not 0 <= (now-updated).total_seconds() <= self.max_odds_age_minutes*60:
                     continue
+                fresh_books.add(book_id)
                 rows = []
                 for outcome in data.get("outcomes", []) if isinstance(data.get("outcomes"), list) else []:
                     if not isinstance(outcome, dict):
+                        continue
+                    stamp = self._dt(outcome.get("_quote_updated_at")) if outcome.get("_quote_updated_at") else updated
+                    if not stamp or not 0 <= (now-stamp).total_seconds() <= self.max_odds_age_minutes*60:
                         continue
                     name, price = self._name(outcome.get("name")), self._num(outcome.get("price"))
                     line = self._num(outcome.get("point"))
@@ -414,7 +419,7 @@ class MontanteService:
                 prices.append(chosen[1]); updates.append(updated.isoformat()); books.add(book_id)
                 break
         if len(books) < self.min_books:
-            self._reject("insufficient_fresh_complete_sources"); return None
+            self._reject("stale_or_undated_sources" if len(fresh_books)<self.min_books else "insufficient_fresh_complete_sources"); return None
         return {"num_books":len(books), "consensus":statistics.median(values),
             "stability":max(0.,100-statistics.pstdev(values)*1000), "prices":prices,
             "odds_verified_at":min(updates)}
@@ -428,6 +433,9 @@ class MontanteService:
                 continue
             outcomes = data.get("outcomes") or []
             if len(outcomes) != 3 or any(not isinstance(o,dict) for o in outcomes):
+                continue
+            if any(not self._dt(o.get("_quote_updated_at") or stamp.isoformat()) or
+                not 0 <= (now-self._dt(o.get("_quote_updated_at") or stamp.isoformat())).total_seconds() <= self.max_odds_age_minutes*60 for o in outcomes):
                 continue
             prices = {self._name(o.get("name")):self._num(o.get("price")) for o in outcomes}
             if set(prices) != {home,away,"draw"} or any(p is None or p <= 1 for p in prices.values()):
