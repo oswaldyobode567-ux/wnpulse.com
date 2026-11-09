@@ -1596,12 +1596,15 @@ def build_today_combos_by_sport(matches: List[Dict], _selection_date=None) -> Di
             tiers[profile[0]] = tier
         for tier in tiers.values():
             tier["shared_matches"] = [p["match_id"] for p in tier["legs"] if sum(any(q["match_id"]==p["match_id"] for q in other["legs"]) for other in tiers.values())>1]
-        families[family_key] = {"family_key":family_key,"family_label":family_label,
-            "matches_today":sum(family_key=="all" or str(m.get("sport_key") or "").startswith(family_key) for m in today_matches),"tiers":tiers}
+        count = sum(family_key=="all" or str(m.get("sport_key") or "").startswith(family_key) for m in today_matches)
+        family_ready = any(len(t["legs"]) >= 2 for t in tiers.values())
+        families[family_key] = {"family_key":family_key,"family_label":family_label,"matches_today":count,
+            "availability_reason":"ready" if family_ready else "quality_or_common_bookmaker" if pool else "no_eligible_markets" if count else "no_upcoming_fixtures",
+            "tiers":tiers}
     ready = any(len(t.get("legs", [])) >= 2 for f in families.values() for t in f["tiers"].values())
     if _selection_date is None and not ready:
         tomorrow = build_today_combos_by_sport(matches, local_now.date() + timedelta(days=1))
-        if tomorrow["total_matches_today"]:
+        if tomorrow["availability_reason"] == "ready" or (not today_matches and tomorrow["total_matches_today"]):
             tomorrow["transition_reason"] = "no_qualified_ticket_remaining_today"
             return tomorrow
     return {"selection_date":selected_day.isoformat(),
