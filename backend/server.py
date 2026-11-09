@@ -4,6 +4,8 @@ Connecte auth.py, odds_service.py, prediction_engine.py, ai_service.py
 """
 import os
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
 import copy
 import logging
 import time
@@ -28,6 +30,7 @@ from urllib.parse import parse_qs
 
 from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Query, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field, StrictBool, StrictInt
@@ -924,6 +927,15 @@ app = FastAPI(
 )
 
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=TRUSTED_HOSTS)
+app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=3)
+
+# Bound CPU-heavy model work without blocking the HTTP event loop.
+_analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="winpulse-analysis")
+
+
+async def _run_analysis(function, *args, **kwargs):
+    return await asyncio.get_running_loop().run_in_executor(_analysis_executor, partial(function, *args, **kwargs))
+
 
 _manual_refresh_lock = asyncio.Lock()
 
@@ -8430,14 +8442,18 @@ async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload
 async def _get_prediction_snapshot(force: bool = False) -> Dict:
     now = time.monotonic()
     async with _prediction_cache_lock:
+        if not force and _prediction_cache["matches"] and now-_prediction_cache["timestamp"] < min(10,PREDICTION_CACHE_TTL):
+            return _prediction_cache
         source_cache_updated_at = None
+        cache_meta = {}
         try:
-            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1})
+            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1,"montante_quotes_updated_at":1})
             source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
         except Exception:
             pass
         same_source_snapshot = (
             source_cache_updated_at == _prediction_cache.get("source_cache_updated_at")
+            and (cache_meta or {}).get("montante_quotes_updated_at") == _prediction_cache.get("targeted_quotes_updated_at")
         )
         if (not force and _prediction_cache["matches"] and same_source_snapshot and
                 now - _prediction_cache["timestamp"] < PREDICTION_CACHE_TTL):
@@ -8446,7 +8462,7 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
         matches = await fetch_all_matches(db)
         real_stats_map = dict(await get_real_stats_map(db, matches))
         real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
-        predictions = analyze_all(matches, real_stats_map=real_stats_map)
+        predictions = await _run_analysis(analyze_all, matches, real_stats_map=real_stats_map)
         try:
             predictions = await _freeze_official_predictions(predictions)
         except Exception as exc:
@@ -8487,23 +8503,28 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
             matches = await asyncio.wait_for(enrich_match_badges(db, matches), timeout=4)
         except Exception as exc:
             logging.getLogger("winpulse.stats").warning("Badge cache unavailable (%s)", type(exc).__name__)
-        calibration = await _compute_calibration_map()
+        try:
+            calibration = await asyncio.wait_for(_compute_calibration_map(), timeout=2)
+        except Exception:
+            calibration = _prediction_cache.get("calibration") or {}
         # Le cache des prédictions doit suivre immédiatement le cache Mongo des
         # matchs. Sans ce contrôle, un refresh du flux pouvait laisser l'API
         # servir pendant 300 s l'ancienne liste de matchs.
         source_cache_updated_at = None
+        cache_meta = {}
         try:
-            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1})
+            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1,"montante_quotes_updated_at":1})
             source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
         except Exception:
             pass
         _prediction_cache.update({
-            "timestamp": now,
+            "timestamp": time.monotonic(),
             "matches": matches,
             "predictions": predictions,
             "real_stats_map": real_stats_map,
             "calibration": calibration,
             "source_cache_updated_at": source_cache_updated_at,
+            "targeted_quotes_updated_at":(cache_meta or {}).get("montante_quotes_updated_at"),
         })
         return _prediction_cache
 
@@ -8580,7 +8601,7 @@ def _match_is_finished(match: dict) -> bool:
 
 
 @app.get("/api/matches")
-async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload)):
+async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload), compact: bool = False):
     snapshot = await _get_prediction_snapshot()
     matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
     predictions = _apply_calibration(
@@ -8601,6 +8622,8 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
         pred = _discovery_prediction(pred,manifest,paid=is_paid)
         pred = _dashboard_prediction_view(pred)
         outer = m if is_paid or not pred.get("locked") else _discovery_metadata(m)
+        if compact:
+            outer = {key:value for key,value in outer.items() if key != "bookmakers"}
         merged.append(_merge_match_prediction(outer, pred))
     return merged
 
@@ -8707,26 +8730,12 @@ async def get_match_analysis(match_id: str, request: Request, response: Response
 
 @app.get("/api/data/status")
 async def get_data_status():
-    cached = await db.odds_cache.find_one({"_id": "all_matches"})
-    if not cached:
-        return {"odds_updated_at": None, "count": 0, "by_sport": {}}
+    cached = await db.odds_cache.find_one({"_id":"all_matches"},
+        {"updated_at":1,"montante_quotes_updated_at":1,"count":1,"by_sport":1}) or {}
+    return {"odds_updated_at":cached.get("updated_at"),
+        "targeted_quotes_updated_at":cached.get("montante_quotes_updated_at"),
+        "count":cached.get("count",0),"by_sport":cached.get("by_sport") or {}}
 
-    by_sport: Dict[str, int] = {}
-    try:
-        matches = await fetch_all_matches(db)
-        for match in matches:
-            key = _normalize_sport(match)
-            if key != "unknown":
-                by_sport[key] = by_sport.get(key, 0) + 1
-    except Exception:
-        by_sport = {}
-
-    return {
-        "odds_updated_at": cached.get("updated_at"),
-        "targeted_quotes_updated_at": cached.get("montante_quotes_updated_at"),
-        "count": cached.get("count", 0),
-        "by_sport": by_sport,
-    }
 
 
 @app.post("/api/data/refresh")
@@ -10750,7 +10759,7 @@ async def _montante_choose_pair(state: Dict, preview: bool = False) -> Dict:
     stats["__hybrid_models__"] = await _get_hybrid_registry()
     analysis_matches = selector.fresh_analysis_matches(matches)
     diagnostic["events_with_recent_sources"] = sum(len(m.get("bookmakers") or []) >= MONTANTE_MIN_BOOKS for m in analysis_matches)
-    predictions = analyze_all(analysis_matches, real_stats_map=stats)
+    predictions = await _run_analysis(analyze_all, analysis_matches, real_stats_map=stats)
     raw_by_id = {str(m.get("id") or m.get("match_id")): m for m in matches if isinstance(m, dict)}
     previously_used = {str(p.get("match_id")) for h in state.get("history", []) for p in h.get("picks", []) if p.get("match_id")}
     candidates = []
@@ -11321,7 +11330,7 @@ async def generate_personal_combo(preferences:PersonalComboRequest,payload:dict=
         raise HTTPException(status_code=422,detail="Filtre trop long")
     values = preferences.model_dump() if hasattr(preferences,"model_dump") else preferences.dict()
     try:
-        return build_personalized_combos(await fetch_all_matches(db),values)
+        return await _run_analysis(build_personalized_combos,await fetch_all_matches(db),values)
     except ValueError as exc:
         raise HTTPException(status_code=422,detail=str(exc))
 
@@ -11331,14 +11340,14 @@ async def generate_personal_combo(preferences:PersonalComboRequest,payload:dict=
 async def get_combos(payload: dict = Depends(get_current_user_payload)):
     await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
-    return build_multi_combos(matches)
+    return await _run_analysis(build_multi_combos,matches)
 
 
 @app.get("/api/combos/super")
 async def get_super_combos(payload: dict = Depends(get_current_user_payload)):
     await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
-    return build_super_combos(matches)
+    return await _run_analysis(build_super_combos,matches)
 
 
 @app.get("/api/combos/ultra-safe")
@@ -11346,7 +11355,7 @@ async def get_ultra_safe_combo(payload: dict = Depends(get_current_user_payload)
     await _require_paid_access(payload)
     matches = await fetch_all_matches(db)
     today_matches = [m for m in matches if _is_today_match(m.get("commence_time", ""))]
-    return build_ultra_safe_combo(today_matches)
+    return await _run_analysis(build_ultra_safe_combo,today_matches)
 
 
 def _prepare_today_combo_tier(tier: dict, tier_key: str, is_paid: bool) -> dict:
@@ -11378,7 +11387,8 @@ def _prepare_today_combo_tier(tier: dict, tier_key: str, is_paid: bool) -> dict:
     return prepared
 
 
-_today_quality_lock = asyncio.Lock()
+_today_quality_task = None
+_today_archive_tasks = set()
 _today_quality_cache = {"at":0.0,"data":None,"source":None}
 
 
@@ -11402,29 +11412,60 @@ async def _archive_today_combos(data, version):
         await db.today_combo_history.bulk_write(operations,ordered=False)
 
 
-async def _quality_today_data(matches):
-    await _get_hybrid_registry()
-    async with _today_quality_lock:
-        cache_source = await db.odds_cache.find_one({"_id":"all_matches"},{"updated_at":1})
-        source_stamp = ((cache_source or {}).get("updated_at"), _discovery_day())
-        cached = _today_quality_cache["data"]
-        if cached and _today_quality_cache["source"]==source_stamp and time.monotonic()-_today_quality_cache["at"]<60:
-            # A cached ticket must never contain a newly-started fixture.
-            if all(_parse_iso(p.get("commence_time")) and _parse_iso(p["commence_time"])>datetime.now(timezone.utc)
-                   for f in cached["families"].values() for t in f["tiers"].values() for p in t.get("legs",[])):
-                return copy.deepcopy(cached)
-        result = build_today_combos_by_sport(matches)
+def _today_cached_tickets_current(data, now):
+    return all((start := _parse_iso(p.get("commence_time"))) and start > now
+        for f in data["families"].values() for tier in f["tiers"].values() for p in tier.get("legs", []))
+
+
+def _queue_today_archive(result, matches):
+    async def run():
         try:
             await asyncio.wait_for(_archive_today_combos(result,"today-quality-1"),timeout=3)
-            # Baseline is observational only. It does not influence public selection.
-            legacy = _legacy_build_today_combos_by_sport(matches)
+            legacy = await _run_analysis(_legacy_build_today_combos_by_sport,matches)
             await asyncio.wait_for(_archive_today_combos(legacy,"today-legacy"),timeout=3)
-            result["history_saved"] = True
         except Exception as exc:
-            logging.getLogger(__name__).warning("Combo history not saved: %s",type(exc).__name__)
-            result["history_saved"] = False
-        _today_quality_cache.update(at=time.monotonic(),data=copy.deepcopy(result),source=source_stamp)
-        return result
+            logging.getLogger(__name__).warning("Combo archive deferred: %s",type(exc).__name__)
+    # Never let experimental archive work accumulate on a busy server.
+    if len(_today_archive_tasks) >= 2:return
+    task = asyncio.create_task(run())
+    _today_archive_tasks.add(task)
+    task.add_done_callback(_today_archive_tasks.discard)
+
+
+async def _quality_today_data():
+    global _today_quality_task
+    now = datetime.now(timezone.utc)
+    cached = _today_quality_cache["data"]
+    day = _discovery_day(now)
+    age = time.monotonic()-_today_quality_cache["at"]
+    valid = cached is not None and _today_quality_cache.get("day")==day and _today_cached_tickets_current(cached,now)
+    if valid and age < 10:
+        return copy.deepcopy(cached)
+    meta = await db.odds_cache.find_one({"_id":"all_matches"},{"updated_at":1,"montante_quotes_updated_at":1}) or {}
+    source_stamp = (meta.get("updated_at"),meta.get("montante_quotes_updated_at"),day)
+    if valid and _today_quality_cache["source"]==source_stamp and age < 180:
+        return copy.deepcopy(cached)
+    if _today_quality_task is None or _today_quality_task.done():
+        async def build():
+            await _get_hybrid_registry()
+            matches = await fetch_all_matches(db)
+            upcoming = [m for m in matches if not m.get("is_finished") and not m.get("completed")
+                and (start := _parse_iso(m.get("commence_time"))) and start > datetime.now(timezone.utc)]
+            result = await _run_analysis(build_today_combos_by_sport,upcoming)
+            _today_quality_cache.update(at=time.monotonic(),data=result,source=source_stamp,day=day)
+            _queue_today_archive(copy.deepcopy(result),upcoming)
+            return result
+        _today_quality_task = asyncio.create_task(build())
+        # Retrieve errors even if every HTTP waiter has disconnected.
+        _today_quality_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+    return copy.deepcopy(await asyncio.shield(_today_quality_task))
+
+
+async def _warm_today_combos():
+    try:
+        await asyncio.wait_for(_quality_today_data(),timeout=30)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Combo warmup deferred: %s",type(exc).__name__)
 
 
 async def _settle_today_combo_history():
@@ -11494,22 +11535,13 @@ async def today_combos_evaluation(payload:dict=Depends(get_current_user_payload)
 
 async def _load_today_combo_data(payload: Optional[dict]) -> dict:
     is_paid = await _has_paid_access(payload)  # Includes subscription expiry.
-    matches = await fetch_all_matches(db)
+    result = await _quality_today_data()
     now = datetime.now(timezone.utc)
-    upcoming = []
-    for match in matches:
-        if not isinstance(match, dict) or match.get("is_finished") or match.get("completed"):
-            continue
-        try:
-            start = datetime.fromisoformat(str(match.get("commence_time") or "").replace("Z", "+00:00"))
-            if start.tzinfo is None:
-                start = start.replace(tzinfo=timezone.utc)
-            if start > now:
-                upcoming.append(match)
-        except (ValueError, TypeError):
-            continue
-    # Keep the engine's selections and scores; only exclude unavailable events.
-    result = await _quality_today_data(upcoming)
+    # A computation spanning kickoff must not publish a ticket that has started.
+    for family in result.get("families",{}).values():
+        for tier in family.get("tiers",{}).values():
+            if any(not (start := _parse_iso(p.get("commence_time"))) or start <= now for p in tier.get("legs",[])):
+                tier.update(legs=[],leg_count=0,total_odds=0,avg_confidence=None,combined_probability=None,status="preparing",unavailable_reason="kickoff_elapsed")
     for family in result.get("families", {}).values():
         family["tiers"] = {
             key: _prepare_today_combo_tier(tier, key, is_paid)
@@ -11531,7 +11563,7 @@ async def get_today_combos(payload: Optional[dict] = Depends(get_optional_user_p
     except HTTPException:
         raise
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Le chargement des combinés a pris trop de temps. Réessaie.")
+        raise HTTPException(status_code=503, detail="Les combinés sont en cours de préparation. Réessaie dans quelques secondes.", headers={"Retry-After":"5"})
     except Exception as exc:
         logging.getLogger(__name__).warning("Today combos unavailable: %s", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Les combinés sont temporairement indisponibles. Réessaie.")
@@ -13458,7 +13490,7 @@ async def _save_predictions_to_history(matches: List[Dict]):
     try:
         real_stats_map=dict(await get_real_stats_map(db,matches))
         real_stats_map['__hybrid_models__']=await _get_hybrid_registry()
-        await _freeze_official_predictions(analyze_all(matches,real_stats_map=real_stats_map))
+        await _freeze_official_predictions(await _run_analysis(analyze_all,matches,real_stats_map=real_stats_map))
     except Exception as exc:
         logging.getLogger('winpulse.official').warning('Official archive deferred (%s)',type(exc).__name__)
 
@@ -15029,8 +15061,7 @@ async def _full_refresh_and_track():
     except Exception as exc:
         logging.getLogger("winpulse.hybrid").warning("Hybrid evaluation unavailable (%s)",type(exc).__name__)
     try:
-        upcoming_for_combos = [m for m in all_matches if _parse_iso(m.get("commence_time")) and _parse_iso(m["commence_time"])>datetime.now(timezone.utc)]
-        await _quality_today_data(upcoming_for_combos)
+        await _quality_today_data()
         await _settle_today_combo_history()
     except Exception as exc:
         logging.getLogger(__name__).warning("Combo comparison refresh failed: %s",type(exc).__name__)
@@ -15275,6 +15306,7 @@ async def startup_event():
 
     # Recovery is queued; API readiness does not wait on external scores.
     _queue_track_results()
+    asyncio.create_task(_warm_today_combos())
     if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
         await asyncio.wait_for(db.predictions_history.create_index([('result',1),('settlement_checked_at',1),('commence_time',-1)]),timeout=5)

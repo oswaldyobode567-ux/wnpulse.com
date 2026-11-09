@@ -26,7 +26,7 @@ export function useRealtimeMatches(intervalMs = 3 * 60 * 1000) {
     const controller = new AbortController();
     const promise = (async () => {
       try {
-        const { data } = await api.get("/matches", { signal: controller.signal, timeout: 20000 });
+        const { data } = await api.get("/matches", { params: { compact: true }, signal: controller.signal, timeout: 20000 });
         if (!Array.isArray(data)) throw new Error("INVALID_MATCH_CATALOGUE");
         if (controller.signal.aborted || !mounted.current || ownerRef.current !== owner) return;
         const order = { live: 0, upcoming: 1, unconfirmed: 2, finished: 3 };

@@ -388,6 +388,16 @@ export default function TodayCombosPage() {
           </div>
         </details>
 
+        {!loading && data && available === 0 && <div role="status" className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 p-5" data-testid="combo-availability">
+          <p className="font-bold text-slate-900">{i18n.t("Aucun combiné admissible pour cette sélection")}</p>
+          <p className="mt-2 text-sm leading-6 text-slate-600">{i18n.t({
+            no_upcoming_fixtures: "Aucun match à venir dans ce sport pour la journée affichée.",
+            no_eligible_markets: "Des matchs sont prévus, mais aucun marché disponible ne remplit les conditions.",
+            quality_or_common_bookmaker: "Les sélections disponibles ne permettent pas de former un ticket qui respecte les critères, dont un bookmaker commun."
+          }[family?.availability_reason || data.availability_reason] || "Aucun ticket de deux rencontres vérifiées n’est disponible pour le moment.")}</p>
+          <div className="mt-3 flex flex-wrap gap-3">{sportKey !== "all" && <Button variant="outline" onClick={() => {setSportKey("all");setQuery("");setLevelKey("all");}}>{i18n.t("Voir tous les sports")}</Button>}
+          <Button asChild variant="outline"><Link to="/app/explorer">{i18n.t("Explorer les matchs")}</Link></Button></div>
+        </div>}
         {i18n.tx(loading ? <LoadingCards /> : !data ? <EmptyState title={i18n.t("Les combinés ne sont pas encore chargés")} description={i18n.t("Utilise Réessayer pour récupérer les données du jour.")} /> : !tiers.length ? <EmptyState title={i18n.t("Aucun combiné disponible pour ce sport")} description={i18n.t("De nouvelles sélections apparaîtront lorsque les matchs et les marchés seront disponibles.")} /> : !filtered.length ? <EmptyState title={i18n.t("Aucun combiné ne correspond à ta recherche")} description={i18n.t("Essaie un autre championnat, une autre équipe ou un autre format.")} action={() => {
         setQuery("");
         setLevelKey("all");
@@ -406,7 +416,7 @@ export default function TodayCombosPage() {
               {i18n.tx(filtered.map(([key, tier], index) => <TierCard key={`${sportKey}-${key}`} tier={tier} tierKey={key} isFree={isFree} now={now} query={query} featured={key === "sure"} index={index} onUpgrade={() => navigate("/app/abonnement")} onShare={() => shareWhatsApp(tier, key)} />))}
             </div>
           </>)}
-        {i18n.tx(!loading && isFree && data && <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center sm:justify-between">
+        {i18n.tx(!loading && isFree && data && available > 0 && <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3"><Sparkles className="mt-1 h-5 w-5 shrink-0 text-orange-600" /><div><p className="font-heading font-bold text-slate-900">{i18n.t("Passe de l\u2019aper\xE7u \xE0 l\u2019analyse compl\xE8te.")}</p><p className="mt-1 text-[16px] text-slate-600">{i18n.t("D\xE9bloque les s\xE9lections de chaque rencontre et les diff\xE9rents formats de combin\xE9s.")}</p></div></div>
           <Button onClick={() => navigate("/app/abonnement")} className="shrink-0 bg-orange-600 text-white hover:bg-orange-700">{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-4 w-4" /></Button>
         </div>)}
