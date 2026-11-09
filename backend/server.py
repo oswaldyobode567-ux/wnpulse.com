@@ -8439,7 +8439,20 @@ async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload
 
 
 
+_prediction_snapshot_task = None
+
+
 async def _get_prediction_snapshot(force: bool = False) -> Dict:
+    global _prediction_snapshot_task
+    if force:
+        return await _build_prediction_snapshot(force=True)
+    if _prediction_snapshot_task is None or _prediction_snapshot_task.done():
+        _prediction_snapshot_task = asyncio.create_task(_build_prediction_snapshot())
+        _prediction_snapshot_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+    return await asyncio.shield(_prediction_snapshot_task)
+
+
+async def _build_prediction_snapshot(force: bool = False) -> Dict:
     now = time.monotonic()
     async with _prediction_cache_lock:
         if not force and _prediction_cache["matches"] and now-_prediction_cache["timestamp"] < min(10,PREDICTION_CACHE_TTL):
@@ -8464,7 +8477,7 @@ async def _get_prediction_snapshot(force: bool = False) -> Dict:
         real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
         predictions = await _run_analysis(analyze_all, matches, real_stats_map=real_stats_map)
         try:
-            predictions = await _freeze_official_predictions(predictions)
+            predictions = await _freeze_official_predictions(predictions, defer_analysis_archive=True)
         except Exception as exc:
             logging.getLogger('winpulse.official').warning('Official primary freeze deferred (%s)',type(exc).__name__)
         _queue_independent_archive(predictions)
@@ -13404,12 +13417,31 @@ def _restore_market_analysis(prediction, snapshot, now):
     return prediction
 
 
-async def _freeze_official_predictions(predictions):
+_market_analysis_archive_task = None
+
+
+async def _write_market_analysis_archive(operations):
+    try:
+        await asyncio.wait_for(db.official_prediction_registry.bulk_write(operations,ordered=False),timeout=30)
+    except Exception as exc:
+        logging.getLogger("winpulse.official").warning("Alternative snapshot deferred (%s)",type(exc).__name__)
+
+
+def _queue_market_analysis_archive(operations):
+    global _market_analysis_archive_task
+    if not _market_analysis_archive_task or _market_analysis_archive_task.done():
+        _market_analysis_archive_task = asyncio.create_task(_write_market_analysis_archive(operations))
+
+
+async def _freeze_official_predictions(predictions, defer_analysis_archive=False):
     """Atomic per-event registry; linked history stays compatible with score settlement."""
     now=datetime.now(timezone.utc)
     candidates={_official_event_key(p):p for p in predictions if p.get('match_id') and not p.get('is_combo')}
     if not candidates:return predictions
-    registered=await db.official_prediction_registry.find({'_id':{'$in':list(candidates)}}).to_list(length=len(candidates))
+    projection = {"prediction":1,"history_linked_at":1}
+    async def read_registry():
+        return await db.official_prediction_registry.find({"_id":{"$in":list(candidates)}},projection).to_list(length=len(candidates))
+    registered=await read_registry()
     registry={r['_id']:r for r in registered}
     missing={key:p for key,p in candidates.items() if key not in registry and p.get('pick')}
     if missing:
@@ -13441,7 +13473,7 @@ async def _freeze_official_predictions(predictions):
                 # Concurrent insert can lose the unique _id race; read the winner below.
                 details=exc.details or {}
                 if details.get('writeConcernErrors') or not details.get('writeErrors') or any(e.get('code')!=11000 for e in details['writeErrors']):raise
-        registered=await db.official_prediction_registry.find({'_id':{'$in':list(candidates)}}).to_list(length=len(candidates))
+        registered=await read_registry()
         registry={r['_id']:r for r in registered}
     history=[];linked=[]
     for key,record in registry.items():
@@ -13454,6 +13486,12 @@ async def _freeze_official_predictions(predictions):
     if history:
         await db.predictions_history.bulk_write(history,ordered=False)
         await db.official_prediction_registry.bulk_write(linked,ordered=False)
+    # Full alternative-market archives are needed only once a match has started.
+    started = [key for key,p in candidates.items() if (kickoff := _parse_iso(p.get("commence_time"))) and kickoff <= now]
+    if started:
+        async for archived in db.official_prediction_registry.find({"_id":{"$in":started}},{"market_analysis_snapshot":1}):
+            if archived["_id"] in registry:
+                registry[archived["_id"]]["market_analysis_snapshot"] = archived.get("market_analysis_snapshot")
     result=[]
     analysis_updates=[]
     for p in predictions:
@@ -13462,8 +13500,10 @@ async def _freeze_official_predictions(predictions):
             analysis_snapshot=_market_analysis_snapshot(p, now)
             if analysis_snapshot:
                 record['market_analysis_snapshot']=analysis_snapshot
-                analysis_updates.append(UpdateOne({'_id':_official_event_key(p)},
-                    {'$set':{'market_analysis_snapshot':analysis_snapshot}}))
+                analysis_updates.append(UpdateOne({"_id":_official_event_key(p),"$or":[
+                    {"market_analysis_snapshot.captured_at":{"$exists":False}},
+                    {"market_analysis_snapshot.captured_at":{"$lt":analysis_snapshot["captured_at"]}}]},
+                    {"$set":{"market_analysis_snapshot":analysis_snapshot}}))
             _restore_market_analysis(row,record.get('market_analysis_snapshot'),now)
             frozen=record['prediction']
             computed={k:p.get(k) for k in ('pick','market','pick_raw','pick_point','team','pick_odds','estimated_win_probability','selection_policy_version')}
@@ -13479,10 +13519,10 @@ async def _freeze_official_predictions(predictions):
                 official_event_id=frozen['official_event_id'],track_policy=_OFFICIAL_POLICY)
         result.append(row)
     if analysis_updates:
-        try:
-            await db.official_prediction_registry.bulk_write(analysis_updates,ordered=False)
-        except Exception as exc:
-            logging.getLogger('winpulse.official').warning('Alternative snapshot deferred (%s)',type(exc).__name__)
+        if defer_analysis_archive:
+            _queue_market_analysis_archive(analysis_updates)
+        else:
+            await _write_market_analysis_archive(analysis_updates)
     return result
 
 
