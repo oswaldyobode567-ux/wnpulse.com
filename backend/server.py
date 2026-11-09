@@ -15362,28 +15362,30 @@ async def startup_event():
             )
         scheduler.start()
 
-    # A fresh odds cache must not prevent a separate stats/crest warmup.
-    if ENABLE_INTERNAL_SCHEDULER:
-        await _scheduled_football_stats_refresh()
-        await _scheduled_apisports_refresh()
+    # Readiness must not wait for network retries, score reconciliation or
+    # a full analysis refresh on an old odds catalogue.
+    global _startup_odds_recovery_task
+    _startup_odds_recovery_task = asyncio.create_task(_recover_odds_after_startup())
 
-    existing = await db.odds_cache.find_one({"_id": "all_matches"})
-    should_refresh = not existing
-    if existing:
-        try:
-            cache_status = await get_odds_cache_status(db)
-            # Un simple TTL court ne doit pas déclencher un appel payant à chaque
-            # redémarrage/déploiement. On auto-refresh au démarrage uniquement si
-            # le cache est réellement ancien.
-            should_refresh = bool(cache_status.get("hard_stale"))
-        except Exception:
-            should_refresh = False
-    if should_refresh:
-        await _run_with_scheduler_lease("startup_refresh", _full_refresh_and_track, lease_seconds=900)
+
+_startup_odds_recovery_task = None
+
+
+async def _recover_odds_after_startup():
+    try:
+        if ENABLE_INTERNAL_SCHEDULER:
+            await asyncio.gather(_scheduled_football_stats_refresh(), _scheduled_apisports_refresh())
+        status = await asyncio.wait_for(get_odds_cache_status(db),timeout=12)
+        if not status.get("cached") or status.get("hard_stale"):
+            await _run_with_scheduler_lease("startup_refresh", _full_refresh_and_track, lease_seconds=900)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Startup odds recovery deferred: %s",type(exc).__name__)
 
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    if _startup_odds_recovery_task and not _startup_odds_recovery_task.done():
+        _startup_odds_recovery_task.cancel()
     if _live_video_scheduler.running:
         _live_video_scheduler.shutdown(wait=False)
     if _live_video_task and not _live_video_task.done():
