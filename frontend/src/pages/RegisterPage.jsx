@@ -1,3 +1,4 @@
+import { proIntent, destinationAfterAuth } from "@/lib/journey";
 import { useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Activity, CheckCircle2, Gift, Loader2 } from "lucide-react";
@@ -64,6 +65,7 @@ export default function RegisterPage() {
   const { t: globalTranslate, language } = useLanguage();
   const t = (key) => ADULT_MESSAGES[language]?.[key] || globalTranslate(key);
   const [params] = useSearchParams();
+  const intent = proIntent(params);
   const initialReferral = (params.get("ref") || "").trim().toUpperCase();
   const [fullName, setFullName] = useState("");
   const [email, setEmail] = useState("");
@@ -117,7 +119,7 @@ export default function RegisterPage() {
         setError("Compte créé. Connecte-toi pour continuer.");
         return;
       }
-      window.location.replace("/app");
+      window.location.replace(destinationAfterAuth(params));
     } catch (err) {
       const detail = err?.response?.data?.detail;
       const message = err?.response?.data?.message;
@@ -195,7 +197,7 @@ export default function RegisterPage() {
               <a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex min-h-11 items-center rounded-lg bg-sky-600 px-4 py-2 text-sm font-bold text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-800" data-testid="register-telegram">{t("Rejoindre le canal")} ↗</a>
             </aside>
             <Link to="/legal/confidentialite" className="mt-3 block text-center text-xs text-orange-700 underline">{t("Politique de confidentialité")}</Link>
-            <div className="mt-6 border-t border-slate-100 pt-5 text-center text-sm text-slate-500">{t("Déjà inscrit ?")} <Link to="/login" className="font-semibold text-orange-600" data-testid="goto-login-link">{t("Se connecter")}</Link></div>
+            <div className="mt-6 border-t border-slate-100 pt-5 text-center text-sm text-slate-500">{t("Déjà inscrit ?")} <Link to={intent ? `/login?${intent}` : "/login"} className="font-semibold text-orange-600" data-testid="goto-login-link">{t("Se connecter")}</Link></div>
           </Card>
           <p className="mt-5 text-center text-xs text-slate-500 lg:hidden">{t("18+ · Joue responsable")}</p>
         </div>

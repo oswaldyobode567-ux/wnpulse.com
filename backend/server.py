@@ -52,6 +52,7 @@ from odds_service import (
 )
 from stats_service import (refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache)
 import stats_service as _optional_stats_service
+from conversion_metrics import JOURNEY_EVENTS, JOURNEY_SOURCES, journey_key, summarize_journeys, record_published_roi, published_roi
 import prediction_engine as _optional_prediction_engine
 from ranking_evaluation import PROTOCOL as RANKING_PROTOCOL, comparison_forecast, summarize as summarize_rankings
 from prediction_engine import (
@@ -9334,6 +9335,7 @@ async def _create_fedapay_subscription_payment(
     plan: Dict,
     payer_name: str = "",
     payer_phone: str = "",
+    journey_id: Optional[str] = None,
 ) -> Dict:
     if not _fedapay_configured():
         raise HTTPException(
@@ -9345,6 +9347,7 @@ async def _create_fedapay_subscription_payment(
     created_at = datetime.now(timezone.utc).isoformat()
     request_doc = {
         "reference": reference,
+        **({"journey_id": journey_id} if journey_id else {}),
         "user_id": user["id"],
         "user_email": user["email"],
         "plan_id": plan["id"],
@@ -9442,10 +9445,12 @@ async def _create_manual_subscription_request(
     plan: Dict,
     payer_name: str = "",
     payer_phone: str = "",
+    journey_id: Optional[str] = None,
 ) -> Dict:
     reference = _generate_reference()
     await db.subscription_requests.insert_one({
         "reference": reference,
+        **({"journey_id": journey_id} if journey_id else {}),
         "user_id": user["id"],
         "user_email": user["email"],
         "plan_id": plan["id"],
@@ -9461,6 +9466,7 @@ async def _create_manual_subscription_request(
 
 
 class CheckoutPayload(BaseModel):
+    journey_token: Optional[str] = None
     tier: str
     phone: str = ""
     payer_name: str = ""
@@ -9493,12 +9499,14 @@ async def subscription_checkout(
     if not user:
         raise HTTPException(status_code=404, detail="Utilisateur introuvable")
 
+    journey_id = journey_key(payload_in.journey_token)
     if FEDAPAY_ENABLED:
         return await _create_fedapay_subscription_payment(
             user,
             plan,
             payer_name=payload_in.payer_name,
             payer_phone=payload_in.phone,
+            journey_id=journey_id,
         )
 
     return await _create_manual_subscription_request(
@@ -9506,6 +9514,7 @@ async def subscription_checkout(
         plan,
         payer_name=payload_in.payer_name,
         payer_phone=payload_in.phone,
+        journey_id=journey_id,
     )
 
 
@@ -9614,7 +9623,11 @@ async def get_subscription_payment_status(
         "payment_provider": req.get("payment_provider"),
         "subscription": user.get("subscription", "free") if user else "free",
         "subscription_expires_at": user.get("subscription_expires_at") if user else None,
-        "activated": bool(req.get("activation_applied")) or req.get("status") == "approved",
+        "activated": (req.get("status") == "approved" and
+            str(req.get("payment_status") or "").lower() not in {"refunded", "reversed", "chargeback", "declined", "canceled", "cancelled", "failed", "expired"} and (
+            req.get("payment_provider") != "fedapay" or (
+                req.get("activation_applied") is True and bool(req.get("fedapay_verified_at"))
+            ))),
     }
 
 
@@ -12418,6 +12431,7 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
         if result not in overall:
             continue
         overall[result] += 1
+        record_published_roi(overall, result, row.get("pick_odds"))
         try:
             odds = float(row.get("pick_odds"))
             if not math.isfinite(odds) or odds <= 1: raise ValueError()
@@ -12428,9 +12442,10 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
         for dimension,key in values.items():
             bucket = groups[dimension].setdefault(key,{"key":key,"won":0,"lost":0,"void":0})
             bucket[result] += 1
+            record_published_roi(bucket, result, row.get("pick_odds"))
     def finish(bucket):
         resolved = bucket["won"] + bucket["lost"]
-        return {**bucket,"evaluated":resolved,"total":resolved+bucket["void"],"win_rate":round(bucket["won"]*100/resolved,1) if resolved else None}
+        return {**{k: v for k, v in bucket.items() if k not in {"priced", "net"}}, **published_roi(bucket), "evaluated":resolved,"total":resolved+bucket["void"],"win_rate":round(bucket["won"]*100/resolved,1) if resolved else None}
     payload = {"days":days,"sport":requested,"from":cutoff.isoformat(),"to":now.isoformat(),"basis":"commence_time",
             "summary":finish(overall),"groups":{key:[finish(v) for _,v in sorted(rows.items())] for key,rows in groups.items()},
             "note":"Historique confirmé et archivé avant le début du match ; remboursements séparés, dates et versions manquantes non inventées. Les modèles expérimentaux ne sont pas des prédictions officielles."}
@@ -15605,6 +15620,43 @@ async def experience_save_preferences(data: ExperiencePreferencesInput, payload:
     return clean
 
 
+class PublicJourneyEvent(BaseModel):
+    token: str = Field(min_length=32, max_length=32)
+    event: str = Field(max_length=16)
+    source: str = Field(default="direct", max_length=16)
+
+
+@app.post("/api/journey/events", status_code=204)
+async def public_journey_event(data: PublicJourneyEvent, request: Request):
+    key = journey_key(data.token)
+    if not key or data.event not in JOURNEY_EVENTS or data.source not in JOURNEY_SOURCES:
+        raise HTTPException(status_code=422, detail="Événement inconnu")
+    if request.headers.get("Sec-GPC") == "1" or request.headers.get("DNT") == "1":
+        return Response(status_code=204)
+    await _consume_security_limit("public_journey", _client_rate_key(request), limit=120, window_seconds=60)
+    now = datetime.now(timezone.utc)
+    # First source is fixed and stage names are deduplicated. No IP or PII here.
+    await db.public_journeys.update_one({"_id": key}, {
+        "$setOnInsert": {"source": data.source, "started_at": now, "expires_at": now + timedelta(days=35)},
+        "$addToSet": {"events": data.event},
+    }, upsert=True)
+    return Response(status_code=204)
+
+
+@app.get("/api/admin/journey/summary")
+async def admin_journey_summary(payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    now = datetime.now(timezone.utc)
+    rows = await db.public_journeys.find({"started_at": {"$gte": now-timedelta(days=30), "$lte": now}},
+        {"source": 1, "started_at": 1, "events": 1}).sort("started_at", -1).limit(10001).max_time_ms(5000).to_list(length=10001)
+    keys = [row["_id"] for row in rows[:10000]]
+    fields = {k: 1 for k in ("journey_id", "created_at", "user_id", "health_monitor_run_id", "payment_environment",
+        "paid_at", "approved_at", "status", "payment_status", "payment_provider", "activation_applied", "fedapay_verified_at")}
+    requests = await db.subscription_requests.find({"journey_id": {"$in": keys}}, fields).max_time_ms(5000).to_list(length=20001) if keys else []
+    result = summarize_journeys(rows[:10000], requests[:20000], now, _quality_time)
+    return {**result, "days": 30, "truncated": len(rows)>10000 or len(requests)>20000}
+
+
 class ExperienceEventInput(BaseModel):
     event: str = Field(max_length=40)
 
@@ -15656,6 +15708,14 @@ async def _experience_indexes():
         logging.getLogger("winpulse.montante").warning("Montante archive index unavailable")
     try:
         await db.experience_daily.create_index("expires_at", expireAfterSeconds=0)
+    except Exception:
+        logging.getLogger("winpulse.experience").warning("Experience retention index unavailable")
+    try:
+        await asyncio.wait_for(asyncio.gather(
+            db.public_journeys.create_index("expires_at", expireAfterSeconds=0),
+            db.public_journeys.create_index("started_at"),
+            db.subscription_requests.create_index("journey_id", sparse=True),
+        ), timeout=4)
     except Exception:
         logging.getLogger("winpulse.experience").warning("Experience retention index unavailable")
 
