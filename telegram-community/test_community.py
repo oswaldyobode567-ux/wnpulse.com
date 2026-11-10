@@ -6,6 +6,7 @@ from io import BytesIO
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
+import httpx
 from fastapi.testclient import TestClient
 from PIL import Image
 import app
@@ -45,6 +46,27 @@ class Community(unittest.IsolatedAsyncioTestCase):
         self.assertIn("3 gagnés · 2 perdus",draft["lines"])
         data["summary"]["total"]=5
         self.assertIsNone(make("results",data,self.now,self.now))
+
+    async def test_saved_news_draft_uses_archive_photo_and_credit(self):
+        draft = {**self.draft, "kind":"news", "link":"https://wnpulse.com/blog/villarreal-getafe"}
+        raw = BytesIO()
+        Image.new("RGB", (960, 540), (215, 190, 75)).save(raw, "WEBP", lossless=True)
+        article = {"post":{"cover_kind":"archive_photo","cover_credit":{
+            "url":"/api/blog/photos/villarreal.webp","caption":"Archives : janvier 2025","author":"FotosLaLiga",
+            "source":"https://commons.wikimedia.org/wiki/File:Villarreal.jpg","license":"CC BY-SA 4.0",
+            "license_url":"https://creativecommons.org/licenses/by-sa/4.0/"}}}
+        def cover_request(request):
+            self.assertEqual(str(request.url), app.API.removesuffix("/api")+"/api/blog/photos/villarreal.webp")
+            return httpx.Response(200,headers={"content-type":"image/webp"},content=raw.getvalue())
+        async with httpx.AsyncClient(transport=httpx.MockTransport(cover_request)) as client:
+            with patch.object(app,"read",AsyncMock(return_value=article)) as read:
+                photo, credit=await app.news_cover(client,draft)
+                read.assert_awaited_once_with("/blog/posts/villarreal-getafe")
+                self.assertIn("FotosLaLiga · CC BY-SA 4.0",credit)
+                with Image.open(BytesIO(poster(draft,photo))) as rendered:
+                    self.assertEqual(rendered.getpixel((540,430)),(215,190,75))
+                article["post"]["cover_credit"]["url"]="https://example.org/photo.webp"
+                self.assertEqual(await app.news_cover(client,draft),(None,""))
 
     async def test_channel_requires_approval_and_sends_once(self):
         app.put("a",self.draft,self.now.timestamp())

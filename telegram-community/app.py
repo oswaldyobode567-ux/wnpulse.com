@@ -9,7 +9,9 @@ import sqlite3
 import time
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -74,13 +76,63 @@ async def read(path, params=None):
         res.raise_for_status()
         return res.json()
 
+def decode_cover(raw):
+    from PIL import Image, ImageOps
+
+    with Image.open(BytesIO(raw), formats=("WEBP",)) as image:
+        if not 1 <= image.width * image.height <= 12_000_000:
+            raise ValueError("Unsupported image size")
+        return ImageOps.exif_transpose(image).convert("RGB")
+
+async def news_cover(client, draft):
+    if draft.get("kind") != "news":
+        return None, ""
+    slug = re.fullmatch(r"/blog/([a-z0-9-]{4,160})", urlsplit(draft["link"]).path)
+    if not slug:
+        return None, ""
+    try:
+        article = (await read("/blog/posts/"+slug[1])).get("post", {})
+        credit = article.get("cover_credit") or {}
+        # Only WinPulse-hosted archives with known reuse rights. Never follow an external URL.
+        path = credit.get("url", "")
+        if (article.get("cover_kind") != "archive_photo"
+                or not re.fullmatch(r"/api/blog/photos/[a-z0-9-]{1,60}\.webp",path)
+                or not clean(credit.get("author"),65)):
+            return None, ""
+        source, license_url = credit.get("source",""), credit.get("license_url","")
+        license_name = credit.get("license","")
+        if (not re.fullmatch(r"https://commons\.wikimedia\.org/wiki/File:[^\s]{1,240}",source)
+                or not re.fullmatch(r"https://creativecommons\.org/licenses/by-sa/(?:3|4)\.0/",license_url)
+                or not re.fullmatch(r"CC BY-SA (?:3|4)\.0",license_name)):
+            return None, ""
+        raw = bytearray()
+        async with client.stream("GET",API.removesuffix("/api")+path) as response:
+            response.raise_for_status()
+            if response.headers.get("content-type","").split(";")[0].strip() != "image/webp":
+                return None, ""
+            async for chunk in response.aiter_bytes():
+                if len(raw)+len(chunk)>2_000_000:
+                    return None, ""
+                raw.extend(chunk)
+        image = await asyncio.to_thread(decode_cover,raw)
+        attribution = ("\n\n"+clean(credit.get("caption"),95)+" · "+clean(credit["author"],65)
+                       +" · "+license_name+" · Image recadrée et mise en page\n"+source+"\n"+license_url)
+        return image, attribution
+    except Exception as exc:
+        LOG.info("Article cover unavailable (%s)",type(exc).__name__)
+        return None, ""
+
 async def telegram(method, chat, text, draft=None):
     params={"chat_id":str(chat)}
     async with httpx.AsyncClient(timeout=14,follow_redirects=False) as client:
         if draft:
-            png=await asyncio.to_thread(poster,draft)
+            photo, attribution=await news_cover(client,draft)
+            # If full attribution would not fit, keep the text-only card.
+            if len((text+attribution).encode("utf-16-le"))//2>1024:
+                photo, attribution=None, ""
+            png=await asyncio.to_thread(poster,draft,photo)
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-                data={**params,"caption":text},files={"photo":("winpulse.png",png,"image/png")})
+                data={**params,"caption":text+attribution},files={"photo":("winpulse.png",png,"image/png")})
         else:
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json={**params,"text":text})
         if res.status_code >= 400:

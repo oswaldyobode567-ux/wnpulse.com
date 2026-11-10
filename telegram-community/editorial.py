@@ -87,8 +87,8 @@ def subscription(plans):
     price = f"{pro['price_xof']:,}".replace(","," ")
     return f"WinPulse Pro : {price} FCFA pour {pro['duration_days']} jours. Consulte l’abonnement pour les moyens de paiement disponibles."
 
-def poster(draft):
-    from PIL import Image, ImageDraw, ImageFont
+def poster(draft, photo=None):
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
     from io import BytesIO
     image = Image.new("RGB",(1080,1080))
     draw = ImageDraw.Draw(image)
@@ -118,6 +118,21 @@ def poster(draft):
             draw.text((110,y),line,font=face,fill=color)
             y+=face.size+13
         y+=18
+    if photo is not None:
+        draw.text((110,169),draft["title"],font=font(39,True),fill="#FFFFFF")
+        cover = ImageOps.fit(photo, (860,448), method=Image.Resampling.LANCZOS)
+        mask = Image.new("L", cover.size)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,859,447),radius=18,fill=255)
+        image.paste(cover,(110,236),mask)
+        draw.rounded_rectangle((127,631,410,668),radius=8,fill="#111425")
+        draw.text((141,637),"PHOTO D’ARCHIVES",font=font(21,True),fill="#FFFFFF")
+        y=711
+        for i,line in enumerate(draft["lines"][:2]):
+            block(line,font(33 if i==0 else 24,i==0),"#F4F2F7",3 if i==0 else 1)
+        draw.text((110,956),"wnpulse.com  •  18+  •  Aucun gain garanti",font=font(24),fill="#E2D9EA")
+        buffer=BytesIO()
+        image.save(buffer,format="PNG")
+        return buffer.getvalue()
     block(draft["title"],font(55,True),"#FFFFFF",2)
     draw.line((110,y,970,y),fill="#FFAB65",width=3)
     y+=55
