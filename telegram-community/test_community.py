@@ -35,7 +35,7 @@ class Community(unittest.IsolatedAsyncioTestCase):
         ]
         draft=make("pick",{"items":rows},self.now,self.now)
         self.assertIn("Cote observée : 1,48",draft["lines"])
-        self.assertEqual(draft["visual_sport"],"football")
+        self.assertEqual(draft["visual"]["teams"],["Lille","Le Havre"])
         self.assertIsNone(make("pick",{"items":rows[:2]},self.now,self.now))
         with Image.open(BytesIO(poster(draft))) as image:
             self.assertEqual((image.format,image.size),("PNG",(1080,1080)))
@@ -100,21 +100,24 @@ class Community(unittest.IsolatedAsyncioTestCase):
                 article["post"]["cover_credit"]["url"]="https://example.org/photo.webp"
                 self.assertEqual(await app.news_cover(client,draft),(None,""))
 
-    async def test_pick_and_results_previews_include_an_illustration(self):
+    async def test_pick_uses_its_own_badge_and_results_avoid_generic_photo(self):
         raw = BytesIO()
-        Image.new("RGB",(960,540),(50,160,220)).save(raw,"WEBP",lossless=True)
+        Image.new("RGB",(120,120),(50,160,220)).save(raw,"PNG")
         paths=[]
-        def cover_request(request):
-            paths.append(request.url.path)
-            return httpx.Response(200,headers={"content-type":"image/webp"},content=raw.getvalue())
-        async with httpx.AsyncClient(transport=httpx.MockTransport(cover_request)) as client:
-            for draft in ({**self.draft,"kind":"pick","visual_sport":"tennis"},
-                          {**self.draft,"kind":"results"}):
-                photo, credit=await app.draft_cover(client,draft)
-                self.assertIn("Photo d’illustration",credit)
-                with Image.open(BytesIO(poster(draft,photo))) as rendered:
-                    self.assertEqual(rendered.getpixel((540,420)),(50,160,220))
-        self.assertEqual(paths,["/api/blog/photos/tennis.webp","/api/blog/photos/football.webp"])
+        def badge_request(request):
+            paths.append(str(request.url))
+            return httpx.Response(200,headers={"content-type":"image/png"},content=raw.getvalue())
+        source="https://media.api-sports.io/football/teams/157.png"
+        draft={**self.draft,"kind":"pick","lines":["Bayern – Mayence","Pronostic : Bayern","Cote : 1,48"],
+               "visual":{"teams":["Bayern","Mayence"],"media":[{"badge":source},{"badge":"https://example.com/logo.png"}]}}
+        async with httpx.AsyncClient(transport=httpx.MockTransport(badge_request)) as client:
+            loaded=await app.pick_badges(client,draft)
+            self.assertIsNone(loaded[1][0])
+            with Image.open(BytesIO(poster(draft,None,[entry[0] for entry in loaded]))) as rendered:
+                self.assertEqual(rendered.getpixel((324,396)),(50,160,220))
+            self.assertEqual(await app.draft_cover(client,{"kind":"results"}),(None,""))
+        self.assertEqual(paths,[source])
+        self.assertEqual(app.NOTICE,"18+")
 
     async def test_channel_requires_approval_and_sends_once(self):
         app.put("a",self.draft,self.now.timestamp())

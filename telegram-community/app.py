@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
-from editorial import LABELS, LINKS, NOTICE, SLOTS, ZONE, clean, make, poster, subscription
+from editorial import LABELS, LINKS, NOTICE, SLOTS, ZONE, clean, fixture_visual, make, poster, subscription
 
 LOG = logging.getLogger("winpulse.community")
 API = "https://wnpulsecom-production.up.railway.app/api"
@@ -97,21 +97,74 @@ async def fetch_cover(client, path):
     return await asyncio.to_thread(decode_cover,raw)
 
 async def draft_cover(client, draft):
-    kind = draft.get("kind")
-    if kind == "news":
-        return await news_cover(client, draft)
-    if kind not in ("pick", "results"):
-        return None, ""
-    # These are CC0 illustrations hosted by WinPulse, never photos of the event itself.
-    sport = draft.get("visual_sport")
-    if sport not in ("football", "basketball", "tennis"):
-        sport = "football"
+    return await news_cover(client, draft) if draft.get("kind") == "news" else (None, "")
+
+def badge_source(media):
+    if not isinstance(media, dict) or media.get("kind") == "portrait":
+        return None
+    source = str(media.get("url") or media.get("badge") or "")
+    return source if re.fullmatch(
+        r"https://(?:media(?:-1)?\.api-sports\.io/(?:[a-z]+/)?teams/[0-9]+\.png|crests\.football-data\.org/[a-zA-Z0-9_-]+\.png)",source
+    ) else None
+
+def decode_badge(raw):
+    from PIL import Image
+
+    with Image.open(BytesIO(raw), formats=("PNG","JPEG")) as image:
+        if not 1 <= image.width * image.height <= 4_000_000:
+            raise ValueError("Unsupported badge size")
+        return image.convert("RGBA")
+
+async def load_badge(client, source):
+    if not source:
+        return None
     try:
-        image = await fetch_cover(client, f"/api/blog/photos/{sport}.webp")
-        return (image, "\n\nPhoto d’illustration.") if image is not None else (None, "")
-    except Exception as exc:
-        LOG.info("Sports illustration unavailable (%s)", type(exc).__name__)
+        raw=bytearray()
+        async with client.stream("GET",source,timeout=4) as response:
+            response.raise_for_status()
+            if response.headers.get("content-type","").split(";")[0].strip() not in ("image/png","image/jpeg"):
+                return None
+            async for chunk in response.aiter_bytes():
+                if len(raw)+len(chunk)>800_000:
+                    return None
+                raw.extend(chunk)
+        return await asyncio.to_thread(decode_badge,raw)
+    except Exception:
+        return None
+
+def portrait_source(media):
+    if not isinstance(media, dict) or media.get("kind")!="portrait" or media.get("verified_license") is not True:
         return None, ""
+    source = str(media.get("url") or "").split("?",1)[0]
+    page = str(media.get("source_url") or "")
+    license_name = str(media.get("license") or "")
+    license_url = str(media.get("license_url") or "")
+    author = clean(media.get("author"),65)
+    if not (author and re.fullmatch(r"https://(?:upload|thumb)\.wikimedia\.org/wikipedia/commons/[^\s?#]+\.(?:jpe?g|png)",source,re.I)
+            and re.fullmatch(r"https://commons\.wikimedia\.org/wiki/File:[^\s]{1,240}",page)
+            and re.fullmatch(r"CC BY(?:-SA)? (?:3|4)\.0",license_name)
+            and re.fullmatch(r"https://creativecommons\.org/licenses/by(?:-sa)?/(?:3|4)\.0/?",license_url)):
+        return None, ""
+    return source, f"{author} · {license_name} · Photo redimensionnée\n{page}\n{license_url}"
+
+async def load_pick_media(client, media):
+    badge = badge_source(media)
+    portrait, credit = portrait_source(media)
+    image = await load_badge(client,badge or portrait)
+    return image, credit if image is not None else ""
+
+async def pick_badges(client, draft):
+    visual=draft.get("visual") or {}
+    if not visual:
+        try:
+            rows=(await read("/discovery")).get("items",[])
+            match=next((r for r in rows if " – ".join(fixture_visual(r)["teams"])==draft["lines"][0]),None)
+            if match:
+                visual=fixture_visual(match)
+                draft["visual"]=visual
+        except Exception:
+            pass
+    return await asyncio.gather(*(load_pick_media(client,media) for media in visual.get("media",[])[:2]))
 
 async def news_cover(client, draft):
     if draft.get("kind") != "news":
@@ -149,10 +202,18 @@ async def telegram(method, chat, text, draft=None):
     async with httpx.AsyncClient(timeout=14,follow_redirects=False) as client:
         if draft:
             photo, attribution=await draft_cover(client,draft)
-            # If full attribution would not fit, keep the text-only card.
+            # Do not use licensed photos without their complete credits.
             if len((text+attribution).encode("utf-16-le"))//2>1024:
                 photo, attribution=None, ""
-            png=await asyncio.to_thread(poster,draft,photo)
+            badges=[]
+            if draft.get("kind")=="pick":
+                for image, credit in await pick_badges(client,draft):
+                    extra="\n\n"+credit if credit else ""
+                    if len((text+attribution+extra).encode("utf-16-le"))//2>1024:
+                        image,extra=None,""
+                    badges.append(image)
+                    attribution+=extra
+            png=await asyncio.to_thread(poster,draft,photo,badges)
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
                 data={**params,"caption":text+attribution},files={"photo":("winpulse.png",png,"image/png")})
         else:

@@ -8,7 +8,7 @@ ZONE = ZoneInfo("Africa/Porto-Novo")
 LINKS = {name: f"{SITE}/{path}?utm_source=telegram&utm_medium=community"
          for name, path in {"pick":"app", "results":"resultats", "news":"blog",
                             "pro":"app/abonnement", "start":"register", "guide":"blog", "promo":"app/abonnement"}.items()}
-NOTICE = "18+ · Les paris comportent un risque de perte. Aucun gain garanti."
+NOTICE = "18+"
 LABELS = {"pick":"Sélection gratuite", "results":"Bilan des pronostics", "news":"Actualité sportive",
           "guide":"Comprendre WinPulse", "promo":"Offre WinPulse"}
 SLOTS = {"results": (8, 30), "pick": (12, 0), "news": (18, 0)}
@@ -25,10 +25,17 @@ def stamp(value):
     except ValueError:
         return None
 
+def fixture_visual(row):
+    return {"teams":[clean(row.get("home_team"),75),clean(row.get("away_team"),75)],
+            "sport":clean(row.get("sport_key"),65),"league":clean(row.get("sport_title"),65),
+            "media":[{**(row.get(side+"_media") or {}),
+                       "badge":row.get(side+"_logo") or row.get(side+"_team_logo")}
+                     for side in ("home","away")]}
+
 def make(kind, data, now, scheduled):
     """Return exact facts and their validity deadline; no guessed results."""
     lines, link, until = [], LINKS[kind], datetime.combine(now.date()+timedelta(days=1), datetime.min.time(), ZONE)
-    visual_sport = ""
+    visual = {}
     if kind == "pick":
         candidates = []
         for row in data.get("items", []):
@@ -51,8 +58,7 @@ def make(kind, data, now, scheduled):
         if not candidates:
             return None
         start, row, pred, odds = min(candidates, key=lambda c:c[0])
-        sport = str(row.get("sport_key") or "").lower().partition("_")[0]
-        visual_sport = {"soccer":"football","basketball":"basketball","tennis":"tennis"}.get(sport,"")
+        visual = fixture_visual(row)
         until = min(until, start)
         lines = [f"{clean(row['home_team'],70)} – {clean(row['away_team'],70)}",
                  f"{clean(pred.get('market_label'),70) or 'Pronostic'} : {clean(pred['pick'],100)}",
@@ -82,7 +88,7 @@ def make(kind, data, now, scheduled):
     else:
         return None
     return {"kind":kind,"title":LABELS[kind],"lines":lines,"link":link,"until":until.timestamp(),
-            "visual_sport":visual_sport}
+            "visual":visual}
 
 def subscription(plans):
     pro = next((p for p in plans if isinstance(p,dict) and p.get("id")=="pro"),None) if isinstance(plans,list) else None
@@ -91,7 +97,7 @@ def subscription(plans):
     price = f"{pro['price_xof']:,}".replace(","," ")
     return f"WinPulse Pro : {price} FCFA pour {pro['duration_days']} jours. Consulte l’abonnement pour les moyens de paiement disponibles."
 
-def poster(draft, photo=None):
+def poster(draft, photo=None, badges=()):
     from PIL import Image, ImageDraw, ImageFont, ImageOps
     from io import BytesIO
     image = Image.new("RGB",(1080,1080))
@@ -122,6 +128,49 @@ def poster(draft, photo=None):
             draw.text((110,y),line,font=face,fill=color)
             y+=face.size+13
         y+=18
+    if draft.get("kind") in ("pick","results"):
+        pick = draft["kind"] == "pick"
+        # Draw a sports broadcast composition, never an unrelated match photo.
+        draw.rounded_rectangle((96,196,984,627),25,fill="#162640",outline="#405D80",width=2)
+        for x in range(132,970,38):
+            draw.line((x,220,x,600),fill="#1B3453",width=2)
+        draw.ellipse((452,313,628,489),outline="#345679",width=3)
+        draw.line((540,218,540,604),fill="#345679",width=3)
+        if pick:
+            teams = (draft.get("visual") or {}).get("teams") or draft["lines"][0].split(" – ",1)
+            league = (draft.get("visual") or {}).get("league")
+            draw.text((540,232),clean(league,50).upper() or "SÉLECTION GRATUITE",
+                      font=font(25,True),fill="#FFAD68",anchor="mt")
+            for i,(team,x) in enumerate(zip(teams,(324,756))):
+                draw.rounded_rectangle((x-94,302,x+94,490),26,fill="#EDF3FD")
+                entry = badges[i] if i<len(badges) else None
+                if entry is not None:
+                    icon = ImageOps.contain(entry.convert("RGBA"),(157,157),Image.Resampling.LANCZOS)
+                    image.paste(icon,(x-icon.width//2,396-icon.height//2),icon)
+                else:
+                    initials = "".join(word[0] for word in team.split()[:3] if word).upper() or "—"
+                    draw.text((x,396),initials,font=font(52,True),fill="#233B5D",anchor="mm")
+                team_font = font(27,True)
+                label = clean(team,75)
+                while draw.textlength(label,font=team_font)>370:
+                    label=label[:-2].rstrip("…")+"…"
+                draw.text((x,527),label,font=team_font,fill="#F4F2F7",anchor="mt")
+            draw.text((540,396),"VS",font=font(36,True),fill="#FFAD68",anchor="mm")
+        else:
+            draw.text((540,230),"TRACK RECORD",font=font(26,True),fill="#FFAD68",anchor="mt")
+            numbers = re.findall(r"([0-9]+)", " ".join(draft["lines"][1:3]))
+            for (label,color,x), number in zip((("GAGNÉS","#66E4AA",236),("PERDUS","#FF9DA1",438),
+                                               ("ANNULÉS","#9AB8E6",642),("EN ATTENTE","#FFD07D",844)), numbers):
+                draw.rounded_rectangle((x-87,320,x+87,513),18,fill="#101B2E")
+                draw.text((x,394),number,font=font(53,True),fill=color,anchor="mm")
+                draw.text((x,474),label,font=font(18,True),fill="#EDF3FD",anchor="mm")
+        y=654
+        for i,line in enumerate(draft["lines"][1:4] if pick else (draft["lines"][0], draft["lines"][-1])):
+            block(line,font(36 if i==0 else 27,i==0),"#F4F2F7",2 if i==0 else 1)
+        draw.text((110,956),"wnpulse.com  •  18+",font=font(24),fill="#E2D9EA")
+        buffer=BytesIO()
+        image.save(buffer,format="PNG")
+        return buffer.getvalue()
     if photo is not None:
         news = draft.get("kind") == "news"
         photo_height = 448 if news else 342
@@ -137,7 +186,7 @@ def poster(draft, photo=None):
         y=236 + photo_height + 27
         for i,line in enumerate(draft["lines"][:2 if news else 4]):
             block(line,font(33 if i==0 else 24,i==0),"#F4F2F7", (3 if news else 2) if i==0 else 1)
-        draw.text((110,956),"wnpulse.com  •  18+  •  Aucun gain garanti",font=font(24),fill="#E2D9EA")
+        draw.text((110,956),"wnpulse.com  •  18+",font=font(24),fill="#E2D9EA")
         buffer=BytesIO()
         image.save(buffer,format="PNG")
         return buffer.getvalue()
@@ -146,7 +195,7 @@ def poster(draft, photo=None):
     y+=55
     for i,line in enumerate(draft["lines"][:4]):
         block(line,font(38 if i==0 else 33,i==0),"#F4F2F7",3 if i==0 else 2)
-    draw.text((110,942),"wnpulse.com  •  18+  •  Aucun gain garanti",font=font(24),fill="#E2D9EA")
+    draw.text((110,942),"wnpulse.com  •  18+",font=font(24),fill="#E2D9EA")
     buffer=BytesIO()
     image.save(buffer,format="PNG")
     return buffer.getvalue()
