@@ -47,6 +47,21 @@ class Community(unittest.IsolatedAsyncioTestCase):
         data["summary"]["total"]=5
         self.assertIsNone(make("results",data,self.now,self.now))
 
+    async def test_preview_recovers_current_pick_without_publishing(self):
+        now = self.now.replace(hour=21, minute=0)
+        key = f"{now:%Y%m%d}-pick"
+        upcoming = {"result":"pending","home_team":"Lille","away_team":"Le Havre",
+                    "commence_time":(now+timedelta(hours=1)).isoformat(),
+                    "prediction":{"free_daily_pick":True,"locked":False,"pick":"Lille","pick_odds":1.48}}
+        with patch.object(app,"read",AsyncMock(return_value={"items":[upcoming]})) as read:
+            old=f"{now-timedelta(days=1):%Y%m%d}-pick"
+            self.assertIsNone(await app.preview_row(old,now))
+            row=await app.preview_row(key,now)
+            self.assertEqual(row["state"],"draft")
+            self.assertIsNone(row["telegram_id"])
+            self.assertEqual((await app.preview_row(key,now))["id"],key)
+            read.assert_awaited_once_with("/discovery")
+
     async def test_saved_news_draft_uses_archive_photo_and_credit(self):
         draft = {**self.draft, "kind":"news", "link":"https://wnpulse.com/blog/villarreal-getafe"}
         raw = BytesIO()
