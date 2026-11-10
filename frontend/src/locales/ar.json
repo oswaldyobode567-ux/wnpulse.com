@@ -1107,5 +1107,13 @@
   "L’exemple n’est pas disponible pour le moment.": "المثال غير متاح مؤقتًا.",
   "Voir un exemple": "عرض مثال",
   "Premier renouvellement après 30 jours": "أول تجديد بعد 30 يومًا",
-  "Fenêtre de 7 jours terminée": "انتهت مهلة 7 أيام"
+  "Fenêtre de 7 jours terminée": "انتهت مهلة 7 أيام",
+  "Exemple sélectionné": "مثال مختار",
+  "Une sélection gagnante récente": "اختيار رابح حديث",
+  "Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.": "مثال مختار من سجل النتائج. النتائج السابقة لا تضمن النتائج المقبلة.",
+  "Voir les sélections à la une": "عرض أبرز الاختيارات",
+  "Résumé assisté par IA": "ملخص بمساعدة الذكاء الاصطناعي",
+  "Consulte les raisons du choix et les points à surveiller.{{v0}}": "اطّلع على أسباب الاختيار وما يستحق المتابعة.{{v0}}",
+  "Niveau de risque : {{v0}}": "مستوى المخاطرة: {{v0}}",
+  "Probabilité estimée : {{v0}}.": "الاحتمال المقدّر: {{v0}}."
 }

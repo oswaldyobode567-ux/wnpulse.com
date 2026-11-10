@@ -12442,16 +12442,21 @@ async def subscription_analysis_example(response: Response):
         "home_team", "away_team", "sport_title", "commence_time", "pick",
         "market_label", "pick_odds", "result",
     )}
+    public_fields = tuple(fields)
+    fields.update({f"official_snapshot.{key}": 1 for key in public_fields if key != "result"})
     fields["_id"] = 0
     example = await db.predictions_history.find_one(
         {"is_primary_official": True, "is_combo": {"$ne": True},
-         "result": {"$in": ["won", "lost", "void"]},
+         "result": "won",
          "pick": {"$type": "string", "$ne": ""},
          "commence_time": {"$lt": datetime.now(timezone.utc).isoformat()}},
         fields, sort=[("commence_time", -1)], max_time_ms=3500,
     )
+    if example:
+        snapshot = example.get("official_snapshot") or {}
+        example = {key: snapshot.get(key, example.get(key)) for key in public_fields if key != "result"} | {"result": "won"}
     response.headers["Cache-Control"] = "public, max-age=120"
-    return {"example": example}
+    return {"example": example, "selection": "recent_winner"}
 
 
 @app.get("/api/track-record")

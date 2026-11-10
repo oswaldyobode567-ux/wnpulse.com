@@ -103,13 +103,13 @@ export default function TopPicksPage() {
       <div className="relative grid gap-7 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)] lg:items-end"><div>
         <div className="mb-5 inline-flex items-center gap-2 rounded-full border border-orange-300/25 bg-orange-400/10 px-3 py-2 text-xs font-bold tracking-wide text-orange-200"><Trophy className="h-4 w-4" />{i18n.t("LA SÉLECTION DU MOTEUR")}</div>
         <h1 id="top-picks-title" className="font-heading text-4xl font-extrabold leading-[1.08] tracking-tight sm:text-5xl">{i18n.t("Les picks à la une.")}<br /><span className="text-orange-300">{i18n.t("Chaque détail compte.")}</span></h1>
-        <p className="mt-5 max-w-xl text-base leading-7 text-slate-300">{i18n.t("Les sélections classées par le moteur, réunies dans une vue claire pour comparer les marchés et ouvrir les analyses.")}</p>
+        <p className="mt-5 max-w-xl text-base leading-7 text-slate-300">{i18n.t("Compare les sélections du jour et ouvre l’analyse de chaque match.")}</p>
       </div><div className="grid grid-cols-3 gap-2 sm:gap-3">
         {[[picks.length, "Sélections", Trophy], [visibleCount, "Accessibles", CheckCircle2], [liveCount, "En direct", Radio]].map(([value, label, Icon]) => <div key={label} className="min-w-0 rounded-2xl border border-white/10 bg-white/5 px-3 py-4"><Icon className="mb-3 h-4 w-4 text-orange-300" /><strong className="font-mono text-3xl font-bold">{loading ? "—" : i18n.formatNumber(value)}</strong><span className="mt-2 block break-words text-[11px] leading-5 text-slate-300 sm:text-xs">{i18n.t(label)}</span></div>)}
       </div></div>
     </section>
     <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5" aria-labelledby="top-market-heading">
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 id="top-market-heading" className="font-heading text-lg font-extrabold text-slate-900">{i18n.t("Quel marché t’intéresse ?")}</h2><p className="mt-1 text-sm text-slate-500">{i18n.t("Le classement du moteur est conservé dans chaque filtre.")}</p></div><button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 disabled:opacity-50" data-testid="top-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />{i18n.t("Actualiser")}</button></div>
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><div><h2 id="top-market-heading" className="font-heading text-lg font-extrabold text-slate-900">{i18n.t("Quel marché t’intéresse ?")}</h2><p className="mt-1 text-sm text-slate-500">{i18n.t("Les filtres te permettent de retrouver les matchs qui t’intéressent.")}</p></div><button type="button" onClick={() => setRefresh(value => value + 1)} disabled={loading} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-sm font-bold text-slate-700 disabled:opacity-50" data-testid="top-refresh"><RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />{i18n.t("Actualiser")}</button></div>
       <div className="flex flex-wrap gap-2" aria-label={i18n.t("Filtrer par marché")}>{BET_FILTERS.map(filter => <button key={filter.key} type="button" aria-pressed={betFilter === filter.key} onClick={() => setBetFilter(filter.key)} className={`flex min-h-11 items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors ${betFilter === filter.key ? "border-slate-900 bg-slate-900 text-white" : "border-slate-200 text-slate-600 hover:border-orange-300"}`}>{i18n.tx(filter.label)}<span className={`rounded-md px-1.5 py-0.5 font-mono text-xs ${betFilter === filter.key ? "bg-white/15" : "bg-slate-100"}`}>{loading ? "—" : i18n.formatNumber(filter.key === "all" ? picks.length : picks.filter(pick => matchesBetFilter(pick, filter.key)).length)}</span></button>)}</div>
     </section>
     {!loading && isFree && lockedCount > 0 && <div className="mb-6 flex flex-col justify-between gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center" data-testid="upgrade-banner-top"><div className="flex items-start gap-3"><Sparkles className="mt-1 h-5 w-5 shrink-0 text-orange-600" /><div><h2 className="text-base font-extrabold text-slate-900">{i18n.t("{{count}} sélections à débloquer", {
@@ -123,7 +123,7 @@ export default function TopPicksPage() {
           isOpen: true,
           tier: "PRO"
         })} />)}</div>}
-    <p className="mx-auto mt-7 flex max-w-2xl items-start justify-center gap-2 text-center text-xs leading-6 text-slate-500"><Info className="mt-1 h-4 w-4 shrink-0" />{i18n.t("La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.")}</p>
+    <p className="mx-auto mt-7 flex max-w-2xl items-start justify-center gap-2 text-center text-xs leading-6 text-slate-500"><Info className="mt-1 h-4 w-4 shrink-0" />{i18n.t("Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.")}</p>
     <PaymentModal isOpen={payState.isOpen} onClose={() => setPayState({
         isOpen: false,
         tier: payState.tier
@@ -149,14 +149,14 @@ function PickCard({
   const odds = pick.pick_odds === null || pick.pick_odds === undefined ? null : Number(pick.pick_odds);
   const target = `/app/match/${pick.match_id}`;
   return <article className={`wp-pick-in flex min-w-0 flex-col overflow-hidden rounded-3xl border bg-white transition-shadow hover:shadow-lg ${featured ? "border-orange-300 md:col-span-2" : locked ? "border-dashed border-slate-300" : "border-slate-200"}`} data-testid={`top-pick-card-${pick.match_id}`}>
-    <header className={`flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 ${featured ? "border-orange-100 bg-orange-50/70" : "border-slate-100 bg-slate-50/60"}`}><div className="flex min-w-0 items-center gap-2"><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl font-mono text-sm font-black ${featured ? "bg-orange-600 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>#{i18n.formatNumber(rank)}</span><span className="text-xs font-bold text-slate-600">{i18n.t(featured ? "À regarder de près" : "Sélection du moteur")}</span></div><div className="flex flex-wrap items-center gap-2">{pick.is_live && <span className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-2 py-1.5 text-xs font-bold text-rose-700"><Radio className="h-3.5 w-3.5" />{i18n.t("LIVE")}</span>}{locked ? <span className="inline-flex items-center gap-1.5 rounded-lg border border-orange-200 bg-orange-50 px-2 py-1.5 text-xs font-bold text-orange-700"><Lock className="h-3.5 w-3.5" />PRO</span> : risk && <span className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-600">{i18n.t(risk)}</span>}</div></header>
+    <header className={`flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 ${featured ? "border-orange-100 bg-orange-50/70" : "border-slate-100 bg-slate-50/60"}`}><div className="flex min-w-0 items-center gap-2"><span className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl font-mono text-sm font-black ${featured ? "bg-orange-600 text-white" : "border border-slate-200 bg-white text-slate-700"}`}>#{i18n.formatNumber(rank)}</span><span className="text-xs font-bold text-slate-600">{i18n.t(featured ? "À regarder de près" : "Sélection WinPulse")}</span></div><div className="flex flex-wrap items-center gap-2">{pick.is_live && <span className="inline-flex items-center gap-1.5 rounded-lg bg-rose-50 px-2 py-1.5 text-xs font-bold text-rose-700"><Radio className="h-3.5 w-3.5" />{i18n.t("LIVE")}</span>}{locked ? <span className="inline-flex items-center gap-1.5 rounded-lg border border-orange-200 bg-orange-50 px-2 py-1.5 text-xs font-bold text-orange-700"><Lock className="h-3.5 w-3.5" />PRO</span> : risk && <span className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-xs font-semibold text-slate-600">{i18n.t(risk)}</span>}</div></header>
     <div className={`flex-1 p-5 sm:p-6 ${featured ? "md:grid md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] md:items-center md:gap-8" : ""}`}>
       <Link to={target} className="block min-w-0 rounded-lg"><div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs font-semibold leading-5 text-slate-500"><span className="inline-flex items-center gap-1.5"><Flame className="h-3.5 w-3.5 text-orange-500" />{pick.sport_title || "—"}</span><span className="inline-flex items-center gap-1.5"><CalendarDays className="h-3.5 w-3.5" />{i18n.formatPattern(pick.commence_time, "DD/MM HH:mm") || "—"}</span></div><h3 className={`break-words font-heading font-extrabold leading-snug text-slate-900 ${featured ? "text-2xl sm:text-3xl" : "text-2xl"}`}>{pick.home_team || "—"}<span className="my-1 block text-xs font-medium text-slate-400">{i18n.t("vs")}</span>{pick.away_team || "—"}</h3></Link>
       {locked ? <div className="mt-5 rounded-2xl border border-dashed border-orange-200 bg-orange-50/60 p-5"><Lock className="mb-3 h-6 w-6 text-orange-500" /><p className="text-base font-extrabold text-slate-900">{i18n.t("Pronostic verrouillé")}</p><p className="mt-2 text-sm leading-6 text-slate-600">{i18n.t("Consulte les détails de cette sélection avec Pro.")}</p><button type="button" onClick={onUpgrade} className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-orange-600 px-4 py-2 text-sm font-bold text-white">{i18n.t("Débloquer")}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></button></div> : <div className={`mt-5 rounded-2xl border border-orange-100 bg-orange-50/70 p-4 sm:p-5 ${featured ? "md:mt-0" : ""}`}><p className="mb-3 text-xs font-bold uppercase tracking-wide text-orange-800"><span className={`inline-flex rounded-md border px-2 py-1 ${marketColor(pick.market_label || "")}`}>{i18n.bet(pick.market_label || "Pronostic")}</span></p><div className="flex items-start justify-between gap-4"><div className="min-w-0"><p className="text-xs text-slate-500">{i18n.t("La sélection")}</p><p className="mt-1 break-words text-lg font-extrabold leading-7 text-slate-900">{i18n.bet(pick.pick)}</p></div><div className="shrink-0 rounded-xl border border-orange-100 bg-white px-3 py-2 text-end"><span className="text-xs text-slate-500">{i18n.t("Cote")}</span><strong className="mt-1 block font-mono text-3xl font-black text-orange-700">{Number.isFinite(odds) && odds > 1 ? i18n.formatNumber(odds, {
                 maximumFractionDigits: 2
               }) : "—"}</strong></div></div></div>}
     </div>
-    <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 px-5 py-4 sm:px-6"><div className="min-w-0 flex-1">{validConfidence ? <div className="max-w-xs"><div className="mb-2 flex items-center justify-between gap-3 text-xs"><span className="font-semibold text-slate-500">{i18n.t("Confiance du moteur")}</span><strong className="font-mono text-slate-800">{i18n.formatNumber(confidence, {
+    <footer className="flex flex-wrap items-center justify-between gap-4 border-t border-slate-100 px-5 py-4 sm:px-6"><div className="min-w-0 flex-1">{validConfidence ? <div className="max-w-xs"><div className="mb-2 flex items-center justify-between gap-3 text-xs"><span className="font-semibold text-slate-500">{i18n.t("Estimation")}</span><strong className="font-mono text-slate-800">{i18n.formatNumber(confidence, {
                 maximumFractionDigits: 0
               })} %</strong></div><div className="h-1.5 overflow-hidden rounded-full bg-slate-100"><div className="h-full rounded-full bg-orange-500" style={{
               width: `${confidence}%`
@@ -241,7 +241,7 @@ const RESULTS_MESSAGES = {
     "Impossible de charger les pronostics.": "Impossible de charger les pronostics.",
     "Aucun pick pour ce marché.": "Aucun pick pour ce marché.",
     "Voir tous les picks": "Voir tous les picks",
-    "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.": "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.",
+    "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.": "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.",
     "À regarder de près": "À regarder de près",
     "Sélection du moteur": "Sélection du moteur",
     "LIVE": "LIVE",
@@ -358,7 +358,7 @@ const RESULTS_MESSAGES = {
     "Impossible de charger les pronostics.": "Unable to load predictions.",
     "Aucun pick pour ce marché.": "No picks for this market.",
     "Voir tous les picks": "View all picks",
-    "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.": "Confidence is an engine indicator, not a guarantee. Odds may change.",
+    "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.": "Confidence is an engine indicator, not a guarantee. Odds may change.",
     "À regarder de près": "Worth a closer look",
     "Sélection du moteur": "Engine selection",
     "LIVE": "LIVE",
@@ -475,7 +475,7 @@ const RESULTS_MESSAGES = {
     "Impossible de charger les pronostics.": "No se pueden cargar los pronósticos.",
     "Aucun pick pour ce marché.": "Sin selecciones para este mercado.",
     "Voir tous les picks": "Ver todas las selecciones",
-    "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.": "La confianza es un indicador del motor, no una garantía. Las cuotas pueden cambiar.",
+    "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.": "La confianza es un indicador del motor, no una garantía. Las cuotas pueden cambiar.",
     "À regarder de près": "Para mirar de cerca",
     "Sélection du moteur": "Selección del motor",
     "LIVE": "EN DIRECTO",
@@ -592,7 +592,7 @@ const RESULTS_MESSAGES = {
     "Impossible de charger les pronostics.": "Não foi possível carregar os prognósticos.",
     "Aucun pick pour ce marché.": "Sem seleções para este mercado.",
     "Voir tous les picks": "Ver todas as seleções",
-    "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.": "A confiança é um indicador do motor, não uma garantia. As odds podem mudar.",
+    "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.": "A confiança é um indicador do motor, não uma garantia. As odds podem mudar.",
     "À regarder de près": "Para ver com atenção",
     "Sélection du moteur": "Seleção do motor",
     "LIVE": "EM DIRETO",
@@ -709,7 +709,7 @@ const RESULTS_MESSAGES = {
     "Impossible de charger les pronostics.": "Tipps konnten nicht geladen werden.",
     "Aucun pick pour ce marché.": "Keine Tipps für diesen Markt.",
     "Voir tous les picks": "Alle Tipps ansehen",
-    "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.": "Die Konfidenz ist ein Engine-Indikator, keine Garantie. Quoten können sich ändern.",
+    "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.": "Die Konfidenz ist ein Engine-Indikator, keine Garantie. Quoten können sich ändern.",
     "À regarder de près": "Einen genaueren Blick wert",
     "Sélection du moteur": "Auswahl der Engine",
     "LIVE": "LIVE",
@@ -826,7 +826,7 @@ const RESULTS_MESSAGES = {
     "Impossible de charger les pronostics.": "تعذر تحميل التوقعات.",
     "Aucun pick pour ce marché.": "لا توجد اختيارات لهذا السوق.",
     "Voir tous les picks": "عرض جميع الاختيارات",
-    "La confiance est un indicateur du moteur, pas une garantie. Les cotes peuvent évoluer.": "الثقة مؤشر من المحرك وليست ضمانًا. قد تتغير المعاملات.",
+    "Les estimations ne garantissent pas les résultats. Les cotes peuvent évoluer.": "الثقة مؤشر من المحرك وليست ضمانًا. قد تتغير المعاملات.",
     "À regarder de près": "يستحق نظرة أقرب",
     "Sélection du moteur": "اختيار المحرك",
     "LIVE": "مباشر",

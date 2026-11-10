@@ -1107,5 +1107,13 @@
   "L’exemple n’est pas disponible pour le moment.": "L’exemple n’est pas disponible pour le moment.",
   "Voir un exemple": "Voir un exemple",
   "Premier renouvellement après 30 jours": "Premier renouvellement après 30 jours",
-  "Fenêtre de 7 jours terminée": "Fenêtre de 7 jours terminée"
+  "Fenêtre de 7 jours terminée": "Fenêtre de 7 jours terminée",
+  "Exemple sélectionné": "Exemple sélectionné",
+  "Une sélection gagnante récente": "Une sélection gagnante récente",
+  "Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.": "Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.",
+  "Voir les sélections à la une": "Voir les sélections à la une",
+  "Résumé assisté par IA": "Résumé assisté par IA",
+  "Consulte les raisons du choix et les points à surveiller.{{v0}}": "Consulte les raisons du choix et les points à surveiller.{{v0}}",
+  "Niveau de risque : {{v0}}": "Niveau de risque : {{v0}}",
+  "Probabilité estimée : {{v0}}.": "Probabilité estimée : {{v0}}."
 }
