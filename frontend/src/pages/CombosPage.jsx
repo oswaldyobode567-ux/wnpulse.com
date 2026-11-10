@@ -1,3 +1,4 @@
+import { copyShareText } from "@/lib/shareClipboard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, Check, ChevronDown, Clock, Copy, Info, Layers, Loader2, Lock, RefreshCw, SlidersHorizontal, Sparkles, X } from "lucide-react";
@@ -73,12 +74,15 @@ export default function CombosPage() {
   function exclude(identity){if(form.excluded_match_ids.length>=30)return;const next={...form,excluded_match_ids:[...new Set([...form.excluded_match_ids,identity])]};setForm(next);build(next);}
   const fresh=visibleResult&&Date.parse(visibleResult.expires_at)>now;
   const canUse=(ticket)=>visibleResult&&Date.parse(visibleResult.expires_at)>Date.now()&&validTicket(ticket)&&ticket.legs.every(p=>Date.parse(p.commence_time)>Date.now());
+  const ticketText=ticket=>["WNPulse · "+t("personal"),t("bookmaker")+" : "+ticket.bookmaker, t("zone")+" : "+zone,"",...ticket.legs.map((p,i)=>`${i+1}. ${p.home_team} vs ${p.away_team}\n${p.sport_title}\n${date(p.commence_time)}\n${i18n.bet(p.market_label)} : ${i18n.bet(p.pick)} @ ${n(p.pick_odds)}`),"",t("total")+" : "+n(ticket.total_odds),t("disclaimer"),"https://wnpulse.com"].join("\n");
   async function copyTicket(ticket){
     if(!canUse(ticket))return;
-    const content=["WNPulse · "+t("personal"),t("bookmaker")+" : "+ticket.bookmaker, t("zone")+" : "+zone,"",...ticket.legs.map((p,i)=>`${i+1}. ${p.home_team} vs ${p.away_team}\n${p.sport_title}\n${date(p.commence_time)}\n${i18n.bet(p.market_label)} : ${i18n.bet(p.pick)} @ ${n(p.pick_odds)}`),"",t("total")+" : "+n(ticket.total_odds),t("disclaimer"),"https://wnpulse.com"].join("\n");
+    const content=ticketText(ticket);
     const current=copyEpoch.current;
-    try{if(!navigator.clipboard?.writeText)throw new Error("Clipboard");await navigator.clipboard.writeText(content);if(current===copyEpoch.current)setNotice(t("copied"));}
-    catch{if(current===copyEpoch.current)setManual(content);}
+    const copied=await copyShareText(content);
+    if(current!==copyEpoch.current)return;
+    if(copied){setNotice(t("copied"));setManual("");}
+    else {setNotice("");setManual(content);}
   }
   const leagues=(options?.leagues||[]).filter(l=>(!form.sports.length||form.sports.includes(l.sport))&&String(l.label).toLocaleLowerCase(i18n.locale).includes(search.toLocaleLowerCase(i18n.locale)));
   const sportLabel=key=>(SPORT_NAMES[lang]||SPORT_NAMES.fr)[key]||key;
@@ -94,7 +98,14 @@ export default function CombosPage() {
           <details><summary><Info aria-hidden="true"/>{t("why")}<ChevronDown aria-hidden="true"/></summary><p>{t("consensus")} : {n(leg.confidence)} %</p><p>{t("stability")} : {n(leg.stability_score)} / 100</p><p>{t("sources")} : {n(leg.num_books)}</p><p>{t("quality")} : {n(leg.quality_score)} / 100</p><p>{t("qualityNote")}</p></details>
           <div className="pc-leg-footer"><Link to={`/app/match/${encodeURIComponent(leg.match_id)}`}>{t("analysis")}<ArrowRight aria-hidden="true"/></Link><button type="button" disabled={busy||form.excluded_match_ids.length>=30} onClick={()=>exclude(leg.match_id)} data-testid={`exclude-${principal?"main":"alt"}-${index}`}><X aria-hidden="true"/>{t("exclude")}</button></div>
         </section>)}</div>
-        <button className="pc-button pc-copy" type="button" disabled={!canUse(ticket)} onClick={()=>copyTicket(ticket)}><Copy aria-hidden="true"/>{t("copy")}</button>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <button className="pc-button" type="button" data-testid="personal-copy" disabled={!canUse(ticket)} onClick={()=>copyTicket(ticket)}><Copy aria-hidden="true"/>{t("copy")}</button>
+          {canUse(ticket) && <>
+            <a className="pc-button border-emerald-200 text-emerald-800" data-testid="personal-whatsapp" target="_blank" rel="noopener noreferrer" href={`https://wa.me/?text=${encodeURIComponent(ticketText(ticket))}`} onClick={event=>{if(!canUse(ticket))event.preventDefault();}}>WhatsApp ↗</a>
+            <a className="pc-button border-sky-200 text-sky-800" data-testid="personal-telegram" target="_blank" rel="noopener noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent("https://wnpulse.com")}&text=${encodeURIComponent(ticketText(ticket))}`} onClick={event=>{if(!canUse(ticket))event.preventDefault();}}>Telegram ↗</a>
+          </>}
+        </div>
+        {manual===ticketText(ticket) && <label className="pc-note mt-3 block">{t("manualCopy")}<textarea data-testid="personal-manual-copy" className="mt-2 min-h-36 w-full rounded-lg border p-2" value={manual} readOnly onFocus={e=>e.target.select()} autoFocus /></label>}
       </div>
     </article>;
   }
@@ -121,7 +132,7 @@ export default function CombosPage() {
           {!fresh&&<div className="pc-alert">{t("stale")} <button className="pc-button" onClick={()=>build()}><RefreshCw aria-hidden="true"/>{t("recalculate")}</button></div>}
           {validTicket(visibleResult.principal)?<div className="pc-grid">{ticketView(visibleResult.principal,true)}{visibleResult.alternative?ticketView(visibleResult.alternative,false):<div className="pc-empty"><Check aria-hidden="true"/><h3>{t("noAlternative")}</h3><p>{t("noAlternativeText")}</p></div>}</div>:<div className="pc-empty"><Info aria-hidden="true"/><h3>{t("noTicket")}</h3><p>{t("noTicketText")}</p></div>}
         </>}
-        {notice&&<p className="pc-note" role="status">{notice}</p>}{manual&&<label className="pc-note">{t("manualCopy")}<textarea value={manual} readOnly onFocus={e=>e.target.select()}/></label>}
+        {notice&&<p className="pc-note" role="status">{notice}</p>}
         <p className="pc-footer">{t("disclaimer")}</p>
       </section>
     </div>}

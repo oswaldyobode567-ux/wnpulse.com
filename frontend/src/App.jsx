@@ -1,3 +1,4 @@
+import { MatchShareBasketProvider } from "@/contexts/MatchShareBasket";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, Link } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
@@ -70,7 +71,7 @@ function RequireAuth({
 export default function App() {
   return <LanguageProvider>
     <AuthProvider>
-      <ExperienceProvider>
+      <MatchShareBasketProvider><ExperienceProvider>
       <BrowserRouter>
         <NavigationPositionMemory />
         <PublicLanguageBar />
@@ -155,7 +156,7 @@ export default function App() {
         <ContextualWhatsAppWidget />
         <LocalizedToaster />
       </BrowserRouter>
-      </ExperienceProvider>
+      </ExperienceProvider></MatchShareBasketProvider>
     </AuthProvider>
     </LanguageProvider>;
 }
