@@ -166,19 +166,30 @@ async def editorial_intro(kind):
         LOG.info("Editorial intro unavailable (%s)",type(exc).__name__)
     return ""
 
+DRAFT_INPUTS = {
+    "pick": ("/discovery", None),
+    "results": ("/track-record/highlights", {"time_zone": ZONE.key}),
+    "news": ("/blog/posts", {"limit": 12}),
+}
+
+def preview_recovery_kind(key, now):
+    return next((kind for kind in ("pick", "results") if key == f"{now:%Y%m%d}-{kind}"), None)
+
 async def preview_row(key, now):
     row = get(key)
-    if row is not None or key != f"{now:%Y%m%d}-pick":
+    kind = preview_recovery_kind(key, now)
+    if row is not None or not kind:
         return row
     try:
-        # A missed daily slot can be recovered in preview, using the normal public pick rules.
-        draft = make("pick", await read("/discovery"), now, now)
+        path, params = DRAFT_INPUTS[kind]
+        draft = make(kind, await read(path, params), now, now)
         if draft:
-            due = now.replace(hour=SLOTS["pick"][0], minute=SLOTS["pick"][1], second=0, microsecond=0)
+            hour, minute = SLOTS[kind]
+            due = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
             put(key, draft, due.timestamp())
         return get(key)
     except Exception as exc:
-        LOG.info("On-demand pick unavailable (%s)", type(exc).__name__)
+        LOG.info("On-demand draft %s unavailable (%s)", kind, type(exc).__name__)
         return None
 
 async def prepare(now):
@@ -191,8 +202,7 @@ async def prepare(now):
         if get(key):
             continue
         try:
-            path, params = {"pick":("/discovery",None),"news":("/blog/posts",{"limit":12}),
-                "results":("/track-record/highlights",{"time_zone":ZONE.key})}[kind]
+            path, params = DRAFT_INPUTS[kind]
             draft=make(kind,await read(path,params),now,max(due,now))
             if draft:
                 draft["intro"]=await editorial_intro(kind)
@@ -302,11 +312,13 @@ async def command(message):
             rows=con.execute("SELECT id,state,due FROM drafts ORDER BY due DESC LIMIT 12").fetchall()
         answer="Brouillons et historique (heure de Porto-Novo)\n"+"\n".join(f"{r['id']} · {r['state']} · {datetime.fromtimestamp(r['due'],ZONE):%d/%m %H:%M}" for r in rows) if rows else "Aucun brouillon pour l’instant."
     elif is_admin and name=="/preview":
-        row=await preview_row(arg, datetime.now(ZONE))
+        now=datetime.now(ZONE)
+        row=await preview_row(arg, now)
         if not row:
-            message = ("Aucun pronostic gratuit à venir n’a pu être préparé. Réessaie plus tard."
-                       if arg == f"{datetime.now(ZONE):%Y%m%d}-pick"
-                       else "Brouillon introuvable. Consulte /drafts.")
+            message = {
+                "pick": "Aucun pronostic gratuit à venir n’a pu être préparé. Réessaie plus tard.",
+                "results": "Le bilan de la veille n’a pas pu être préparé à partir du Track Record. Réessaie plus tard.",
+            }.get(preview_recovery_kind(arg, now), "Brouillon introuvable. Consulte /drafts.")
             await telegram("sendMessage",chat_id,message)
             return
         draft=json.loads(row["payload"])

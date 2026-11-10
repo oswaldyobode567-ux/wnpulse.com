@@ -60,7 +60,23 @@ class Community(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(row["state"],"draft")
             self.assertIsNone(row["telegram_id"])
             self.assertEqual((await app.preview_row(key,now))["id"],key)
-            read.assert_awaited_once_with("/discovery")
+            read.assert_awaited_once_with("/discovery", None)
+
+    async def test_preview_recovers_verified_results_for_previous_day(self):
+        now = self.now.replace(hour=21, minute=0)
+        key = f"{now:%Y%m%d}-results"
+        data = {"date":now.date().isoformat(),"source":"track_record","complete":True,
+                "summary":{"won":3,"lost":2,"pending":1,"void":0,"total":6}}
+        with patch.object(app,"read",AsyncMock(return_value=data)) as read:
+            self.assertIsNone(await app.preview_row(key,now))
+            data["date"] = (now.date()-timedelta(days=1)).isoformat()
+            row=await app.preview_row(key,now)
+            self.assertEqual(row["state"],"draft")
+            self.assertIsNone(row["telegram_id"])
+            self.assertIn("3 gagnés · 2 perdus",row["payload"])
+            self.assertEqual((await app.preview_row(key,now))["id"],key)
+            self.assertEqual(read.await_count,2)
+            read.assert_awaited_with("/track-record/highlights", {"time_zone":ZONE.key})
 
     async def test_saved_news_draft_uses_archive_photo_and_credit(self):
         draft = {**self.draft, "kind":"news", "link":"https://wnpulse.com/blog/villarreal-getafe"}
