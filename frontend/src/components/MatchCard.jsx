@@ -1,4 +1,5 @@
 import { useMatchShareBasket } from "@/contexts/MatchShareBasket";
+import PickShareImagePanel from "@/components/PickShareImagePanel";
 import { copyShareText } from "@/lib/shareClipboard";
 import api from "@/lib/api";
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
@@ -477,7 +478,7 @@ export function buildShareMessages(items, kind, words, helpers) {
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const field = (label, value) => value !== null && value !== undefined && String(value).trim() ? `${label} : ${shareClean(value)}` : null;
   const header = `🎯 ${kind === "results" ? words.results : words.picks}\n${words.zone} : ${zone}\n${words.caption}`;
-  const footer = `\n\n🌐 https://wnpulse.com\n${words.disclaimer}`;
+  const footer = `\n\n🌐 https://wnpulse.com\n18+`;
   const blocks = items.filter(shareEligible).map((item, index) => {
     const p = item.prediction || item;
     const teams = [item.home_team, item.away_team];
@@ -512,6 +513,19 @@ function ShareComposer({ items, kind, onClose }) {
   const words=useAdminShareLanguage();
   const helpers=useMatchLanguage();
   const messages=buildShareMessages(items,kind,words,helpers);
+  const cards=items.filter(shareEligible).filter(item=>item.home_team && item.away_team).map(item=>{
+    const p=item.prediction || item;
+    const teams=[item.home_team,item.away_team];
+    const odds=finiteNumber(p.pick_odds ?? p.odds);
+    const time=item.commence_time || item.date;
+    return {teams,badgeSources:["home","away"].map(side=>badgeUrls(item,side).find(url=>/api-sports\.io|crests\.football-data\.org/.test(url))),
+      competition:item.league || item.sport_title || item.sport || "",
+      date:time && Number.isFinite(new Date(time).getTime()) ? helpers.formatDate(time,{day:"2-digit",month:"2-digit",hour:"2-digit",minute:"2-digit"}) : "",
+      market:translateBetText(p.market_label || p.market_key || words.pick,helpers.t,helpers.formatNumber,teams),
+      pick:translateBetText(p.pick,helpers.t,helpers.formatNumber,teams),
+      odds:odds>1 ? helpers.formatNumber(odds,{minimumFractionDigits:2,maximumFractionDigits:2}) : "",
+      status:kind==="results" ? (words[String(p.status || item.status || "").toLowerCase()] || (p.won===true ? words.won : p.won===false ? words.lost : words.pending)) : ""};
+  });
   const [part,setPart]=useState(0);
   const [copied,setCopied]=useState("");
   const dialog=useRef(null);
@@ -525,6 +539,7 @@ function ShareComposer({ items, kind, onClose }) {
     <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">{words.preview}</h2><button type="button" onClick={onClose} className={SHARE_BUTTON}>{words.close}</button></div>
     <p className="my-3 text-xs leading-5 text-slate-500">{words.hint}</p>
     <div className="mb-2 flex flex-wrap gap-2" aria-label={words.part}>{messages.map((message,index)=><button type="button" key={index} aria-pressed={part===index} onClick={()=>{setPart(index);setCopied("");}} className={`${SHARE_BUTTON} ${part===index ? "border-orange-500 bg-orange-50 text-orange-700" : "border-slate-200"}`}>{words.part} {index+1}/{messages.length}</button>)}</div>
+    <PickShareImagePanel cards={cards} t={helpers.t} />
     <label className="sr-only" htmlFor="admin-share-text">{words.preview}</label><textarea id="admin-share-text" readOnly value={current} dir="auto" className="h-72 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" />
     <div className="mt-3 flex flex-wrap gap-2">
       <a href={`https://wa.me/?text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-green-600 bg-green-600 text-white`} data-testid="admin-share-whatsapp">WhatsApp ↗</a>
@@ -542,7 +557,8 @@ function detailShareSnapshot(item) {
   const fields = ["pick", "pick_odds", "market", "market_label", "market_key", "pick_point", "team", "confidence", "label", "best_bookmaker", "is_alternative", "status", "alternative_result_confirmed"];
   return {
     id:item.id || item.match_id, commence_time:item.commence_time, home_team:item.home_team, away_team:item.away_team,
-    sport_title:item.sport_title, league:item.league,
+    sport_title:item.sport_title, league:item.league, sport_key:item.sport_key,
+    home_image_candidates:badgeUrls(item,"home"), away_image_candidates:badgeUrls(item,"away"),
     prediction:Object.fromEntries(fields.map(key=>[key,p[key]])),
   };
 }
