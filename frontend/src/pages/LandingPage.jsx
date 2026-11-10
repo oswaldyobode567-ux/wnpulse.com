@@ -18,7 +18,7 @@ import {
   Gift,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
-import { useLanguage, useExperienceCopy, StadiumBackdrop, AppearanceSwitcher } from "@/components/AppLayout";
+import { useLanguage, useExperienceCopy, AppearanceSwitcher } from "@/components/AppLayout";
 import api from "@/lib/api";
 
 // Même archive que /track-record ; endpoint inclus dans server.py livré.
@@ -123,7 +123,7 @@ function isAvailablePick(row) {
 }
 
 const LANDING_EXTRA = {
- fr:["Pourquoi cette sélection ?","Estimation du moteur","Sources de cotes","bookmaker(s)","Données de sources non communiquées.","Point de vigilance","Une estimation reste incertaine et la cote peut évoluer.","Date à confirmer","Découvre une fiche WinPulse","Un exemple réel actuellement disponible","Match","Marché","Sélection","Cote","Avec Pro : autres sélections, combinés et outils d’analyse.","Aucune sélection publique disponible pour le moment.","Comparer les accès","Free : sélections gratuites et historique public.","Pro : sélections et outils réservés aux abonnés.","Estimation non communiquée.","Rencontres visibles ; détails réservés selon l’accès."],
+ fr:["Pourquoi cette sélection ?","Probabilité estimée","Sources de cotes","bookmaker(s)","Données de sources non communiquées.","Point de vigilance","Une estimation reste incertaine et la cote peut évoluer.","Date à confirmer","Découvre une fiche WinPulse","Un exemple réel actuellement disponible","Match","Marché","Sélection","Cote","Avec Pro : autres sélections, combinés et outils d’analyse.","Aucune sélection publique disponible pour le moment.","Comparer les accès","Free : sélections gratuites et historique public.","Pro : sélections et outils réservés aux abonnés.","Estimation non communiquée.","Rencontres visibles ; détails réservés selon l’accès."],
  en:["Why this selection?","Model estimate","Odds sources","bookmaker(s)","Source details unavailable.","Risk to consider","An estimate is uncertain and odds can change.","Time to be confirmed","Explore a WinPulse match card","A real selection currently available","Match","Market","Selection","Odds","With Pro: more selections, accumulators and analysis tools.","No public selection available currently.","Compare access","Free: available picks and public history.","Pro: subscriber selections and tools.","Estimate unavailable.","Fixtures visible; details depend on access."],
  es:["¿Por qué esta selección?","Estimación del motor","Fuentes de cuotas","casa(s) de apuestas","Fuentes no disponibles.","Riesgo a considerar","Una estimación es incierta y la cuota puede cambiar.","Hora por confirmar","Descubre una ficha WinPulse","Una selección real disponible","Partido","Mercado","Selección","Cuota","Con Pro: más selecciones, combinadas y herramientas de análisis.","No hay una selección pública disponible.","Comparar accesos","Free: selecciones gratis e historial público.","Pro: selecciones y herramientas para abonados.","Estimación no disponible.","Partidos visibles; detalles según el acceso."],
  pt:["Porquê esta seleção?","Estimativa do motor","Fontes de cotas","operador(es)","Fontes não disponíveis.","Risco a considerar","Uma estimativa é incerta e a cota pode mudar.","Hora por confirmar","Descobre uma ficha WinPulse","Uma seleção real disponível","Jogo","Mercado","Seleção","Cota","Com Pro: mais seleções, combinados e ferramentas de análise.","Nenhuma seleção pública disponível.","Comparar acessos","Free: seleções grátis e histórico público.","Pro: seleções e ferramentas para subscritores.","Estimativa indisponível.","Jogos visíveis; detalhes conforme o acesso."],
@@ -366,22 +366,17 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <section className="wp-public-hero relative overflow-hidden wp-gradient-hero"><StadiumBackdrop/>
-        {/* Lumières décoratives : une entrée douce, puis un fond stable. */}
-        <div aria-hidden="true" className="wp-hero-glow absolute -top-32 -right-32 h-96 w-96 rounded-full bg-orange-300/40 blur-3xl pointer-events-none" />
-        <div aria-hidden="true" className="wp-hero-glow absolute -bottom-32 -left-32 h-96 w-96 rounded-full bg-rose-300/40 blur-3xl pointer-events-none" />
-        <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 h-72 w-72 rounded-full bg-amber-300/20 blur-3xl pointer-events-none" />
-
+      <section className="wp-public-hero wp-editorial-hero relative overflow-hidden">
         <div className="relative mx-auto w-full min-w-0 max-w-7xl px-4 py-12 sm:px-6 sm:py-24 lg:px-8">
           <div className="grid min-w-0 gap-10 items-center lg:grid-cols-12">
             <div className="min-w-0 lg:col-span-7">
-              <div className="wp-enter mb-6 inline-flex max-w-full flex-wrap items-center gap-2 rounded-full border-2 border-orange-400 bg-white px-3 py-1.5 text-[11px] font-bold text-orange-700 shadow-lg shadow-orange-200/50 sm:text-xs">
+              <div className="wp-enter mb-6 inline-flex max-w-full flex-wrap items-center gap-2 wp-editorial-eyebrow text-xs">
                 <span aria-hidden="true" className="h-2 w-2 rounded-full bg-orange-500" />
                 {t("Pronostics · Analyses · Résultats publics")}
               </div>
               <h1 className="wp-enter wp-mobile-hero-title font-heading text-4xl font-black leading-tight tracking-tighter text-slate-900 sm:text-5xl lg:text-6xl" style={{ "--wp-delay": "80ms" }}>
                 {experienceWords.heroOne}{" "}
-                <span className="block bg-gradient-to-r from-orange-600 via-rose-500 to-fuchsia-600 bg-clip-text text-transparent">{experienceWords.heroTwo}</span>
+                <span className="block wp-editorial-muted">{experienceWords.heroTwo}</span>
               </h1>
               <p className="wp-enter mt-5 max-w-2xl text-base leading-relaxed text-slate-600 sm:text-lg" style={{ "--wp-delay": "160ms" }}>
                 {experienceWords.heroIntro}
@@ -389,7 +384,7 @@ export default function LandingPage() {
               <div className="wp-enter mt-8 flex flex-col sm:flex-row gap-3" style={{ "--wp-delay": "240ms" }}>
                 <Button
                   size="lg"
-                  className="wp-action group relative h-auto min-h-12 w-full whitespace-normal border-0 px-5 py-3 text-base text-white shadow-2xl shadow-orange-600/40 wp-gradient-warm sm:w-auto sm:px-8"
+                  className="wp-action group relative h-auto min-h-12 w-full whitespace-normal border-0 px-5 py-3 text-base text-white wp-editorial-button sm:w-auto sm:px-8"
                   onClick={showPicks}
                   data-testid="hero-cta-btn"
                 >
@@ -609,8 +604,7 @@ export default function LandingPage() {
         </div>
       </section>
 
-      <section id="pricing" className="bg-slate-950 text-white border-t border-neutral-200 relative overflow-hidden">
-        <div className="absolute inset-0 wp-gradient-hero opacity-20" />
+      <section id="pricing" className="wp-editorial-pricing bg-slate-950 text-white border-t border-neutral-200 relative overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-20 relative">
           <div data-wp-reveal className="text-center mb-12">
             <div className="inline-flex items-center gap-2 rounded-full bg-orange-500/10 border border-orange-500/30 px-3 py-1 text-xs font-bold text-orange-400 mb-4">
@@ -621,7 +615,7 @@ export default function LandingPage() {
             </h2>
             <p className="mt-3 text-slate-400">{t("Découvre WinPulse gratuitement. Passe à Pro pour retrouver les pronostics, les combinés et les outils réservés aux abonnés.")}</p>
           </div>
-          <div className="mx-auto mb-6 max-w-4xl rounded-2xl border border-white/15 bg-white/5 p-5" data-testid="pricing-example"><h3 className="text-xl font-bold">{extra[8]}</h3><p className="mt-1 text-sm text-slate-300">{extra[9]}</p>{livePicks.find(isAvailablePick) ? (()=>{const example = livePicks.find(isAvailablePick);return <div className="mt-4 grid min-w-0 gap-2 rounded-xl bg-white/10 p-4 text-sm sm:grid-cols-2"><p className="break-words"><span className="text-slate-400">{extra[10]} :</span> {example.home_team} vs {example.away_team}</p><p><span className="text-slate-400">{extra[11]} :</span> {example.market_label || "—"}</p><p><span className="text-slate-400">{extra[12]} :</span> {example.pick}</p><p><span className="text-slate-400">{extra[13]} :</span> {example.pick_odds ?? "—"}</p></div>;})() : <p className="mt-3 text-sm text-slate-300">{extra[15]}</p>}<p className="mt-3 text-sm leading-6 text-slate-300">{extra[14]}</p><p className="mt-3 text-xs text-slate-400">{extra[17]}<br />{extra[18]}</p></div>
+          <div className="mx-auto mb-6 max-w-4xl rounded-2xl border border-white/15 bg-white/5 p-5" data-testid="pricing-example"><h3 className="text-xl font-bold">{extra[8]}</h3><p className="mt-1 text-sm text-slate-300">{extra[9]}</p>{livePicks.find(isAvailablePick) ? (()=>{const example = livePicks.find(isAvailablePick);return <div className="mt-4 grid min-w-0 gap-2 rounded-xl bg-white/10 p-4 text-sm sm:grid-cols-2"><p className="break-words"><span className="text-slate-400">{extra[10]} :</span> {example.home_team} vs {example.away_team}</p><p><span className="text-slate-400">{extra[11]} :</span> {example.market_label || "—"}</p><p><span className="text-slate-400">{extra[12]} :</span> {example.pick}</p><p><span className="text-slate-400">{extra[13]} :</span> {example.pick_odds ?? "—"}</p></div>;})() : <p className="mt-3 text-sm text-slate-300">{extra[15]}</p>}</div>
           <div className="mx-auto grid max-w-4xl gap-5 md:grid-cols-2">
             {[
               {

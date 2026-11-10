@@ -1107,5 +1107,13 @@
   "L’exemple n’est pas disponible pour le moment.": "The example is temporarily unavailable.",
   "Voir un exemple": "See an example",
   "Premier renouvellement après 30 jours": "First renewal after 30 days",
-  "Fenêtre de 7 jours terminée": "7-day window closed"
+  "Fenêtre de 7 jours terminée": "7-day window closed",
+  "Exemple sélectionné": "Selected example",
+  "Une sélection gagnante récente": "A recent winning selection",
+  "Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.": "A selected example from the results record. Past results do not guarantee future outcomes.",
+  "Voir les sélections à la une": "See featured picks",
+  "Résumé assisté par IA": "AI-assisted summary",
+  "Consulte les raisons du choix et les points à surveiller.{{v0}}": "See why this pick was made and what to watch for.{{v0}}",
+  "Niveau de risque : {{v0}}": "Risk level: {{v0}}",
+  "Probabilité estimée : {{v0}}.": "Estimated probability: {{v0}}."
 }

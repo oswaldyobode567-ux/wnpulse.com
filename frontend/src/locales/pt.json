@@ -1107,5 +1107,13 @@
   "L’exemple n’est pas disponible pour le moment.": "O exemplo está temporariamente indisponível.",
   "Voir un exemple": "Ver um exemplo",
   "Premier renouvellement après 30 jours": "Primeira renovação após 30 dias",
-  "Fenêtre de 7 jours terminée": "Janela de 7 dias encerrada"
+  "Fenêtre de 7 jours terminée": "Janela de 7 dias encerrada",
+  "Exemple sélectionné": "Exemplo selecionado",
+  "Une sélection gagnante récente": "Uma seleção vencedora recente",
+  "Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.": "Um exemplo do histórico. Resultados passados não garantem os futuros.",
+  "Voir les sélections à la une": "Ver seleções em destaque",
+  "Résumé assisté par IA": "Resumo assistido por IA",
+  "Consulte les raisons du choix et les points à surveiller.{{v0}}": "Vê os motivos da escolha e o que importa acompanhar.{{v0}}",
+  "Niveau de risque : {{v0}}": "Nível de risco: {{v0}}",
+  "Probabilité estimée : {{v0}}.": "Probabilidade estimada: {{v0}}."
 }

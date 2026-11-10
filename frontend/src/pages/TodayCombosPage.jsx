@@ -387,12 +387,6 @@ export default function TodayCombosPage() {
           <summary className="flex cursor-pointer items-center gap-2 font-semibold text-slate-800"><Info className="h-5 w-5 text-orange-700" />{i18n.t("Comment lire ces combin\xE9s ?")}<ChevronDown className="ms-auto h-5 w-5" /></summary>
           <div className="mt-3 space-y-2 text-[14px] leading-relaxed text-slate-600">
             <p>{i18n.t("Toutes les s\xE9lections doivent r\xE9ussir pour que le combin\xE9 soit gagnant. Une cote plus \xE9lev\xE9e ne signifie pas une meilleure chance de r\xE9ussite.")}</p>
-            <p>{i18n.t("La confiance moyenne concerne les s\xE9lections individuelles. L\u2019estimation combin\xE9e, si le moteur la fournit, est indicative et d\xE9pend de ses hypoth\xE8ses et des corr\xE9lations entre \xE9v\xE9nements.")}</p>
-            <p>{i18n.t("Les s\xE9lections viennent du moteur statistique WinPulse. Les explications d\xE9crivent les march\xE9s et les donn\xE9es disponibles ; elles ne garantissent aucun r\xE9sultat.")}</p>
-            <p>{i18n.rich("La journ\xE9e du flux est d\xE9finie en {{v0}}. Les dates et horaires des rencontres sont affich\xE9s dans ton fuseau : {{v1}}.", {
-              v0: i18n.tx(data?.schedule_timezone || "UTC"),
-              v1: i18n.tx(localZone)
-            })}</p>
           </div>
         </details>
 
@@ -518,7 +512,7 @@ function TierCard({
         {i18n.tx(locked ? <Lock className={cn("mx-auto mb-3 h-8 w-8", meta.color)} /> : <Clock className="mx-auto mb-3 h-8 w-8 text-slate-500" />)}
         <p className="text-[18px] font-bold text-slate-800">{i18n.tx(locked && count > 0 ? i18n.t("{{v0}} s\xE9lections \xE0 d\xE9couvrir", {
             v0: count
-          }) : "Le moteur attend davantage de sélections")}</p><p className="mt-2 text-[16px] leading-relaxed text-slate-600">{i18n.tx(locked && count > 0 ? "Le détail de ce format est disponible avec Pro." : "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.")}</p>
+          }) : "Pas assez de sélections admissibles")}</p><p className="mt-2 text-[16px] leading-relaxed text-slate-600">{i18n.tx(locked && count > 0 ? "Le détail de ce format est disponible avec Pro." : "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.")}</p>
       </div>)}
       {i18n.tx(state === "incomplete" && legs.length > 0 && <p className="rounded-2xl bg-slate-50 p-4 text-[16px] leading-relaxed text-slate-600">{i18n.t("Cette s\xE9lection ne constitue pas encore un combin\xE9 complet. Le partage sera disponible d\xE8s qu\u2019au moins deux rencontres seront retenues.")}</p>)}
       {i18n.tx(locked && count >= 2 ? <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5"><p className="text-[19px] font-bold text-slate-900">{i18n.t("D\xE9couvre toutes les s\xE9lections")}</p><p className="mb-4 mt-2 text-[16px] leading-relaxed text-slate-600">{i18n.t("Les rencontres sont visibles. Les march\xE9s, les cotes et les analyses compl\xE8tes se d\xE9bloquent avec Pro.")}</p><Button className="h-12 w-full rounded-xl bg-orange-700 text-[16px] text-white hover:bg-orange-800" onClick={onUpgrade} data-testid={`today-upgrade-${tierKey}`}><Lock className="me-2 h-5 w-5" />{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-5 w-5" /></Button></div> : <Button onClick={onShare} disabled={!canShare(tier, tierKey, isFree, now)} className="h-12 w-full rounded-xl bg-emerald-700 text-[16px] text-white hover:bg-emerald-800" data-testid={`today-share-${tierKey}`}><Send className="me-2 h-5 w-5" />{i18n.t("Partager sur WhatsApp")}</Button>)}
@@ -559,19 +553,16 @@ function LegCard({
         <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-orange-200 bg-orange-50 p-4"><div className="min-w-0"><p className="text-[14px] font-medium text-orange-800">{i18n.bet(text(leg.market_label, "Marché non communiqué"))}</p><p className="mt-1.5 break-words text-[18px] font-bold leading-relaxed text-orange-950">{i18n.bet(text(leg.pick, "Sélection non communiquée"))}</p></div><div className="shrink-0 rounded-xl bg-white px-3 py-2.5 text-center shadow-sm"><span className="block text-[14px] text-slate-600">{i18n.t("Cote")}</span><strong className="block font-mono text-[27px] font-extrabold text-orange-800">{i18n.tx(number(leg.pick_odds) > 1 ? formatNumber(i18n, leg.pick_odds, 2) : "—")}</strong></div></div>
         <div className="mt-4 flex flex-wrap items-center gap-2"><span className="rounded-lg bg-slate-100 px-3 py-2 text-[14px] text-slate-700">{i18n.rich("Confiance fournie : {{v0}}", {
               v0: <strong>{i18n.tx(percent(i18n, leg.confidence))}</strong>
-            })}</span>{i18n.tx(risk && <Badge className={cn("px-3 py-2 text-[14px]", risk.className)}>{i18n.rich("Niveau du moteur : {{v0}}", {
+            })}</span>{i18n.tx(risk && <Badge className={cn("px-3 py-2 text-[14px]", risk.className)}>{i18n.rich("Niveau de risque : {{v0}}", {
               v0: i18n.tx(risk.label)
             })}</Badge>)}</div>
         <details className="mt-3 rounded-xl border border-slate-200 bg-slate-50 px-4 py-1"><summary className="cursor-pointer gap-2 text-[15px] font-semibold text-slate-700"><Info className="h-4 w-4 shrink-0 text-orange-700" />{i18n.t("Comprendre cette s\xE9lection")}<ChevronDown className="ms-auto h-4 w-4 shrink-0" /></summary><div className="space-y-3 border-t border-slate-200 pb-3 pt-3 text-[16px] leading-relaxed text-slate-600"><p>{i18n.tx(explainPick(i18n, leg))}</p>
         {leg.selection_reason && <div className="space-y-1 rounded-lg bg-white p-3">
           <p className="font-semibold text-slate-800">{i18n.t("Pourquoi cette sélection ?")}</p>
-          <p>{i18n.t("Stabilité des probabilités entre sources")} : {percent(i18n,leg.selection_reason.stability)}</p>
           <p>{i18n.t("Bookmakers analysés")} : {formatNumber(i18n,leg.selection_reason.bookmakers,0)}</p>
-          <p>{i18n.t("Indice de classement")} : {formatNumber(i18n,leg.selection_reason.quality)} / 100</p>
-          <p className="text-xs">{i18n.t("Cet indice sert au tri ; il ne représente pas une chance de gagner.")}</p>
-        </div>}{i18n.tx(number(probability) !== null && <p>{i18n.rich("Estimation du moteur pour ce pari : {{v0}}.", {
+        </div>}{i18n.tx(number(probability) !== null && <p>{i18n.rich("Probabilité estimée : {{v0}}.", {
                 v0: <strong className="text-slate-800">{i18n.tx(percent(i18n, probability))}</strong>
-              })}</p>)}<p>{i18n.t("Cette explication d\xE9crit le march\xE9. Elle ne suppose aucune forme r\xE9cente, blessure ou statistique absente des donn\xE9es.")}</p></div></details>
+              })}</p>)}</div></details>
         {i18n.tx(allowAnalysis && id !== null && id !== undefined && String(id) && <Link to={`/app/match/${encodeURIComponent(String(id))}`} className="mt-4 inline-flex min-h-[44px] items-center gap-2 rounded-lg px-1 text-[16px] font-bold text-orange-800 hover:text-orange-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500">{i18n.t("Voir l\u2019analyse du match")}<ArrowRight className="h-4 w-4" /></Link>)}
       </>)}
     </div>
@@ -653,7 +644,7 @@ const TODAY_MESSAGES = {
     "En préparation": "En préparation",
     "Aperçu Pro": "Aperçu Pro",
     "Disponible": "Disponible",
-    "Le moteur attend davantage de sélections": "Le moteur attend davantage de sélections",
+    "Pas assez de sélections admissibles": "Pas assez de sélections admissibles",
     "Le détail de ce format est disponible avec Pro.": "Le détail de ce format est disponible avec Pro.",
     "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.": "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.",
     "Marché non communiqué": "Marché non communiqué",
@@ -820,7 +811,7 @@ const TODAY_MESSAGES = {
     "En préparation": "Being prepared",
     "Aperçu Pro": "Pro preview",
     "Disponible": "Available",
-    "Le moteur attend davantage de sélections": "The engine is waiting for more selections",
+    "Pas assez de sélections admissibles": "The engine is waiting for more selections",
     "Le détail de ce format est disponible avec Pro.": "This format's details are available with Pro.",
     "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.": "A complete accumulator needs at least two matches. No match is added artificially.",
     "Marché non communiqué": "Market not provided",
@@ -987,7 +978,7 @@ const TODAY_MESSAGES = {
     "En préparation": "En preparación",
     "Aperçu Pro": "Vista previa Pro",
     "Disponible": "Disponible",
-    "Le moteur attend davantage de sélections": "El motor espera más selecciones",
+    "Pas assez de sélections admissibles": "El motor espera más selecciones",
     "Le détail de ce format est disponible avec Pro.": "Los detalles de este formato están disponibles con Pro.",
     "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.": "Una combinada completa necesita al menos dos encuentros. No se añaden partidos artificialmente.",
     "Marché non communiqué": "Mercado no comunicado",
@@ -1154,7 +1145,7 @@ const TODAY_MESSAGES = {
     "En préparation": "Em preparação",
     "Aperçu Pro": "Pré-visualização Pro",
     "Disponible": "Disponível",
-    "Le moteur attend davantage de sélections": "O motor aguarda mais seleções",
+    "Pas assez de sélections admissibles": "O motor aguarda mais seleções",
     "Le détail de ce format est disponible avec Pro.": "Os detalhes deste formato estão disponíveis com Pro.",
     "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.": "Uma combinada completa requer pelo menos dois encontros. Nenhum jogo é acrescentado artificialmente.",
     "Marché non communiqué": "Mercado não indicado",
@@ -1321,7 +1312,7 @@ const TODAY_MESSAGES = {
     "En préparation": "In Vorbereitung",
     "Aperçu Pro": "Pro-Vorschau",
     "Disponible": "Verfügbar",
-    "Le moteur attend davantage de sélections": "Die Engine wartet auf weitere Tipps",
+    "Pas assez de sélections admissibles": "Die Engine wartet auf weitere Tipps",
     "Le détail de ce format est disponible avec Pro.": "Details dieses Formats sind mit Pro verfügbar.",
     "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.": "Eine vollständige Kombiwette benötigt mindestens zwei Begegnungen. Es werden keine Spiele künstlich ergänzt.",
     "Marché non communiqué": "Wettmarkt nicht angegeben",
@@ -1488,7 +1479,7 @@ const TODAY_MESSAGES = {
     "En préparation": "قيد الإعداد",
     "Aperçu Pro": "معاينة Pro",
     "Disponible": "متاح",
-    "Le moteur attend davantage de sélections": "ينتظر المحرك مزيدًا من الاختيارات",
+    "Pas assez de sélections admissibles": "ينتظر المحرك مزيدًا من الاختيارات",
     "Le détail de ce format est disponible avec Pro.": "تفاصيل هذه الصيغة متاحة مع Pro.",
     "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.": "يتطلب الرهان المجمع الكامل مباراتين على الأقل. لا تُضاف مباريات بشكل مصطنع.",
     "Marché non communiqué": "السوق غير مُعلن",

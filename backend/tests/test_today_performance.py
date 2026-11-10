@@ -104,3 +104,26 @@ class RenewalCohort(unittest.TestCase):
         data = ns['_quality_payment_metrics'](rows, now, 30)
         self.assertEqual((data['first_30d_due'], data['first_30d_renewed']), (2, 1))
         self.assertEqual(data['first_30d_renewal_percent'], 50)
+
+
+class SubscriptionExample(unittest.IsolatedAsyncioTestCase):
+    async def test_only_settled_wins_are_requested_and_frozen_odds_are_public(self):
+        async def find_one(query, fields, **kwargs):
+            self.assertEqual(query["result"], "won")
+            self.assertTrue(query["is_primary_official"])
+            self.assertEqual(query["is_combo"], {"$ne": True})
+            self.assertEqual(fields["_id"], 0)
+            return {"pick": "Choix", "pick_odds": 1.7, "official_snapshot": {
+                "pick_odds": 1.8, "user_email": "internal@example.test",
+            }}
+        tree = ast.parse((ROOT / "server.py").read_text())
+        route = next(n for n in tree.body if getattr(n, "name", None) == "subscription_analysis_example")
+        route.decorator_list = []
+        ns = dict(Response=object, datetime=datetime, timezone=timezone,
+                  db=SimpleNamespace(predictions_history=SimpleNamespace(find_one=find_one)))
+        exec(compile(ast.Module(body=[route], type_ignores=[]), "preview-regression", "exec"), ns)
+        result = await ns["subscription_analysis_example"](SimpleNamespace(headers={}))
+        self.assertEqual(result["example"]["result"], "won")
+        self.assertEqual(result["example"]["pick_odds"], 1.8)
+        self.assertNotIn("official_snapshot", result["example"])
+        self.assertNotIn("user_email", result["example"])

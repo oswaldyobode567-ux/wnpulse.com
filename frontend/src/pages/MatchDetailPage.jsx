@@ -220,7 +220,7 @@ export default function MatchDetailPage() {
           </div>
         </Card>
         <div className="wp-detail-grid"><aside className="wp-detail-pick" id="match-prediction">
-        {!locked && <PrimarySelectionNotice prediction={p} language={i18n.language}/>}
+
         {/* Prediction summary */}
         {i18n.tx(!p.pick && !p.locked ? <Card className="mb-6 p-5 text-sm text-slate-600" data-testid="prediction-unavailable">{freeWords.unavailable}</Card> : locked ? <Card className="border border-dashed border-orange-300 bg-gradient-to-br from-orange-50 to-rose-50 p-6 mb-6" data-testid="prediction-locked">
             <div className="flex items-start justify-between gap-4 mb-4">
@@ -308,7 +308,7 @@ export default function MatchDetailPage() {
                 {i18n.tx(loadingAnalysis ? <Loader2 className="h-4 w-4 animate-spin" /> : analysisError ? "Réessayer" : "Enrichir l’explication")}
               </Button>)}
           </div>
-          {i18n.tx(!analysis && !loadingAnalysis && <div className="text-sm text-slate-500">{i18n.rich("Demande une pr\xE9sentation compl\xE9mentaire des \xE9l\xE9ments disponibles. Selon la configuration du service, le texte peut \xEAtre r\xE9dig\xE9 avec l\u2019aide d\u2019une IA ou par le moteur statistique.{{v0}}", {
+          {i18n.tx(!analysis && !loadingAnalysis && <div className="text-sm text-slate-500">{i18n.rich("Consulte les raisons du choix et les points à surveiller.{{v0}}", {
             v0: i18n.tx(!isPaid && <div className="mt-3 flex items-center gap-2 text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-3">
                   <Lock className="h-4 w-4" />
                   <span className="text-xs">{i18n.rich("Certaines analyses compl\xE9mentaires sont r\xE9serv\xE9es \xE0 Pro. {{v0}}.", {
@@ -343,12 +343,7 @@ export default function MatchDetailPage() {
                     <span className="font-semibold">{i18n.t("Alternative :")}</span>{i18n.tx(analysis.alternative_bet)}
                   </div>
                 </div>)}
-              <div className="text-[10px] text-slate-400 pt-2">{i18n.rich("Source : {{v0}}", {
-              v0: i18n.tx(["gemini", "anthropic", "openai"].includes(analysis.source) ? i18n.t("R\xE9daction assist\xE9e par IA ({{v0}})", {
-                v0: analysis.source === "gemini" ? "Gemini" : analysis.source === "anthropic" ? "Claude" : "OpenAI"
-              }) : analysis.source === "unknown" || !analysis.source ? "Source non précisée par le service" : "Moteur statistique")
-            })}
-              </div>
+              {["gemini", "anthropic", "openai"].includes(analysis.source) && <p className="mt-2 text-xs text-slate-500">{i18n.t("Résumé assisté par IA")}</p>}
             </div>)}
         </Card>)}
         {!locked && <MarketQuotes match={data} />}
@@ -736,31 +731,19 @@ function DecisionReport({
   const data = state.key === key ? state.data : null;
   const failed = state.key === key && state.error;
   const text = (code, values = {}) => (w[code] || w.unknown).replace(/\{(\w+)\}/g, (_, k) => String(values[k] ?? '—'));
-  const date = value => value && Number.isFinite(new Date(value).getTime()) ? i18n.formatDate(value, {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit'
-  }) : w.unknown;
   const number = value => value !== null && value !== undefined && Number.isFinite(Number(value)) ? i18n.formatNumber(Number(value), {
     maximumFractionDigits: 2
   }) : '—';
   const c = data?.comparable || {};
-  const frozen = data?.initial_snapshot;
   return <section className="wp-decision mb-5 rounded-2xl border border-slate-200 bg-white p-4 sm:p-5" data-testid="decision-report" dir={i18n.direction}>
-  <p className="wp-eyebrow">WinPulse / Insights</p><h2 className="mt-2 text-2xl font-bold text-slate-900">{w.title}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{w.intro}</p>
+  <h2 className="mt-2 text-2xl font-bold text-slate-900">{w.title}</h2><p className="mt-2 text-sm leading-6 text-slate-500">{w.intro}</p>
   {!data ? failed ? <div role="alert" className="mt-4 text-sm leading-6 text-slate-600"><p>{w.error}</p><button type="button" onClick={() => setRetry(n => n + 1)} className="mt-2 min-h-11 rounded-xl border px-4 font-bold text-orange-700">{w.retry}</button></div> : <p role="status" className="mt-4 text-sm text-slate-500">{w.loading}</p> : <>
    <div className="mt-5"><h3 className="text-base font-bold text-slate-900">{w.evidence}</h3><ul className="mt-2 space-y-2 text-sm leading-6 text-slate-600">{(data.support || []).map((fact, i) => <li key={i} className="flex gap-2"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-emerald-600" /><span>{text(fact.code, {
                 value: number(fact.value)
               })}</span></li>)}</ul></div>
    <div className="mt-4 rounded-xl bg-amber-50 p-3"><h3 className="text-sm font-bold text-amber-900">{w.cautions}</h3><ul className="mt-2 space-y-2 text-sm leading-6 text-amber-900">{(data.cautions || []).map((fact, i) => <li key={i}>• {text(fact.code)}</li>)}<li>• {w.alwaysRisk}</li></ul></div>
    {data.context && (data.coverage?.home_games > 0 || data.coverage?.away_games > 0) && <details className="mt-4 border-t border-slate-200 pt-3" data-testid="decision-context"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.contextTitle}</summary><div className="mt-3 grid grid-cols-2 gap-3">{['home', 'away'].map(side => <div key={side} className="min-w-0 rounded-xl bg-slate-50 p-3"><p className="break-words text-xs font-bold">{match?.[`${side}_team`]}</p><strong className="mt-2 block font-mono text-lg">{number(data.context[side]?.wins)} / {number(data.context[side]?.played)}</strong><p className="text-xs text-slate-500">{w.winsGames}</p></div>)}</div><p className="mt-3 text-xs leading-6 text-slate-500">{w.contextNote}</p></details>}
-   <details className="mt-4 border-t border-slate-200 pt-3" data-testid="decision-coverage"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.coverage} · {w[data.coverage?.status] || w.unknown}</summary><p className="mt-2 text-sm leading-6 text-slate-600">{text('games', {
-            home: number(data.coverage?.home_games),
-            away: number(data.coverage?.away_games)
-          })}</p><p className="mt-2 text-xs leading-6 text-slate-500">{w.collected} : {date(data.source_updated_at)}<br />{w.source} : {data.coverage?.source || w.unknown}</p></details>
    <details className="mt-3 border-t border-slate-200 pt-3" data-testid="decision-cohort"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.cohort} <span className="text-slate-500">({number(c.evaluated ?? 0)})</span></summary><p className="mt-2 text-xs leading-6 text-slate-500">{w.basis}</p><div className="mt-3 grid grid-cols-3 gap-2">{[[w.wins, c.won], [w.losses, c.lost], [w.voids, c.void]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3"><strong className="font-mono text-lg">{number(value ?? 0)}</strong><p className="mt-1 text-xs text-slate-500">{label}</p></div>)}</div><p className="mt-3 text-sm font-bold">{w.rate} : {c.win_rate == null ? '—' : `${number(c.win_rate)} %`}</p><p className="mt-2 text-xs leading-6 text-slate-500">{c.evaluated ? c.evaluated < 30 ? w.limited : w.historical : w.none}</p><p className="mt-2 text-xs leading-6 text-slate-500">{w.model} : {c.model_version || w.unknown}</p></details>
-   <details className="mt-3 border-t border-slate-200 pt-3" data-testid="decision-frozen"><summary className="min-h-11 cursor-pointer py-2 text-sm font-bold text-slate-800">{w.frozen}</summary>{frozen ? <><div className="mt-2 grid grid-cols-2 gap-3 text-sm"><div>{w.initialOdds}<strong className="mt-1 block font-mono">{number(frozen.pick_odds)}</strong></div><div>{w.initialEstimate}<strong className="mt-1 block font-mono">{number(frozen.confidence)} %</strong></div></div><p className="mt-3 text-xs text-slate-500">{w.recorded} : {date(frozen.captured_at)}</p><p className="mt-2 text-xs leading-6 text-slate-500">{w.frozenNote}</p></> : <p className="mt-2 text-xs leading-6 text-slate-500">{w.notFrozen}</p>}</details>
    {data.result && <p className="mt-4 rounded-xl bg-slate-50 p-3 text-sm font-bold">{w.result} : {w[data.result.result] || w.unknown} {data.result.final_score && <bdi>· {data.result.final_score}</bdi>}</p>}
   </>}
  </section>;

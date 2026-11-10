@@ -20,7 +20,7 @@ const FALLBACK_PLAN = {
   duration_days: 30,
   period: "mois",
   tagline: "Un seul prix. Tout WinPulse. Sans compromis.",
-  features: ["Accès illimité à tous les pronostics, tous les jours, sur 7 sports", "Tous les combinés (Sûr, Booster, Extra, Jackpot) débloqués", "Chaque match analysé sur tous ses marchés", "Combo Builder et détecteur de value bets", "Analyse IA experte sur chaque match", "Montante WinPulse avec picks débloqués", "Track Record public et vérifiable", "Support prioritaire par WhatsApp"]
+  features: ["Accès illimité à tous les pronostics, tous les jours, sur 7 sports", "Tous les combinés (Sûr, Booster, Extra, Jackpot) débloqués", "Chaque match analysé sur tous ses marchés", "Combo Builder et détecteur de value bets", "Analyses des rencontres", "Montante WinPulse avec picks débloqués", "Track Record public et vérifiable", "Support prioritaire par WhatsApp"]
 };
 function formatXof(i18n, value) {
   const amount = Number(value || 0);
@@ -193,12 +193,17 @@ export default function SubscriptionPage() {
     window.open(`https://wa.me/${WHATSAPP_NUMBER}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
   };
   return <AppLayout>
-      <div className="mx-auto min-w-0 max-w-6xl space-y-6 px-4 py-7 pb-36 sm:px-6 lg:pb-10" data-testid="subscription-page-scroll">
-        <header className="relative overflow-hidden rounded-3xl bg-slate-950 p-6 text-white sm:p-10"><div className="pointer-events-none absolute -end-20 -top-24 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl" aria-hidden="true"/><p className="relative text-xs font-bold uppercase tracking-widest text-orange-300">WinPulse Pro</p><h1 className="relative mt-3 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight sm:text-5xl">{w.proTitle}</h1><p className="relative mt-4 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">{w.proIntro}</p></header>
+      <div className="wp-subscription mx-auto min-w-0 max-w-6xl space-y-6 px-4 py-7 pb-36 sm:px-6 lg:pb-10" data-testid="subscription-page-scroll">
+        <header className="wp-editorial-hero rounded-3xl px-6 py-9 sm:px-12 sm:py-14">
+          <p className="wp-editorial-eyebrow">WinPulse Pro</p>
+          <h1 className="mt-3 max-w-3xl font-heading text-4xl font-bold leading-tight tracking-tight sm:text-6xl">{w.proTitle}</h1>
+          <p className="wp-editorial-muted mt-4 max-w-xl text-base leading-7">{w.proIntro}</p>
+          <a className="wp-editorial-link mt-4 inline-flex min-h-11 items-center text-sm font-bold" href="#pro-example">{i18n.t("Voir un exemple")} ↓</a>
+        </header>
         <ProDiscoveryExample />
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,.8fr)]">
           <section className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 sm:p-6" data-testid="pro-comparison"><h2 className="text-xl font-extrabold text-slate-900">{w.compare}</h2><div className="mt-5 grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 border-b pb-3 text-xs font-bold text-slate-500"><span>{w.feature}</span><span>Free</span><span className="text-orange-700">Pro</span></div>{[[w.selections,w.freeSelections,w.paidSelections],[w.availableData,w.preview,w.included],[w.savedSearches,'3','8'],[w.follow,w.included,w.included],[w.history,w.included,w.included],[w.combos,w.preview,w.included]].map(([label,free,pro],index)=><div key={index} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 border-b border-slate-100 py-4 text-xs leading-5 sm:text-sm"><span className="break-words font-semibold text-slate-800">{label}</span><span className="break-words text-slate-500">{free}</span><span className="break-words font-bold text-orange-700">{pro}</span></div>)}<p className="mt-4 text-xs leading-6 text-slate-500">{w.coverage}</p></section>
-          <section className="rounded-3xl border-2 border-orange-400 bg-white p-6 shadow-lg shadow-orange-100/50 sm:p-8" data-testid={`plan-${plan.id}`}><span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">WinPulse Pro</span><div className="mt-5 flex flex-wrap items-baseline gap-2"><strong className="font-heading text-4xl font-black tracking-tight text-slate-900">{formatXof(i18n,amount)}</strong><span className="text-sm text-slate-500">FCFA / 30 {i18n.language==='fr'?'jours':i18n.language==='en'?'days':i18n.language==='es'?'días':i18n.language==='pt'?'dias':i18n.language==='de'?'Tage':'يوماً'}</span></div><p className="mt-4 text-sm leading-6 text-slate-500">{w.period}</p><ul className="mt-6 space-y-3">{[w.paidSelections,w.availableData,w.combos,w.builder,w.follow,w.savedSearches+' · 8'].map((label,index)=><li key={index} className="flex gap-2 text-sm leading-6 text-slate-700"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-orange-600"/><span>{label}</span></li>)}</ul><Button disabled={isCurrent} onClick={openPayment} data-testid="choose-pro-primary-btn" className="mt-7 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base font-bold text-white hover:bg-orange-700">{isCurrent?i18n.t('Plan actuel'):w.upgrade}</Button><p className="mt-4 text-xs leading-6 text-slate-500">{w.payment}</p></section>
+          <section className="wp-editorial-plan rounded-3xl border bg-white p-6 sm:p-8" data-testid={`plan-${plan.id}`}><span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">WinPulse Pro</span><div className="mt-5 flex flex-wrap items-baseline gap-2"><strong className="font-heading text-4xl font-black tracking-tight text-slate-900">{formatXof(i18n,amount)}</strong><span className="text-sm text-slate-500">FCFA / 30 {i18n.language==='fr'?'jours':i18n.language==='en'?'days':i18n.language==='es'?'días':i18n.language==='pt'?'dias':i18n.language==='de'?'Tage':'يوماً'}</span></div><p className="mt-4 text-sm leading-6 text-slate-500">{w.period}</p><ul className="mt-6 space-y-3">{[w.paidSelections,w.availableData,w.combos,w.builder,w.follow,w.savedSearches+' · 8'].map((label,index)=><li key={index} className="flex gap-2 text-sm leading-6 text-slate-700"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-orange-600"/><span>{label}</span></li>)}</ul><Button disabled={isCurrent} onClick={openPayment} data-testid="choose-pro-primary-btn" className="mt-7 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base font-bold text-white hover:bg-orange-700">{isCurrent?i18n.t('Plan actuel'):w.upgrade}</Button><p className="mt-4 text-xs leading-6 text-slate-500">{w.payment}</p></section>
         </div>
         <p className="rounded-2xl bg-slate-100 p-4 text-xs leading-6 text-slate-600">{w.note}</p>
       </div>
@@ -209,14 +214,13 @@ export default function SubscriptionPage() {
           <div className="pointer-events-auto mx-auto flex w-full max-w-2xl items-center gap-3 rounded-2xl border border-orange-200 bg-white/95 p-3 shadow-[0_-8px_28px_rgba(15,23,42,0.16)] backdrop-blur-xl">
             <div className="min-w-0 flex-1">
               <div className="truncate text-xs font-bold text-slate-500">{i18n.t("WinPulse Pro")}</div>
-              <div className="font-heading text-base font-black text-slate-900">
+              <div className="font-heading whitespace-nowrap text-sm font-bold text-slate-900 sm:text-base">
                 {i18n.rich("{{v0}} FCFA / mois", {
               v0: i18n.tx(formatXof(i18n, amount))
             })}</div>
             </div>
 
-            <a href="#pro-example" className="inline-flex min-h-11 shrink-0 items-center text-xs font-bold text-orange-700 hover:underline">{i18n.t("Voir un exemple")}</a>
-            <button type="button" onClick={openPayment} className="shrink-0 rounded-xl bg-orange-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 active:scale-[0.99]" data-testid="subscription-mobile-sticky-unlock">{i18n.t("D\xE9bloquer Pro")}</button>
+            <button type="button" onClick={openPayment} className="shrink-0 rounded-full bg-orange-500 px-3 py-3 text-sm font-extrabold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 active:scale-[0.99]" data-testid="subscription-mobile-sticky-unlock">{i18n.t("D\xE9bloquer Pro")}</button>
           </div>
         </div>)}
 
@@ -332,15 +336,14 @@ function ProDiscoveryExample() {
   useEffect(() => {
     const controller = new AbortController();
     api.get("/subscription/analysis-example", { signal: controller.signal, timeout: 6500 })
-      .then(({ data }) => { if (!controller.signal.aborted) setExample(data?.example || null); })
+      .then(({ data }) => { if (!controller.signal.aborted) setExample(data?.example?.result === "won" ? data.example : null); })
       .catch(() => { if (!controller.signal.aborted) setExample(null); });
     return () => controller.abort();
   }, []);
-  const verdict = { won: "Gagné", lost: "Perdu", void: "Remboursé" };
-  return <section id="pro-example" className="scroll-mt-20 rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="pro-real-example">
-    <p className="text-xs font-bold uppercase tracking-wider text-orange-700">WinPulse Pro</p>
-    <h2 className="mt-2 text-xl font-extrabold text-slate-900">{i18n.t("Un exemple réel avant de t’abonner")}</h2>
-    {example ? <article className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+  return <section id="pro-example" className="wp-editorial-example scroll-mt-20 rounded-3xl border border-slate-200 bg-white p-5 sm:p-8" data-testid="pro-real-example">
+    <p className="wp-editorial-eyebrow">{i18n.t("Exemple sélectionné")}</p>
+    <h2 className="mt-2 text-xl font-extrabold text-slate-900">{i18n.t("Une sélection gagnante récente")}</h2>
+    {example ? <article className="wp-editorial-example-card mt-5 rounded-2xl p-4 sm:p-6">
       <p className="break-words text-sm font-medium text-slate-600">{i18n.tx(example.sport_title)} · {i18n.formatDate(example.commence_time, { dateStyle: "medium", timeStyle: "short" })}</p>
       <h3 className="mt-2 break-words text-lg font-bold text-slate-900">{example.home_team} · {example.away_team}</h3>
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
@@ -348,9 +351,12 @@ function ProDiscoveryExample() {
         <div><p className="text-xs text-slate-600">{i18n.t("Sélection publiée")}</p><p className="break-words font-bold">{i18n.bet(example.pick)}</p></div>
         <div><p className="text-xs text-slate-600">{i18n.t("Cote publiée")}</p><p className="font-bold">{i18n.formatNumber(example.pick_odds, { maximumFractionDigits: 2 })}</p></div>
       </div>
-      <p className="mt-3 text-sm font-bold">{i18n.t("Résultat")}: {i18n.t(verdict[example.result] || "Clôturé")}</p>
-      <p className="mt-2 text-sm text-slate-600">{i18n.t("Extrait d’une fiche clôturée. Avec Pro, tu retrouves les analyses des matchs à venir et les marchés disponibles pour chaque rencontre.")}</p>
+      <p className="wp-winner-label mt-4 inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-bold"><CheckCircle2 className="h-4 w-4" aria-hidden="true" />{i18n.t("Gagné")}</p>
+      <p className="mt-2 text-sm text-slate-600">{i18n.t("Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.")}</p>
     </article> : <p className="mt-4 text-sm text-slate-600" role="status">{i18n.t(example === undefined ? "Chargement…" : "L’exemple n’est pas disponible pour le moment.")}</p>}
-    <Link to="/resultats" className="mt-2 inline-flex min-h-11 items-center text-sm font-bold text-orange-700 hover:underline">{i18n.t("Voir le bilan des résultats")} →</Link>
+    <div className="mt-2 flex flex-wrap gap-x-5">
+      <Link to="/app/top" className="wp-editorial-link inline-flex min-h-11 items-center text-sm font-bold">{i18n.t("Voir les sélections à la une")} →</Link>
+      <Link to="/resultats" className="inline-flex min-h-11 items-center text-sm font-semibold text-slate-600 hover:underline">{i18n.t("Voir le bilan des résultats")} →</Link>
+    </div>
   </section>;
 }

@@ -1107,5 +1107,13 @@
   "L’exemple n’est pas disponible pour le moment.": "Das Beispiel ist vorübergehend nicht verfügbar.",
   "Voir un exemple": "Beispiel ansehen",
   "Premier renouvellement après 30 jours": "Erste Verlängerung nach 30 Tagen",
-  "Fenêtre de 7 jours terminée": "7-Tage-Zeitraum abgeschlossen"
+  "Fenêtre de 7 jours terminée": "7-Tage-Zeitraum abgeschlossen",
+  "Exemple sélectionné": "Ausgewähltes Beispiel",
+  "Une sélection gagnante récente": "Ein aktueller erfolgreicher Tipp",
+  "Un exemple choisi dans l’historique. Les résultats passés ne garantissent pas les prochains.": "Ein Beispiel aus dem Ergebnisverlauf. Vergangene Ergebnisse sind keine Garantie.",
+  "Voir les sélections à la une": "Empfohlene Tipps ansehen",
+  "Résumé assisté par IA": "KI-gestützte Zusammenfassung",
+  "Consulte les raisons du choix et les points à surveiller.{{v0}}": "Sieh dir die Gründe und die zu beachtenden Punkte an.{{v0}}",
+  "Niveau de risque : {{v0}}": "Risikoniveau: {{v0}}",
+  "Probabilité estimée : {{v0}}.": "Geschätzte Wahrscheinlichkeit: {{v0}}."
 }
