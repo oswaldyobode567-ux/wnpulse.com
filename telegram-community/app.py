@@ -84,6 +84,35 @@ def decode_cover(raw):
             raise ValueError("Unsupported image size")
         return ImageOps.exif_transpose(image).convert("RGB")
 
+async def fetch_cover(client, path):
+    raw = bytearray()
+    async with client.stream("GET",API.removesuffix("/api")+path) as response:
+        response.raise_for_status()
+        if response.headers.get("content-type","").split(";")[0].strip() != "image/webp":
+            return None
+        async for chunk in response.aiter_bytes():
+            if len(raw)+len(chunk)>2_000_000:
+                return None
+            raw.extend(chunk)
+    return await asyncio.to_thread(decode_cover,raw)
+
+async def draft_cover(client, draft):
+    kind = draft.get("kind")
+    if kind == "news":
+        return await news_cover(client, draft)
+    if kind not in ("pick", "results"):
+        return None, ""
+    # These are CC0 illustrations hosted by WinPulse, never photos of the event itself.
+    sport = draft.get("visual_sport")
+    if sport not in ("football", "basketball", "tennis"):
+        sport = "football"
+    try:
+        image = await fetch_cover(client, f"/api/blog/photos/{sport}.webp")
+        return (image, "\n\nPhoto d’illustration.") if image is not None else (None, "")
+    except Exception as exc:
+        LOG.info("Sports illustration unavailable (%s)", type(exc).__name__)
+        return None, ""
+
 async def news_cover(client, draft):
     if draft.get("kind") != "news":
         return None, ""
@@ -105,16 +134,9 @@ async def news_cover(client, draft):
                 or not re.fullmatch(r"https://creativecommons\.org/licenses/by-sa/(?:3|4)\.0/",license_url)
                 or not re.fullmatch(r"CC BY-SA (?:3|4)\.0",license_name)):
             return None, ""
-        raw = bytearray()
-        async with client.stream("GET",API.removesuffix("/api")+path) as response:
-            response.raise_for_status()
-            if response.headers.get("content-type","").split(";")[0].strip() != "image/webp":
-                return None, ""
-            async for chunk in response.aiter_bytes():
-                if len(raw)+len(chunk)>2_000_000:
-                    return None, ""
-                raw.extend(chunk)
-        image = await asyncio.to_thread(decode_cover,raw)
+        image = await fetch_cover(client, path)
+        if image is None:
+            return None, ""
         attribution = ("\n\n"+clean(credit.get("caption"),95)+" · "+clean(credit["author"],65)
                        +" · "+license_name+" · Image recadrée et mise en page\n"+source+"\n"+license_url)
         return image, attribution
@@ -126,7 +148,7 @@ async def telegram(method, chat, text, draft=None):
     params={"chat_id":str(chat)}
     async with httpx.AsyncClient(timeout=14,follow_redirects=False) as client:
         if draft:
-            photo, attribution=await news_cover(client,draft)
+            photo, attribution=await draft_cover(client,draft)
             # If full attribution would not fit, keep the text-only card.
             if len((text+attribution).encode("utf-16-le"))//2>1024:
                 photo, attribution=None, ""

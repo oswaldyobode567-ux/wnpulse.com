@@ -28,6 +28,7 @@ def stamp(value):
 def make(kind, data, now, scheduled):
     """Return exact facts and their validity deadline; no guessed results."""
     lines, link, until = [], LINKS[kind], datetime.combine(now.date()+timedelta(days=1), datetime.min.time(), ZONE)
+    visual_sport = ""
     if kind == "pick":
         candidates = []
         for row in data.get("items", []):
@@ -50,6 +51,8 @@ def make(kind, data, now, scheduled):
         if not candidates:
             return None
         start, row, pred, odds = min(candidates, key=lambda c:c[0])
+        sport = str(row.get("sport_key") or "").lower().partition("_")[0]
+        visual_sport = {"soccer":"football","basketball":"basketball","tennis":"tennis"}.get(sport,"")
         until = min(until, start)
         lines = [f"{clean(row['home_team'],70)} – {clean(row['away_team'],70)}",
                  f"{clean(pred.get('market_label'),70) or 'Pronostic'} : {clean(pred['pick'],100)}",
@@ -78,7 +81,8 @@ def make(kind, data, now, scheduled):
         link = LINKS[kind].replace("/blog?", f"/blog/{post['slug']}?")
     else:
         return None
-    return {"kind":kind,"title":LABELS[kind],"lines":lines,"link":link,"until":until.timestamp()}
+    return {"kind":kind,"title":LABELS[kind],"lines":lines,"link":link,"until":until.timestamp(),
+            "visual_sport":visual_sport}
 
 def subscription(plans):
     pro = next((p for p in plans if isinstance(p,dict) and p.get("id")=="pro"),None) if isinstance(plans,list) else None
@@ -119,16 +123,20 @@ def poster(draft, photo=None):
             y+=face.size+13
         y+=18
     if photo is not None:
+        news = draft.get("kind") == "news"
+        photo_height = 448 if news else 342
         draw.text((110,169),draft["title"],font=font(39,True),fill="#FFFFFF")
-        cover = ImageOps.fit(photo, (860,448), method=Image.Resampling.LANCZOS)
+        cover = ImageOps.fit(photo, (860,photo_height), method=Image.Resampling.LANCZOS)
         mask = Image.new("L", cover.size)
-        ImageDraw.Draw(mask).rounded_rectangle((0,0,859,447),radius=18,fill=255)
+        ImageDraw.Draw(mask).rounded_rectangle((0,0,859,photo_height-1),radius=18,fill=255)
         image.paste(cover,(110,236),mask)
-        draw.rounded_rectangle((127,631,410,668),radius=8,fill="#111425")
-        draw.text((141,637),"PHOTO D’ARCHIVES",font=font(21,True),fill="#FFFFFF")
-        y=711
-        for i,line in enumerate(draft["lines"][:2]):
-            block(line,font(33 if i==0 else 24,i==0),"#F4F2F7",3 if i==0 else 1)
+        label_y = 236 + photo_height - 53
+        draw.rounded_rectangle((127,label_y,456,label_y+37),radius=8,fill="#111425")
+        draw.text((141,label_y+6),"PHOTO D’ARCHIVES" if news else "PHOTO D’ILLUSTRATION",
+                  font=font(21,True),fill="#FFFFFF")
+        y=236 + photo_height + 27
+        for i,line in enumerate(draft["lines"][:2 if news else 4]):
+            block(line,font(33 if i==0 else 24,i==0),"#F4F2F7", (3 if news else 2) if i==0 else 1)
         draw.text((110,956),"wnpulse.com  •  18+  •  Aucun gain garanti",font=font(24),fill="#E2D9EA")
         buffer=BytesIO()
         image.save(buffer,format="PNG")

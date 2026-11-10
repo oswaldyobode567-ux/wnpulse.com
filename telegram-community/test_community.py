@@ -27,7 +27,7 @@ class Community(unittest.IsolatedAsyncioTestCase):
 
     def test_selects_only_public_future_pick_and_renders_png(self):
         pred = {"free_daily_pick":True,"locked":False,"pick":"Lille","pick_odds":1.48}
-        row = {"result":"pending","home_team":"Lille","away_team":"Le Havre","prediction":pred}
+        row = {"result":"pending","home_team":"Lille","away_team":"Le Havre","prediction":pred,"sport_key":"soccer_france_ligue_one"}
         rows = [
             {**row,"commence_time":(self.now-timedelta(minutes=1)).isoformat()},
             {**row,"prediction":{**pred,"locked":True},"commence_time":(self.now+timedelta(minutes=10)).isoformat()},
@@ -35,6 +35,7 @@ class Community(unittest.IsolatedAsyncioTestCase):
         ]
         draft=make("pick",{"items":rows},self.now,self.now)
         self.assertIn("Cote observée : 1,48",draft["lines"])
+        self.assertEqual(draft["visual_sport"],"football")
         self.assertIsNone(make("pick",{"items":rows[:2]},self.now,self.now))
         with Image.open(BytesIO(poster(draft))) as image:
             self.assertEqual((image.format,image.size),("PNG",(1080,1080)))
@@ -98,6 +99,22 @@ class Community(unittest.IsolatedAsyncioTestCase):
                     self.assertEqual(rendered.getpixel((540,430)),(215,190,75))
                 article["post"]["cover_credit"]["url"]="https://example.org/photo.webp"
                 self.assertEqual(await app.news_cover(client,draft),(None,""))
+
+    async def test_pick_and_results_previews_include_an_illustration(self):
+        raw = BytesIO()
+        Image.new("RGB",(960,540),(50,160,220)).save(raw,"WEBP",lossless=True)
+        paths=[]
+        def cover_request(request):
+            paths.append(request.url.path)
+            return httpx.Response(200,headers={"content-type":"image/webp"},content=raw.getvalue())
+        async with httpx.AsyncClient(transport=httpx.MockTransport(cover_request)) as client:
+            for draft in ({**self.draft,"kind":"pick","visual_sport":"tennis"},
+                          {**self.draft,"kind":"results"}):
+                photo, credit=await app.draft_cover(client,draft)
+                self.assertIn("Photo d’illustration",credit)
+                with Image.open(BytesIO(poster(draft,photo))) as rendered:
+                    self.assertEqual(rendered.getpixel((540,420)),(50,160,220))
+        self.assertEqual(paths,["/api/blog/photos/tennis.webp","/api/blog/photos/football.webp"])
 
     async def test_channel_requires_approval_and_sends_once(self):
         app.put("a",self.draft,self.now.timestamp())
