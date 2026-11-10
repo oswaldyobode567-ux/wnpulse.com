@@ -293,6 +293,37 @@ async def prepare(now):
         except Exception as exc:
             LOG.info("Draft %s unavailable (%s)",kind,type(exc).__name__)
 
+def approve_draft(key, now):
+    row=get(key)
+    if not row:
+        return "Brouillon introuvable. Copie l’identifiant exact dans /drafts."
+    state=row["state"]
+    if state=="sent":
+        if re.fullmatch(r"@[a-zA-Z0-9_]+",CHANNEL) and row["telegram_id"]:
+            return f"Déjà publié : https://t.me/{CHANNEL[1:]}/{row['telegram_id']}"
+        return "Ce brouillon a déjà été publié."
+    if state=="sending":
+        return "L’envoi est en cours. Ne relance pas la commande."
+    if state=="review":
+        return "Telegram n’a pas confirmé l’envoi. Vérifie le canal avant de republier."
+    if state=="cancelled":
+        return "Ce brouillon a été annulé."
+    if state=="expired" or row["expires"]<=now:
+        move(key,("draft","approved"),"expired")
+        end=datetime.fromtimestamp(row["expires"],ZONE)
+        return f"Brouillon expiré depuis le {end:%d/%m à %H:%M} (Porto-Novo). Aucun envoi prévu."
+    if state not in ("draft","approved"):
+        return "Ce brouillon ne peut pas être validé. Consulte /drafts."
+    if state=="draft" and not move(key,("draft",),"approved"):
+        return "Le statut a changé. Renvoie /approve pour voir le nouvel état."
+    prefix = "Déjà validé." if state=="approved" else "Brouillon validé."
+    if not (LIVE and VALID_CHANNEL and VALID_TOKEN):
+        return prefix+" Publication dans le canal désactivée ou non configurée."
+    if row["due"]<=now:
+        return prefix+" Envoi au prochain passage du bot, tant que le brouillon est encore valide."
+    due=datetime.fromtimestamp(row["due"],ZONE)
+    return f"{prefix} Publication prévue le {due:%d/%m à %H:%M} (Porto-Novo)."
+
 async def publish(key):
     if not (LIVE and VALID_CHANNEL and VALID_TOKEN):
         return "Publication désactivée."
@@ -423,12 +454,7 @@ async def command(message):
                      "until":(due+timedelta(hours=6)).timestamp()},due.timestamp())
             answer=f"Brouillon {key} pour {due:%d/%m à %H:%M}. /preview {key} puis /approve {key}."
     elif is_admin and name=="/approve":
-        row=get(arg)
-        answer=("Brouillon validé ; publication prévue à l’heure indiquée (ou au prochain passage si dépassée)."
-                if row and row["expires"]>time.time() and move(arg,("draft",),"approved")
-                else "Brouillon indisponible, déjà traité ou expiré.")
-        if not LIVE and row:
-            answer+=" Publication canal désactivée pour ce service."
+        answer=approve_draft(arg,time.time())
     elif is_admin and name=="/cancel":
         answer="Brouillon annulé." if move(arg,("draft","approved"),"cancelled") else "Brouillon non annulable."
     if answer:

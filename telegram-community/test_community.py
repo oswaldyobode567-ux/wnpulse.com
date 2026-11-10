@@ -124,10 +124,22 @@ class Community(unittest.IsolatedAsyncioTestCase):
         send=AsyncMock(return_value={"message_id":19})
         with patch.multiple(app,LIVE=True,VALID_CHANNEL=True,VALID_TOKEN=True,CHANNEL="@testwinpulse",telegram=send):
             self.assertIn("non validé",await app.publish("a"))
-            self.assertTrue(app.move("a",("draft",),"approved"))
+            self.assertIn("Brouillon validé.",app.approve_draft("a",self.now.timestamp()))
+            self.assertIn("Déjà validé.",app.approve_draft("a",self.now.timestamp()))
             await asyncio.gather(app.publish("a"),app.publish("a"))
+            self.assertIn("https://t.me/testwinpulse/19",app.approve_draft("a",self.now.timestamp()))
         self.assertEqual(send.await_count,1)
         self.assertEqual(app.get("a")["telegram_id"],19)
+
+    def test_approve_distinguishes_expired_missing_and_unconfirmed(self):
+        now=self.now.timestamp()
+        app.put("old",{**self.draft,"until":now-1},now-50)
+        self.assertIn("introuvable",app.approve_draft("missing",now))
+        self.assertIn("expiré",app.approve_draft("old",now))
+        self.assertEqual(app.get("old")["state"],"expired")
+        app.put("review",self.draft,now)
+        app.move("review",("draft",),"review")
+        self.assertIn("n’a pas confirmé",app.approve_draft("review",now))
 
     async def test_ambiguous_delivery_is_not_retried(self):
         app.put("a",self.draft,self.now.timestamp())
