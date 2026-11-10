@@ -8440,16 +8440,50 @@ async def hybrid_prediction_status(payload:dict=Depends(get_current_user_payload
 
 
 _prediction_snapshot_task = None
+_catalogue_warm_task = None
 
 
-async def _get_prediction_snapshot(force: bool = False) -> Dict:
+def _ensure_prediction_snapshot_task():
     global _prediction_snapshot_task
-    if force:
-        return await _build_prediction_snapshot(force=True)
     if _prediction_snapshot_task is None or _prediction_snapshot_task.done():
         _prediction_snapshot_task = asyncio.create_task(_build_prediction_snapshot())
         _prediction_snapshot_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-    return await asyncio.shield(_prediction_snapshot_task)
+    return _prediction_snapshot_task
+
+
+async def _get_prediction_snapshot(force: bool = False) -> Dict:
+    if force:
+        return await _build_prediction_snapshot(force=True)
+    return await asyncio.shield(_ensure_prediction_snapshot_task())
+
+
+async def _keep_catalogue_warm():
+    # Local Mongo cache only. No provider calls or additional odds credits.
+    while True:
+        started = time.monotonic()
+        cold = not _prediction_cache["matches"]
+        try:
+            await _get_prediction_snapshot()
+            if cold:
+                logging.getLogger("winpulse.catalogue").info(
+                    "Catalogue warmup completed in %.0f ms", (time.monotonic()-started)*1000)
+        except Exception as exc:
+            logging.getLogger("winpulse.catalogue").warning("Catalogue warmup failed: %s", type(exc).__name__)
+        await asyncio.sleep(30)
+
+
+async def _catalogue_snapshot(compact):
+    age = time.monotonic() - _prediction_cache["timestamp"]
+    if compact and _prediction_cache["matches"] and age < PREDICTION_CACHE_TTL + 120:
+        if age >= 30:
+            _ensure_prediction_snapshot_task()
+        return dict(_prediction_cache), "hit" if age < 30 else "refreshing"
+    mode = "refresh" if _prediction_cache["matches"] else "cold"
+    try:
+        return dict(await asyncio.wait_for(_get_prediction_snapshot(), timeout=12)), mode
+    except asyncio.TimeoutError:
+        logging.getLogger("winpulse.catalogue").warning("Catalogue %s: preparation exceeds 12 seconds", mode)
+        raise HTTPException(status_code=503, detail="Le catalogue est en cours de préparation.", headers={"Retry-After": "5", "X-Catalogue-Cache": mode})
 
 
 async def _build_prediction_snapshot(force: bool = False) -> Dict:
@@ -8520,16 +8554,8 @@ async def _build_prediction_snapshot(force: bool = False) -> Dict:
             calibration = await asyncio.wait_for(_compute_calibration_map(), timeout=2)
         except Exception:
             calibration = _prediction_cache.get("calibration") or {}
-        # Le cache des prédictions doit suivre immédiatement le cache Mongo des
-        # matchs. Sans ce contrôle, un refresh du flux pouvait laisser l'API
-        # servir pendant 300 s l'ancienne liste de matchs.
-        source_cache_updated_at = None
-        cache_meta = {}
-        try:
-            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1,"montante_quotes_updated_at":1})
-            source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
-        except Exception:
-            pass
+        # Tag the data with the source observed before reading it. A concurrent
+        # odds refresh must never relabel an older snapshot as the new version.
         _prediction_cache.update({
             "timestamp": time.monotonic(),
             "matches": matches,
@@ -8614,8 +8640,10 @@ def _match_is_finished(match: dict) -> bool:
 
 
 @app.get("/api/matches")
-async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payload), compact: bool = False):
-    snapshot = await _get_prediction_snapshot()
+async def get_matches(response: Response, payload: Optional[dict] = Depends(get_optional_user_payload), compact: bool = False):
+    started = time.monotonic()
+    snapshot, cache_mode = await _catalogue_snapshot(compact)
+    prepared = time.monotonic()
     matches = [m for m in snapshot["matches"] if not _match_is_finished(m)]
     predictions = _apply_calibration(
         [dict(p) for p in snapshot["predictions"]],
@@ -8638,6 +8666,11 @@ async def get_matches(payload: Optional[dict] = Depends(get_optional_user_payloa
         if compact:
             outer = {key:value for key,value in outer.items() if key != "bookmakers"}
         merged.append(_merge_match_prediction(outer, pred))
+    duration = (time.monotonic() - started) * 1000
+    response.headers["X-Catalogue-Cache"] = cache_mode
+    response.headers["Server-Timing"] = f"catalogue;dur={duration:.1f};desc=\"{cache_mode}\", snapshot;dur={(prepared-started)*1000:.1f}"
+    if cache_mode == "cold" or duration > 1500:
+        logging.getLogger("winpulse.catalogue").info("Catalogue %s: %.0f ms (%d matches)", cache_mode, duration, len(merged))
     return merged
 
 
@@ -12403,6 +12436,24 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
     return payload
 
 
+@app.get("/api/subscription/analysis-example")
+async def subscription_analysis_example(response: Response):
+    fields = {key: 1 for key in (
+        "home_team", "away_team", "sport_title", "commence_time", "pick",
+        "market_label", "pick_odds", "result",
+    )}
+    fields["_id"] = 0
+    example = await db.predictions_history.find_one(
+        {"is_primary_official": True, "is_combo": {"$ne": True},
+         "result": {"$in": ["won", "lost", "void"]},
+         "pick": {"$type": "string", "$ne": ""},
+         "commence_time": {"$lt": datetime.now(timezone.utc).isoformat()}},
+        fields, sort=[("commence_time", -1)], max_time_ms=3500,
+    )
+    response.headers["Cache-Control"] = "public, max-age=120"
+    return {"example": example}
+
+
 @app.get("/api/track-record")
 async def get_track_record_public(
     page: int = 1,
@@ -15346,6 +15397,8 @@ async def startup_event():
 
     # Recovery is queued; API readiness does not wait on external scores.
     _queue_track_results()
+    global _catalogue_warm_task
+    _catalogue_warm_task = asyncio.create_task(_keep_catalogue_warm())
     asyncio.create_task(_warm_today_combos())
     if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
@@ -15424,6 +15477,10 @@ async def _recover_odds_after_startup():
 
 @app.on_event("shutdown")
 async def shutdown_event():
+    for task in (_catalogue_warm_task, _prediction_snapshot_task):
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
     if _startup_odds_recovery_task and not _startup_odds_recovery_task.done():
         _startup_odds_recovery_task.cancel()
     if _live_video_scheduler.running:
@@ -15814,6 +15871,7 @@ def _quality_payment_metrics(rows, now, days, registrations=None):
     period_refs = {str(row.get("reference") or row.get("_id")) for _, row in confirmed}
     attempt_paid = sum(str(r.get("reference") or r.get("_id")) in period_refs for r in attempts)
     repeated = 0; first_buyers = set(); due = renewed = missing_expiry = 0
+    first_due = first_renewed = 0
     for uid, payments in by_user.items():
         for i, (paid, row) in enumerate(payments):
             if cutoff <= paid <= now:
@@ -15830,8 +15888,12 @@ def _quality_payment_metrics(rows, now, days, registrations=None):
             # are never called churn. Early renewal also counts.
             if cutoff - timedelta(days=7) <= expiry <= now - timedelta(days=7):
                 due += 1
-                if any(paid < later <= expiry + timedelta(days=7) for later, _ in payments[i+1:]):
+                renewed_in_window = any(paid <= later <= expiry + timedelta(days=7) for later, _ in payments[i+1:])
+                if renewed_in_window:
                     renewed += 1
+                if i == 0 and timedelta(days=29, hours=23) <= expiry - paid <= timedelta(days=30, hours=1):
+                    first_due += 1
+                    first_renewed += int(renewed_in_window)
     revenue = 0; amount_missing = 0; fedapay = manual = unknown_environment = 0
     for _, row in paid_period:
         amount = _quality_number(row.get("amount_fcfa"))
@@ -15856,6 +15918,8 @@ def _quality_payment_metrics(rows, now, days, registrations=None):
         "first_buyers": len(first_buyers), "repeat_purchases": repeated,
         "renewal_cycles_due": due, "renewal_cycles_renewed": renewed,
         "renewal_percent": round(100*renewed/due, 1) if due else None,
+        "first_30d_due": first_due, "first_30d_renewed": first_renewed,
+        "first_30d_renewal_percent": round(100*first_renewed/first_due, 1) if first_due else None,
         "payments_missing_expiry": missing_expiry, "grace_days": 7,
         "renewal_from": (cutoff-timedelta(days=7)).isoformat(), "renewal_to": (now-timedelta(days=7)).isoformat(),
         "new_registrations": len(registrations), "new_registrations_paid": converted,
