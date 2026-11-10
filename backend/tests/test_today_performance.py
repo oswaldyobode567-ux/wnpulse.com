@@ -69,3 +69,38 @@ class TodayReason(unittest.TestCase):
         result=ns['build_today_combos_by_sport'](rows)
         self.assertEqual(result['day_offset'],0)
         self.assertEqual(result['families']['soccer']['availability_reason'],'no_eligible_markets')
+        self.assertEqual(result['families']['soccer']['next_fixture_date'], (now+timedelta(hours=25)).date().isoformat())
+
+class CatalogueCache(unittest.IsolatedAsyncioTestCase):
+    async def test_compact_catalogue_serves_existing_snapshot_while_refreshing(self):
+        now = time.monotonic()
+        started = []
+        ns = load('server.py', {'_catalogue_snapshot'}, {
+            'time': time, 'PREDICTION_CACHE_TTL': 300,
+            '_prediction_cache': {'matches': [{'id': 'existing'}], 'timestamp': now - 40},
+            '_ensure_prediction_snapshot_task': lambda: started.append(True),
+        })
+        snapshot, mode = await ns['_catalogue_snapshot'](True)
+        self.assertEqual(mode, 'refreshing')
+        self.assertEqual(snapshot['matches'], [{'id': 'existing'}])
+        self.assertEqual(started, [True])
+        self.assertIsNot(snapshot, ns['_prediction_cache'])
+
+
+class RenewalCohort(unittest.TestCase):
+    def test_first_month_requires_completed_grace_and_counts_one_cycle_per_customer(self):
+        now = datetime(2026, 11, 10, tzinfo=timezone.utc)
+        ns = load('server.py', {'_quality_payment_metrics'}, {
+            'timedelta': timedelta, '_quality_time': lambda value: value,
+            '_quality_number': float,
+        })
+        def row(user, ref, ago, duration=30, environment='live'):
+            paid = now - timedelta(days=ago)
+            return dict(user_id=user, reference=ref, status='approved', approved_at=paid,
+                        created_at=paid, payment_environment=environment, amount_fcfa=10500,
+                        activation_expires_at=paid + timedelta(days=duration))
+        rows = [row('a', 'a1', 55), row('a', 'a2', 27), row('b', 'b1', 40),
+                row('c', 'c1', 34), row('test', 'test', 45, environment='sandbox')]
+        data = ns['_quality_payment_metrics'](rows, now, 30)
+        self.assertEqual((data['first_30d_due'], data['first_30d_renewed']), (2, 1))
+        self.assertEqual(data['first_30d_renewal_percent'], 50)

@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { Link } from "react-router-dom";
-import MatchCard from "@/components/MatchCard";
 import AppLayout, { usePageLanguage, useExperienceCopy, useExperienceEvent } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -196,11 +195,11 @@ export default function SubscriptionPage() {
   return <AppLayout>
       <div className="mx-auto min-w-0 max-w-6xl space-y-6 px-4 py-7 pb-36 sm:px-6 lg:pb-10" data-testid="subscription-page-scroll">
         <header className="relative overflow-hidden rounded-3xl bg-slate-950 p-6 text-white sm:p-10"><div className="pointer-events-none absolute -end-20 -top-24 h-72 w-72 rounded-full bg-orange-500/20 blur-3xl" aria-hidden="true"/><p className="relative text-xs font-bold uppercase tracking-widest text-orange-300">WinPulse Pro</p><h1 className="relative mt-3 max-w-3xl text-3xl font-extrabold leading-tight tracking-tight sm:text-5xl">{w.proTitle}</h1><p className="relative mt-4 max-w-2xl text-sm leading-7 text-slate-300 sm:text-base">{w.proIntro}</p></header>
+        <ProDiscoveryExample />
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,.8fr)]">
           <section className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 sm:p-6" data-testid="pro-comparison"><h2 className="text-xl font-extrabold text-slate-900">{w.compare}</h2><div className="mt-5 grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 border-b pb-3 text-xs font-bold text-slate-500"><span>{w.feature}</span><span>Free</span><span className="text-orange-700">Pro</span></div>{[[w.selections,w.freeSelections,w.paidSelections],[w.availableData,w.preview,w.included],[w.savedSearches,'3','8'],[w.follow,w.included,w.included],[w.history,w.included,w.included],[w.combos,w.preview,w.included]].map(([label,free,pro],index)=><div key={index} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 border-b border-slate-100 py-4 text-xs leading-5 sm:text-sm"><span className="break-words font-semibold text-slate-800">{label}</span><span className="break-words text-slate-500">{free}</span><span className="break-words font-bold text-orange-700">{pro}</span></div>)}<p className="mt-4 text-xs leading-6 text-slate-500">{w.coverage}</p></section>
           <section className="rounded-3xl border-2 border-orange-400 bg-white p-6 shadow-lg shadow-orange-100/50 sm:p-8" data-testid={`plan-${plan.id}`}><span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">WinPulse Pro</span><div className="mt-5 flex flex-wrap items-baseline gap-2"><strong className="font-heading text-4xl font-black tracking-tight text-slate-900">{formatXof(i18n,amount)}</strong><span className="text-sm text-slate-500">FCFA / 30 {i18n.language==='fr'?'jours':i18n.language==='en'?'days':i18n.language==='es'?'días':i18n.language==='pt'?'dias':i18n.language==='de'?'Tage':'يوماً'}</span></div><p className="mt-4 text-sm leading-6 text-slate-500">{w.period}</p><ul className="mt-6 space-y-3">{[w.paidSelections,w.availableData,w.combos,w.builder,w.follow,w.savedSearches+' · 8'].map((label,index)=><li key={index} className="flex gap-2 text-sm leading-6 text-slate-700"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-orange-600"/><span>{label}</span></li>)}</ul><Button disabled={isCurrent} onClick={openPayment} data-testid="choose-pro-primary-btn" className="mt-7 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base font-bold text-white hover:bg-orange-700">{isCurrent?i18n.t('Plan actuel'):w.upgrade}</Button><p className="mt-4 text-xs leading-6 text-slate-500">{w.payment}</p></section>
         </div>
-        <ProDiscoveryExample />
         <p className="rounded-2xl bg-slate-100 p-4 text-xs leading-6 text-slate-600">{w.note}</p>
       </div>
 
@@ -216,6 +215,7 @@ export default function SubscriptionPage() {
             })}</div>
             </div>
 
+            <a href="#pro-example" className="inline-flex min-h-11 shrink-0 items-center text-xs font-bold text-orange-700 hover:underline">{i18n.t("Voir un exemple")}</a>
             <button type="button" onClick={openPayment} className="shrink-0 rounded-xl bg-orange-500 px-4 py-3 text-sm font-extrabold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 active:scale-[0.99]" data-testid="subscription-mobile-sticky-unlock">{i18n.t("D\xE9bloquer Pro")}</button>
           </div>
         </div>)}
@@ -326,8 +326,31 @@ export default function SubscriptionPage() {
     </AppLayout>;
 }
 
-function ProDiscoveryExample(){
- const w=useExperienceCopy();const {user}=useAuth();const [example,setExample]=useState(null);
- useEffect(()=>{const controller=new AbortController();setExample(null);api.get('/discovery',{signal:controller.signal,timeout:12000}).then(({data})=>{if(!controller.signal.aborted)setExample((data.items||[]).find(m=>m?.prediction?.pick&&!m.prediction.locked)||null);}).catch(()=>{});return()=>controller.abort();},[user?.id,user?.subscription,user?.subscription_tier]);
- return <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="pro-real-example"><h2 className="text-lg font-extrabold text-slate-900">{w.previewExample}</h2>{example?<div className="mt-4 max-w-xl"><MatchCard match={example} isFree={!user?.is_admin&&String(user?.subscription_tier||user?.subscription||'free').toLowerCase()==='free'}/></div>:<Link to="/app/aujourdhui" className="mt-4 inline-flex min-h-11 items-center text-sm font-bold text-orange-700">{w.allMatches} →</Link>}</section>;
+function ProDiscoveryExample() {
+  const i18n = usePageLanguage();
+  const [example, setExample] = useState(undefined);
+  useEffect(() => {
+    const controller = new AbortController();
+    api.get("/subscription/analysis-example", { signal: controller.signal, timeout: 6500 })
+      .then(({ data }) => { if (!controller.signal.aborted) setExample(data?.example || null); })
+      .catch(() => { if (!controller.signal.aborted) setExample(null); });
+    return () => controller.abort();
+  }, []);
+  const verdict = { won: "Gagné", lost: "Perdu", void: "Remboursé" };
+  return <section id="pro-example" className="scroll-mt-20 rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="pro-real-example">
+    <p className="text-xs font-bold uppercase tracking-wider text-orange-700">WinPulse Pro</p>
+    <h2 className="mt-2 text-xl font-extrabold text-slate-900">{i18n.t("Un exemple réel avant de t’abonner")}</h2>
+    {example ? <article className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 sm:p-5">
+      <p className="break-words text-sm font-medium text-slate-600">{i18n.tx(example.sport_title)} · {i18n.formatDate(example.commence_time, { dateStyle: "medium", timeStyle: "short" })}</p>
+      <h3 className="mt-2 break-words text-lg font-bold text-slate-900">{example.home_team} · {example.away_team}</h3>
+      <div className="mt-4 grid gap-3 sm:grid-cols-3">
+        <div><p className="text-xs text-slate-600">{i18n.t("Marché")}</p><p className="break-words font-bold">{i18n.bet(example.market_label) || "—"}</p></div>
+        <div><p className="text-xs text-slate-600">{i18n.t("Sélection publiée")}</p><p className="break-words font-bold">{i18n.bet(example.pick)}</p></div>
+        <div><p className="text-xs text-slate-600">{i18n.t("Cote publiée")}</p><p className="font-bold">{i18n.formatNumber(example.pick_odds, { maximumFractionDigits: 2 })}</p></div>
+      </div>
+      <p className="mt-3 text-sm font-bold">{i18n.t("Résultat")}: {i18n.t(verdict[example.result] || "Clôturé")}</p>
+      <p className="mt-2 text-sm text-slate-600">{i18n.t("Extrait d’une fiche clôturée. Avec Pro, tu retrouves les analyses des matchs à venir et les marchés disponibles pour chaque rencontre.")}</p>
+    </article> : <p className="mt-4 text-sm text-slate-600" role="status">{i18n.t(example === undefined ? "Chargement…" : "L’exemple n’est pas disponible pour le moment.")}</p>}
+    <Link to="/resultats" className="mt-2 inline-flex min-h-11 items-center text-sm font-bold text-orange-700 hover:underline">{i18n.t("Voir le bilan des résultats")} →</Link>
+  </section>;
 }

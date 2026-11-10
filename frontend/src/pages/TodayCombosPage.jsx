@@ -244,6 +244,13 @@ export default function TodayCombosPage() {
     if (families.length && !families.some(f => f.family_key === sportKey)) setSportKey(families[0].family_key);
   }, [families, sportKey]);
   const family = families.find(f => f.family_key === sportKey);
+  const readyCount = f => Object.values(f?.tiers || {}).filter(t => availability(t, now) === "ready").length;
+  const rankedFamilies = [...families].sort((a, b) =>
+    Number(b.family_key === "all") - Number(a.family_key === "all") ||
+    readyCount(b) - readyCount(a) || Number(b.matches_today > 0) - Number(a.matches_today > 0)
+  );
+  const nextDate = /^\d{4}-\d{2}-\d{2}$/.test(family?.next_fixture_date || "")
+    ? formatDate(i18n, family.next_fixture_date + "T12:00:00Z", { dateStyle: "long", timeZone: "UTC" }) : null;
   const tiers = useMemo(() => {
     const result = Object.entries(family?.tiers || {}).filter(([key, tier]) => LEVEL_ORDER.includes(key) && tier && typeof tier === "object" && !Array.isArray(tier));
     return result.sort(([a], [b]) => (LEVEL_ORDER.indexOf(a) < 0 ? 99 : LEVEL_ORDER.indexOf(a)) - (LEVEL_ORDER.indexOf(b) < 0 ? 99 : LEVEL_ORDER.indexOf(b)));
@@ -257,7 +264,8 @@ export default function TodayCombosPage() {
   const accessible = tiers.filter(([key, tier]) => canShare(tier, key, isFree, now)).length;
   const upcoming = number(family?.matches_today);
   const localZone = Intl.DateTimeFormat().resolvedOptions().timeZone || "heure locale";
-  const generatedLabel = formatDate(i18n, data?.generated_at, {
+  const selectionDate = /^\d{4}-\d{2}-\d{2}$/.test(data?.selection_date || "") ? data.selection_date + "T12:00:00Z" : data?.generated_at;
+  const generatedLabel = formatDate(i18n, selectionDate, {
     day: "numeric",
     month: "long",
     timeZone: data?.schedule_timezone || "UTC"
@@ -352,8 +360,8 @@ export default function TodayCombosPage() {
             </Button>
           </div>
           <div className="mb-4 flex gap-2 overflow-x-auto pb-1" aria-label={i18n.t("Filtrer par sport")}>
-            {i18n.tx(families.map(f => <button type="button" key={f.family_key} aria-pressed={sportKey === f.family_key} onClick={() => setSportKey(f.family_key)} className={cn("shrink-0 min-h-[48px] rounded-xl border px-5 py-3 text-[16px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500", sportKey === f.family_key ? "border-slate-900 bg-slate-900 text-white" : "border-neutral-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50")}>
-              {i18n.tx(f.family_label)}<span className="ms-2 text-[14px] opacity-60">{i18n.tx(formatNumber(i18n, f.matches_today, 0))}</span>
+            {i18n.tx(rankedFamilies.map(f => <button type="button" key={f.family_key} aria-pressed={sportKey === f.family_key} onClick={() => setSportKey(f.family_key)} className={cn("shrink-0 min-h-[48px] rounded-xl border px-5 py-3 text-[16px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500", sportKey === f.family_key ? "border-slate-900 bg-slate-900 text-white" : "border-neutral-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50")}>
+              {i18n.tx(f.family_label)}{f.family_key !== "all" && readyCount(f) > 0 && <span className="ms-2 inline-block h-2 w-2 rounded-full bg-emerald-500" aria-label={i18n.t("Combinés prêts")} />}<span className="ms-2 text-[14px] opacity-60">{i18n.tx(formatNumber(i18n, f.matches_today, 0))}</span>
             </button>))}
             {i18n.tx(loading && !families.length && <div className="h-10 w-64 animate-pulse rounded-xl bg-slate-100" />)}
           </div>
@@ -388,6 +396,10 @@ export default function TodayCombosPage() {
           </div>
         </details>
 
+        {data && <div className="mb-5 flex flex-wrap items-center justify-between gap-2 text-sm text-slate-600">
+          <p>{nextDate ? i18n.t("Prochains matchs couverts : {{date}}", { date: nextDate }) : i18n.t("Aucune date suivante confirmée dans le calendrier disponible.")}</p>
+          <Link to="/resultats" className="inline-flex min-h-11 items-center font-bold text-orange-700 hover:underline">{i18n.t("Voir le bilan des résultats")} →</Link>
+        </div>}
         {!loading && data && available === 0 && <div role="status" className="mb-5 rounded-2xl border border-slate-200 bg-slate-50 p-5" data-testid="combo-availability">
           <p className="font-bold text-slate-900">{i18n.t("Aucun combiné admissible pour cette sélection")}</p>
           <p className="mt-2 text-sm leading-6 text-slate-600">{i18n.t({

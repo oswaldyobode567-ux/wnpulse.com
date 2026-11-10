@@ -1568,15 +1568,25 @@ _legacy_build_today_combos_by_sport = build_today_combos_by_sport
 def build_today_combos_by_sport(matches: List[Dict], _selection_date=None) -> Dict:
     local_now = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=1)))
     selected_day = _selection_date or local_now.date()
-    def on_selected_day(match):
+    def local_match_day(match):
         try:
             start = datetime.fromisoformat(str(match.get("commence_time", "")).replace("Z", "+00:00"))
             if start.tzinfo is None:
                 start = start.replace(tzinfo=timezone.utc)
-            return start.astimezone(local_now.tzinfo).date() == selected_day
+            return start.astimezone(local_now.tzinfo).date()
         except (ValueError, TypeError):
-            return False
-    today_matches = [m for m in matches if on_selected_day(m) and _is_upcoming(m.get("commence_time", ""))]
+            return None
+    upcoming_days = [(m, local_match_day(m)) for m in matches if
+        not m.get("completed") and not m.get("is_finished") and _is_upcoming(m.get("commence_time", ""))]
+    today_matches = [m for m, day in upcoming_days if day == selected_day]
+    next_fixture_dates = {}
+    for match, day in upcoming_days:
+        if not day or day <= selected_day:
+            continue
+        for family_key, _ in SPORT_FAMILIES:
+            if family_key == "all" or str(match.get("sport_key") or "").startswith(family_key):
+                next_fixture_dates[family_key] = min(day, next_fixture_dates.get(family_key, day))
+
     picks = _today_pool(today_matches)
     families = {}
     for family_key,family_label in SPORT_FAMILIES:
@@ -1600,6 +1610,7 @@ def build_today_combos_by_sport(matches: List[Dict], _selection_date=None) -> Di
         family_ready = any(len(t["legs"]) >= 2 for t in tiers.values())
         families[family_key] = {"family_key":family_key,"family_label":family_label,"matches_today":count,
             "availability_reason":"ready" if family_ready else "quality_or_common_bookmaker" if pool else "no_eligible_markets" if count else "no_upcoming_fixtures",
+            "next_fixture_date":next_fixture_dates[family_key].isoformat() if family_key in next_fixture_dates else None,
             "tiers":tiers}
     ready = any(len(t.get("legs", [])) >= 2 for f in families.values() for t in f["tiers"].values())
     if _selection_date is None and not ready:
