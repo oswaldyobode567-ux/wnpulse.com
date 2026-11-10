@@ -32,7 +32,8 @@ from fastapi import FastAPI, Depends, HTTPException, status, Header, Request, Qu
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.gzip import GZipMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
-from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, PlainTextResponse, JSONResponse, StreamingResponse, FileResponse
+from pathlib import Path
 from pydantic import BaseModel, EmailStr, Field, StrictBool, StrictInt
 from motor.motor_asyncio import AsyncIOMotorClient
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -81,7 +82,7 @@ _OBSERVED_ENRICHMENT_AVAILABLE = (
 
 from ai_service import generate_analysis
 from blog_seed import (
-    bootstrap_blog, blog_cover_svg, list_posts as blog_list_posts, get_post as blog_get_post,
+    bootstrap_blog, blog_cover_svg, BLOG_PHOTO_KEYS, list_posts as blog_list_posts, get_post as blog_get_post,
     save_post as blog_save_post, delete_post as blog_delete_post, BlogConflictError,
 )
 from blog_seed import (
@@ -9787,12 +9788,22 @@ def _blog_absolute_images(result, request):
     posts = result.get("posts") if isinstance(result, dict) else None
     if not isinstance(posts, list):
         posts = [result["post"]] if isinstance(result, dict) and isinstance(result.get("post"), dict) else []
+    if isinstance(result, dict) and isinstance(result.get("related"), list):
+        posts = [*posts, *result["related"]]
     for post in posts:
-        for key in ("cover", "fallback_cover", "image", "image_url", "thumbnail", "cover_image", "cover_url", "imageUrl"):
+        for key in ("cover", "fallback_cover", "photo_fallback", "image", "image_url", "thumbnail", "cover_image", "cover_url", "imageUrl"):
             value = post.get(key)
-            if isinstance(value, str) and value.startswith("/api/blog/covers/"):
+            if isinstance(value, str) and value.startswith(("/api/blog/covers/", "/api/blog/photos/")):
                 post[key] = base + value
     return result
+
+
+@app.get("/api/blog/photos/{sport}.webp", include_in_schema=False)
+async def get_blog_photo(sport: str):
+    if sport not in BLOG_PHOTO_KEYS:
+        raise HTTPException(status_code=404, detail="Photo introuvable")
+    photo = Path(__file__).resolve().parent / "blog_photos" / f"{sport}.webp"
+    return FileResponse(photo, media_type="image/webp", headers={"Cache-Control": "public, max-age=86400"})
 
 
 @app.get("/api/blog/covers/{sport}.svg", include_in_schema=False)

@@ -24,7 +24,7 @@ function safeBlogUrl(value) {
   } catch { return ""; }
 }
 function BlogImage({ post, className = "", loading = "lazy" }) {
-  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
+  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.photo_fallback, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
   const identity = candidates.join("|");
   const [failed, setFailed] = useState({ identity, urls: [] });
   const failedUrls = failed.identity === identity ? failed.urls : [];
@@ -258,7 +258,7 @@ export default function BlogPostPage() {
     "@context": "https://schema.org",
     "@type": "Article",
     "headline": post.title,
-    "description": post.meta_description,
+    "description": post.meta_description || post.excerpt,
     "image": post.cover,
     "datePublished": post.published_at,
     "author": { "@type": "Organization", "name": post.author || "WinPulse" },
@@ -274,7 +274,7 @@ export default function BlogPostPage() {
 
   useSeoMeta({
     title: post ? `${post.title} | WinPulse Blog` : "Article — WinPulse",
-    description: post?.meta_description,
+    description: post?.meta_description || post?.excerpt,
     canonical,
     ogImage: post?.cover,
     jsonLd,
@@ -358,6 +358,7 @@ export default function BlogPostPage() {
           <BlogImage key={post.slug} post={post} className="absolute inset-0 w-full h-full object-cover" loading="eager" />
         </div>
 
+        {post.cover_kind === "photo_illustration" && <p className="-mt-8 mb-8 text-xs text-slate-500">Photo d’illustration · ne représente pas l’événement décrit.</p>}
         {safeBlogUrl(post.source_url) && <aside className="mb-8 rounded-2xl border border-orange-200 bg-orange-50 p-5" aria-label="Source de l’actualité"><p className="text-xs uppercase tracking-wider font-bold text-orange-700">Revue de presse · {post.source_name || "Média original"}</p><p className="mt-2 text-sm leading-relaxed text-slate-700">Cette publication présente un lien d’actualité. Le reportage complet et les déclarations sont à consulter auprès du média cité.</p><a href={safeBlogUrl(post.source_url)} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center mt-3 rounded-xl bg-slate-950 text-white px-4 py-2 font-semibold text-sm">Lire l’article original ↗</a></aside>}
         {/* Body */}
         <div className="prose-wp" data-testid="post-content">
@@ -378,7 +379,7 @@ export default function BlogPostPage() {
         </div>
 
         {/* Related */}
-        {data?.related?.length > 0 && (
+        {Array.isArray(data?.related) && data.related.length > 0 && (
           <div className="mt-14">
             <h3 className="font-heading text-xl font-extrabold text-slate-900 mb-5">Articles liés</h3>
             <div className="grid sm:grid-cols-3 gap-4">

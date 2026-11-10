@@ -54,7 +54,7 @@ function safeBlogUrl(value) {
   } catch { return ""; }
 }
 function BlogImage({ post, className = "", loading = "lazy" }) {
-  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
+  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.photo_fallback, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
   const identity = candidates.join("|");
   const [failed, setFailed] = useState({ identity, urls: [] });
   const failedUrls = failed.identity === identity ? failed.urls : [];

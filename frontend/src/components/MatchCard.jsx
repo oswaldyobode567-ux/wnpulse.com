@@ -1,3 +1,5 @@
+import { useMatchShareBasket } from "@/contexts/MatchShareBasket";
+import { copyShareText } from "@/lib/shareClipboard";
 import api from "@/lib/api";
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { useAuth } from "@/contexts/AuthContext";
@@ -527,46 +529,86 @@ function ShareComposer({ items, kind, onClose }) {
     <div className="mt-3 flex flex-wrap gap-2">
       <a href={`https://wa.me/?text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-green-600 bg-green-600 text-white`} data-testid="admin-share-whatsapp">WhatsApp ↗</a>
       <a href={`https://t.me/share/url?url=${encodeURIComponent("https://wnpulse.com")}&text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-sky-600 bg-sky-600 text-white`} data-testid="admin-share-telegram">Telegram ↗</a>
-      <button type="button" className={`${SHARE_BUTTON} border-slate-200`} onClick={async()=>{try{await navigator.clipboard.writeText(current);setCopied(words.copied);}catch{setCopied(words.copyError);}}}>{words.copy}</button>
+      <button type="button" className={`${SHARE_BUTTON} border-slate-200`} onClick={async()=>{setCopied(await copyShareText(current) ? words.copied : words.copyError);}}>{words.copy}</button>
     </div><p className="mt-2 text-xs text-slate-500" role="status">{copied}</p>
   </dialog>;
 }
-export function AdminShareProvider({isAdmin,items=[],kind="picks",children}) {
+function detailShareKey(item) {
+  const p = item.prediction || item;
+  return JSON.stringify([item.id || item.match_id, item.commence_time, p.market || p.market_key || p.market_label, p.pick, p.pick_point, p.team]);
+}
+function detailShareSnapshot(item) {
+  const p = item.prediction || item;
+  const fields = ["pick", "pick_odds", "market", "market_label", "market_key", "pick_point", "team", "confidence", "label", "best_bookmaker", "is_alternative", "status", "alternative_result_confirmed"];
+  return {
+    id:item.id || item.match_id, commence_time:item.commence_time, home_team:item.home_team, away_team:item.away_team,
+    sport_title:item.sport_title, league:item.league,
+    prediction:Object.fromEntries(fields.map(key=>[key,p[key]])),
+  };
+}
+export function AdminShareProvider({isAdmin,items=[],kind="picks",sharedAcrossMatches=false,children}) {
   const [selection,setSelection]=useState([]);
   const [individual,setIndividual]=useState(null);
   const [bulkOpen,setBulkOpen]=useState(false);
   const [owner,setOwner]=useState(null);
   const {user}=useAuth();
   const userId=user?.id;
+  const basket=useMatchShareBasket();
+  const shared=sharedAcrossMatches && Boolean(basket);
+  const keyFor=shared ? detailShareKey : shareItemKey;
   const permitted=Boolean(isAdmin && user?.is_admin);
   const available=new Map();
-  if(permitted)items.filter(shareEligible).forEach(item=>available.set(shareItemKey(item),item));
-  const keys=owner===userId ? selection.filter(key=>available.has(key)) : [];
+  if(permitted)items.filter(shareEligible).forEach(item=>available.set(keyFor(item),item));
+  const keys=shared ? basket.items.map(detailShareKey) : owner===userId ? selection.filter(key=>available.has(key)) : [];
   const signature=JSON.stringify(Array.from(available, ([key,item])=>{
     const prediction=item.prediction || item;
-    return [key,prediction.confidence,prediction.label,prediction.best_bookmaker,prediction.status,prediction.won,prediction.score_home,prediction.score_away,item.league,item.sport_title,item.match];
+    return [key,prediction.pick_odds,prediction.confidence,prediction.label,prediction.best_bookmaker,prediction.status,prediction.won,prediction.score_home,prediction.score_away,item.league,item.sport_title,item.match];
   }));
   useEffect(()=>{
     const validKeys=new Set(JSON.parse(signature).map(row=>row[0]));
     setSelection(previous=>previous.filter(key=>validKeys.has(key)));setBulkOpen(false);setIndividual(null);
     // Source changes invalidate the preview; no stale pick or previous page is shared.
   },[signature,userId]);
-  const selected=keys.map(key=>available.get(key));
-  const context={permitted,kind,available,keys,selected,
-    toggle(key){setOwner(userId);setSelection(keys.includes(key)?keys.filter(value=>value!==key):keys.length<20?[...keys,key]:keys);},
-    selectAll(){setOwner(userId);setSelection(Array.from(available.keys()).slice(0,20));},
-    clear(){setSelection([]);},open(item){setIndividual(item);setBulkOpen(false);},openBulk(){if(selected.length){setIndividual(null);setBulkOpen(true);}}
+  const selected=shared ? basket.items : keys.map(key=>available.get(key));
+  const context={permitted,kind,available,keys,selected,shared,keyFor,
+    toggle(key) {
+      if (shared) {
+        basket.change(previous => previous.some(item=>detailShareKey(item)===key)
+          ? previous.filter(item=>detailShareKey(item)!==key)
+          : available.has(key) && previous.length<20 ? [...previous,detailShareSnapshot(available.get(key))] : previous);
+        return;
+      }
+      setOwner(userId);setSelection(keys.includes(key)?keys.filter(value=>value!==key):keys.length<20?[...keys,key]:keys);
+    },
+    selectAll() {
+      if (shared) {
+        basket.change(previous => [...previous, ...Array.from(available).filter(([key])=>!previous.some(item=>detailShareKey(item)===key)).map(([,item])=>detailShareSnapshot(item))].slice(0,20));
+        return;
+      }
+      setOwner(userId);setSelection(Array.from(available.keys()).slice(0,20));
+    },
+    clear(){if(shared)basket.change(()=>[]);else setSelection([]);},
+    open(item){setIndividual(item);setBulkOpen(false);},
+    openBulk(){if(selected.length){setIndividual(null);setBulkOpen(true);}},
   };
   const preview=individual ? [individual] : bulkOpen ? selected : [];
   return <AdminShareContext.Provider value={context}>{children}{permitted && preview.length>0 && <ShareComposer key={JSON.stringify(preview.map(shareItemKey))} items={preview} kind={kind==="picks" && preview.every(item=>(item.prediction||item).is_alternative && (item.prediction||item).alternative_result_confirmed)?"results":kind} onClose={()=>{setIndividual(null);setBulkOpen(false);}} />}</AdminShareContext.Provider>;
 }
 export function AdminShareToolbar() {
   const context=useContext(AdminShareContext),words=useAdminShareLanguage();
+  const {t}=useLanguage();
   if(!context?.permitted)return null;
   return <section className="my-3 rounded-xl border border-orange-200 bg-orange-50 p-3" aria-label={words.admin} data-testid="admin-share-toolbar">
     <div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-bold text-slate-900">{words.admin}</h2><span className="text-xs font-semibold text-orange-700" aria-live="polite">{context.keys.length}/20 {words.selected}</span></div>
-    <p className="mt-1 text-xs leading-5 text-slate-600">{words.scope} {context.kind==="results" ? words.page : ""}</p>
+    <p className="mt-1 text-xs leading-5 text-slate-600">{context.shared ? t("Tes sélections et leurs cotes restent dans le panier quand tu changes de match (20 maximum).") : words.scope} {context.kind==="results" ? words.page : ""}</p>
     <div className="mt-2 flex flex-wrap gap-2"><button type="button" onClick={context.selectAll} disabled={!context.available.size} className={`${SHARE_BUTTON} border-orange-200 bg-white`}>{words.all}</button><button type="button" onClick={context.clear} disabled={!context.keys.length} className={`${SHARE_BUTTON} border-orange-200 bg-white`}>{words.clear}</button><button type="button" onClick={context.openBulk} disabled={!context.keys.length} className={`${SHARE_BUTTON} border-orange-600 bg-orange-600 text-white`} data-testid="admin-share-bulk">{words.preview}</button></div>
+    {context.shared && context.selected.length>0 && <details className="mt-3 rounded-lg border border-orange-200 p-2">
+      <summary className="cursor-pointer text-sm font-semibold">{t("Voir les sélections conservées")}</summary>
+      <ul className="mt-2 divide-y divide-slate-200">{context.selected.map(item=><li key={context.keyFor(item)} className="flex flex-wrap items-center justify-between gap-2 py-2 text-xs">
+        <span className="min-w-0 break-words">{item.home_team} vs {item.away_team} · {item.prediction.pick} @ {item.prediction.pick_odds}</span>
+        <button type="button" className={SHARE_BUTTON} onClick={()=>context.toggle(context.keyFor(item))}>{t("Retirer")}</button>
+      </li>)}</ul>
+    </details>}
   </section>;
 }
 export function AdminShareActions({item,isAdmin,kind="picks"}) {
@@ -574,7 +616,7 @@ export function AdminShareActions({item,isAdmin,kind="picks"}) {
   const {user}=useAuth();
   const [preview,setPreview]=useState(false);
   if(!isAdmin || !user?.is_admin || !shareEligible(item))return null;
-  const key=shareItemKey(item),selectable=context?.permitted && context.available.has(key);
+  const key=context?.keyFor(item) || shareItemKey(item),selectable=context?.permitted && context.available.has(key);
   const open=()=>{if(context?.permitted)context.open(item);else setPreview(true);};
   return <div className="mt-3 border-t border-slate-100 pt-2" data-testid="admin-share-actions">
     <div className="flex flex-wrap items-center gap-2">
@@ -829,7 +871,7 @@ export function MultiMarketBoard({ prediction = {}, match = {} }) {
     {!theoretical && <div className="mt-3"><PredictionEvidence prediction={row} /></div>}
     {user?.is_admin && !theoretical && row.selection_available!==false && finiteNumber(row.pick_odds)>1 && <AdminShareActions isAdmin={true} item={shareItem(row)} kind={row.alternative_result_confirmed?"results":"picks"}/>}
   </article>;
-  return <AdminShareProvider isAdmin={Boolean(user?.is_admin)} items={choices.filter(row=>row.selection_available!==false && finiteNumber(row.pick_odds)>1).map(shareItem)}><section className="mb-6 min-w-0 rounded-3xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-4 sm:p-6" data-testid="multi-market-board">
+  return <AdminShareProvider sharedAcrossMatches isAdmin={Boolean(user?.is_admin)} items={choices.filter(row=>row.selection_available!==false && finiteNumber(row.pick_odds)>1).map(shareItem)}><section className="mb-6 min-w-0 rounded-3xl border border-indigo-100 bg-gradient-to-b from-indigo-50/60 to-white p-4 sm:p-6" data-testid="multi-market-board">
     <h2 className="text-xl font-extrabold tracking-tight text-slate-900">{w.title}</h2>
     {prediction.analysis_snapshot?.archived && <p className="my-3 rounded-xl border border-amber-200 bg-amber-50 p-3 text-sm leading-6 text-amber-900" data-testid="archived-market-analysis">{detailWords.archived}</p>}
     <AdminShareToolbar/><p className="mt-2 text-sm leading-6 text-slate-600">{w.intro}</p>

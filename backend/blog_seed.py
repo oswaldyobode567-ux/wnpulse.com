@@ -890,10 +890,20 @@ def serialize_post(doc, full=False, admin=False):
         cover = safe_cover(provided) if isinstance(provided, str) else ""
     except ValueError:
         cover = ""
-    result["cover"] = cover or default_blog_cover(doc.get("sport") or "")
-    result["cover_kind"] = "provided" if cover and not cover.startswith("/api/blog/covers/") else "illustration"
-    result["cover_alt"] = ("Illustration WNPulse · " + (doc.get("sport") or "Guides et analyses")) if result["cover_kind"] == "illustration" else doc.get("title", "")
-    result["fallback_cover"] = default_blog_cover(doc.get("sport") or "")
+    # Explicit editorial covers keep priority. Older generated vector covers
+    # can upgrade without changing the stored article or its image field.
+    illustration = not cover or urlsplit(cover).path.startswith("/api/blog/covers/")
+    sport = doc.get("sport") or ""
+    key = slugify(sport) if isinstance(sport, str) else ""
+    photo_key = key if key in BLOG_PHOTO_KEYS else ("football" if not key else None)
+    photo = f"/api/blog/photos/{photo_key}.webp" if photo_key else ""
+    fallback = default_blog_cover(sport)
+    result["cover"] = (photo or fallback) if illustration else cover
+    result["cover_kind"] = ("photo_illustration" if photo else "illustration") if illustration else "provided"
+    result["cover_alt"] = (("Photo d’illustration · " + (sport or "terrain de football")) if photo else
+        ("Illustration WNPulse · " + (sport or "Guides et analyses"))) if illustration else doc.get("title", "")
+    result["photo_fallback"] = photo
+    result["fallback_cover"] = fallback
     for alias in ("image", "image_url", "thumbnail", "cover_image", "cover_url", "imageUrl"):
         result[alias] = result["cover"]
     if full:
@@ -923,7 +933,19 @@ async def get_post(db, slug):
     doc = await db.blog_posts.find_one({**public_filter(), "slug": slug})
     if not doc:
         raise LookupError("Cet article n’est pas disponible.")
-    return {"post": serialize_post(doc, full=True)}
+    query = {**public_filter(), "slug": {"$ne": slug}}
+    if doc.get("sport"):
+        query["sport"] = doc["sport"]
+    elif doc.get("category"):
+        query["category"] = doc["category"]
+    related = []
+    try:
+        cursor = db.blog_posts.find(query, {"content": 0}).sort("published_at", -1).limit(3)
+        related = await asyncio.wait_for(cursor.to_list(length=3), timeout=2)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Related blog posts unavailable: %s", type(exc).__name__)
+    return {"post": serialize_post(doc, full=True), "related": [serialize_post(row) for row in related]}
+
 
 async def save_post(db, data, author_id, post_id=None):
     cleaned = validate_post(data)
@@ -1173,6 +1195,7 @@ async def bootstrap_blog(db):
 # Self-hosted, original vector illustrations: no hotlinking, licence ambiguity,
 # external image fetch, optional package, or publisher photograph.
 BLOG_COVER_VERSION = "2026-10-17-v1"
+BLOG_PHOTO_KEYS = frozenset({"football", "basketball", "tennis"})
 BLOG_COVERS = {
     "football": ("Football", "football"), "basketball": ("Basketball", "basketball"),
     "tennis": ("Tennis", "tennis"), "rugby": ("Rugby", "rugby"),
