@@ -220,7 +220,7 @@ export default function SubscriptionPage() {
             })}</div>
             </div>
 
-            <button type="button" onClick={openPayment} className="shrink-0 rounded-full bg-orange-500 px-3 py-3 text-sm font-extrabold text-white shadow-lg shadow-orange-500/20 hover:bg-orange-600 active:scale-[0.99]" data-testid="subscription-mobile-sticky-unlock">{i18n.t("D\xE9bloquer Pro")}</button>
+            <button type="button" onClick={openPayment} className="wp-editorial-button shrink-0 px-3 py-3 text-sm font-extrabold active:scale-[0.99]" data-testid="subscription-mobile-sticky-unlock">{i18n.t("D\xE9bloquer Pro")}</button>
           </div>
         </div>)}
 

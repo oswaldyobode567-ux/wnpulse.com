@@ -191,7 +191,7 @@ class RouteErrorBoundary extends Component {
 }
 function RouteBoundary({children}){const {pathname}=useLocation();const w=useExperienceCopy();return <RouteErrorBoundary route={pathname} words={w}>{children}</RouteErrorBoundary>;}
 
-function ContextualWhatsAppWidget(){const {pathname}=useLocation();return pathname.startsWith('/app')&&pathname!=='/app/profil'?null:<WhatsAppWidget/>;}
+function ContextualWhatsAppWidget(){const {pathname}=useLocation();return pathname==='/'||(pathname.startsWith('/app')&&pathname!=='/app/profil')?null:<WhatsAppWidget/>;}
 
 function QualitySignals() {
   const {
