@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import api from "@/lib/api";
+import BlogImage from "@/components/BlogImage";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -44,23 +45,6 @@ function useSeoMeta({ title, description, canonical, ogImage }) {
   }, [title, description, canonical, ogImage]);
 }
 
-
-function safeBlogUrl(value) {
-  if (typeof value !== "string" || !value.trim()) return "";
-  try {
-    const base = new URL(api.defaults?.baseURL || "/api", window.location.origin);
-    const url = new URL(value, base.origin);
-    return ["https:", "http:"].includes(url.protocol) ? url.href : "";
-  } catch { return ""; }
-}
-function BlogImage({ post, className = "", loading = "lazy" }) {
-  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.photo_fallback, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
-  const identity = candidates.join("|");
-  const [failed, setFailed] = useState({ identity, urls: [] });
-  const failedUrls = failed.identity === identity ? failed.urls : [];
-  const src = candidates.find(url => !failedUrls.includes(url));
-  return src ? <img src={src} alt={post.cover_alt || post.title || "Sport"} className={className} loading={loading} decoding="async" onError={() => setFailed(previous => ({ identity, urls: [...(previous.identity === identity ? previous.urls : []), src] }))} /> : <div role="img" aria-label="Illustration sportive WinPulse" className={`${className} grid place-items-center bg-gradient-to-br from-slate-950 to-orange-900 text-white`}><div className="text-center p-5"><Activity className="h-12 w-12 mx-auto text-orange-400" /><div className="mt-3 font-bold">{post.sport || "WinPulse"}</div><div className="text-xs mt-1 text-orange-200">Illustration sportive</div></div></div>;
-}
 
 export default function BlogPage() {
   const [posts, setPosts] = useState([]);
@@ -152,7 +136,7 @@ export default function BlogPage() {
               <Link to={`/blog/${featured.slug}`} data-testid={`blog-featured-${featured.slug}`}>
                 <Card className="group relative overflow-hidden border-neutral-200 mb-10 grid md:grid-cols-5 hover:shadow-2xl transition-shadow">
                   <div className="md:col-span-3 aspect-video md:aspect-auto bg-slate-100 relative overflow-hidden">
-                    <BlogImage post={featured} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="eager" />
+                    <BlogImage creditOverlay post={featured} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-700" loading="eager" />
                     <div className="absolute top-3 left-3">
                       <Badge className="bg-orange-500 text-white border-0 font-bold">
                         <Sparkles className="h-3 w-3 mr-1" /> À la une
@@ -189,7 +173,7 @@ export default function BlogPage() {
                 <Link key={p.slug} to={`/blog/${p.slug}`} data-testid={`blog-card-${p.slug}`}>
                   <Card className="group h-full overflow-hidden border-neutral-200 hover:shadow-xl hover:-translate-y-1 transition-all flex flex-col">
                     <div className="relative aspect-[16/10] bg-slate-100 overflow-hidden">
-                      <BlogImage post={p} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
+                      <BlogImage creditOverlay post={p} className="absolute inset-0 w-full h-full object-cover group-hover:scale-105 transition-transform duration-500" />
                     </div>
                     <div className="p-5 flex-1 flex flex-col">
                       <div className="flex flex-wrap gap-1.5 mb-2.5">

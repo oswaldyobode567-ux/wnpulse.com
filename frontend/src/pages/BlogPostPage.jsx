@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import api from "@/lib/api";
+import BlogImage, { safeBlogUrl } from "@/components/BlogImage";
 import { Card } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
@@ -14,23 +15,6 @@ import "dayjs/locale/fr";
 
 dayjs.locale("fr");
 
-
-function safeBlogUrl(value) {
-  if (typeof value !== "string" || !value.trim()) return "";
-  try {
-    const base = new URL(api.defaults?.baseURL || "/api", window.location.origin);
-    const url = new URL(value, base.origin);
-    return ["https:", "http:"].includes(url.protocol) ? url.href : "";
-  } catch { return ""; }
-}
-function BlogImage({ post, className = "", loading = "lazy" }) {
-  const candidates = [...new Set([post.cover, post.image_url, post.image, post.thumbnail, post.photo_fallback, post.fallback_cover].map(safeBlogUrl).filter(Boolean))];
-  const identity = candidates.join("|");
-  const [failed, setFailed] = useState({ identity, urls: [] });
-  const failedUrls = failed.identity === identity ? failed.urls : [];
-  const src = candidates.find(url => !failedUrls.includes(url));
-  return src ? <img src={src} alt={post.cover_alt || post.title || "Sport"} className={className} loading={loading} decoding="async" onError={() => setFailed(previous => ({ identity, urls: [...(previous.identity === identity ? previous.urls : []), src] }))} /> : <div role="img" aria-label="Illustration sportive WinPulse" className={`${className} grid place-items-center bg-gradient-to-br from-slate-950 to-orange-900 text-white`}><div className="text-center p-5"><Activity className="h-12 w-12 mx-auto text-orange-400" /><div className="mt-3 font-bold">{post.sport || "WinPulse"}</div><div className="text-xs mt-1 text-orange-200">Illustration sportive</div></div></div>;
-}
 
 /** Tiny markdown → JSX renderer (handles h2, h3, lists, bold, links, code, tables, paragraphs, blockquotes). */
 function renderMarkdown(md) {
@@ -259,7 +243,7 @@ export default function BlogPostPage() {
     "@type": "Article",
     "headline": post.title,
     "description": post.meta_description || post.excerpt,
-    "image": post.cover,
+    ...(post.cover ? { image: post.cover } : {}),
     "datePublished": post.published_at,
     "author": { "@type": "Organization", "name": post.author || "WinPulse" },
     "publisher": {
@@ -358,7 +342,11 @@ export default function BlogPostPage() {
           <BlogImage key={post.slug} post={post} className="absolute inset-0 w-full h-full object-cover" loading="eager" />
         </div>
 
-        {post.cover_kind === "photo_illustration" && <p className="-mt-8 mb-8 text-xs text-slate-500">Photo d’illustration · ne représente pas l’événement décrit.</p>}
+        {post.cover_kind === "archive_photo" && post.cover_credit && (
+          <p className="-mt-8 mb-8 text-xs leading-relaxed text-slate-600">
+            {post.cover_credit.caption} · Photo : <a className="underline" href={post.cover_credit.source}>{post.cover_credit.author}</a> · <a className="underline" href={post.cover_credit.license_url}>{post.cover_credit.license}</a> · redimensionnée et recadrée à l’affichage
+          </p>
+        )}
         {safeBlogUrl(post.source_url) && <aside className="mb-8 rounded-2xl border border-orange-200 bg-orange-50 p-5" aria-label="Source de l’actualité"><p className="text-xs uppercase tracking-wider font-bold text-orange-700">Revue de presse · {post.source_name || "Média original"}</p><p className="mt-2 text-sm leading-relaxed text-slate-700">Cette publication présente un lien d’actualité. Le reportage complet et les déclarations sont à consulter auprès du média cité.</p><a href={safeBlogUrl(post.source_url)} target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center mt-3 rounded-xl bg-slate-950 text-white px-4 py-2 font-semibold text-sm">Lire l’article original ↗</a></aside>}
         {/* Body */}
         <div className="prose-wp" data-testid="post-content">

@@ -16,22 +16,41 @@ class BlogPhotos(unittest.IsolatedAsyncioTestCase):
         exec(compile(ast.Module(body=functions, type_ignores=[]), "blog-test", "exec"), ns)
         return ns
 
-    def test_photos_replace_illustrations_but_keep_editorial_cover(self):
-        photos = {"football", "basketball", "tennis"}
-        ns = self.functions("blog_seed.py", {"serialize_post", "safe_cover", "slugify", "default_blog_cover"},
-                            urlsplit=urlsplit, re=re, unicodedata=unicodedata, BLOG_PHOTO_KEYS=photos,
-                            BLOG_COVERS={key: None for key in [*photos, "rugby", "guides"]}, BLOG_COVER_VERSION="test")
-        for sport in photos:
-            content = ns["serialize_post"]({"_id":"a", "sport":sport.title(), "cover":f"/api/blog/covers/{sport}.svg"})
-            self.assertEqual(content["cover"], f"/api/blog/photos/{sport}.webp")
-            self.assertEqual(content["cover_kind"], "photo_illustration")
-            file = (ROOT/"blog_photos"/f"{sport}.webp").read_bytes()
+    def test_matching_archives_replace_generic_cover_but_keep_editorial_cover(self):
+        media = self.functions("blog_article_media.py", {"_plain", "article_subjects", "archive_photo",
+            "approved_source_photo"}, re=re, unicodedata=unicodedata, urlsplit=urlsplit,
+            CLUBS={"football": (("Villarreal", 533, ("villarreal",)), ("Getafe", 546, ("getafe",)))},
+            ARCHIVES={("Villarreal", "Getafe"): ("villarreal", "Archives", "Author", "Source.jpg", "4.0")})
+        ns = self.functions("blog_seed.py", {"serialize_post", "safe_cover"}, urlsplit=urlsplit, re=re,
+            canonical_source_url=lambda _: None, article_subjects=media["article_subjects"],
+            approved_source_photo=media["approved_source_photo"], archive_photo=media["archive_photo"])
+        serialize = ns["serialize_post"]
+        base = {"_id":"a", "sport":"Football", "kind":"news_link", "cover":"/api/blog/covers/football.svg"}
+        archive = serialize({**base, "title":"Live Villarreal – Getafe"})
+        self.assertEqual(archive["cover"], "/api/blog/photos/villarreal.webp")
+        self.assertEqual(archive["cover_kind"], "archive_photo")
+        self.assertEqual([s["name"] for s in archive["cover_subjects"]], ["Villarreal", "Getafe"])
+        self.assertEqual(archive["cover_credit"]["caption"], "Archives")
+        self.assertEqual(serialize({**base, "title":"Un autre club"})["cover"], "")
+        self.assertEqual(serialize({**base, "title":"Villarreal – Getafe", "cover":"https://example.test/photo.jpg"})["cover"],
+            "https://example.test/photo.jpg")
+        self.assertEqual(serialize(base, admin=True)["cover"], "")
+        for key in ("villarreal", "le-havre", "brest-lyon"):
+            file = (ROOT/"blog_photos"/f"{key}.webp").read_bytes()
             self.assertEqual((file[:4], file[8:12]), (b"RIFF", b"WEBP"))
-        custom = ns["serialize_post"]({"_id":"a", "sport":"Tennis", "cover":"https://example.test/photo.jpg"})
-        self.assertEqual(custom["cover"], "https://example.test/photo.jpg")
-        self.assertEqual(custom["photo_fallback"], "/api/blog/photos/tennis.webp")
-        rugby = ns["serialize_post"]({"_id":"a", "sport":"Rugby"})
-        self.assertIn("rugby.svg", rugby["cover"])
+
+    def test_publisher_photo_requires_permission_and_filters_logos(self):
+        from unittest.mock import patch
+        import os
+        from urllib.parse import unquote
+        approve = self.functions("blog_article_media.py", {"approved_source_photo"},
+            os=os, re=re, urlsplit=urlsplit, unquote=unquote)["approved_source_photo"]
+        with patch.dict(os.environ, {"BLOG_APPROVED_IMAGE_HOSTS":"media.test=photos.media.test"}):
+            self.assertEqual(approve("media.test", "https://photos.media.test/article.jpg#fragment"),
+                "https://photos.media.test/article.jpg")
+            self.assertEqual(approve("unapproved.test", "https://photos.media.test/article.jpg"), "")
+            self.assertEqual(approve("media.test", "https://photos.media.test/logo.jpg"), "")
+            self.assertEqual(approve("media.test", "https://photos.media.test.evil.test/article.jpg"), "")
 
     async def test_related_query_excludes_current_and_unpublished(self):
         class Collection:
