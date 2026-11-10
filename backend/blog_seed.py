@@ -22,6 +22,7 @@ from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 from pymongo import ReturnDocument
 from pymongo.errors import DuplicateKeyError
+from blog_article_media import ARTICLE_PHOTO_KEYS, approved_source_photo, archive_photo, article_subjects
 
 BLOG_POSTS = [
     {
@@ -890,24 +891,28 @@ def serialize_post(doc, full=False, admin=False):
         cover = safe_cover(provided) if isinstance(provided, str) else ""
     except ValueError:
         cover = ""
-    # Explicit editorial covers keep priority. Older generated vector covers
-    # can upgrade without changing the stored article or its image field.
-    illustration = not cover or urlsplit(cover).path.startswith("/api/blog/covers/")
+    # Editorial covers win. Legacy generated covers never become a generic photo again.
+    generated = not cover or urlsplit(cover).path.startswith(("/api/blog/covers/", "/api/blog/photos/"))
     sport = doc.get("sport") or ""
-    key = slugify(sport) if isinstance(sport, str) else ""
-    photo_key = key if key in BLOG_PHOTO_KEYS else ("football" if not key else None)
-    photo = f"/api/blog/photos/{photo_key}.webp" if photo_key else ""
-    fallback = default_blog_cover(sport)
-    result["cover"] = (photo or fallback) if illustration else cover
-    result["cover_kind"] = ("photo_illustration" if photo else "illustration") if illustration else "provided"
-    result["cover_alt"] = (("Photo d’illustration · " + (sport or "terrain de football")) if photo else
-        ("Illustration WNPulse · " + (sport or "Guides et analyses"))) if illustration else doc.get("title", "")
-    result["photo_fallback"] = photo
-    result["fallback_cover"] = fallback
+    is_news = doc.get("kind") == "news_link" or bool(doc.get("auto_generated"))
+    subjects = article_subjects(doc.get("title", ""), sport) if is_news else []
+    source = canonical_source_url(doc.get("source_url")) if is_news else None
+    source_photo = approved_source_photo(source[1], doc.get("source_photo")) if source else ""
+    archive = archive_photo(subjects) if generated and not source_photo else None
+    photo = (source_photo or (archive or {}).get("url", "")) if generated else cover
+    result["cover"] = cover if admin and not generated else ("" if admin else photo)
+    result["cover_kind"] = ("provided" if not generated else "source_photo" if source_photo else
+                             "archive_photo" if archive else "article_graphic")
+    result["cover_alt"] = (archive or {}).get("caption") or doc.get("title", "")
+    result["cover_credit"] = archive
+    result["cover_subjects"] = subjects
     for alias in ("image", "image_url", "thumbnail", "cover_image", "cover_url", "imageUrl"):
         result[alias] = result["cover"]
     if full:
         result["content"] = doc.get("content", "")
+        legacy_note = "\n\nL’image de couverture est une illustration WNPulse du sport concerné, pas une photographie de l’événement."
+        if is_news and result["content"].endswith(legacy_note):
+            result["content"] = result["content"][:-len(legacy_note)]
         result["body"] = result["content"]  # Compatibility with simple existing readers.
     if admin:
         result.update(status=doc.get("status"), revision=doc.get("revision", 1))
@@ -1195,7 +1200,7 @@ async def bootstrap_blog(db):
 # Self-hosted, original vector illustrations: no hotlinking, licence ambiguity,
 # external image fetch, optional package, or publisher photograph.
 BLOG_COVER_VERSION = "2026-10-17-v1"
-BLOG_PHOTO_KEYS = frozenset({"football", "basketball", "tennis"})
+BLOG_PHOTO_KEYS = frozenset({"football", "basketball", "tennis"}) | ARTICLE_PHOTO_KEYS
 BLOG_COVERS = {
     "football": ("Football", "football"), "basketball": ("Basketball", "basketball"),
     "tennis": ("Tennis", "tennis"), "rugby": ("Rugby", "rugby"),
@@ -1374,6 +1379,7 @@ def candidate(row, now=None):
     sport, category = identified
     return {"title": title, "url": url, "domain": domain, "source": SOURCE_NAMES[domain],
             "sport": sport, "category": category, "seen_at": seen.isoformat(),
+            "source_photo": approved_source_photo(domain, row.get("socialimage")),
             "url_hash": hashlib.sha256(url.encode()).hexdigest(),
             "title_hash": hashlib.sha256(re.sub(r"\W+", " ", normalized_text(title)).strip().encode()).hexdigest()}
 
@@ -1493,12 +1499,11 @@ def build_post(item, now=None):
         "Le reportage, les précisions et les éventuelles déclarations sont à consulter chez le média cité. "
         "WNPulse ne reproduit pas le texte intégral et n’invente ni résultat ni citation.\n\n"
         f"Titre repéré le {seen_local.strftime('%d/%m/%Y à %H:%M')} (heure de Porto-Novo). "
-        "Ce repérage n’est pas une confirmation de la date de publication originale.\n\n"
-        "L’image de couverture est une illustration WNPulse du sport concerné, pas une photographie de l’événement."
+        "Ce repérage n’est pas une confirmation de la date de publication originale."
     )
     return {"_id": "news:" + item["url_hash"], "slug": "actu-" + (slugify(item["title"])[:92].rstrip("-") or "sport") + "-" + item["url_hash"][:12],
             "title": item["title"], "excerpt": f"{item['sport']} · {item['category']} — {item['title']} Source : {item['source']}.",
-            "content": content, "category": item["category"], "sport": item["sport"], "cover": default_blog_cover(item["sport"]),
+            "content": content, "category": item["category"], "sport": item["sport"], "cover": "", "source_photo": item.get("source_photo", ""),
             "tags": [item["sport"], item["category"], "Revue de presse"], "status": "published", "author": "WinPulse",
             "created_at": now.isoformat(), "updated_at": now.isoformat(), "published_at": now.isoformat(),
             "read_min": 1, "revision": 1, "kind": "news_link", "auto_generated": True,
@@ -1532,7 +1537,7 @@ async def news_status(db, scheduler_active=True):
             "last_added": state.get("last_added", 0), "today_added": count,
             "sport_counts": per_sport, "target_sport": state.get("target_sport"),
             "last_candidates": state.get("last_candidates", 0), "collector_version": "multisport-v2",
-            "cover_provider": "WNPulse self-hosted illustrations",
+            "cover_provider": "Photos autorisées, archives et visuels par article",
             "next_poll_at": state.get("next_poll_at"), "last_error": state.get("last_error"), "date": today}
 
 async def set_paused(db, paused):
@@ -1584,6 +1589,14 @@ async def synchronize_news(db, fetcher=None):
         existing = await db.blog_posts.find({"auto_generated": True}, {"auto_title_hash": 1, "auto_url_hash": 1}).sort("created_at", -1).limit(1000).to_list(length=1000)
         known_titles = {doc.get("auto_title_hash") for doc in existing}
         known_urls = {doc.get("auto_url_hash") for doc in existing}
+        # Backfill a few recent identical URLs when an approved source supplies a photo.
+        # Never touch editorial covers, content or publication dates.
+        backfill = [item for item in rows if item.get("source_photo") and item["url_hash"] in known_urls][:4]
+        for item in backfill:
+            await db.blog_posts.update_one({
+                "auto_url_hash": item["url_hash"], "status": "published", "auto_generated": True,
+                "source_photo": {"$in": [None, ""]},
+            }, {"$set": {"source_photo": item["source_photo"]}})
         # Exclude previously imported/edited/deleted items before balancing sports.
         rows = [item for item in rows if item["url_hash"] not in known_urls and item["title_hash"] not in known_titles]
         for item in balanced_candidates(rows, per_sport):
