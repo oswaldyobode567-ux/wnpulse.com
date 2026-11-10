@@ -1093,20 +1093,30 @@ function FollowedPicksContent() {
   const { language, locale, direction, bet, formatDate, t } = usePageLanguage();
   const w = FOLLOW_PAGE_TEXT[language] || FOLLOW_PAGE_TEXT.fr;
   const rows = Array.isArray(state?.follows) ? state.follows : [];
+  const [filter, setFilter] = useState("all");
   const resolvedCount = rows.filter(row => row.state === "resolved").length;
+  const stamp = value => Date.parse(value || "") || 0;
+  const visible = rows.filter(row => filter === "all" || (row.state === "resolved") === (filter === "resolved"))
+    .sort((a, b) => Number(a.state === "resolved") - Number(b.state === "resolved")
+      || (a.state === "resolved" ? stamp(b.commence_time) - stamp(a.commence_time) : stamp(a.commence_time) - stamp(b.commence_time)));
   const clearing = Boolean(state?.busy.has("clear-resolved"));
   const date = value => value && Number.isFinite(new Date(value).getTime()) ? formatDate(value,{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"}) : "—";
   const odds = value => value != null && Number.isFinite(Number(value)) && Number(value)>1 ? new Intl.NumberFormat(locale,{minimumFractionDigits:2,maximumFractionDigits:3}).format(Number(value)) : "—";
   return <main dir={direction} className="mx-auto max-w-5xl min-w-0 px-4 py-7 pb-24" data-testid="follow-centre">
     <header className="mb-6 rounded-3xl bg-slate-950 p-5 text-white sm:p-8"><p className="text-xs font-bold uppercase tracking-wider text-orange-300">WinPulse</p><h1 className="mt-2 text-2xl font-extrabold sm:text-4xl">{w[0]}</h1><p className="mt-2 text-sm leading-6 text-slate-300">{w[1]}</p><p className="mt-2 text-xs text-slate-400">{w[12]}</p></header>
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-slate-500">{w[15]}</p><button type="button" data-testid="follow-refresh" disabled={Boolean(state?.loading)} aria-busy={Boolean(state?.loading)} onClick={()=>state?.refresh(true)} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 px-4 text-sm font-bold text-orange-700 disabled:opacity-60">{state?.loading && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{state?.loading ? w[22] : w[16]}</button></div>
+    <nav className="mb-4 flex flex-wrap items-center gap-2" aria-label={t("Filtrer le suivi")}>
+      {[["all", "Tout", rows.length], ["active", "À suivre", rows.length - resolvedCount], ["resolved", "Résultats confirmés", resolvedCount]].map(([key, label, count]) =>
+        <button type="button" key={key} aria-pressed={filter === key} onClick={() => setFilter(key)} className={cn("min-h-11 rounded-full border px-4 text-sm font-semibold", filter === key ? "border-orange-500 text-orange-700" : "border-slate-200 text-slate-600")}>{t(label)} · {count}</button>)}
+      <Link to="/app/aujourdhui" className="inline-flex min-h-11 items-center px-2 text-sm font-bold text-orange-700">{t("Voir les sélections")} →</Link>
+    </nav>
     {resolvedCount > 0 && <section className="mb-4 rounded-2xl border border-slate-200 bg-white p-4">
       <button type="button" data-testid="clear-resolved-follows" disabled={clearing || state?.loading} aria-busy={clearing} onClick={async () => { if (await state.clearResolved()) toast.success(w[26]); }} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-slate-900 px-4 py-3 text-sm font-bold text-white disabled:opacity-60 sm:w-auto">{clearing && <Loader2 className="h-4 w-4 animate-spin motion-reduce:animate-none" aria-hidden="true" />}{clearing ? w[25] : w[24]}</button>
       <p className="mt-2 text-sm leading-6 text-slate-500">{w[27]}</p>
     </section>}
     {state?.lastUpdated && <p role="status" aria-live="polite" className="mb-3 text-xs text-slate-500">{w[23]} : {date(state.lastUpdated)}</p>}
     {state?.failed && <p role="alert" className="mb-4 rounded-xl bg-amber-50 p-4 text-sm">{w[21]}</p>}
-    {state?.loading && !rows.length ? <p role="status" className="p-5">…</p> : !rows.length ? <div className="rounded-2xl border border-dashed p-6 text-center"><p>{w[13]}</p><Link to="/app" className="mt-4 inline-flex min-h-11 items-center font-bold text-orange-700">{w[14]} →</Link></div> : <div className="grid min-w-0 gap-3 md:grid-cols-2">{rows.map(row=>{
+    {state?.loading && !rows.length ? <p role="status" className="p-5">…</p> : !rows.length ? <div className="rounded-2xl border border-dashed p-6 text-center"><p>{w[13]}</p><Link to="/app" className="mt-4 inline-flex min-h-11 items-center font-bold text-orange-700">{w[14]} →</Link></div> : !visible.length ? <p className="py-5 text-sm text-slate-600">{t("Aucune sélection dans ce filtre.")}</p> : <div className="grid min-w-0 gap-3 md:grid-cols-2">{visible.map(row=>{
       const outcome = row.state !== "resolved" ? w[4] : row.result === "won" ? w[5] : row.result === "lost" ? w[6] : row.result === "void" ? w[7] : w[4];
       const confirmed = state.items.find(item => item.id === row.id);
       return <article key={row.id} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex flex-wrap justify-between gap-2"><span className={`rounded-full px-3 py-1 text-xs font-bold ${row.result === "won" ? "bg-emerald-100 text-emerald-800" : row.result === "lost" ? "bg-rose-100 text-rose-800" : "bg-slate-100 text-slate-700"}`}>{outcome}</span><span className="text-xs text-slate-500">{w[3]} : {date(row.commence_time)}</span></div><h2 className="mt-3 break-words font-bold text-slate-900"><bdi>{row.home_team} vs {row.away_team}</bdi></h2><p className="mt-2 break-words text-sm font-semibold text-orange-700">{w[19]} : <bdi>{bet(row.pick)}</bdi></p><p className="mt-1 text-sm text-slate-600">{w[20]} : {bet(row.market_label || row.market || "—")}</p><p className="mt-2 text-sm text-slate-600">{w[2]} : <bdi className="font-mono font-bold">{odds(row.pick_odds)}</bdi>{row.best_bookmaker && <> · {row.best_bookmaker}</>}</p>

@@ -40,6 +40,7 @@ function RequireAuth({
   children,
   admin = false
 }) {
+  const location = useLocation();
   const {
     t
   } = useLanguage();
@@ -55,7 +56,10 @@ function RequireAuth({
       </div>;
   }
   if (!user) {
-    return <Navigate to="/login" replace />;
+    const params = new URLSearchParams(location.search);
+    const ref = params.get("payment") === "return" ? params.get("reference") : "";
+    const pro = location.pathname === "/app/abonnement";
+    return <Navigate to={pro ? `/login?next=pro${/^PE-[A-F0-9]{8}$/.test(ref || "") ? `&reference=${ref}` : ""}` : "/login"} replace />;
   }
   if (admin && !user.is_admin) {
     return <Navigate to="/app" replace />;

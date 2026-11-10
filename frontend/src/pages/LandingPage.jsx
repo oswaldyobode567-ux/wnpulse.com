@@ -1,3 +1,4 @@
+import { journeyChoice, setJourneyChoice, trackJourney } from "@/lib/journey";
 import { TeamBadge, badgeUrl, MediaCredits } from "@/components/MatchCard";
 import { Link, useNavigate } from "react-router-dom";
 import { useEffect, useRef, useState } from "react";
@@ -204,6 +205,26 @@ export default function LandingPage() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
+  const [measure, setMeasure] = useState(journeyChoice);
+  const freeSample = livePicks.find(row => row.free_daily_pick === true && isAvailablePick(row));
+  useEffect(() => {
+    if (measure !== "yes") return;
+    trackJourney("visit", true);
+    const target = document.getElementById("wp-free-sample");
+    if (!target || !window.IntersectionObserver) return;
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) {
+        trackJourney("free_pick");
+        observer.disconnect();
+      }
+    }, { threshold: 0.3 });
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [measure, freeSample?.match_id || freeSample?.id || freeSample?.commence_time]);
+  function chooseMeasurement(value) {
+    setJourneyChoice(value);
+    setMeasure(value ? "yes" : "no");
+  }
   const extra = LANDING_EXTRA[language] || LANDING_EXTRA.fr;
   const pathWords = DISCOVERY_PATH_COPY[language] || DISCOVERY_PATH_COPY.fr;
   const [picksStatus, setPicksStatus] = useState("loading");
@@ -228,6 +249,7 @@ export default function LandingPage() {
   }
 
   function showPricing() {
+    trackJourney("pro");
     document.getElementById("pricing")?.scrollIntoView({
       behavior: window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches ? "auto" : "smooth",
       block: "start",
@@ -402,7 +424,7 @@ export default function LandingPage() {
                   {t("Découvrir l’offre Pro")}
                 </Button>
               </div>
-              <div className="mt-3"><a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500" data-testid="landing-telegram">{telegramLabel} ↗</a></div>
+              <div className="mt-3"><a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" onClick={() => trackJourney("telegram")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500" data-testid="landing-telegram">{telegramLabel} ↗</a></div>
               <Link to="/resultats" className="wp-result-link mt-4 inline-flex min-h-11 items-center gap-2 text-sm font-semibold text-slate-600" data-testid="hero-results-btn">{t("Consulter l’historique complet")}<ArrowRight className="h-3.5 w-3.5 rtl:rotate-180" /></Link>
               <div className="wp-enter mt-5 flex flex-wrap items-center gap-x-4 gap-y-3 text-sm text-slate-500 sm:gap-6" style={{ "--wp-delay": "320ms" }}>
                 <div className="flex items-center gap-2">
@@ -442,10 +464,11 @@ export default function LandingPage() {
                       </div>
                     ) : livePicks.map((row, i) => {
                       const locked = !isAvailablePick(row);
+                      const isSample = row === freeSample;
                       const confidence = row.confidence == null || row.confidence === "" ? NaN : Number(row.confidence);
                       const showConfidence = !locked && Number.isFinite(confidence) && confidence >= 0 && confidence <= 100;
                       return (
-                        <div key={row.id || i} className="wp-public-pick wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
+                        <div id={isSample ? "wp-free-sample" : undefined} key={row.id || i} className="wp-public-pick wp-enter wp-interactive-card min-w-0 rounded-lg border border-neutral-100 bg-neutral-50 p-3" style={{ "--wp-delay": `${i * 70}ms` }}>
                           <div className="space-y-2">{["home","away"].map(side=><div key={side} className="flex min-w-0 items-center gap-2"><TeamBadge name={row[`${side}_team`]} src={badgeUrl(row,side)} kind={row[`${side}_media`]?.kind} /><bdi className="min-w-0 break-words text-sm font-bold leading-5 text-slate-800">{row[`${side}_team`]}</bdi></div>)}{row.sport_title && <p className="text-xs text-slate-500">{row.sport_title}</p>}</div>
                           <p className="mt-2 text-xs text-slate-500"><time dateTime={row.commence_time || undefined}>{landingTime(row.commence_time,locale,extra[7])}</time>{row.market_label && <> · {row.market_label}</>}</p>
                           <div className="mt-2 flex min-w-0 flex-wrap items-start justify-between gap-2">
@@ -454,7 +477,11 @@ export default function LandingPage() {
                             </p>
                             {showConfidence && <span className="rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-xs font-bold text-orange-700">{t("Indice : {{value}} %", { value: formatNumber(Math.round(confidence)) })}</span>}
                           </div>
-                          {!locked && <details className="wp-public-reasons mt-3 rounded-lg border border-orange-100 bg-white px-3 text-xs leading-5 text-slate-600"><summary className="min-h-11 cursor-pointer py-3 font-bold text-slate-800">{extra[0]}</summary><p className="mt-1">• {row.model_probability != null && Number.isFinite(Number(row.model_probability)) && Number(row.model_probability)>=0 && Number(row.model_probability)<=100 ? `${extra[1]} : ${formatNumber(Number(row.model_probability))} %` : extra[19]}</p><p>• {row.num_books != null && Number.isFinite(Number(row.num_books)) && Number(row.num_books)>0 ? `${extra[2]} : ${formatNumber(Number(row.num_books))} ${extra[3]}` : extra[4]}</p><p className="mt-2 text-amber-800"><strong>{extra[5]} :</strong> {extra[6]}</p></details>}
+                          {!locked && <details open={isSample || undefined} className="wp-public-reasons mt-3 rounded-lg border border-orange-100 bg-white px-3 text-xs leading-5 text-slate-600"><summary className="min-h-11 cursor-pointer py-3 font-bold text-slate-800">{extra[0]}</summary><p className="mt-1">• {row.estimated_win_probability != null && Number.isFinite(Number(row.estimated_win_probability)) && Number(row.estimated_win_probability)>=0 && Number(row.estimated_win_probability)<=100 ? `${extra[1]} : ${formatNumber(Number(row.estimated_win_probability))} %` : extra[19]}</p><p>• {row.num_books != null && Number.isFinite(Number(row.num_books)) && Number(row.num_books)>0 ? `${extra[2]} : ${formatNumber(Number(row.num_books))} ${extra[3]}` : extra[4]}</p><p className="mt-2 text-amber-800"><strong>{extra[5]} :</strong> {extra[6]}</p></details>}
+                          {isSample && <div className="mt-3 flex flex-wrap gap-x-4">
+                            <a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" onClick={() => trackJourney("telegram")} className="inline-flex min-h-11 items-center text-xs font-bold text-sky-700 hover:underline" data-testid="sample-telegram">{t("Suivre sur Telegram")} ↗</a>
+                            <button type="button" onClick={showPricing} className="min-h-11 text-xs font-bold text-orange-700 hover:underline" data-testid="sample-pro">{t("Découvrir l’offre Pro")} →</button>
+                          </div>}
                           <MediaCredits match={row}/>
                         </div>
                       );
@@ -681,7 +708,10 @@ export default function LandingPage() {
                   className={`wp-action h-auto min-h-11 w-full whitespace-normal py-3 ${p.highlight
                     ? "wp-gradient-warm text-white border-0 hover:opacity-90"
                     : "bg-white text-slate-900 hover:bg-slate-100"}`}
-                  onClick={() => navigate(user ? (p.id === "free" ? "/app" : "/app/abonnement") : signupUrl)}
+                  onClick={() => {
+                    if (p.id !== "free") trackJourney("pro");
+                    navigate(user ? (p.id === "free" ? "/app" : "/app/abonnement") : p.id === "free" ? signupUrl : `${signupUrl}${signupUrl.includes("?") ? "&" : "?"}next=pro`);
+                  }}
                 >
                   {p.cta}
                 </Button>
@@ -689,6 +719,17 @@ export default function LandingPage() {
             ))}
           </div>
         </div>
+      </section>
+
+      <section className="mx-auto max-w-7xl px-4 py-4 text-sm text-slate-600" aria-label={t("Mesure d’audience")}>
+        <details open={measure === null ? true : undefined}>
+          <summary className="min-h-11 cursor-pointer py-2 font-semibold">{t("Mesure d’audience")}</summary>
+          <p className="max-w-xl">{t("Si tu acceptes, WinPulse compte les étapes de cette visite jusqu’au paiement. Ton choix ne change pas ton accès au site.")}</p>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button variant="outline" size="sm" aria-pressed={measure === "yes"} onClick={() => chooseMeasurement(true)}>{t("Accepter")}</Button>
+            <Button variant="outline" size="sm" aria-pressed={measure === "no"} onClick={() => chooseMeasurement(false)}>{t("Refuser")}</Button>
+          </div>
+        </details>
       </section>
 
       <footer className="border-t border-neutral-200 bg-white">

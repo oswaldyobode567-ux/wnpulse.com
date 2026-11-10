@@ -204,6 +204,7 @@ export default function AdminPage() {
         <Tabs defaultValue="quality" className="space-y-6">
           <TabsList className="h-auto flex flex-wrap justify-start gap-1 bg-neutral-100">
             <TabsTrigger value="quality" data-testid="tab-quality"><ShieldCheck className="mr-1.5 h-3.5 w-3.5" />Pilotage</TabsTrigger>
+            <TabsTrigger value="journey" data-testid="tab-journey">Parcours visiteurs</TabsTrigger>
             <TabsTrigger value="ranking" data-testid="tab-ranking">Comparatif des pronostics</TabsTrigger>
             <TabsTrigger value="enrichment" data-testid="tab-enrichment"><EnrichmentTabLabel /></TabsTrigger>
             <TabsTrigger value="payments" data-testid="tab-payments">Paiements</TabsTrigger>
@@ -216,6 +217,8 @@ export default function AdminPage() {
           </TabsList>
 
           <TabsContent value="quality"><QualityControlPanel /></TabsContent>
+
+          <TabsContent value="journey"><JourneyReport /></TabsContent>
 
           <TabsContent value="ranking"><RankingEvaluationPanel /></TabsContent>
 
@@ -1010,5 +1013,42 @@ function RankingEvaluationPanel() {
       <h3 className="font-bold text-slate-900">Autre test : modèle de scores indépendant</h3>
       <p>{number(previous.resolved_pairs)} matchs évalués · rendement simulé du modèle de référence : {percent(previous.arms?.baseline?.roi_percent)} · modèle de scores : {percent(previous.arms?.challenger?.roi_percent)}.</p>
     </div>}
+  </section>;
+}
+
+function JourneyReport() {
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [refresh, setRefresh] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    api.get("/admin/journey/summary", { signal: controller.signal, timeout: 14000 })
+      .then(({ data }) => { if (!controller.signal.aborted) setReport(data); })
+      .catch(() => { if (!controller.signal.aborted) setReport(null); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [refresh]);
+  const titles = { direct: "Direct / non renseigné", telegram: "Telegram", facebook: "Facebook", instagram: "Instagram", tiktok: "TikTok", campaign: "Autre campagne" };
+  const cols = [["visits", "Visites"], ["free_pick", "Aperçu vu"], ["telegram", "Clic Telegram"], ["pro", "Offre Pro"], ["checkout", "Paiement demandé"], ["paid", "Paiement confirmé"]];
+  const format = value => new Intl.NumberFormat("fr-FR").format(value || 0);
+  const rows = report ? [["Total", report.totals], ...Object.entries(report.sources || {}).map(([key, values]) => [titles[key] || key, values])] : [];
+  return <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="journey-report">
+    <div className="flex flex-wrap items-start justify-between gap-4">
+      <div><h2 className="text-xl font-bold text-slate-900">De la première visite à Pro</h2>
+        <p className="mt-2 max-w-xl text-sm leading-6 text-slate-600">30 jours · visites ayant accepté la mesure. Un clic Telegram n’indique pas que le visiteur a rejoint le canal.</p></div>
+      <Button variant="outline" disabled={loading} onClick={() => setRefresh(v => v + 1)}>Actualiser</Button>
+    </div>
+    {loading ? <p role="status" className="mt-5 text-sm text-slate-600">Chargement…</p> : !report ? <p role="alert" className="mt-5 text-sm">Mesures indisponibles pour le moment.</p>
+      : <>
+        {!report.totals?.visits && <p className="mt-5 text-sm text-slate-600">Aucune visite mesurée sur cette période.</p>}
+        <div className="mt-5 overflow-x-auto"><table className="min-w-[42rem] w-full text-left text-sm">
+          <thead><tr><th scope="col" className="border-b p-3">Origine</th>{cols.map(([key, label]) => <th key={key} scope="col" className="border-b p-3">{label}</th>)}</tr></thead>
+          <tbody>{rows.map(([label, values]) => <tr key={label}><th scope="row" className="border-b p-3">{label}</th>{cols.map(([key]) => <td key={key} className="border-b p-3 tabular-nums">{format(values?.[key])}</td>)}</tr>)}</tbody>
+        </table></div>
+        <p className="mt-4 text-xs leading-6 text-slate-600">Les étapes sont comptées une fois par visite. Les colonnes ne sont pas des étapes obligatoires. Les paiements de test et les paiements annulés ne comptent pas comme confirmés.</p>
+        <p className="mt-2 break-all text-sm text-slate-600">Lien à partager dans le canal : <code>https://wnpulse.com/?via=telegram</code></p>
+        {report.truncated && <p className="mt-2 text-sm text-amber-800">Le rapport a atteint sa limite de données.</p>}
+      </>}
   </section>;
 }

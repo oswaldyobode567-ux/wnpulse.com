@@ -1,5 +1,6 @@
+import { proIntent, destinationAfterAuth } from "@/lib/journey";
 import { useRef, useState } from "react";
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +15,8 @@ export default function LoginPage() {
   const translateRef = useRef(t);
   translateRef.current = t;
   const navigate = useNavigate();
+  const { search } = useLocation();
+  const intent = proIntent(search);
   const { login } = useAuth();
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -25,7 +28,7 @@ export default function LoginPage() {
     try {
       await login(email.trim().toLowerCase(), password);
       toast.success(translateRef.current("Bienvenue !"));
-      navigate("/app");
+      navigate(destinationAfterAuth(search), { replace: true });
     } catch (err) {
       let msg;
       if (err?.response) {
@@ -64,7 +67,7 @@ export default function LoginPage() {
             <div><div className="flex flex-wrap items-center justify-between gap-2"><Label htmlFor="password">{t("Mot de passe")}</Label><Link to="/forgot-password" className="text-xs text-orange-600 font-semibold hover:underline" data-testid="forgot-password-link">{t("Mot de passe oublié ?")}</Link></div><Input id="password" type="password" value={password} onChange={e=>setPassword(e.target.value)} required data-testid="login-password-input" autoComplete="current-password" placeholder="••••••••" className="mt-1 h-12 text-base" /></div>
             <Button type="submit" disabled={loading} className="w-full min-h-12 h-auto whitespace-normal py-3 wp-gradient-warm text-base text-white border-0 hover:opacity-90" data-testid="login-submit-button">{loading ? <><Loader2 className="h-4 w-4 animate-spin me-2" /><span>{t("Connexion en cours…")}</span></> : t("Se connecter")}</Button>
           </form>
-          <div className="mt-6 text-sm text-center text-slate-500">{t("Pas encore de compte ?")}{" "}<Link to="/register" className="text-orange-600 font-semibold" data-testid="goto-register-link">{t("Créer un compte gratuit")}</Link></div>
+          <div className="mt-6 text-sm text-center text-slate-500">{t("Pas encore de compte ?")}{" "}<Link to={intent ? `/register?${intent}` : "/register"} className="text-orange-600 font-semibold" data-testid="goto-register-link">{t("Créer un compte gratuit")}</Link></div>
           <div className="mt-3 text-center"><button type="button" onClick={()=>{try {
                 localStorage.removeItem("pronostix_token");
                 localStorage.removeItem("pronostix_user");

@@ -1,3 +1,5 @@
+import { useSearchParams } from "react-router-dom";
+import { journeyToken, trackJourney } from "@/lib/journey";
 import { useEffect, useState } from "react";
 import api from "@/lib/api";
 import { Link } from "react-router-dom";
@@ -29,10 +31,13 @@ function formatXof(i18n, value) {
 export default function SubscriptionPage() {
   const i18n = usePageLanguage();
   const w = useExperienceCopy();
+  const [returnParams] = useSearchParams();
+  const returning = returnParams.get("payment") === "return" && /^PE-[A-F0-9]{8}$/.test(returnParams.get("reference") || "");
   useExperienceEvent("pro_view");
   const {
-    user
+    user, refresh
   } = useAuth();
+  useEffect(() => { trackJourney("pro"); }, []);
   const [plans, setPlans] = useState([FALLBACK_PLAN]);
   const [loading, setLoading] = useState(false);
   const [paymentOpen, setPaymentOpen] = useState(false);
@@ -133,7 +138,8 @@ export default function SubscriptionPage() {
       const response = await api.post("/subscription/checkout", {
         tier: String(plan.id).toLowerCase(),
         phone: cleanPhone,
-        payer_name: cleanName
+        payer_name: cleanName,
+        journey_token: journeyToken() || undefined
       });
       const generatedReference = response?.data?.reference;
       if (!generatedReference) {
@@ -159,9 +165,10 @@ export default function SubscriptionPage() {
         window.location.assign(safePaymentUrl.toString());
         return;
       }
+      if (response?.data?.payment_provider !== "manual_momo") throw new Error("missing checkout redirect");
       setPaymentStep(2);
-    } catch (error) {
-      setPaymentError(error?.response?.data?.detail || error?.message || "Impossible de générer la référence de paiement.");
+    } catch {
+      setPaymentError("Le paiement n’a pas pu être ouvert. Réessaie dans un instant.");
     } finally {
       setSubmitting(false);
     }
@@ -200,15 +207,16 @@ export default function SubscriptionPage() {
           <p className="wp-editorial-muted mt-4 max-w-xl text-base leading-7">{w.proIntro}</p>
           <a className="wp-editorial-link mt-4 inline-flex min-h-11 items-center text-sm font-bold" href="#pro-example">{i18n.t("Voir un exemple")} ↓</a>
         </header>
+        <PaymentReturnStatus refreshUser={refresh} />
         <ProDiscoveryExample />
         <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(280px,.8fr)]">
           <section className="min-w-0 rounded-3xl border border-slate-200 bg-white p-4 sm:p-6" data-testid="pro-comparison"><h2 className="text-xl font-extrabold text-slate-900">{w.compare}</h2><div className="mt-5 grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] gap-2 border-b pb-3 text-xs font-bold text-slate-500"><span>{w.feature}</span><span>Free</span><span className="text-orange-700">Pro</span></div>{[[w.selections,w.freeSelections,w.paidSelections],[w.availableData,w.preview,w.included],[w.savedSearches,'3','8'],[w.follow,w.included,w.included],[w.history,w.included,w.included],[w.combos,w.preview,w.included]].map(([label,free,pro],index)=><div key={index} className="grid grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)_minmax(0,1fr)] items-start gap-2 border-b border-slate-100 py-4 text-xs leading-5 sm:text-sm"><span className="break-words font-semibold text-slate-800">{label}</span><span className="break-words text-slate-500">{free}</span><span className="break-words font-bold text-orange-700">{pro}</span></div>)}<p className="mt-4 text-xs leading-6 text-slate-500">{w.coverage}</p></section>
-          <section className="wp-editorial-plan rounded-3xl border bg-white p-6 sm:p-8" data-testid={`plan-${plan.id}`}><span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">WinPulse Pro</span><div className="mt-5 flex flex-wrap items-baseline gap-2"><strong className="font-heading text-4xl font-black tracking-tight text-slate-900">{formatXof(i18n,amount)}</strong><span className="text-sm text-slate-500">FCFA / 30 {i18n.language==='fr'?'jours':i18n.language==='en'?'days':i18n.language==='es'?'días':i18n.language==='pt'?'dias':i18n.language==='de'?'Tage':'يوماً'}</span></div><p className="mt-4 text-sm leading-6 text-slate-500">{w.period}</p><ul className="mt-6 space-y-3">{[w.paidSelections,w.availableData,w.combos,w.builder,w.follow,w.savedSearches+' · 8'].map((label,index)=><li key={index} className="flex gap-2 text-sm leading-6 text-slate-700"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-orange-600"/><span>{label}</span></li>)}</ul><Button disabled={isCurrent} onClick={openPayment} data-testid="choose-pro-primary-btn" className="mt-7 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base font-bold text-white hover:bg-orange-700">{isCurrent?i18n.t('Plan actuel'):w.upgrade}</Button><p className="mt-4 text-xs leading-6 text-slate-500">{w.payment}</p></section>
+          <section className="wp-editorial-plan rounded-3xl border bg-white p-6 sm:p-8" data-testid={`plan-${plan.id}`}><span className="inline-flex rounded-full bg-orange-50 px-3 py-1 text-xs font-extrabold text-orange-700">WinPulse Pro</span><div className="mt-5 flex flex-wrap items-baseline gap-2"><strong className="font-heading text-4xl font-black tracking-tight text-slate-900">{formatXof(i18n,amount)}</strong><span className="text-sm text-slate-500">FCFA / 30 {i18n.language==='fr'?'jours':i18n.language==='en'?'days':i18n.language==='es'?'días':i18n.language==='pt'?'dias':i18n.language==='de'?'Tage':'يوماً'}</span></div><p className="mt-4 text-sm leading-6 text-slate-500">{w.period}</p><ul className="mt-6 space-y-3">{[w.paidSelections,w.availableData,w.combos,w.builder,w.follow,w.savedSearches+' · 8'].map((label,index)=><li key={index} className="flex gap-2 text-sm leading-6 text-slate-700"><CheckCircle2 className="mt-1 h-4 w-4 shrink-0 text-orange-600"/><span>{label}</span></li>)}</ul>{!returning && <Button disabled={isCurrent} onClick={openPayment} data-testid="choose-pro-primary-btn" className="mt-7 h-auto min-h-12 w-full whitespace-normal bg-orange-600 px-5 py-3 text-base font-bold text-white hover:bg-orange-700">{isCurrent?i18n.t('Plan actuel'):w.upgrade}</Button>}<p className="mt-4 text-xs leading-6 text-slate-500">{w.payment}</p></section>
         </div>
         <p className="rounded-2xl bg-slate-100 p-4 text-xs leading-6 text-slate-600">{w.note}</p>
       </div>
 
-      {i18n.tx(subscriptionTier === "free" && !isCurrent && !paymentOpen && <div className="lg:hidden fixed inset-x-0 z-[90] px-3 pointer-events-none" style={{
+      {i18n.tx(subscriptionTier === "free" && !isCurrent && !paymentOpen && !returning && <div className="lg:hidden fixed inset-x-0 z-[90] px-3 pointer-events-none" style={{
       bottom: "calc(4rem + env(safe-area-inset-bottom))"
     }} data-testid="subscription-mobile-sticky-cta">
           <div className="pointer-events-auto mx-auto flex w-full max-w-2xl items-center gap-3 rounded-2xl border border-orange-200 bg-white/95 p-3 shadow-[0_-8px_28px_rgba(15,23,42,0.16)] backdrop-blur-xl">
@@ -358,5 +366,63 @@ function ProDiscoveryExample() {
       <Link to="/app/top" className="wp-editorial-link inline-flex min-h-11 items-center text-sm font-bold">{i18n.t("Voir les sélections à la une")} →</Link>
       <Link to="/resultats" className="inline-flex min-h-11 items-center text-sm font-semibold text-slate-600 hover:underline">{i18n.t("Voir le bilan des résultats")} →</Link>
     </div>
+  </section>;
+}
+
+function PaymentReturnStatus({ refreshUser }) {
+  const i18n = usePageLanguage();
+  const [params] = useSearchParams();
+  const reference = params.get("payment") === "return" ? params.get("reference") : null;
+  const valid = /^PE-[A-F0-9]{8}$/.test(reference || "");
+  const [state, setState] = useState("checking");
+  const [retry, setRetry] = useState(0);
+  useEffect(() => {
+    if (!valid) return undefined;
+    const controller = new AbortController();
+    let attempts = 0;
+    let timer;
+    setState("checking");
+    const check = async () => {
+      attempts++;
+      try {
+        const { data } = await api.get(`/subscription/payment-status/${encodeURIComponent(reference)}`, {
+          signal: controller.signal, timeout: 10000,
+        });
+        if (controller.signal.aborted) return;
+        if (data?.activated === true) {
+          setState("confirmed");
+          try { sessionStorage.removeItem("winpulse_payment_reference"); } catch {}
+          Promise.resolve(refreshUser?.()).catch(() => {});
+          return;
+        }
+        const status = String(data?.payment_status || "").toLowerCase();
+        if (["declined", "canceled", "cancelled", "expired", "failed", "refunded"].includes(status)) {
+          setState("declined");
+          return;
+        }
+        setState("pending");
+        if (attempts < 4) timer = window.setTimeout(check, 6000);
+      } catch {
+        if (!controller.signal.aborted) setState("error");
+      }
+    };
+    check();
+    return () => { controller.abort(); window.clearTimeout(timer); };
+    // refreshUser is only used after server confirmation.
+  }, [valid, reference, retry]);
+  if (!valid) return null;
+  const messages = {
+    checking: "Vérification de ton paiement…",
+    pending: "Paiement en attente de confirmation. Tu peux revenir vérifier avec la même référence.",
+    confirmed: "Paiement confirmé. Ton accès Pro a été activé.",
+    declined: "Ce paiement n’a pas été confirmé par le prestataire.",
+    error: "Impossible de vérifier le paiement pour le moment.",
+  };
+  return <section role="status" aria-live="polite" data-testid="payment-return-status" className="rounded-2xl border border-slate-200 bg-white p-5">
+    <p className="font-bold text-slate-900">{i18n.t(messages[state])}</p>
+    <p className="mt-1 text-sm text-slate-600">{i18n.t("Référence")} : <bdi>{reference}</bdi></p>
+    {state === "confirmed" ? <Link to="/app/aujourdhui" className="mt-2 inline-flex min-h-11 items-center font-bold text-orange-700">{i18n.t("Voir les sélections")} →</Link>
+      : <Button type="button" variant="outline" className="mt-2" disabled={state === "checking"} onClick={() => setRetry(v => v + 1)}>{i18n.t("Vérifier à nouveau")}</Button>}
+    {state === "declined" && <Link replace to="/app/abonnement" className="ms-3 inline-flex min-h-11 items-center font-bold text-orange-700">{i18n.t("Retour à l’offre")} →</Link>}
   </section>;
 }
