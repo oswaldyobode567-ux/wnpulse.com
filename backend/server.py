@@ -53,6 +53,7 @@ from odds_service import (
 from stats_service import (refresh_real_stats_cache, get_real_stats_map, enrich_match_badges, get_match_insights, refresh_apisports_cache)
 import stats_service as _optional_stats_service
 import prediction_engine as _optional_prediction_engine
+from ranking_evaluation import PROTOCOL as RANKING_PROTOCOL, comparison_forecast, summarize as summarize_rankings
 from prediction_engine import (
     analyze_all, analyze_match, top_predictions, build_multi_combos, find_value_bets,
     build_super_combos, build_today_combos_by_sport, build_ultra_safe_combo,
@@ -8516,6 +8517,7 @@ async def _build_prediction_snapshot(force: bool = False) -> Dict:
             logging.getLogger('winpulse.official').warning('Official primary freeze deferred (%s)',type(exc).__name__)
         _queue_independent_archive(predictions)
         _queue_model_comparison_archive(predictions)
+        _queue_ranking_comparison(predictions, matches)
         # Comparison arms are private experimental data, never public/Free payloads.
         for prediction in predictions:
             prediction.pop('model_comparison', None)
@@ -16766,6 +16768,58 @@ def _queue_model_comparison_archive(predictions):
     _model_comparison_archive_task=asyncio.create_task(run())
 
 
+_ranking_comparison_task = None
+
+
+def _ranking_comparison_rows(predictions, matches, captured_at):
+    # Freeze the real public selection, even when the challenger passes.
+    by_id = {str(m["id"]): m for m in matches if m.get("id")}
+    rows = []
+    for prediction in predictions:
+        match = by_id.get(str(prediction.get("match_id")))
+        if not match:
+            continue
+        kickoff = _parse_iso(match.get("commence_time"))
+        if not kickoff or not 0 < (kickoff-captured_at).total_seconds() <= 12*3600:
+            continue
+        comparison = comparison_forecast(prediction, match, captured_at)
+        if comparison is None:
+            continue
+        identity = _official_fixture_key(match) or _official_event_key(prediction)
+        if not identity:
+            continue
+        rows.append({
+            "_id": f"{RANKING_PROTOCOL}:{identity}",
+            "protocol": RANKING_PROTOCOL, "match_id": str(match["id"]),
+            "commence_time": kickoff.isoformat(), "captured_at": captured_at.isoformat(),
+            "sport_key": match.get("sport_key"), "home_team": match["home_team"],
+            "away_team": match["away_team"], "comparison": comparison, "state": "pending",
+        })
+    return rows
+
+
+def _queue_ranking_comparison(predictions, matches):
+    global _ranking_comparison_task
+    if _ranking_comparison_task and not _ranking_comparison_task.done():
+        return
+    captured_at = datetime.now(timezone.utc)
+    # Predictions are replaced rather than mutated across catalogue generations.
+    async def save():
+        try:
+            rows = await asyncio.to_thread(_ranking_comparison_rows, predictions, matches, captured_at)
+            now = datetime.now(timezone.utc)
+            operations = [UpdateOne({"_id": r["_id"]},
+                {"$setOnInsert": {k: v for k, v in r.items() if k != "_id"}}, upsert=True)
+                for r in rows if _parse_iso(r["commence_time"]) > now]
+            if operations:
+                result = await asyncio.wait_for(db.model_comparison_forecasts.bulk_write(operations, ordered=False), timeout=20)
+                if result.upserted_count:
+                    logging.getLogger("uvicorn.error").info("Selective ranking archived %d prematch observations", result.upserted_count)
+        except Exception as exc:
+            logging.getLogger("winpulse.comparison").warning("Selective ranking archive deferred: %s", type(exc).__name__)
+    _ranking_comparison_task = asyncio.create_task(save())
+
+
 def _model_comparison_outcome(record,score):
     from prediction_engine import settle_comparison_candidate
     if not score or score.get('completed') is not True:return None
@@ -16780,6 +16834,10 @@ def _model_comparison_outcome(record,score):
     home,away=values.get(record['home_team']),values.get(record['away_team'])
     if home is None or away is None:return None
     pair=record.get('comparison') or {};evaluated={}
+    if record.get("protocol") == RANKING_PROTOCOL and pair.get("challenger") is None:
+        baseline = settle_comparison_candidate(pair.get("baseline") or {}, home, away, record["home_team"], record["away_team"])
+        return {"baseline": baseline, "challenger": None, "same_selection": False,
+                "final_score": f"{home}-{away}"} if baseline else None
     for arm in ('baseline','challenger'):
         evaluated[arm]=settle_comparison_candidate(pair.get(arm) or {},home,away,record['home_team'],record['away_team'])
     if not all(evaluated.values()):return None
@@ -16792,10 +16850,10 @@ def _model_comparison_outcome(record,score):
 
 async def _settle_model_comparisons():
     now=datetime.now(timezone.utc)
-    rows=await db.model_comparison_forecasts.find({'state':'pending',
-        'commence_time':{'$lte':(now-timedelta(hours=2)).isoformat()},
-        '$or':[{'next_check_at':{'$exists':False}},{'next_check_at':{'$lte':now.isoformat()}}]
-        }).sort('commence_time',1).to_list(length=500)
+    pending = {'state':'pending', 'commence_time':{'$lte':(now-timedelta(hours=2)).isoformat()},
+        '$or':[{'next_check_at':{'$exists':False}},{'next_check_at':{'$lte':now.isoformat()}}]}
+    rows = await db.model_comparison_forecasts.find({**pending, 'protocol':RANKING_PROTOCOL}).sort('commence_time',1).to_list(length=250)
+    rows += await db.model_comparison_forecasts.find({**pending, 'protocol':'paired-football-probability-floor120-20261106'}).sort('commence_time',1).to_list(length=250)
     if not rows:return
     scores=await db.scores_archive.find({'event_id':{'$in':list({r['match_id'] for r in rows})},'completed':True}).to_list(length=1000)
     # Conflicting final scores are deferred, never resolved arbitrarily.
@@ -16852,6 +16910,17 @@ async def prediction_comparison_status(days:int=30,payload:dict=Depends(get_curr
         'truncated':total>len(rows),'publication_mode':os.environ.get('WNPULSE_FOOTBALL_PROBABILITY_MODE','independent_pilot')}
 
 
+@app.get("/api/admin/prediction-comparison/ranking")
+async def selective_ranking_status(days: int = 30, payload: dict = Depends(get_current_user_payload)):
+    await _require_admin(payload)
+    days = max(1, min(90, days))
+    cutoff = (datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
+    query = {"protocol": RANKING_PROTOCOL, "commence_time": {"$gte": cutoff}}
+    rows = await db.model_comparison_forecasts.find(query, {"_id":0, "state":1, "evaluation":1}
+        ).sort("commence_time", -1).limit(10001).max_time_ms(8000).to_list(length=10001)
+    return {**summarize_rankings(rows[:10000]), "days": days, "truncated": len(rows)>10000}
+
+
 async def _scheduled_model_comparison_settlement():
     try:
         await asyncio.wait_for(_run_with_scheduler_lease('paired_model_settlement',
@@ -16864,6 +16933,7 @@ async def _scheduled_model_comparison_settlement():
 async def _paired_comparison_startup():
     try:
         await db.model_comparison_forecasts.create_index([('state',1),('next_check_at',1),('commence_time',1)])
+        await asyncio.wait_for(db.model_comparison_forecasts.create_index([('protocol',1),('commence_time',-1)]), timeout=5)
     except Exception:pass
     if ENABLE_INTERNAL_SCHEDULER:
         scheduler.add_job(_scheduled_model_comparison_settlement,'interval',minutes=15,

@@ -204,6 +204,7 @@ export default function AdminPage() {
         <Tabs defaultValue="quality" className="space-y-6">
           <TabsList className="h-auto flex flex-wrap justify-start gap-1 bg-neutral-100">
             <TabsTrigger value="quality" data-testid="tab-quality"><ShieldCheck className="mr-1.5 h-3.5 w-3.5" />Pilotage</TabsTrigger>
+            <TabsTrigger value="ranking" data-testid="tab-ranking">Comparatif des pronostics</TabsTrigger>
             <TabsTrigger value="enrichment" data-testid="tab-enrichment"><EnrichmentTabLabel /></TabsTrigger>
             <TabsTrigger value="payments" data-testid="tab-payments">Paiements</TabsTrigger>
             <TabsTrigger value="users" data-testid="tab-users">Utilisateurs</TabsTrigger>
@@ -215,6 +216,8 @@ export default function AdminPage() {
           </TabsList>
 
           <TabsContent value="quality"><QualityControlPanel /></TabsContent>
+
+          <TabsContent value="ranking"><RankingEvaluationPanel /></TabsContent>
 
           <TabsContent value="enrichment"><VisualAssetsPanel /><EnrichmentPanel /></TabsContent>
           <TabsContent value="payments">
@@ -948,4 +951,64 @@ function VisualAssetsPanel(){
   {data?.last_run?.checked_at&&<p className="mt-3 text-xs text-slate-500">{w[19]} : {new Intl.DateTimeFormat(i18n.locale,{dateStyle:'short',timeStyle:'short'}).format(new Date(data.last_run.checked_at))}</p>}
   {data?.missing_sample?.length>0&&<details className="mt-4 rounded-xl border border-slate-200 p-3"><summary className="min-h-8 cursor-pointer text-sm font-semibold text-slate-700">{w[10]}</summary><ul className="mt-3 space-y-2 text-sm text-slate-500">{data.missing_sample.map(row=><li key={row.key} className="break-words"><bdi>{row.name}</bdi> · {sports[row.sport]||row.sport}</li>)}</ul></details>}
  </Card>;
+}
+
+
+function RankingEvaluationPanel() {
+  const [report, setReport] = useState(null);
+  const [previous, setPrevious] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoading(true);
+    const request = path => api.get(path, { signal: controller.signal, timeout: 14000 }).then(r => r.data);
+    Promise.allSettled([
+      request("/admin/prediction-comparison/ranking?days=30"),
+      request("/admin/prediction-comparison/status?days=30"),
+    ]).then(([current, legacy]) => {
+      if (controller.signal.aborted) return;
+      setReport(current.status === "fulfilled" ? current.value : null);
+      setPrevious(legacy.status === "fulfilled" ? legacy.value : null);
+      setLoading(false);
+    });
+    return () => controller.abort();
+  }, [revision]);
+  const number = value => value == null ? "—" : new Intl.NumberFormat("fr-FR", { maximumFractionDigits: 2 }).format(value);
+  const percent = value => value == null ? "—" : `${number(value)} %`;
+  const cells = data => [number(data?.bets), percent(data?.win_rate), percent(data?.roi), number(data?.net_per_100_events)];
+  const rows = report ? [
+    ["Pronostic publié", report.arms.baseline],
+    ["Classement sélectif", report.arms.challenger],
+    ["Publié · mêmes matchs joués", report.same_event_arms.baseline],
+    ["Sélectif · mêmes matchs joués", report.same_event_arms.challenger],
+  ] : [];
+  return <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="ranking-evaluation">
+    <div className="flex flex-wrap items-start justify-between gap-4">
+      <div><h2 className="text-xl font-bold text-slate-900">Le classement sélectif à l’essai</h2>
+        <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-600">Football · 30 derniers jours. Les deux choix sont enregistrés avant le coup d’envoi. Le site continue à publier ses pronostics habituels pendant la comparaison.</p></div>
+      <Button variant="outline" disabled={loading} onClick={() => setRevision(n => n+1)}>Actualiser</Button>
+    </div>
+    {loading ? <p role="status" className="mt-5 text-sm text-slate-600">Chargement de la comparaison…</p>
+      : !report ? <p role="alert" className="mt-5 text-sm text-slate-600">Le rapport est temporairement indisponible.</p>
+      : <>
+        <div className="mt-5 grid gap-3 sm:grid-cols-3">
+          {[["Matchs suivis", report.observed], ["Résultats confirmés", report.resolved], ["Matchs écartés par le test", report.passed]].map(([label, value]) =>
+            <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-sm text-slate-600">{label}</p><strong className="mt-1 block text-2xl text-slate-900">{number(value)}</strong></div>)}
+        </div>
+        <p className="mt-4 text-sm leading-6 text-slate-600">Couverture sur les résultats confirmés : <strong>{percent(report.coverage)}</strong> · {number(report.different_choices)} choix différents. {report.paired < report.min_review_pairs ? `Premier examen après ${report.min_review_pairs} matchs comparables ; l’échantillon est encore insuffisant.` : "Échantillon disponible pour examen ; aucun changement automatique."}</p>
+        {report.truncated && <p className="mt-3 text-sm text-amber-800">Le rapport est limité aux 10 000 observations les plus récentes.</p>}
+        <div className="mt-5 overflow-x-auto">
+          <table className="min-w-[39rem] w-full text-left text-sm">
+            <thead className="text-slate-500"><tr>{["Comparaison", "Sélections", "Réussite", "Rendement", "Unités nettes / 100 matchs"].map(label => <th key={label} scope="col" className="border-b p-3">{label}</th>)}</tr></thead>
+            <tbody>{rows.map(([label, data]) => <tr key={label}><th scope="row" className="border-b p-3 text-slate-900">{label}</th>{cells(data).map((value, i) => <td key={i} className="border-b p-3 tabular-nums">{value}</td>)}</tr>)}</tbody>
+          </table>
+        </div>
+        <p className="mt-4 text-xs leading-6 text-slate-500">Rendement simulé à une unité par sélection aux cotes enregistrées. Les remboursements ne comptent pas comme des victoires. Le résultat par 100 matchs inclut les matchs écartés, avec un résultat net de zéro pour ces matchs.</p>
+      </>}
+    {!loading && previous && <div className="mt-6 border-t pt-5 text-sm leading-6 text-slate-600">
+      <h3 className="font-bold text-slate-900">Autre test : modèle de scores indépendant</h3>
+      <p>{number(previous.resolved_pairs)} matchs évalués · rendement simulé du modèle de référence : {percent(previous.arms?.baseline?.roi_percent)} · modèle de scores : {percent(previous.arms?.challenger?.roi_percent)}.</p>
+    </div>}
+  </section>;
 }
