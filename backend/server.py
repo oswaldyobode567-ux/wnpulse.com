@@ -11864,10 +11864,42 @@ def _discovery_candidates(snapshot, now):
     return first + rest
 
 
+_free_daily_manifest_cache = None
+
+
+def _cached_discovery_manifest(snapshot, now, day):
+    cached = _free_daily_manifest_cache
+    if cached is None or snapshot.get("timestamp") is None:
+        return None
+    key, expires, doc = cached
+    return doc if key == (day, snapshot.get("timestamp")) and now < expires else None
+
+
+def _remember_discovery_manifest(snapshot, now, day, doc, live):
+    global _free_daily_manifest_cache
+    if snapshot.get("timestamp") is None:
+        return doc
+    expiries = [now + timedelta(seconds=45)]
+    for item in doc.get("entries", []):
+        row = live.get(item["match_id"], item["match"])
+        kickoff = _discovery_date(row.get("commence_time"))
+        if kickoff is not None:
+            expiries.append(kickoff)
+    _free_daily_manifest_cache = ((day, snapshot.get("timestamp")), min(expiries), doc)
+    return doc
+
+
 async def _discovery_manifest(snapshot):
     """Three stable upcoming previews; replace at kickoff, never based on results."""
     now = _discovery_now(); day = _discovery_day(now)
+    cached = _cached_discovery_manifest(snapshot, now, day)
+    if cached is not None:
+        return cached
     async with _free_daily_lock:
+        now = _discovery_now(); day = _discovery_day(now)
+        cached = _cached_discovery_manifest(snapshot, now, day)
+        if cached is not None:
+            return cached
         for attempt in range(8):
             doc = await db.free_daily_picks.find_one({"_id":day})
             previous = (doc or {}).get("entries", [])
@@ -11889,7 +11921,7 @@ async def _discovery_manifest(snapshot):
             additions = [item for item in _discovery_candidates(snapshot, now) if item["match_id"] not in seen]
             entries += additions[:max(0, FREE_DAILY_PICK_LIMIT-len(entries))]
             if doc is not None and entries == previous:
-                return doc
+                return _remember_discovery_manifest(snapshot, now, day, doc, live)
             values = {"entries":entries, "archive":archived + retired,
                       "updated_at":now.isoformat(), "mode":"rolling_upcoming"}
             if doc is None:
