@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { ArrowRight, BarChart3, CalendarDays, Check, ChevronDown, Clock, Copy, Info, Loader2, Lock, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, Sparkles, Trash2, Trophy, X } from "lucide-react";
 import AppLayout, { usePageLanguage, ExperienceToolNav } from "@/components/AppLayout";
@@ -894,7 +894,12 @@ export default function ComboBuilderPage() {
   const filtered = confidenceFilter === "all" ? baseFiltered : baseFiltered.filter(match => {
     const score = bestPicks.get(match.match_id)?.confidence;
     return score >= activeConfidence.min && score < activeConfidence.max;
-  }).sort((a, b) => bestPicks.get(b.match_id).confidence - bestPicks.get(a.match_id).confidence);
+  }).sort((a, b) => {
+    const scoreA = bestPicks.get(a.match_id).confidence;
+    const scoreB = bestPicks.get(b.match_id).confidence;
+    const tier = score => score >= 90 ? 3 : score >= 80 ? 2 : 1;
+    return tier(scoreB) - tier(scoreA) || (order === "competition" ? 0 : scoreB - scoreA);
+  });
   const selectedKeys = useMemo(() => new Set(selectedPicks.map(p => p._key)), [selectedPicks]);
   const availableOptions = useMemo(() => eligible.reduce((sum, match) => sum + match.picks.filter(p => selectable(match, p, now)).length, 0), [eligible, now]);
   function togglePick(match, pick) {
@@ -1076,17 +1081,20 @@ export default function ComboBuilderPage() {
               v0: <select id="cb-order" value={order} onChange={event => setOrder(event.target.value)}><option value="time">{i18n.t("Horaire")}</option><option value="competition">{i18n.t("Comp\xE9tition")}</option></select>
             })}</label></section>
         <div className="cb-sports" aria-label={i18n.t("Choisir un sport")} data-testid="builder-sport-tabs">{i18n.tx(SPORT_TABS.filter(tab => tab.key !== "other" || sportCounts.other).map(tab => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key} data-testid={`builder-tab-${tab.key}`}>{i18n.tx(tab.label)}<span>{i18n.tx(loading ? "—" : sportCounts[tab.key] || 0)}</span></button>))}</div>
+        <section className="wp-confidence-panel" aria-labelledby="builder-confidence-title">
+          <h2 id="builder-confidence-title">{i18n.t("Confiance du moteur")}</h2>
+          <div className="cb-sports wp-confidence-tabs" role="group" aria-label={i18n.t("Filtrer par confiance du moteur")} data-testid="builder-confidence-filters">
+              {confidenceOptions.map(filter => <button key={filter.key} type="button" aria-pressed={confidenceFilter === filter.key} onClick={() => setConfidenceFilter(filter.key)}>
+                {i18n.t(filter.label)}<span>{i18n.tx(loading ? "—" : filter.count)}</span>
+              </button>)}
+            </div>
+        </section>
         <div className="cb-main">
           <section className="cb-catalogue" aria-labelledby="cb-matches-heading"><div className="cb-section-title"><div><p className="cb-kicker">{i18n.t("01 \xB7 Compose ton ticket")}</p><h2 id="cb-matches-heading">{i18n.t("Les rencontres \xE0 explorer")}</h2><p>{i18n.tx(loading ? "Chargement du programme…" : i18n.t("{{v0}} rencontre{{v1}} correspond{{v2}} \xE0 tes filtres", {
                     v0: filtered.length,
                     v1: filtered.length > 1 ? "s" : "",
                     v2: filtered.length > 1 ? "ent" : ""
                   }))}</p></div></div>
-            <div className="cb-sports" role="group" aria-label={i18n.t("Filtrer par confiance du moteur")} data-testid="builder-confidence-filters">
-              {confidenceOptions.map(filter => <button key={filter.key} type="button" aria-pressed={confidenceFilter === filter.key} onClick={() => setConfidenceFilter(filter.key)}>
-                {i18n.t(filter.label)}<span>{i18n.tx(loading ? "—" : filter.count)}</span>
-              </button>)}
-            </div>
             {i18n.tx(selectedPicks.length > 0 && <a href="#builder-ticket" onClick={() => setTicketOpen(true)} className="cb-ticket-jump"><span><Trophy aria-hidden="true" />{i18n.rich("{{v0}} s\xE9lection{{v1}}{{v2}}", {
                   v0: i18n.tx(selectedPicks.length),
                   v1: i18n.tx(selectedPicks.length > 1 ? "s" : ""),
@@ -1096,12 +1104,22 @@ export default function ComboBuilderPage() {
                 })}</span><strong>{i18n.t("Voir le ticket")}<ArrowRight aria-hidden="true" /></strong></a>)}
             {i18n.tx(loadedAt !== null && !fresh && <p className="cb-alert" role="status">{i18n.t("Le catalogue n\u2019a pas \xE9t\xE9 v\xE9rifi\xE9 depuis plus de cinq minutes. Actualise avant d\u2019ajouter ou de partager une s\xE9lection.")}</p>)}
             {i18n.tx(skipped > 0 && <p className="cb-small-note">{i18n.t("Certaines donn\xE9es incompl\xE8tes n\u2019ont pas pu \xEAtre affich\xE9es.")}</p>)}
-            {i18n.tx(loading || authLoading ? <div className="cb-empty" role="status"><Loader2 aria-hidden="true" className="cb-spin" /><h3>{i18n.t("Chargement des rencontres")}</h3><p>{i18n.t("Les options disponibles appara\xEEtront ici.")}</p></div> : !filtered.length ? <div className="cb-empty"><Search aria-hidden="true" /><h3>{i18n.tx(eligible.length ? "Aucune rencontre pour ces filtres" : "Aucune rencontre disponible actuellement")}</h3><p>{i18n.tx(eligible.length ? "Essaie une autre équipe ou élargis les filtres." : "Actualise plus tard pour retrouver les prochains marchés proposés.")}</p>{i18n.tx(eligible.length > 0 && <button type="button" className="cb-button cb-button--outline" onClick={() => {
+            {i18n.tx(loading || authLoading ? <div className="cb-empty" role="status"><Loader2 aria-hidden="true" className="cb-spin" /><h3>{i18n.t("Chargement des rencontres")}</h3><p>{i18n.t("Les options disponibles appara\xEEtront ici.")}</p></div> : !filtered.length ? <div className="cb-empty"><Search aria-hidden="true" /><h3>{i18n.tx(eligible.length && confidenceFilter !== "all" ? "Aucun pronostic disponible dans cette tranche" : eligible.length ? "Aucune rencontre pour ces filtres" : "Aucune rencontre disponible actuellement")}</h3><p>{i18n.tx(eligible.length ? "Essaie une autre équipe ou élargis les filtres." : "Actualise plus tard pour retrouver les prochains marchés proposés.")}</p>{i18n.tx(eligible.length > 0 && <button type="button" className="cb-button cb-button--outline" onClick={() => {
                 setSport("all");
                 setDay("all");
                 setQuery("");
                 setConfidenceFilter("all");
-              }}>{i18n.t("R\xE9initialiser les filtres")}</button>)}</div> : <><div className="cb-matches">{i18n.tx(filtered.slice(0, limit).map(match => <MatchCard key={match.match_id} match={match} preferredPick={confidenceFilter === "all" ? null : bestPicks.get(match.match_id)} expanded={expandedMatchId === match.match_id} onToggle={() => setExpandedMatchId(value => value === match.match_id ? null : match.match_id)} onPickToggle={togglePick} selectedKeys={selectedKeys} now={now} fresh={fresh} canStats={canPersist} stats={canPersist ? matchStats[match.match_id] : null} onStats={() => loadStats(match)} />))}</div><p className="cb-results-count">{i18n.rich("{{v0}} sur {{v1}} rencontres affich\xE9es", {
+              }}>{i18n.t("R\xE9initialiser les filtres")}</button>)}</div> : <><div className="cb-matches" key={confidenceFilter}>{i18n.tx(filtered.slice(0, limit).map((match, index) => {
+              const pick = bestPicks.get(match.match_id);
+              const band = confidenceOptions.slice(2).find(filter => pick?.confidence >= filter.min && pick?.confidence < filter.max);
+              const previous = bestPicks.get(filtered[index - 1]?.match_id);
+              const showBand = confidenceFilter === "70+" && band &&
+                !(previous?.confidence >= band.min && previous?.confidence < band.max);
+              return <Fragment key={match.match_id}>
+                {showBand && <h3 className="wp-confidence-band">{i18n.t(band.label)} <span>{band.count}</span></h3>}
+                <MatchCard key={match.match_id} match={match} preferredPick={confidenceFilter === "all" ? null : bestPicks.get(match.match_id)} expanded={expandedMatchId === match.match_id} onToggle={() => setExpandedMatchId(value => value === match.match_id ? null : match.match_id)} onPickToggle={togglePick} selectedKeys={selectedKeys} now={now} fresh={fresh} canStats={canPersist} stats={canPersist ? matchStats[match.match_id] : null} onStats={() => loadStats(match)} />
+              </Fragment>;
+            }))}</div><p className="cb-results-count">{i18n.rich("{{v0}} sur {{v1}} rencontres affich\xE9es", {
                   v0: i18n.tx(Math.min(limit, filtered.length)),
                   v1: i18n.tx(filtered.length)
                 })}</p>{i18n.tx(limit < filtered.length && <button type="button" className="cb-button cb-button--outline cb-show-more" onClick={() => setLimit(value => value + 12)}>{i18n.t("Afficher les rencontres suivantes")}<Plus aria-hidden="true" /></button>)}</>)}
