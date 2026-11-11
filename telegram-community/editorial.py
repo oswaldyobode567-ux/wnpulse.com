@@ -1,5 +1,7 @@
 """Editorial inputs: public WinPulse data, never private picks or chat history."""
 import re
+from hashlib import blake2s
+from math import isfinite
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -28,6 +30,7 @@ def stamp(value):
 def fixture_visual(row):
     return {"teams":[clean(row.get("home_team"),75),clean(row.get("away_team"),75)],
             "sport":clean(row.get("sport_key"),65),"league":clean(row.get("sport_title"),65),
+            "country":clean(row.get("country") or row.get("sport_country") or row.get("league_country"),50),
             "media":[{**(row.get(side+"_media") or {}),
                        "badge":row.get(side+"_logo") or row.get(side+"_team_logo")}
                      for side in ("home","away")]}
@@ -83,7 +86,12 @@ def make(kind, data, now, scheduled, admin=False):
                  f"{clean(pred.get('market_label'),70) or 'Pronostic'} : {clean(pred['pick'],100)}",
                  f"Cote observée : {odds:.2f}".replace(".",","),
                  f"{start.astimezone(ZONE):%d/%m à %H:%M} · heure de Paris"]
-        details={"teams":visual["teams"],"competition":visual["league"],
+        confidence = pred.get("confidence")
+        if isinstance(confidence, bool) or not isinstance(confidence, (int, float)) or not isfinite(confidence) or not 0 < confidence <= 100:
+            confidence = None
+        details={"teams":visual["teams"],"competition":visual["league"],"country":visual["country"],
+                 "risk":{"safe":"Faible","value":"Modéré","risky":"Élevé"}.get(pred.get("label")),
+                 "confidence":confidence,
                  "market":clean(pred.get("market_label"),70) or "Pronostic",
                  "pick":clean(pred["pick"],120),"odds":f"{odds:.2f}".replace(".",","),
                  "date":start.astimezone(ZONE).strftime("%d/%m · %H:%M"),"time_zone":ZONE.key,
@@ -122,6 +130,38 @@ def subscription(plans):
     price = f"{pro['price_xof']:,}".replace(","," ")
     return f"WinPulse Pro : {price} FCFA pour {pro['duration_days']} jours. Consulte l’abonnement pour les moyens de paiement disponibles."
 
+def fixture_backdrop(draw, visual):
+    """Build a stable editorial background from the competition and fixture."""
+    palettes = (
+        ((13, 29, 56), (28, 75, 121)), ((38, 21, 55), (92, 45, 111)),
+        ((10, 41, 39), (26, 101, 85)), ((52, 23, 26), (128, 46, 54)),
+        ((29, 34, 49), (73, 80, 108)), ((47, 34, 21), (114, 76, 38)),
+    )
+    identity = str(visual.get("league") or visual.get("sport") or "")
+    teams = " | ".join(visual.get("teams") or [])
+    league_seed = blake2s(identity.encode()).digest()
+    match_seed = blake2s(teams.encode()).digest()
+    base, accent = palettes[league_seed[0] % len(palettes)]
+    for y in range(660):
+        weight = (1 - y / 660) * 0.72
+        tone = tuple(round(a + (b-a)*weight) for a,b in zip(base,accent))
+        draw.line((0,y,1080,y),fill=tone)
+    variant = match_seed[0] % 4
+    if variant == 0:
+        for offset in range(-200, 1200, 110):
+            draw.line((offset,170,offset+330,655),fill=accent,width=3)
+    elif variant == 1:
+        for size in range(100, 750, 65):
+            draw.ellipse((540-size,410-size,540+size,410+size),outline=accent,width=3)
+    elif variant == 2:
+        for x in range(20, 1080, 54):
+            for y in range(190, 655, 54):
+                draw.ellipse((x,y,x+4,y+4),fill=accent)
+    else:
+        for offset in range(0, 430, 36):
+            draw.rounded_rectangle((offset,180+offset//3,1080-offset,650-offset//3),24,outline=accent,width=3)
+
+
 def poster(draft, photo=None, badges=(), hero=None, hero_label="VISUEL D’ILLUSTRATION"):
     from PIL import Image, ImageDraw, ImageFont, ImageOps
     from io import BytesIO
@@ -137,6 +177,8 @@ def poster(draft, photo=None, badges=(), hero=None, hero_label="VISUEL D’ILLUS
         for y in range(660):
             fade.line((0,y,1080,y),fill=(10,16,28,int(100+115*(y/659)**2)))
         image.paste(Image.alpha_composite(cover.convert("RGBA"),shade).convert("RGB"),(0,0))
+    if draft.get("kind") == "pick" and hero is None:
+        fixture_backdrop(draw, draft.get("visual") or {})
     draw.rounded_rectangle((64,62,1016,1018),32,outline="#555269",width=3)
     def font(size, bold=False):
         return ImageFont.truetype("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",size)
@@ -188,7 +230,7 @@ def poster(draft, photo=None, badges=(), hero=None, hero_label="VISUEL D’ILLUS
                       font=font(24,True),fill="#FFB57D")
             for i,(team,x) in enumerate(zip(teams,(315,765))):
                 if hero is None:
-                    draw.rounded_rectangle((x-209,237,x+209,589),28,fill="#1C2A43",outline="#3B4B64",width=2)
+                    draw.rounded_rectangle((x-209,237,x+209,589),28,fill="#172337",outline="#3B4B64",width=2)
                 else:
                     draw.rounded_rectangle((x-205,438,x+205,554),20,fill="#172337")
                 draw.rounded_rectangle((x-75,270,x+75,420),22,fill="#F2F5FB")
