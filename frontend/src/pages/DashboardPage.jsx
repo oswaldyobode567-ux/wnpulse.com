@@ -1090,12 +1090,15 @@ const LEAGUE_PRIORITY = [
   "NBA","EuroLeague","ATP","WTA","NHL","MLB",
 ];
 function groupByLeague(matches) {
-  const groups = {};
-  for (const m of matches) {
-    const league = m.sport_title || "Autre";
-    if (!groups[league]) groups[league] = [];
-    groups[league].push(m);
-  } return Object.entries(groups).sort(([a],[b]) => {
+  const groups = new Map();
+  for (const match of matches) {
+    const league = match.sport_title || match.league_name || "Autre";
+    const country = match.country_name || (typeof match.country === "string" ? match.country : match.country?.name);
+    const label = country && !league.toLowerCase().includes(String(country).toLowerCase()) ? `${country} · ${league}` : league;
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(match);
+  }
+  return [...groups.entries()].sort(([a],[b]) => {
     const ia = LEAGUE_PRIORITY.findIndex(p => a.includes(p));
     const ib = LEAGUE_PRIORITY.findIndex(p => b.includes(p));
     if (ia === -1 && ib === -1) return a.localeCompare(b);
@@ -1284,8 +1287,6 @@ export function MatchCataloguePage() {
   const today = useCalendarDay();
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   const [refreshing,  setRefreshing] = useState(false);
-  // Open the nearest day by default; other dates remain available without a long wall of cards.
-  const [openDays, setOpenDays] = useDashboardViewState("open-days", {});
   const subscriptionTier = String(user?.subscription_tier || user?.subscription || "free").toLowerCase();
   const isFree = subscriptionTier === "free" && !user?.is_admin;
   const isAdmin = Boolean(user?.is_admin);
@@ -1356,9 +1357,18 @@ export function MatchCataloguePage() {
     return c;
   }, [matches]);
   const orderedMatches = useMemo(() => sortDashboardMatches(filtered, sort), [filtered, sort]);
-  const leagueGroups = useMemo(() => groupByLeague(orderedMatches), [orderedMatches]);
   const dayGroups = useMemo(() => groupDashboardDays(orderedMatches, today), [orderedMatches, today]);
-  const todayCount = filtered.filter(match => localMatchDay(match.commence_time) === today).length;
+  const dates = [...new Set([today, ...dayGroups.map(([key]) => key)])].sort();
+  const requestedDate = searchParams.get("date");
+  const selectedDate = dates.includes(requestedDate) ? requestedDate : today;
+  const dateIndex = dates.indexOf(selectedDate);
+  const visibleMatches = dayGroups.find(([key]) => key === selectedDate)?.[1] || [];
+  const leagueGroups = groupByLeague(visibleMatches);
+  const selectDate = value => setSearchParams(previous => {
+    const params = new URLSearchParams(previous);
+    value === today ? params.delete("date") : params.set("date", value);
+    return params;
+  });
   const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
   const advancedFilterCount = Number(betFilter !== "all") + Number(riskFilter !== "all");
   const activeFilters = [
@@ -1369,7 +1379,7 @@ export function MatchCataloguePage() {
   ];
   return (
     <AppLayout>
-      <AdminShareProvider isAdmin={isAdmin} items={filtered} kind="picks">
+      <AdminShareProvider isAdmin={isAdmin} items={visibleMatches} kind="picks">
       <div className="wp-catalogue mx-auto max-w-7xl space-y-5 px-4 py-6 sm:space-y-6 sm:px-6 sm:py-8 lg:px-8" data-testid="dashboard-redesigned">
         <Card className="wp-catalogue-header relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-5 text-white sm:p-7">
           <div className="pointer-events-none absolute -end-20 -top-24 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
@@ -1463,7 +1473,7 @@ export function MatchCataloguePage() {
         <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-lg sm:text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
-              <p className="mt-1 text-sm leading-6 text-slate-500" aria-live="polite">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(filtered.length), leagues: formatNumber(leagueGroups.length) })}</p>
+              <p className="mt-1 text-sm leading-6 text-slate-500" aria-live="polite">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(visibleMatches.length), leagues: formatNumber(leagueGroups.length) })}</p>
             </div>
             <div className="flex min-w-0 flex-wrap items-center gap-2"><label htmlFor="dashboard-sort" className="text-xs font-semibold text-slate-500">{t("Trier les matchs")}</label>
               <select id="dashboard-sort" value={sort} onChange={event => setSort(event.target.value)} title={t("Le tri reste indépendant pour chaque journée et chaque championnat.")}
@@ -1472,17 +1482,22 @@ export function MatchCataloguePage() {
               </select>
             </div>
           </div>
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-x-4 gap-y-1 rounded-xl border border-orange-100 bg-orange-50/60 px-3 py-2 text-xs leading-5 text-slate-600 sm:text-sm"><p>{t("Les rencontres sont regroupées par date, puis par championnat.")}</p><p className="text-xs text-slate-500">{t("Horaires dans ton fuseau : {{zone}}", { zone: timeZone })}</p></div>
-          {loading ? <div className="space-y-6">{[1,2].map(number => <div key={number}><Skeleton className="mb-3 h-7 w-48" /><div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{[1,2,3].map(index => <Skeleton key={index} className="h-72 rounded-xl" />)}</div></div>)}</div>
-            : filtered.length === 0 ? <Card className="rounded-2xl border-dashed border-slate-200 bg-white px-5 py-10 text-center"><Search className="mx-auto mb-3 h-7 w-7 text-orange-400" aria-hidden="true" /><p className="text-lg font-semibold text-slate-700">{hasSearch ? t("Aucune rencontre ne correspond à cette recherche et aux filtres.") : t("Aucun match pour ce filtre")}</p><p className="mt-2 text-sm leading-6 text-slate-500">{t("Essaie un nom d’équipe, un pays ou un championnat, ou retire les filtres.")}</p><Button type="button" variant="outline" className="mt-4 min-h-11" onClick={resetFilters}>{t("Réinitialiser les filtres")}</Button></Card>
-              : <div className="space-y-6">
-                <nav aria-label={t("Parcourir les journées")} className="flex min-w-0 gap-2 overflow-x-auto rounded-2xl border border-slate-200 bg-white p-2 sm:flex-wrap sm:p-3" data-testid="dashboard-day-navigation">
-                  {dayGroups.map(([key, dayMatches]) => <a key={key} href={`#day-${key}`} onClick={() => { setOpenDays(previous => ({ ...previous, [key]: true })); }} className={`shrink-0 inline-flex min-h-11 max-w-full items-center gap-2 rounded-xl border px-3 py-2 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${key === today ? "border-orange-500 bg-orange-500 text-white" : "border-slate-200 bg-slate-50 text-slate-700 hover:border-orange-300"}`}>
-                    <span className="min-w-0 break-words">{calendarDayTitle(key, today, t, formatDate)}</span><span className="rounded-full bg-black/5 px-2 py-0.5 text-xs tabular-nums">{formatNumber(dayMatches.length)}</span>
-                  </a>)}
-                </nav>
-                {todayCount === 0 && <div className="rounded-2xl border border-dashed border-orange-200 bg-orange-50/50 p-5" data-testid="dashboard-no-today"><h3 className="font-heading text-lg font-bold text-slate-900">{t("Matchs du jour")} · {formatDate(`${today}T12:00:00`, { day: "numeric", month: "long" })}</h3><p className="mt-2 text-sm leading-6 text-slate-600">{t("Aucun match du jour avec ces filtres.")} {t("Voir les prochaines rencontres ci-dessous ou modifier les filtres.")}</p></div>}
-                {dayGroups.map(([key, dayMatches], index) => <DaySection key={key} expanded={hasSearch || (openDays[key] ?? index === 0)} onToggle={() => setOpenDays(previous => ({ ...previous, [key]: !(previous[key] ?? index === 0) }))} dayKey={key} today={today} matches={dayMatches} isAdmin={isAdmin} isFree={isFree} showAllMatches={hasSearch} onUpgrade={() => navigate("/app/abonnement")} />)}
+          <nav aria-label={t("Parcourir les journées")} className="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2" data-testid="dashboard-day-navigation">
+            <button type="button" aria-label={t("Journée précédente")} disabled={dateIndex === 0} onClick={() => selectDate(dates[dateIndex - 1])} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border disabled:opacity-40">
+              <ChevronRight className="h-4 w-4 rotate-180 rtl:rotate-0" aria-hidden="true" />
+            </button>
+            <select aria-label={t("Date des rencontres")} value={selectedDate} onChange={event => selectDate(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 text-center text-sm font-semibold">
+              {dates.map(key => <option key={key} value={key}>{calendarDayTitle(key, today, t, formatDate)}{key === today ? ` · ${formatDate(`${today}T12:00:00`, { day: "numeric", month: "short" })}` : ""}</option>)}
+            </select>
+            <button type="button" aria-label={t("Journée suivante")} disabled={dateIndex === dates.length - 1} onClick={() => selectDate(dates[dateIndex + 1])} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border disabled:opacity-40">
+              <ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
+            </button>
+          </nav>
+          <p className="mb-3 text-xs text-slate-500">{t("Horaires dans ton fuseau : {{zone}}", { zone: timeZone })}</p>
+          {loading ? <Skeleton className="h-48 rounded-xl" />
+            : visibleMatches.length === 0 ? <div className="rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-600" data-testid="dashboard-no-today">{t("Aucun match pour ce filtre")}</div>
+              : <div className="space-y-3" data-testid="dashboard-day" data-day={selectedDate}>
+                {leagueGroups.map(([league, leagueMatches]) => <LeagueSection key={`${selectedDate}:${league}`} dayKey={selectedDate} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} showAllMatches compact />)}
               </div>}
 
         </section>
@@ -1516,46 +1531,6 @@ export function MatchCataloguePage() {
   );
 
 }
-function DaySection({ dayKey, today, matches, isAdmin, isFree, onUpgrade, showAllMatches, expanded, onToggle }) {
-  const { t, formatDate, formatNumber } = useDashboardLanguage();
-  const [showAllLeagues, setShowAllLeagues] = useDashboardViewState(`day:${dayKey}:all-leagues`, false);
-  const groups = groupByLeague(matches);
-  const visibleGroups = showAllLeagues || showAllMatches ? groups : groups.slice(0, 4);
-  const isToday = dayKey === today;
-  const tomorrow = dayjs(today).add(1, "day").format("YYYY-MM-DD");
-  const past = dayKey !== "undated" && dayKey < today;
-  const counts = matches.reduce((result, match) => {
-    const finished = match.completed || match.is_finished || match.prediction?.is_finished;
-    const live = !finished && (match.is_live || match.prediction?.is_live);
-    result[finished ? "finished" : live ? "live" : "upcoming"] += 1;
-    return result;
-  }, { live: 0, finished: 0, upcoming: 0 });
-  return <section id={`day-${dayKey}`} aria-labelledby={`day-title-${dayKey}`} className="min-w-0 scroll-mt-6 space-y-4" data-testid="dashboard-day" data-day={dayKey}>
-    <header className={`relative overflow-hidden rounded-2xl border p-3 sm:p-5 ${isToday ? "border-orange-300 bg-gradient-to-br from-orange-50 via-white to-orange-50" : "border-slate-200 bg-white"}`}>
-      <button type="button" onClick={onToggle} disabled={showAllMatches} aria-expanded={expanded} aria-controls={`day-content-${dayKey}`} className="flex min-h-11 w-full items-center gap-2 text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-500 rounded-xl" data-testid="day-toggle">
-        <span className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
-          <span className={`grid h-10 w-10 sm:h-12 sm:w-12 shrink-0 place-items-center rounded-xl text-lg ${isToday ? "bg-orange-500 text-white shadow-md shadow-orange-200" : "bg-slate-100 text-slate-700"}`} aria-hidden="true">{dayKey === "undated" ? "?" : formatDate(`${dayKey}T12:00:00`, { day: "2-digit" })}</span>
-          <span className="min-w-0">
-            <span className="mb-1 block text-xs font-bold uppercase tracking-wider text-orange-600">{t(isToday ? "Matchs du jour" : dayKey === tomorrow ? "Demain" : past ? "Jours précédents" : dayKey === "undated" ? "Date à confirmer" : "Prochains jours")}</span>
-            <span role="heading" aria-level={3} id={`day-title-${dayKey}`} className="block break-words font-heading text-sm font-extrabold leading-5 text-slate-900 sm:text-xl sm:leading-7">{dayKey === "undated" ? t("Date à confirmer") : formatDate(`${dayKey}T12:00:00`, { weekday: "long", day: "numeric", month: "long", year: "numeric" })}</span>
-            <span className="mt-1 block text-xs leading-5 text-slate-500 sm:text-sm">{t("{{count}} rencontres · {{leagues}} championnats", { count: formatNumber(matches.length), leagues: formatNumber(groups.length) })}</span>
-          </span>
-        </span>
-        <ChevronRight className={`h-5 w-5 shrink-0 text-orange-500 ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
-      </button>
-        <div className="mt-2 flex flex-wrap gap-2 text-xs font-semibold">
-          {counts.live > 0 && <span className="inline-flex items-center gap-1 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-1.5 text-rose-700"><Radio className="h-3.5 w-3.5" aria-hidden="true" />{formatNumber(counts.live)} {t("En direct")}</span>}
-          {counts.upcoming > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-600">{formatNumber(counts.upcoming)} {t("À venir")}</span>}
-          {counts.finished > 0 && <span className="rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1.5 text-slate-500">{formatNumber(counts.finished)} {t("Terminés")}</span>}
-        </div>
-    </header>
-    <div id={`day-content-${dayKey}`} hidden={!expanded} className={`space-y-3 sm:space-y-4 border-s-2 ps-1 sm:ps-4 ${isToday ? "border-orange-300" : "border-slate-200"}`}>
-      {expanded && visibleGroups.map(([league, leagueMatches]) => <LeagueSection key={league} dayKey={dayKey} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} showAllMatches={showAllMatches} />)}
-      {expanded && !showAllMatches && groups.length > 4 && <button type="button" onClick={() => setShowAllLeagues(value => !value)} className="flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm font-bold leading-6 text-orange-700 hover:border-orange-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="day-show-more">{t(showAllLeagues ? "Réduire cette journée" : "Voir tous les championnats de cette journée")}<span className="rounded-full bg-orange-50 px-2 py-0.5 text-xs">{formatNumber(groups.length)}</span></button>}
-    </div>
-  </section>;
-}
-
 function getLeagueEmoji(name = "") {
   const n = name.toLowerCase();
   if (n.includes("nba") || n.includes("basketball") || n.includes("euroleague")) return "🏀";
@@ -1565,8 +1540,8 @@ function getLeagueEmoji(name = "") {
   if (n.includes("mma") || n.includes("ufc")) return "🥊";
   return "⚽";
 }
-function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false }) {
-  const { t, formatNumber } = useDashboardLanguage();
+function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false }) {
+  const { t, formatNumber, formatDate } = useDashboardLanguage();
   const [expanded, setExpanded] = useDashboardViewState(`league:${dayKey}:${league}:open`,true);
   const [expandedAll, setExpandedAll] = useDashboardViewState(`league:${dayKey}:${league}:all`,false);
   const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
@@ -1580,7 +1555,16 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
       <ChevronRight className={`h-4 w-4 shrink-0 text-slate-400 transition-transform motion-reduce:transition-none ${expanded ? "rotate-90" : "rtl:rotate-180"}`} aria-hidden="true" />
     </button>
     {expanded && <>
-      <div className="grid min-w-0 gap-2.5 sm:gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} />)}</div>
+      {compact ? <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
+        {visible.map(match => <details key={match.id} className="group min-w-0">
+          <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
+            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+            <span className="min-w-0 flex-1 break-words font-medium text-slate-900"><bdi>{match.home_team}</bdi> <span className="text-slate-400">–</span> <bdi>{match.away_team}</bdi></span>
+            <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 group-open:rotate-90" aria-hidden="true" />
+          </summary>
+          <div className="p-2"><MatchCard match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} /></div>
+        </details>)}
+      </div> : <div className="grid min-w-0 gap-2.5 sm:gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} />)}</div>}
       {!showAllMatches && matches.length > 6 && <button type="button" onClick={() => setExpandedAll(value => !value)} className="mt-3 flex min-h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-600 hover:border-orange-300 hover:text-orange-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="league-show-more">
         {expandedAll ? t("Réduire cette liste") : t("Voir {{count}} autres rencontres", { count: formatNumber(matches.length - visible.length) })}
       </button>}
