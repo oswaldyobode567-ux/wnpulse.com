@@ -1027,6 +1027,7 @@ const SPORT_TABS = [
   { key: "basketball", label: "Basketball", icon: "🏀" },
   { key: "tennis",     label: "Tennis",     icon: "🎾" },
   { key: "icehockey",  label: "Hockey",     icon: "🏒" },
+  { key: "americanfootball", label: "Football américain", icon: "🏈" },
   { key: "baseball",   label: "Baseball",   icon: "⚾" },
   { key: "mma",        label: "MMA",        icon: "🥊" },
 ];
@@ -1542,14 +1543,16 @@ export function MatchCataloguePage() {
   );
 
 }
-function getLeagueEmoji(name = "") {
-  const n = name.toLowerCase();
-  if (n.includes("nba") || n.includes("basketball") || n.includes("euroleague")) return "🏀";
-  if (n.includes("tennis") || n.includes("atp") || n.includes("wta") || n.includes("wimbledon")) return "🎾";
-  if (n.includes("nhl") || n.includes("hockey")) return "🏒";
-  if (n.includes("mlb") || n.includes("baseball")) return "⚾";
-  if (n.includes("mma") || n.includes("ufc")) return "🥊";
-  return "⚽";
+function getLeagueEmoji(match) {
+  const sport = String(match?.sport_key || match?.prediction?.sport_key || "").toLowerCase().split("_")[0];
+  const icons = {
+    soccer: "⚽", football: "⚽", icehockey: "🏒", hockey: "🏒",
+    americanfootball: "🏈", basketball: "🏀", tennis: "🎾", baseball: "⚾",
+    mma: "🥊", boxing: "🥊", rugby: "🏉", cricket: "🏏", golf: "⛳",
+    volleyball: "🏐", handball: "🤾", aussierules: "🏉", motorsport: "🏎️",
+    badminton: "🏸", tabletennis: "🏓", snooker: "🎱",
+  };
+  return icons[sport] || "🏆";
 }
 function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false }) {
   const { t, formatNumber, formatDate } = useDashboardLanguage();
@@ -1559,7 +1562,7 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
   return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-2 sm:p-4" data-testid="dashboard-league">
     <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-lg" aria-hidden="true">{getLeagueEmoji(league)}</span>
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-lg" aria-hidden="true">{getLeagueEmoji(matches[0])}</span>
       <h4 className="min-w-0 flex-1 basis-28 break-words font-heading text-sm sm:text-base font-bold leading-5 sm:leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h4>
       {liveCount > 0 && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">{formatNumber(liveCount)} {t("LIVE")}</span>}
       <span className="rounded-full bg-white px-2 py-1 text-xs font-bold tabular-nums text-slate-500">{formatNumber(matches.length)}</span>
