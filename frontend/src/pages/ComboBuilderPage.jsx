@@ -628,7 +628,7 @@ export default function ComboBuilderPage() {
   const [sport, setSport] = useState("all"),
     [query, setQuery] = useState(""),
     [day, setDay] = useState("all");
-  const [confidenceFilter, setConfidenceFilter] = useState("70+");
+  const [requestedConfidenceFilter, setConfidenceFilter] = useState(null);
   const [order, setOrder] = useState("time"),
     [limit, setLimit] = useState(12);
   const [selectedPicks, setSelectedPicks] = useState([]),
@@ -843,7 +843,7 @@ export default function ComboBuilderPage() {
   }, [account, isPaid, loadSaved]);
   useEffect(() => {
     setLimit(12);
-  }, [sport, query, day, order, confidenceFilter]);
+  }, [sport, query, day, order, requestedConfidenceFilter]);
   useEffect(() => {
     copyGeneration.current += 1;
     setManualCopy("");
@@ -890,6 +890,7 @@ export default function ComboBuilderPage() {
       pick.confidence >= filter.min && pick.confidence < filter.max
     ).length,
   }));
+  const confidenceFilter = requestedConfidenceFilter ?? (confidenceOptions.find(filter => filter.key === "70+")?.count > 0 ? "70+" : "all");
   const activeConfidence = confidenceOptions.find(filter => filter.key === confidenceFilter);
   const filtered = confidenceFilter === "all" ? baseFiltered : baseFiltered.filter(match => {
     const score = bestPicks.get(match.match_id)?.confidence;
