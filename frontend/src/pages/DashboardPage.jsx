@@ -1562,7 +1562,7 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
   return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-2 sm:p-4" data-testid="dashboard-league">
     <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-slate-200 bg-white text-lg" aria-hidden="true">{getLeagueEmoji(matches[0])}</span>
+      <span className="wp-league-mark grid h-9 w-9 shrink-0 place-items-center rounded-xl border text-lg" aria-hidden="true">{getLeagueEmoji(matches[0])}</span>
       <h4 className="min-w-0 flex-1 basis-28 break-words font-heading text-sm sm:text-base font-bold leading-5 sm:leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h4>
       {liveCount > 0 && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">{formatNumber(liveCount)} {t("LIVE")}</span>}
       <span className="rounded-full bg-white px-2 py-1 text-xs font-bold tabular-nums text-slate-500">{formatNumber(matches.length)}</span>
@@ -1573,7 +1573,13 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
         {visible.map(match => <details key={match.id} className="group min-w-0">
           <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
             <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
-            <span className="min-w-0 flex-1 break-words font-medium text-slate-900"><bdi>{match.home_team}</bdi> <span className="text-slate-400">–</span> <bdi>{match.away_team}</bdi></span>
+            <span className="wp-fixture-teams min-w-0 flex-1 font-medium text-slate-900">
+              {["home", "away"].map(side => <span key={side} className="flex min-w-0 items-center gap-2">
+                <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
+                  kind={match[`${side}_media`]?.kind} sport={match.sport_key} size="compact" />
+                <bdi className="min-w-0 break-words">{match[`${side}_team`]}</bdi>
+              </span>)}
+            </span>
             <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 group-open:rotate-90" aria-hidden="true" />
           </summary>
           <div className="p-2"><MatchCard match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} /></div>
