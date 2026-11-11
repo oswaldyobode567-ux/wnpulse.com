@@ -476,44 +476,47 @@ function shareClean(value) {
 export function buildShareMessages(items, kind, words, helpers) {
   const { t, formatNumber, formatDate } = helpers;
   const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-  const field = (label, value) => value !== null && value !== undefined && String(value).trim() ? `${label} : ${shareClean(value)}` : null;
-  const header = `🎯 ${kind === "results" ? words.results : words.picks}\n${words.zone} : ${zone}\n${words.caption}`;
-  const footer = `\n\n🌐 https://wnpulse.com\n18+`;
-  const blocks = items.filter(shareEligible).map((item, index) => {
-    const p = item.prediction || item;
-    const teams = [item.home_team, item.away_team];
-    const odds = finiteNumber(p.pick_odds ?? p.odds);
-    const confidence = finiteNumber(p.confidence);
-    const value = item.commence_time || item.date;
-    const date = value && Number.isFinite(new Date(value).getTime()) ? formatDate(value, {year:"numeric",month:"2-digit",day:"2-digit", ...(item.commence_time || /T\d{2}:\d{2}/.test(String(value)) ? {hour:"2-digit",minute:"2-digit"} : {})}) : words.unavailable;
-    const status = String(p.status || item.status || "").toLowerCase();
-    const result = ["won","lost","void"].includes(status) ? words[status] : p.won === true ? words.won : p.won === false ? words.lost : words.pending;
-    return [ `${index + 1}. ${shareClean(item.match || teams.filter(Boolean).join(" vs ")) || words.unavailable}`,
-      p.is_alternative ? (MARKET_DETAIL_COPY[helpers.language] || MARKET_DETAIL_COPY.fr).alternative : null,
-      field(words.competition, item.league || item.sport_title || item.sport), field(words.date,date),
-      field(words.market, p.market_label || p.market_key ? translateBetText(p.market_label || p.market_key,t,formatNumber,teams) : words.unavailable),
-      field(words.pick,translateBetText(p.pick,t,formatNumber,teams)),
-      field(words.odds, odds !== null && odds > 1 ? formatNumber(odds,{minimumFractionDigits:2,maximumFractionDigits:2}) : words.unavailable),
-      field(words.risk, words[p.label] || words.unavailable),
-      confidence !== null && confidence >= 0 && confidence <= 100 ? field(words.confidence,`${formatNumber(confidence,{maximumFractionDigits:0})}%`) : null,
-      field(words.bookmaker,p.best_bookmaker), kind === "results" || p.is_alternative ? field(words.result,result) : null,
+  const header = kind === "results" ? words.results : words.picks;
+  const footer = `\n\n${words.caption}\n${words.zone} : ${zone}\nhttps://wnpulse.com · 18+`;
+  const blocks = items.filter(shareEligible).map((item,index)=>{
+    const p=item.prediction || item;
+    const teams=[item.home_team,item.away_team];
+    const odds=finiteNumber(p.pick_odds ?? p.odds);
+    const value=item.commence_time || item.date;
+    const date=value && Number.isFinite(new Date(value).getTime())
+      ? formatDate(value,{day:"2-digit",month:"2-digit",...(item.commence_time || /T\d{2}:\d{2}/.test(String(value)) ? {hour:"2-digit",minute:"2-digit"} : {})})
+      : words.unavailable;
+    const league=shareClean(item.league || item.sport_title || item.sport);
+    const pick=translateBetText(p.pick,t,formatNumber,teams);
+    const market=translateBetText(p.market_label || p.market_key || "",t,formatNumber,teams);
+    const status=String(p.status || item.status || "").toLowerCase();
+    const result=["won","lost","void"].includes(status) ? words[status] : p.won===true ? words.won : p.won===false ? words.lost : words.pending;
+    return [
+      `${index+1}. ${shareClean(item.match || teams.filter(Boolean).join("  vs  ")) || words.unavailable}`,
+      [league,date].filter(Boolean).join(" · "),
+      `→ ${words.pick} : ${shareClean(pick)}`,
+      [market,odds!==null && odds>1 ? `${words.odds} ${formatNumber(odds,{minimumFractionDigits:2,maximumFractionDigits:2})}` : null].filter(Boolean).join(" · "),
+      p.best_bookmaker ? `${words.bookmaker} : ${shareClean(p.best_bookmaker)}` : null,
+      kind==="results" ? `${words.result} : ${result}` : null,
     ].filter(Boolean).join("\n");
   });
-  // Whole selections stay together. A long batch becomes separate, explicitly numbered messages.
-  const groups=[]; let current=[]; let length=0;
-  const budget=1700-header.length-footer.length;
-  for (const block of blocks) {
-    if (current.length && length + block.length + 2 > budget) {groups.push(current);current=[];length=0;}
-    current.push(block);length+=block.length+2;
+  const groups=[];let group=[],size=0;
+  const budget=1900-header.length-footer.length;
+  for(const block of blocks){
+    if(group.length && size+block.length+2>budget){groups.push(group);group=[];size=0;}
+    group.push(block);size+=block.length+2;
   }
-  if(current.length)groups.push(current);
-  return groups.map((group,index)=>`${header}\n${words.part} ${index+1}/${groups.length}\n\n${group.join("\n\n")}${footer}`);
+  if(group.length)groups.push(group);
+  return groups.map((rows,i)=>`${header}${groups.length>1 ? ` · ${i+1}/${groups.length}` : ""}\n\n${rows.join("\n\n")}${footer}`);
 }
 function ShareComposer({ items, kind, onClose }) {
   const words=useAdminShareLanguage();
   const helpers=useMatchLanguage();
-  const messages=buildShareMessages(items,kind,words,helpers);
-  const cards=items.filter(shareEligible).filter(item=>item.home_team && item.away_team).map(item=>{
+  const [focus,setFocus]=useState(0);
+  const eligible=items.filter(shareEligible);
+  const selected=focus<0 ? eligible : eligible.slice(Math.min(focus,Math.max(0,eligible.length-1)),Math.min(focus,Math.max(0,eligible.length-1))+1);
+  const messages=buildShareMessages(selected,kind,words,helpers);
+  const cards=selected.filter(item=>item.home_team && item.away_team).map(item=>{
     const p=item.prediction || item;
     const teams=[item.home_team,item.away_team];
     const odds=finiteNumber(p.pick_odds ?? p.odds);
@@ -537,10 +540,16 @@ function ShareComposer({ items, kind, onClose }) {
   },[]);
   return <dialog ref={dialog} onCancel={onClose} onClick={event=>{if(event.target===event.currentTarget)onClose();}} aria-label={words.preview} className="m-auto w-[calc(100%-1.5rem)] max-w-xl max-h-[90dvh] overflow-y-auto rounded-2xl border border-slate-200 bg-white p-4 text-slate-900 shadow-2xl backdrop:bg-slate-950/60" data-testid="admin-share-composer">
     <div className="flex items-center justify-between gap-3"><h2 className="text-lg font-bold">{words.preview}</h2><button type="button" onClick={onClose} className={SHARE_BUTTON}>{words.close}</button></div>
-    <p className="my-3 text-xs leading-5 text-slate-500">{words.hint}</p>
+    <p className="my-3 text-sm leading-6 text-slate-500">{words.hint}</p>
+    {eligible.length>1 && <label className="mb-3 block text-sm font-semibold">{helpers.t("Contenu à partager")}
+      <select data-testid="share-content-selection" value={focus} onChange={event=>{setFocus(Number(event.target.value));setPart(0);setCopied("");}} className="mt-2 w-full rounded-xl border border-slate-200 bg-white p-3">
+        {eligible.map((item,index)=><option key={index} value={index}>{[item.home_team,item.away_team].filter(Boolean).join(" – ") || item.match} · {(item.prediction || item).pick}</option>)}
+        <option value={-1}>{helpers.t("Tous les pronostics sélectionnés")} ({eligible.length})</option>
+      </select>
+    </label>}
     <div className="mb-2 flex flex-wrap gap-2" aria-label={words.part}>{messages.map((message,index)=><button type="button" key={index} aria-pressed={part===index} onClick={()=>{setPart(index);setCopied("");}} className={`${SHARE_BUTTON} ${part===index ? "border-orange-500 bg-orange-50 text-orange-700" : "border-slate-200"}`}>{words.part} {index+1}/{messages.length}</button>)}</div>
-    <PickShareImagePanel cards={cards} t={helpers.t} />
-    <label className="sr-only" htmlFor="admin-share-text">{words.preview}</label><textarea id="admin-share-text" readOnly value={current} dir="auto" className="h-72 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" />
+    {focus>=0 ? <PickShareImagePanel cards={cards} t={helpers.t} text={current} /> : <p className="my-3 rounded-xl bg-orange-50 p-3 text-sm text-orange-900">{helpers.t("La série est partagée en texte. Choisis une rencontre pour son image et son message individuel.")}</p>}
+    <label className="sr-only" htmlFor="admin-share-text">{words.preview}</label><textarea id="admin-share-text" readOnly value={current} dir="auto" className="h-52 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" />
     <div className="mt-3 flex flex-wrap gap-2">
       <a href={`https://wa.me/?text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-green-600 bg-green-600 text-white`} data-testid="admin-share-whatsapp">WhatsApp ↗</a>
       <a href={`https://t.me/share/url?url=${encodeURIComponent("https://wnpulse.com")}&text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-sky-600 bg-sky-600 text-white`} data-testid="admin-share-telegram">Telegram ↗</a>

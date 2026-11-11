@@ -35,34 +35,45 @@ export async function makePickShareImage({teams, badgeSources, competition, date
   const backdrop=ctx.createLinearGradient(0,0,1080,1080);
   backdrop.addColorStop(0,"#111a31"); backdrop.addColorStop(1,"#22182d");
   ctx.fillStyle=backdrop; ctx.fillRect(0,0,1080,1080);
-  write("WINPULSE  /  MATCH CENTER",86,82,30,"#FFB479",860);
-  write([competition,date].filter(Boolean).join("   •   "),86,145,30,"#DFEAFA",900);
-  box(86,202,908,416,32,"#192D4B");
-  ctx.strokeStyle="#34577D"; ctx.lineWidth=3;
-  ctx.strokeRect(111,228,858,364);
-  ctx.beginPath();ctx.moveTo(540,228);ctx.lineTo(540,592);ctx.stroke();
-  ctx.beginPath();ctx.arc(540,406,85,0,Math.PI*2);ctx.stroke();
+  box(72,60,936,92,24,"#F38C40");
+  write("WINPULSE",104,106,35,"#151D30",370);
+  write("SÉLECTION",970,106,24,"#151D30",280,"right");
+  write(competition,88,190,28,"#FFB57D",900);
   for (let i=0;i<2;i++) {
-    const x=[312,768][i], name=teams[i] || "—", badge=badges[i];
-    box(x-96,282,192,192,26,"#EFF4FF");
+    const x=[315,765][i], name=teams[i] || "—", badge=badges[i];
+    box(x-207,235,414,354,28,"#1C2A43");
+    box(x-75,268,150,150,22,"#F2F5FB");
     if (badge) {
-      const scale=Math.min(158/badge.naturalWidth,158/badge.naturalHeight);
+      const scale=Math.min(130/badge.naturalWidth,130/badge.naturalHeight);
       const w=badge.naturalWidth*scale,h=badge.naturalHeight*scale;
-      ctx.drawImage(badge,x-w/2,378-h/2,w,h);
+      ctx.drawImage(badge,x-w/2,343-h/2,w,h);
     } else {
-      write(name.split(/\s+/).slice(0,3).map(word=>Array.from(word)[0]).join("").toUpperCase(),x,378,60,"#263D60",175,"center");
+      write(name.split(/\s+/).slice(0,3).map(word=>Array.from(word)[0]).join("").toUpperCase(),x,343,43,"#263D60",140,"center");
     }
-    write(name,x,532,35,"#F6F8FF",370,"center");
+    ctx.font="700 32px system-ui, sans-serif";
+    const lines=[""];
+    for(const word of String(name).split(/\s+/)) {
+      const line=(lines.at(-1)+" "+word).trim();
+      if(ctx.measureText(line).width>365 && lines.at(-1)) lines.push(word);
+      else lines[lines.length-1]=line;
+    }
+    lines.slice(0,2).forEach((line,j)=>write(line,x,472+j*43,32,"#F6F8FF",365,"center"));
   }
-  box(497,367,86,78,14,"#111A31");
-  write("VS",540,406,32,"#FFB479",70,"center");
-  box(86,659,908,284,28,"#10182A");
-  write(market,119,716,32,"#FFB479",610);
-  write(pick,119,798,48,"#F8FAFF",620);
-  write(status,119,883,27,"#C9DAF5",600);
-  if (odds) { box(782,741,174,118,19,"#FFB479"); write(odds,869,801,49,"#151B2F",150,"center"); }
-  write("wnpulse.com",86,1005,29,"#DAE6F8",650);
-  write("18+",994,1005,26,"#DAE6F8",85,"right");
+  box(498,328,84,65,14,"#F38C40");
+  write("VS",540,361,26,"#151D30",70,"center");
+  write(date,96,635,26,"#DAE4F5",870);
+  box(96,680,888,245,24,"#F0F3F9");
+  write("NOTRE CHOIX",126,722,22,"#6E4C39",600);
+  write(pick,126,787,36,"#17253D",625);
+  write(market,126,850,23,"#41516B",625);
+  if (odds) {
+    box(788,730,166,140,20,"#F38C40");
+    write("COTE",871,761,19,"#402E25",140,"center");
+    write(odds,871,817,40,"#17253D",140,"center");
+  }
+  if(status)write(status,96,957,24,"#F7B17E",800);
+  write("Les analyses sur wnpulse.com",96,1005,25,"#DAE6F8",810);
+  write("18+",984,1005,22,"#DAE6F8",85,"right");
   return new Promise((resolve,reject) => {
     canvas.toBlob(blob => blob ? resolve(new File([blob],"winpulse-pronostic.png",{type:"image/png"})) : reject(new Error("Image indisponible")),"image/png");
   });
