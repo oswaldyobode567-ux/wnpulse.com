@@ -11655,26 +11655,21 @@ async def get_predictions_combos_alias(payload: dict = Depends(get_current_user_
 
 @app.get("/api/builder/matches")
 async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    matches = await fetch_all_matches(db)
-    matches = [m for m in matches if not _match_is_finished(m)]
-    if sport and sport != "all":
-        wanted_sport = str(sport).lower().strip()
-        aliases = {
-            "soccer": "football",
-            "ice_hockey": "hockey",
-            "icehockey": "hockey",
-            "americanfootball": "american_football",
-        }
-        wanted_sport = aliases.get(wanted_sport, wanted_sport)
-        matches = [m for m in matches if _normalize_sport(m) == wanted_sport]
-    real_stats_map = await get_real_stats_map(db, matches)
+    snapshot, _ = await _catalogue_snapshot(compact=True)
     is_paid = await _has_paid_access(payload)
-    snapshot = await _get_prediction_snapshot()
     manifest = await _discovery_manifest(snapshot) if not is_paid else {}
-    chosen = {entry["match_id"]:entry for entry in manifest.get("entries",[])}
+    chosen = {entry["match_id"]: entry for entry in manifest.get("entries", [])}
+    aliases = {"soccer": "football", "ice_hockey": "hockey", "icehockey": "hockey", "americanfootball": "american_football"}
+    wanted = (sport or "all").lower().strip()
+    wanted = aliases.get(wanted, wanted)
+    analyses = {_discovery_match_id(p): p for p in snapshot["predictions"]}
     result = []
-    for m in matches:
-        analyzed = analyze_match(m, real_stats_map=real_stats_map)
+    for m in snapshot["matches"]:
+        if _match_is_finished(m) or (wanted != "all" and _normalize_sport(m) != wanted):
+            continue
+        analyzed = analyses.get(_discovery_match_id(m))
+        if not analyzed:
+            continue
         raw_picks = analyzed.get("markets", [])
         frozen = chosen.get(_discovery_match_id(m))
         if not is_paid and frozen:
