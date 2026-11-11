@@ -559,3 +559,30 @@ html[data-wp-theme='light'] .wp-premium :is(.wp-home-hero,.wp-catalogue-header,.
     transform: none;
   }
 }
+
+
+/* Match catalogue navigation and crest presentation */
+.wp-premium .wp-fixture-teams { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:6px 16px; }
+.wp-premium .wp-league-mark { background:linear-gradient(145deg,#fff,#eee6fc); color:#463267; border-color:#ddd1ef; }
+.wp-premium [data-testid='participant-image'][data-image-size='compact'] { border-radius:7px; box-shadow:none; }
+.wp-premium [data-testid='dashboard-league'] > button { padding-inline:8px; }
+.wp-premium [data-testid='dashboard-league'] > button[aria-expanded='true'] { background:#9471c21a; box-shadow:inset 3px 0 #9870ce; }
+.wp-premium [data-testid='dashboard-league'] summary:hover,
+.wp-premium [data-testid='dashboard-league'] details[open] > summary { background:#9471c212; }
+.wp-premium [data-testid='dashboard-day-navigation'] button[aria-current='date'] {
+  background:linear-gradient(120deg,#9f391d,#be592c); color:white;
+  box-shadow:0 3px 9px #a044283f;
+}
+.wp-premium [data-testid='combination-tools-nav'] a[aria-current='page'] { box-shadow:inset 0 -2px #d29573,0 4px 12px #38244d2c; }
+@media (max-width:520px) {
+  .wp-premium .wp-fixture-teams { grid-template-columns:minmax(0,1fr); }
+}
+@media (prefers-reduced-motion:no-preference) {
+  .wp-premium [data-testid='dashboard-league'] > button,
+  .wp-premium [data-testid='dashboard-league'] summary {
+    transition:background-color 180ms ease,box-shadow 180ms ease;
+  }
+  .wp-premium [data-testid='dashboard-league'] > button[aria-expanded='true'] + div {
+    animation:wp-filter-in 210ms var(--wp-motion-ease) both;
+  }
+}
