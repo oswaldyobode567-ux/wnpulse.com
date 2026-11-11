@@ -42,3 +42,15 @@ Tests locaux (sans jeton ni appels Telegram) :
 cd telegram-community
 python -m unittest -v
 ```
+
+## Conversation privée
+
+Écrire **pronostics du jour**, **résultats**, **actualités** ou **abonnement** suffit désormais.
+La demande de pronostics montre toutes les sélections gratuites encore à venir proposées par l'API publique, dans l'ordre des horaires. Un match déjà commencé, verrouillé ou indisponible n'est pas présenté. Le nombre annoncé correspond aux cartes envoyées ; les choix ne sont pas des combinés. Le brouillon quotidien automatique reste une sélection de mise en avant.
+
+Pour le propriétaire défini dans TELEGRAM_ADMIN_IDS, chaque réponse est un aperçu privé.
+**Publier les pronostics** ou **publier les résultats** valide exactement le dernier ensemble présenté dans cette conversation privée. Les brouillons non consultés ne sont pas approuvés par ces phrases.
+Une consultation, « bonjour » ou une phrase non reconnue n'autorise jamais une publication.
+Les anciennes commandes /preview et /approve restent compatibles.
+
+Les nouvelles cartes séparent les équipes, la compétition, l'heure et le bloc du choix. Le bilan utilise quatre statuts clairement nommés.

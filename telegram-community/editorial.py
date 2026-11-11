@@ -32,10 +32,29 @@ def fixture_visual(row):
                        "badge":row.get(side+"_logo") or row.get(side+"_team_logo")}
                      for side in ("home","away")]}
 
+def daily_picks(data, now, scheduled):
+    """All usable public selections, stable order, one official selection per match."""
+    choices=[]
+    seen=set()
+    rows=data.get("items",[]) if isinstance(data,dict) else []
+    for row in rows:
+        if not isinstance(row,dict):
+            continue
+        draft=make("pick",{"items":[row]},now,scheduled)
+        if not draft:
+            continue
+        identity=str(row.get("id") or row.get("match_id") or tuple(draft["visual"]["teams"]))
+        if identity in seen:
+            continue
+        seen.add(identity)
+        choices.append((stamp(row["commence_time"]),identity,draft))
+    return [draft for _,_,draft in sorted(choices,key=lambda choice:(choice[0],choice[1]))]
+
 def make(kind, data, now, scheduled):
     """Return exact facts and their validity deadline; no guessed results."""
     lines, link, until = [], LINKS[kind], datetime.combine(now.date()+timedelta(days=1), datetime.min.time(), ZONE)
     visual = {}
+    details = {}
     if kind == "pick":
         candidates = []
         for row in data.get("items", []):
@@ -64,6 +83,11 @@ def make(kind, data, now, scheduled):
                  f"{clean(pred.get('market_label'),70) or 'Pronostic'} : {clean(pred['pick'],100)}",
                  f"Cote observée : {odds:.2f}".replace(".",","),
                  f"{start.astimezone(ZONE):%d/%m à %H:%M} · heure de Porto-Novo"]
+        details={"teams":visual["teams"],"competition":visual["league"],
+                 "market":clean(pred.get("market_label"),70) or "Pronostic",
+                 "pick":clean(pred["pick"],120),"odds":f"{odds:.2f}".replace(".",","),
+                 "date":start.astimezone(ZONE).strftime("%d/%m · %H:%M"),
+                 "bookmaker":clean(pred.get("best_bookmaker"),50)}
     elif kind == "results":
         summary = data.get("summary", {})
         expected = (now.date()-timedelta(days=1)).isoformat()
@@ -88,7 +112,7 @@ def make(kind, data, now, scheduled):
     else:
         return None
     return {"kind":kind,"title":LABELS[kind],"lines":lines,"link":link,"until":until.timestamp(),
-            "visual":visual}
+            "visual":visual,"details":details}
 
 def subscription(plans):
     pro = next((p for p in plans if isinstance(p,dict) and p.get("id")=="pro"),None) if isinstance(plans,list) else None
@@ -129,45 +153,72 @@ def poster(draft, photo=None, badges=()):
             y+=face.size+13
         y+=18
     if draft.get("kind") in ("pick","results"):
-        pick = draft["kind"] == "pick"
-        # Draw a sports broadcast composition, never an unrelated match photo.
-        draw.rounded_rectangle((96,196,984,627),25,fill="#162640",outline="#405D80",width=2)
-        for x in range(132,970,38):
-            draw.line((x,220,x,600),fill="#1B3453",width=2)
-        draw.ellipse((452,313,628,489),outline="#345679",width=3)
-        draw.line((540,218,540,604),fill="#345679",width=3)
-        if pick:
-            teams = (draft.get("visual") or {}).get("teams") or draft["lines"][0].split(" – ",1)
-            league = (draft.get("visual") or {}).get("league")
-            draw.text((540,232),clean(league,50).upper() or "SÉLECTION GRATUITE",
-                      font=font(25,True),fill="#FFAD68",anchor="mt")
-            for i,(team,x) in enumerate(zip(teams,(324,756))):
-                draw.rounded_rectangle((x-94,302,x+94,490),26,fill="#EDF3FD")
-                entry = badges[i] if i<len(badges) else None
-                if entry is not None:
-                    icon = ImageOps.contain(entry.convert("RGBA"),(157,157),Image.Resampling.LANCZOS)
-                    image.paste(icon,(x-icon.width//2,396-icon.height//2),icon)
+        is_pick = draft["kind"]=="pick"
+        d=draft.get("details") or {}
+        visual=draft.get("visual") or {}
+        def centered(text,x,y,width,size,max_lines=2):
+            face=font(size,True)
+            words=clean(text,150).split()
+            lines=[""]
+            for word in words:
+                trial=(lines[-1]+" "+word).strip()
+                if draw.textlength(trial,font=face)>width and lines[-1]:
+                    lines.append(word)
                 else:
-                    initials = "".join(word[0] for word in team.split()[:3] if word).upper() or "—"
-                    draw.text((x,396),initials,font=font(52,True),fill="#233B5D",anchor="mm")
-                team_font = font(27,True)
-                label = clean(team,75)
-                while draw.textlength(label,font=team_font)>370:
-                    label=label[:-2].rstrip("…")+"…"
-                draw.text((x,527),label,font=team_font,fill="#F4F2F7",anchor="mt")
-            draw.text((540,396),"VS",font=font(36,True),fill="#FFAD68",anchor="mm")
+                    lines[-1]=trial
+            for line in lines[:max_lines]:
+                while draw.textlength(line,font=face)>width and len(line)>1:
+                    line=line[:-2].rstrip("…")+"…"
+                draw.text((x,y),line,font=face,fill="#F4F2F7",anchor="mt")
+                y+=size+10
+        draw.rounded_rectangle((76,70,1004,155),22,fill="#F38C40")
+        draw.text((108,96),"WINPULSE",font=font(34,True),fill="#151D30")
+        draw.text((969,107),"SÉLECTION" if is_pick else "LE BILAN",font=font(24,True),fill="#151D30",anchor="rm")
+        if is_pick:
+            teams=visual.get("teams") or d.get("teams") or draft["lines"][0].split(" – ",1)
+            draw.text((96,183),clean(visual.get("league"),48).upper() or "PRONOSTIC GRATUIT",
+                      font=font(24,True),fill="#FFB57D")
+            for i,(team,x) in enumerate(zip(teams,(315,765))):
+                draw.rounded_rectangle((x-209,237,x+209,589),28,fill="#1C2A43",outline="#3B4B64",width=2)
+                draw.rounded_rectangle((x-75,270,x+75,420),22,fill="#F2F5FB")
+                entry=badges[i] if i<len(badges) else None
+                if entry is not None:
+                    icon=ImageOps.contain(entry.convert("RGBA"),(130,130),Image.Resampling.LANCZOS)
+                    image.paste(icon,(x-icon.width//2,345-icon.height//2),icon)
+                else:
+                    initials="".join(word[0] for word in team.split()[:3] if word).upper() or "—"
+                    draw.text((x,345),initials,font=font(42,True),fill="#233B5D",anchor="mm")
+                centered(team,x,452,364,32)
+            draw.rounded_rectangle((498,329,582,393),14,fill="#F38C40")
+            draw.text((540,361),"VS",font=font(26,True),fill="#151D30",anchor="mm")
+            draw.text((96,622),d.get("date") or (draft["lines"][3] if len(draft["lines"])>3 else ""),
+                      font=font(25),fill="#DAE4F5")
+            draw.rounded_rectangle((96,682,984,924),24,fill="#F0F3F9")
+            draw.text((126,709),"NOTRE CHOIX",font=font(22,True),fill="#6E4C39")
+            choice=d.get("pick") or (draft["lines"][1].partition(":")[2].strip() if len(draft["lines"])>1 else "")
+            face=font(35,True)
+            chosen=clean(choice,110)
+            while draw.textlength(chosen,font=face)>615 and len(chosen)>1:
+                chosen=chosen[:-2].rstrip("…")+"…"
+            draw.text((126,766),chosen,font=face,fill="#17253D")
+            market=d.get("market") or (draft["lines"][1].partition(":")[0] if len(draft["lines"])>1 else "")
+            draw.text((126,838),clean(market,44),font=font(23),fill="#41516B")
+            odds=d.get("odds") or (draft["lines"][2].partition(":")[2].strip() if len(draft["lines"])>2 else "")
+            draw.rounded_rectangle((787,733,953,869),20,fill="#F38C40")
+            draw.text((870,761),"COTE",font=font(18,True),fill="#402E25",anchor="mt")
+            draw.text((870,803),odds,font=font(40,True),fill="#17253D",anchor="mt")
         else:
-            draw.text((540,230),"TRACK RECORD",font=font(26,True),fill="#FFAD68",anchor="mt")
-            numbers = re.findall(r"([0-9]+)", " ".join(draft["lines"][1:3]))
-            for (label,color,x), number in zip((("GAGNÉS","#66E4AA",236),("PERDUS","#FF9DA1",438),
-                                               ("ANNULÉS","#9AB8E6",642),("EN ATTENTE","#FFD07D",844)), numbers):
-                draw.rounded_rectangle((x-87,320,x+87,513),18,fill="#101B2E")
-                draw.text((x,394),number,font=font(53,True),fill=color,anchor="mm")
-                draw.text((x,474),label,font=font(18,True),fill="#EDF3FD",anchor="mm")
-        y=654
-        for i,line in enumerate(draft["lines"][1:4] if pick else (draft["lines"][0], draft["lines"][-1])):
-            block(line,font(36 if i==0 else 27,i==0),"#F4F2F7",2 if i==0 else 1)
-        draw.text((110,956),"wnpulse.com  •  18+",font=font(24),fill="#E2D9EA")
+            draw.text((96,193),"BILAN DES PRONOSTICS",font=font(34,True),fill="#F4F2F7")
+            draw.text((96,252),draft["lines"][0],font=font(24),fill="#D5DFEF")
+            values=re.findall(r"([0-9]+)"," ".join(draft["lines"][1:3]))
+            for i,(label,color) in enumerate((("GAGNÉS","#76E9B3"),("PERDUS","#FFA2A8"),("ANNULÉS","#B6CEF7"),("EN ATTENTE","#FFD07D"))):
+                x,y=(96+(i%2)*457,337+(i//2)*239)
+                draw.rounded_rectangle((x,y,x+431,y+213),25,fill="#1C2A43")
+                draw.text((x+28,y+25),label,font=font(22,True),fill="#CBD9EE")
+                draw.text((x+28,y+79),values[i] if i<len(values) else "—",font=font(64,True),fill=color)
+            draw.text((96,870),draft["lines"][-1],font=font(28,True),fill="#F4F2F7")
+        draw.text((96,963),"Les analyses sur wnpulse.com",font=font(25,True),fill="#F7B17E")
+        draw.text((984,963),"18+",font=font(22),fill="#D8E2F0",anchor="rt")
         buffer=BytesIO()
         image.save(buffer,format="PNG")
         return buffer.getvalue()

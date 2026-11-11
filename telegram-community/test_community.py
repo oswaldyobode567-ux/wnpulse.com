@@ -10,7 +10,7 @@ import httpx
 from fastapi.testclient import TestClient
 from PIL import Image
 import app
-from editorial import make, poster, ZONE
+from editorial import daily_picks, make, poster, ZONE
 
 
 class Community(unittest.IsolatedAsyncioTestCase):
@@ -47,6 +47,46 @@ class Community(unittest.IsolatedAsyncioTestCase):
         self.assertIn("3 gagnés · 2 perdus",draft["lines"])
         data["summary"]["total"]=5
         self.assertIsNone(make("results",data,self.now,self.now))
+
+    async def test_natural_requests_show_all_upcoming_without_publishing(self):
+        now=datetime.now(ZONE)
+        def match(identity,minutes,locked=False):
+            return {"id":identity,"result":"pending","home_team":"Équipe "+identity,"away_team":"Adversaire",
+                    "sport_title":"Championnat","commence_time":(now+timedelta(minutes=minutes)).isoformat(),
+                    "prediction":{"pick":"Équipe "+identity,"pick_odds":1.5,"locked":locked,"free_daily_pick":True}}
+        rows=[match("second",120),match("first",60),match("started",-1),match("locked",45,True),match("first",60)]
+        data={"items":rows}
+        drafts=daily_picks(data,now,now)
+        self.assertEqual([d["details"]["teams"][0] for d in drafts],["Équipe first","Équipe second"])
+        send=AsyncMock(return_value={"message_id":11})
+        message={"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"Pronostics du jour"}
+        with patch.multiple(app,ADMIN={42},telegram=send,read=AsyncMock(return_value=data)):
+            await app.command(message)
+        cards=[call for call in send.await_args_list if call.args[0]=="sendPhoto"]
+        self.assertEqual(len(cards),2)
+        self.assertTrue(all(call.args[1]==42 for call in send.await_args_list))
+        with app.closing(app.connect()) as con:
+            self.assertEqual(con.execute("SELECT count(*) FROM drafts WHERE state='approved'").fetchone()[0],0)
+        with patch.multiple(app,LIVE=True,VALID_CHANNEL=True,VALID_TOKEN=True):
+            answer=app.approve_review(42,"pick")
+            self.assertEqual(answer.count("Brouillon validé"),2)
+        self.assertEqual(app.natural_intent("Résultats"),"/show_results")
+        self.assertEqual(app.natural_intent("Donne-moi les pronostics du jour stp"),"/show_picks")
+        self.assertEqual(app.natural_intent("je veux publier tout et n'importe quoi"),None)
+
+    async def test_natural_results_are_a_private_illustrated_bilan(self):
+        data={"date":(datetime.now(ZONE).date()-timedelta(days=1)).isoformat(),
+              "source":"track_record","complete":True,
+              "summary":{"won":3,"lost":2,"pending":1,"void":0,"total":6}}
+        send=AsyncMock(return_value={"message_id":12})
+        with patch.multiple(app,ADMIN={42},telegram=send,read=AsyncMock(return_value=data)):
+            await app.command({"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"résultats"})
+        cards=[call for call in send.await_args_list if call.args[0]=="sendPhoto"]
+        self.assertEqual(len(cards),1)
+        self.assertIn("3 gagnés · 2 perdus",cards[0].args[2])
+        with patch.multiple(app,LIVE=True,VALID_CHANNEL=True,VALID_TOKEN=True):
+            self.assertIn("Commence",app.approve_review(7,"results"))
+            self.assertIn("Brouillon validé",app.approve_review(42,"results"))
 
     async def test_preview_recovers_current_pick_without_publishing(self):
         now = self.now.replace(hour=21, minute=0)

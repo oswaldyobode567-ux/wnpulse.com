@@ -1,12 +1,14 @@
 """Independent WinPulse community service; the default never publishes."""
 import asyncio
 import hmac
+import hashlib
 import json
 import logging
 import os
 import re
 import sqlite3
 import time
+import unicodedata
 from contextlib import asynccontextmanager, closing
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -16,7 +18,7 @@ from urllib.parse import urlsplit
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 
-from editorial import LABELS, LINKS, NOTICE, SLOTS, ZONE, clean, fixture_visual, make, poster, subscription
+from editorial import LABELS, LINKS, NOTICE, SLOTS, ZONE, clean, daily_picks, fixture_visual, make, poster, subscription
 
 LOG = logging.getLogger("winpulse.community")
 API = "https://wnpulsecom-production.up.railway.app/api"
@@ -47,6 +49,8 @@ def setup():
         CREATE TABLE IF NOT EXISTS drafts(id TEXT PRIMARY KEY, payload TEXT NOT NULL, state TEXT NOT NULL,
           due REAL NOT NULL, expires REAL NOT NULL, telegram_id INTEGER);
         CREATE TABLE IF NOT EXISTS updates(id INTEGER PRIMARY KEY, received REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS review_batches(owner INTEGER NOT NULL, kind TEXT NOT NULL,
+          keys_json TEXT NOT NULL, PRIMARY KEY(owner,kind));
         """)
 
 def put(key, draft, due):
@@ -226,6 +230,14 @@ async def telegram(method, chat, text, draft=None):
         return data["result"]
 
 def caption(draft):
+    if draft.get("kind")=="pick" and draft.get("details"):
+        d=draft["details"]
+        return "\n".join(["WINPULSE · SÉLECTION GRATUITE", "", "  vs  ".join(d["teams"]),
+            d["competition"], f"📅 {d['date']} · Porto-Novo", "",
+            f"NOTRE CHOIX → {d['pick']}", f"{d['market']}  |  Cote {d['odds']}",
+            *( [f"Chez {d['bookmaker']}"] if d.get("bookmaker") else [] ),
+            "", "Une sélection individuelle, pas un combiné.",
+            "Retrouve les autres analyses sur WinPulse.", draft["link"], "18+"])
     return "\n".join([draft["title"], *( [draft["intro"]] if draft.get("intro") else []),
                       "", *draft["lines"], "", draft["link"], NOTICE])
 
@@ -378,6 +390,97 @@ async def health():
     return {"ok":True,"telegram_configured":VALID_SECRET and VALID_TOKEN and bool(ADMIN),
             "channel_configured":VALID_CHANNEL,"channel_publication_enabled":LIVE and VALID_CHANNEL}
 
+def natural_intent(text):
+    normalized=unicodedata.normalize("NFKD",text.lower())
+    normalized=" ".join(re.findall(r"[a-z0-9]+","".join(c for c in normalized if not unicodedata.combining(c))))
+    for prefix in ("bonjour ", "salut ", "donne moi ", "montre moi ", "je veux ", "envoie moi "):
+        if normalized.startswith(prefix):
+            normalized=normalized[len(prefix):]
+    normalized=re.sub(r" (?:stp|s il te plait)$","",normalized)
+    groups={
+        "/show_picks":("pronostic","pronostics","prono","pronos","pronostic du jour","pronostics du jour",
+                       "les pronostics","les pronostics du jour","pronostics disponibles","les pronostics disponibles",
+                       "pronos du jour","pronostique","pronostiques","pronostiques du jour"),
+        "/show_results":("resultat","resultats","les resultats","resultats du jour","les resultats du jour","bilan","bilan du jour","resultats d hier"),
+        "/show_news":("actualite","actualites","actu","news","les actualites"),
+        "/drafts":("brouillon","brouillons","mes brouillons"),
+        "/pro":("abonnement","abonnements","tarif","tarifs","prix","passer pro"),
+        "/start":("aide","menu","bonjour","salut"),
+        "/publish_picks":("publier les pronostics","valider les pronostics","publie les pronostics"),
+        "/publish_results":("publier les resultats","valider les resultats","publie les resultats"),
+        "/publish_news":("publier l actualite","valider l actualite"),
+    }
+    return next((name for name,aliases in groups.items() if normalized in aliases),None)
+
+def review_draft(draft, now):
+    prefix=now.strftime("%Y%m%d")+"-"
+    # Reuse an existing approval/publication for the exact same displayed content.
+    with closing(connect()) as con:
+        existing=con.execute("SELECT id,payload FROM drafts WHERE id LIKE ? AND state IN ('draft','approved','sent')",
+                             (prefix+"%",)).fetchall()
+    for row in existing:
+        previous=json.loads(row["payload"])
+        if previous.get("kind")==draft["kind"] and previous.get("lines")==draft["lines"]:
+            return row["id"]
+    digest=hashlib.sha256(json.dumps([draft["kind"],draft["lines"]],ensure_ascii=False).encode()).hexdigest()[:12]
+    key=prefix+draft["kind"]+"-"+digest
+    put(key,draft,now.timestamp())
+    return key
+
+async def show_current(chat_id, kind, is_admin):
+    now=datetime.now(ZONE)
+    path,params=DRAFT_INPUTS[kind]
+    try:
+        data=await read(path,params)
+        if kind=="pick":
+            drafts=daily_picks(data,now,now)
+        else:
+            draft=make(kind,data,now,now)
+            drafts=[draft] if draft else []
+    except Exception as exc:
+        LOG.info("Current content unavailable (%s)",type(exc).__name__)
+        await telegram("sendMessage",chat_id,"WinPulse ne répond pas pour le moment. Réessaie dans quelques instants.")
+        return
+    if not drafts:
+        if is_admin:
+            with closing(connect()) as con,con:
+                con.execute("DELETE FROM review_batches WHERE owner=? AND kind=?",(chat_id,kind))
+        answer={"pick":"Aucun pronostic gratuit à venir n’est disponible actuellement. Les matchs déjà commencés ne sont pas proposés.",
+                "results":"Le bilan de la veille n’est pas encore disponible.",
+                "news":"Aucune actualité récente disponible pour le moment."}[kind]
+        await telegram("sendMessage",chat_id,answer)
+        return
+    # Public discovery has a small daily allowance. Never disclose Pro picks or silently truncate.
+    if len(drafts)>10:
+        await telegram("sendMessage",chat_id,"La liste est trop longue pour un seul envoi. Consulte les sélections à jour : "+LINKS["pick"])
+        return
+    count=len(drafts)
+    heading=(f"{count} pronostic{'s' if count>1 else ''} gratuit{'s' if count>1 else ''} à venir · heure de Porto-Novo.\n"
+             "Une carte par match, dans l’ordre des horaires. Ce sont des sélections individuelles."
+             if kind=="pick" else "Voici le bilan de la veille, avec tous les statuts." if kind=="results" else "Voici la dernière actualité.")
+    await telegram("sendMessage",chat_id,heading+("\nAperçus privés : rien n’est encore publié sur @wnplus." if is_admin else ""))
+    keys=[]
+    for i,draft in enumerate(drafts,1):
+        key=review_draft(draft,now) if is_admin else None
+        await telegram("sendPhoto",chat_id,f"{i}/{count}\n"+caption(draft),draft)
+        if key:
+            keys.append(key)
+    if is_admin:
+        with closing(connect()) as con,con:
+            con.execute("INSERT INTO review_batches VALUES(?,?,?) ON CONFLICT(owner,kind) DO UPDATE SET keys_json=excluded.keys_json",
+                        (chat_id,kind,json.dumps(keys)))
+        phrase={"pick":"publier les pronostics","results":"publier les résultats","news":"publier l’actualité"}[kind]
+        await telegram("sendMessage",chat_id,f"Ces {count} aperçu(s) sont prêts. Écris « {phrase} » pour valider leur envoi sur @wnplus.\nTu peux aussi écrire « pronostics du jour », « résultats » ou « actualités ».")
+
+def approve_review(owner, kind):
+    with closing(connect()) as con:
+        row=con.execute("SELECT keys_json FROM review_batches WHERE owner=? AND kind=?",(owner,kind)).fetchone()
+    if not row:
+        return "Commence par demander les pronostics, les résultats ou les actualités pour les vérifier en privé."
+    now=time.time()
+    keys=json.loads(row["keys_json"])
+    return "\n\n".join(approve_draft(key,now) for key in keys[:10])
+
 async def command(message):
     chat=message.get("chat") or {}
     user=message.get("from") or {}
@@ -396,17 +499,34 @@ async def command(message):
             await telegram("sendMessage",chat_id,"Bienvenue "+", ".join(members)+" ! Consulte /aide pour découvrir WinPulse.")
         return
     parts=text.split(maxsplit=1)
-    if not parts or not parts[0].startswith("/"):
+    if not parts:
         return
-    name, _, addressed = parts[0].lower().partition("@")
-    if addressed and addressed != USERNAME:
+    if parts[0].startswith("/"):
+        name, _, addressed = parts[0].lower().partition("@")
+        if addressed and addressed != USERNAME:
+            return
+        arg=parts[1].strip() if len(parts)>1 else ""
+    else:
+        name=natural_intent(text) if private else None
+        arg=""
+        if not name:
+            if private:
+                await telegram("sendMessage",chat_id,"Écris « pronostics du jour », « résultats », « actualités » ou « abonnement ». Je te montrerai le contenu disponible.")
+            return
+    if private and name in ("/show_picks","/pronos","/pronostic","/pronostics","/show_results","/resultats","/show_news","/actu"):
+        kind="pick" if name in ("/show_picks","/pronos","/pronostic","/pronostics") else "results" if name in ("/show_results","/resultats") else "news"
+        await show_current(chat_id,kind,is_admin)
         return
-    arg=parts[1].strip() if len(parts)>1 else ""
+    if name in ("/publish_picks","/publish_results","/publish_news"):
+        if is_admin:
+            kind={"/publish_picks":"pick","/publish_results":"results","/publish_news":"news"}[name]
+            await telegram("sendMessage",chat_id,approve_review(chat_id,kind))
+        return
     answer=""
     if name in {"/start","/aide"}:
-        answer=f"Bienvenue sur WinPulse ! /pronos pour les sélections gratuites, /pro pour l’abonnement et /resultats pour le suivi.\n{LINKS['start']}"
+        answer=f"Bienvenue sur WinPulse !\n\nÉcris simplement :\n• Pronostics du jour\n• Résultats\n• Actualités\n• Abonnement\n\n{LINKS['start']}"
         if is_admin:
-            answer+="\nAdministration : /drafts, /preview ID, /approve ID, /cancel ID, /promo TEXTE, /rappel TEXTE."
+            answer+="\n\nTu es administrateur : après avoir vu les cartes, écris « publier les pronostics » ou « publier les résultats » pour donner ton feu vert. Les anciennes commandes restent disponibles."
     elif private and name=="/id":
         answer=f"Ton identifiant Telegram : {chat_id}. Ajoute-le à TELEGRAM_ADMIN_IDS si tu es propriétaire."
     elif name=="/actu":
