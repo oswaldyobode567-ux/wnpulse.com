@@ -1554,6 +1554,29 @@ function getLeagueEmoji(match) {
   };
   return icons[sport] || "🏆";
 }
+const COMPETITION_CREST_CODES = {
+  soccer_epl: "PL",
+  soccer_spain_la_liga: "PD",
+  soccer_germany_bundesliga: "BL1",
+  soccer_italy_serie_a: "SA",
+  soccer_france_ligue_one: "FL1",
+  soccer_uefa_champs_league: "CL",
+  soccer_portugal_primeira_liga: "PPL",
+  soccer_uefa_europa_league: "EL",
+  soccer_conmebol_copa_libertadores: "CLI",
+};
+
+function CompetitionMark({ match }) {
+  const code = COMPETITION_CREST_CODES[match?.sport_key];
+  const [failedCode, setFailedCode] = useState(null);
+  return <span className="wp-league-mark grid h-9 w-9 shrink-0 place-items-center rounded-xl border text-lg" aria-hidden="true">
+    {code && failedCode !== code
+      ? <img src={`https://crests.football-data.org/${code}.png`} alt="" width="24" height="24" loading="lazy" decoding="async"
+          referrerPolicy="no-referrer" className="h-6 w-6 object-contain" onError={() => setFailedCode(code)} />
+      : getLeagueEmoji(match)}
+  </span>;
+}
+
 function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false }) {
   const { t, formatNumber, formatDate } = useDashboardLanguage();
   const [expanded, setExpanded] = useDashboardViewState(`league:${dayKey}:${league}:open`, !compact);
@@ -1562,7 +1585,7 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
   return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-2 sm:p-4" data-testid="dashboard-league">
     <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
-      <span className="wp-league-mark grid h-9 w-9 shrink-0 place-items-center rounded-xl border text-lg" aria-hidden="true">{getLeagueEmoji(matches[0])}</span>
+      <CompetitionMark match={matches[0]} />
       <h4 className="min-w-0 flex-1 basis-28 break-words font-heading text-sm sm:text-base font-bold leading-5 sm:leading-6 text-slate-900"><bdi>{league === "Autre" ? t("Autre") : league}</bdi></h4>
       {liveCount > 0 && <span className="rounded-full border border-rose-200 bg-rose-50 px-2 py-1 text-xs font-bold text-rose-600">{formatNumber(liveCount)} {t("LIVE")}</span>}
       <span className="rounded-full bg-white px-2 py-1 text-xs font-bold tabular-nums text-slate-500">{formatNumber(matches.length)}</span>
