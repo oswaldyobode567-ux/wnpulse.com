@@ -1,5 +1,6 @@
 """Independent WinPulse community service; the default never publishes."""
 import asyncio
+from hashlib import blake2s
 import hmac
 import hashlib
 import html
@@ -224,7 +225,8 @@ async def sports_hero(client,draft):
     if draft.get("kind")!="pick":
         return None,""
     sport=str((draft.get("visual") or {}).get("sport","")).split("_",1)[0]
-    if sport in ("soccer","football"):
+    teams=" | ".join((draft.get("visual") or {}).get("teams") or [])
+    if sport in ("soccer","football") and blake2s(teams.encode()).digest()[0] % 5 == 0:
         path=Path(__file__).with_name("stadium-editorial.webp")
         if path.is_file():
             try:
@@ -279,10 +281,12 @@ def caption(draft):
             except (KeyError,ValueError,TypeError,OverflowError):
                 pass
         return "\n".join(["WINPULSE · "+("SÉLECTION" if draft.get("admin_pick") else "SÉLECTION GRATUITE"), "", "  vs  ".join(d["teams"]),
-            d["competition"], f"📅 {d['date']} · Paris",
+            " · ".join(filter(None, (d.get("country"),d.get("competition")))), f"📅 {d['date']} · Paris",
             *({"strong":["Tendance forte · estimation"],"shared":["Scénario partagé · estimation"]}.get(d.get("profile"),[])), "",
             f"NOTRE CHOIX → {d['pick']}", f"{d['market']}  |  Cote {d['odds']}",
             *( [f"Chez {d['bookmaker']}"] if d.get("bookmaker") else [] ),
+            *([f"Risque {d['risk']}"] if d.get("risk") else []),
+            *([f"Confiance IA {d['confidence']:g} %"] if d.get("confidence") is not None else []),
             "", "Découvre les analyses et l’abonnement WinPulse.", draft["link"], "18+"])
     return "\n".join([draft["title"], *( [draft["intro"]] if draft.get("intro") else []),
                       "", *draft["lines"], "", draft["link"], NOTICE])
