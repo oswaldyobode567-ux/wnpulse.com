@@ -213,6 +213,14 @@ function upcoming(match, now) {
 function selectable(match, pick, now) {
   return Boolean(upcoming(match, now) && match.home_team && match.away_team && !pick.locked && pick.pick && pick.pick_odds !== null);
 }
+const CONFIDENCE_FILTERS = [
+  { key: "all", label: "Toutes les rencontres", min: 0, max: 101 },
+  { key: "70+", label: "Toutes à 70 % et plus", min: 70, max: 101 },
+  { key: "90+", label: "90 % et plus", min: 90, max: 101 },
+  { key: "80–89", label: "80 à moins de 90 %", min: 80, max: 90 },
+  { key: "70–79", label: "70 à moins de 80 %", min: 70, max: 80 },
+];
+
 function toSelection(match, pick) {
   return {
     _key: pick._key,
@@ -620,6 +628,7 @@ export default function ComboBuilderPage() {
   const [sport, setSport] = useState("all"),
     [query, setQuery] = useState(""),
     [day, setDay] = useState("all");
+  const [confidenceFilter, setConfidenceFilter] = useState("70+");
   const [order, setOrder] = useState("time"),
     [limit, setLimit] = useState(12);
   const [selectedPicks, setSelectedPicks] = useState([]),
@@ -834,7 +843,7 @@ export default function ComboBuilderPage() {
   }, [account, isPaid, loadSaved]);
   useEffect(() => {
     setLimit(12);
-  }, [sport, query, day, order]);
+  }, [sport, query, day, order, confidenceFilter]);
   useEffect(() => {
     copyGeneration.current += 1;
     setManualCopy("");
@@ -850,7 +859,7 @@ export default function ComboBuilderPage() {
     });
     return counts;
   }, [eligible]);
-  const filtered = useMemo(() => {
+  const baseFiltered = useMemo(() => {
     const wanted = normalize(query).trim().split(/\s+/).filter(Boolean),
       today = new Date(now),
       tomorrow = new Date(now);
@@ -864,6 +873,28 @@ export default function ComboBuilderPage() {
       return day === "all" || start !== null && sameDay(new Date(start), day === "today" ? today : tomorrow);
     }).sort((a, b) => order === "competition" ? a.competition.localeCompare(b.competition, i18n.locale) || (dateValue(a.commence_time) ?? Infinity) - (dateValue(b.commence_time) ?? Infinity) : (dateValue(a.commence_time) ?? Infinity) - (dateValue(b.commence_time) ?? Infinity) || a.match_id.localeCompare(b.match_id));
   }, [eligible, sport, query, day, order, now, i18n, i18n.language]);
+  const bestPicks = useMemo(() => {
+    const best = new Map();
+    for (const match of baseFiltered) {
+      const pick = match.picks.reduce((highest, candidate) => {
+        if (!selectable(match, candidate, now) || candidate.confidence === null) return highest;
+        return !highest || candidate.confidence > highest.confidence ? candidate : highest;
+      }, null);
+      if (pick) best.set(match.match_id, pick);
+    }
+    return best;
+  }, [baseFiltered, now]);
+  const confidenceOptions = CONFIDENCE_FILTERS.map(filter => ({
+    ...filter,
+    count: filter.key === "all" ? baseFiltered.length : [...bestPicks.values()].filter(pick =>
+      pick.confidence >= filter.min && pick.confidence < filter.max
+    ).length,
+  }));
+  const activeConfidence = confidenceOptions.find(filter => filter.key === confidenceFilter);
+  const filtered = confidenceFilter === "all" ? baseFiltered : baseFiltered.filter(match => {
+    const score = bestPicks.get(match.match_id)?.confidence;
+    return score >= activeConfidence.min && score < activeConfidence.max;
+  }).sort((a, b) => bestPicks.get(b.match_id).confidence - bestPicks.get(a.match_id).confidence);
   const selectedKeys = useMemo(() => new Set(selectedPicks.map(p => p._key)), [selectedPicks]);
   const availableOptions = useMemo(() => eligible.reduce((sum, match) => sum + match.picks.filter(p => selectable(match, p, now)).length, 0), [eligible, now]);
   function togglePick(match, pick) {
@@ -1051,6 +1082,11 @@ export default function ComboBuilderPage() {
                     v1: filtered.length > 1 ? "s" : "",
                     v2: filtered.length > 1 ? "ent" : ""
                   }))}</p></div></div>
+            <div className="cb-sports" role="group" aria-label={i18n.t("Filtrer par confiance du moteur")} data-testid="builder-confidence-filters">
+              {confidenceOptions.map(filter => <button key={filter.key} type="button" aria-pressed={confidenceFilter === filter.key} onClick={() => setConfidenceFilter(filter.key)}>
+                {i18n.t(filter.label)}<span>{i18n.tx(loading ? "—" : filter.count)}</span>
+              </button>)}
+            </div>
             {i18n.tx(selectedPicks.length > 0 && <a href="#builder-ticket" onClick={() => setTicketOpen(true)} className="cb-ticket-jump"><span><Trophy aria-hidden="true" />{i18n.rich("{{v0}} s\xE9lection{{v1}}{{v2}}", {
                   v0: i18n.tx(selectedPicks.length),
                   v1: i18n.tx(selectedPicks.length > 1 ? "s" : ""),
@@ -1064,7 +1100,8 @@ export default function ComboBuilderPage() {
                 setSport("all");
                 setDay("all");
                 setQuery("");
-              }}>{i18n.t("R\xE9initialiser les filtres")}</button>)}</div> : <><div className="cb-matches">{i18n.tx(filtered.slice(0, limit).map(match => <MatchCard key={match.match_id} match={match} expanded={expandedMatchId === match.match_id} onToggle={() => setExpandedMatchId(value => value === match.match_id ? null : match.match_id)} onPickToggle={togglePick} selectedKeys={selectedKeys} now={now} fresh={fresh} canStats={canPersist} stats={canPersist ? matchStats[match.match_id] : null} onStats={() => loadStats(match)} />))}</div><p className="cb-results-count">{i18n.rich("{{v0}} sur {{v1}} rencontres affich\xE9es", {
+                setConfidenceFilter("all");
+              }}>{i18n.t("R\xE9initialiser les filtres")}</button>)}</div> : <><div className="cb-matches">{i18n.tx(filtered.slice(0, limit).map(match => <MatchCard key={match.match_id} match={match} preferredPick={confidenceFilter === "all" ? null : bestPicks.get(match.match_id)} expanded={expandedMatchId === match.match_id} onToggle={() => setExpandedMatchId(value => value === match.match_id ? null : match.match_id)} onPickToggle={togglePick} selectedKeys={selectedKeys} now={now} fresh={fresh} canStats={canPersist} stats={canPersist ? matchStats[match.match_id] : null} onStats={() => loadStats(match)} />))}</div><p className="cb-results-count">{i18n.rich("{{v0}} sur {{v1}} rencontres affich\xE9es", {
                   v0: i18n.tx(Math.min(limit, filtered.length)),
                   v1: i18n.tx(filtered.length)
                 })}</p>{i18n.tx(limit < filtered.length && <button type="button" className="cb-button cb-button--outline cb-show-more" onClick={() => setLimit(value => value + 12)}>{i18n.t("Afficher les rencontres suivantes")}<Plus aria-hidden="true" /></button>)}</>)}
@@ -1149,6 +1186,7 @@ function RiskLabel({
 }
 function MatchCard({
   match,
+  preferredPick,
   expanded,
   onToggle,
   onPickToggle,
@@ -1164,7 +1202,7 @@ function MatchCard({
     [visible, setVisible] = useState(6),
     [statsOpen, setStatsOpen] = useState(false);
   const available = match.picks.filter(pick => selectable(match, pick, now));
-  const primary = available[0],
+  const primary = preferredPick || available[0],
     selected = match.picks.find(pick => selectedKeys.has(pick._key));
   const options = match.picks.filter(pick => group === "all" || marketGroup(pick) === group);
   const selectedPrimary = primary && selectedKeys.has(primary._key);
