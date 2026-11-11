@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import api from "@/lib/api";
 import AppLayout, { useLanguage, usePageLanguage, useExperienceCopy, useExperiencePreferences, useFollowedPicks, useExperienceEvent, StadiumBackdrop, FollowPickButton } from "@/components/AppLayout";
-import MatchCard, { AdminShareProvider, AdminShareToolbar, TeamBadge, badgeUrl, MediaCredits } from "@/components/MatchCard";
+import MatchCard, { AdminShareProvider, AdminShareToolbar, TeamBadge, badgeUrl, badgeUrls, MediaCredits } from "@/components/MatchCard";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -1683,7 +1683,7 @@ function HomeFollowRows({rows}){
  return <div className="grid gap-3 sm:grid-cols-2">{rows.map((row,index)=><Link key={row.id||index} to={`/app/match/${encodeURIComponent(row.match_id||row.id)}`} className="min-w-0 rounded-2xl border border-slate-200 bg-white p-4 transition-colors hover:border-orange-300" data-testid="home-follow-row"><p className="text-xs text-slate-500">{i18n.formatDate(row.commence_time,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</p><h3 className="mt-2 break-words text-sm font-extrabold leading-6 text-slate-900"><bdi>{row.home_team} · {row.away_team}</bdi></h3><p className="mt-2 break-words text-sm font-semibold text-orange-700"><bdi>{i18n.bet(row.pick)}</bdi></p><div className="mt-3 flex flex-wrap items-center justify-between gap-2 text-xs"><span className="text-slate-500">{w.initialOdds} <bdi className="font-mono font-bold">{row.pick_odds??'—'}</bdi></span><span className={`rounded-full px-2 py-1 font-bold ${row.result==='won'?'bg-emerald-50 text-emerald-700':row.result==='lost'?'bg-rose-50 text-rose-700':'bg-slate-100 text-slate-600'}`}>{row.result==='won'?w.won:row.result==='lost'?w.lost:row.result==='void'?w.void:w.pending}</span></div></Link>)}</div>;
 }
 function ExperienceHome(){
- const {user}=useAuth();const w=useExperienceCopy();const i18n=usePageLanguage();const navigate=useNavigate();const {matches,loading,error,lastUpdate,refresh}=useRealtimeMatches();const {preferences}=useExperiencePreferences();const follows=useFollowedPicks();const [now,setNow]=useState(Date.now());
+ const {user}=useAuth();const w=useExperienceCopy();const i18n=usePageLanguage();const navigate=useNavigate();const {matches:sourceMatches,loading,error,lastUpdate,refresh}=useRealtimeMatches();const media=useDashboardMedia();const matches=useMemo(()=>sourceMatches.map(match=>attachDashboardMedia(match,media)),[sourceMatches,media]);const {preferences}=useExperiencePreferences();const follows=useFollowedPicks();const [now,setNow]=useState(Date.now());
  useExperienceEvent('home');
  useEffect(()=>{const timer=window.setInterval(()=>setNow(Date.now()),60000);return()=>window.clearInterval(timer);},[]);
  const upcoming=useMemo(()=>matches.filter(m=>upcomingHomeMatch(m,now)).sort((a,b)=>new Date(a.commence_time)-new Date(b.commence_time)),[matches,now]);
@@ -1693,7 +1693,7 @@ function ExperienceHome(){
  const counts=getAvailablePickCounts(matches);const paid=experiencePaid(user);
  return <div className="wp-home mx-auto min-w-0 max-w-7xl px-4 py-6 sm:px-6 sm:py-8" data-testid="experience-home">
    <section className="wp-home-hero"><StadiumBackdrop/><div className="wp-hero-shade" aria-hidden="true"/><div className="wp-hero-content"><p className="wp-eyebrow">WinPulse / {i18n.formatDate(new Date(now),{day:'numeric',month:'long'})}</p><h1>{w.hello}</h1><p className="wp-hero-intro">{w.homeIntro}</p><div className="wp-hero-links"><Link to="/app/aujourdhui" className="wp-primary-button">{w.allMatches}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link><Link to="/app/suivi" className="wp-quiet-button">{w.follow}<Bookmark className="h-4 w-4"/></Link></div></div>
-     {featured&&<div className="min-w-0 space-y-3" data-testid="featured-pick-actions" data-navigation-match-id={featured.id || featured.match_id}><Link to={`/app/match/${featured.id}`} className="wp-featured-match" data-testid="premium-featured-match"><div className="wp-featured-meta"><span>{w.upcoming}</span><time dateTime={featured.commence_time}>{i18n.formatDate(featured.commence_time,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</time></div><p className="wp-featured-league">{featured.sport_title}</p><div className="wp-featured-teams">{[['home',featured.home_team],['away',featured.away_team]].map(([side,name])=><div key={side}><TeamBadge name={name} src={badgeUrl(featured,side)} kind={featured[`${side}_media`]?.kind} size="large"/><strong><bdi>{name}</bdi></strong></div>)}<span aria-hidden="true">VS</span></div><div className="wp-featured-pick"><div><small>{i18n.bet(featured.prediction.market_label || 'Pronostic')}</small><strong><bdi>{i18n.bet(featured.prediction.pick)}</bdi></strong></div><bdi>{Number.isFinite(Number(featured.prediction.pick_odds))&&Number(featured.prediction.pick_odds)>1?i18n.formatNumber(Number(featured.prediction.pick_odds),{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</bdi></div><span className="wp-featured-open">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></span></Link><FollowPickButton matchId={featured.id || featured.match_id} pick={featured.prediction.pick} market={featured.prediction.market} compact disabled={Boolean(featured.is_live || featured.is_finished || featured.prediction.is_live || featured.prediction.is_finished)}/></div>}
+     {featured&&<div className="min-w-0 space-y-3" data-testid="featured-pick-actions" data-navigation-match-id={featured.id || featured.match_id}><Link to={`/app/match/${featured.id}`} className="wp-featured-match" data-testid="premium-featured-match"><div className="wp-featured-meta"><span>{w.upcoming}</span><time dateTime={featured.commence_time}>{i18n.formatDate(featured.commence_time,{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'})}</time></div><p className="wp-featured-league">{featured.sport_title}</p><div className="wp-featured-teams">{[['home',featured.home_team],['away',featured.away_team]].map(([side,name])=><div key={side}><TeamBadge name={name} src={badgeUrl(featured,side)} fallbackSrcs={badgeUrls(featured,side)} sport={featured.sport_key} kind={featured[`${side}_media`]?.kind} size="large"/><strong><bdi>{name}</bdi></strong></div>)}<span aria-hidden="true">VS</span></div><div className="wp-featured-pick"><div><small>{i18n.bet(featured.prediction.market_label || 'Pronostic')}</small><strong><bdi>{i18n.bet(featured.prediction.pick)}</bdi></strong></div><bdi>{Number.isFinite(Number(featured.prediction.pick_odds))&&Number(featured.prediction.pick_odds)>1?i18n.formatNumber(Number(featured.prediction.pick_odds),{minimumFractionDigits:2,maximumFractionDigits:2}):'—'}</bdi></div><span className="wp-featured-open">{w.open}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></span></Link><FollowPickButton matchId={featured.id || featured.match_id} pick={featured.prediction.pick} market={featured.prediction.market} compact disabled={Boolean(featured.is_live || featured.is_finished || featured.prediction.is_live || featured.prediction.is_finished)}/></div>}
    </section>
    {featured&&<MediaCredits match={featured}/>}
    <div className="wp-overview-strip">{[[loading?'—':counts.total,w.selections,Layers],[loading?'—':upcoming.length,w.upcoming,CalendarDays],[follows?.loading?'—':rows.filter(r=>r.state!=='resolved').length,w.follow,Bookmark]].map(([value,label,Icon],i)=><div key={i}><span className="wp-overview-icon"><Icon className="h-5 w-5" aria-hidden="true"/></span><div><strong>{value}</strong><p>{label}</p></div></div>)}</div>
@@ -1723,8 +1723,10 @@ export function attachDashboardMedia(match, catalogue) {
   for(const field of PARTICIPANT_MEDIA_FIELDS)if(entry[field] != null)result[field]=entry[field];
   return result;
 }
+let dashboardMediaCache = {};
+
 function useDashboardMedia() {
-  const [catalogue,setCatalogue]=useState({});
+  const [catalogue,setCatalogue]=useState(dashboardMediaCache);
   useEffect(()=>{
     let active=true,pending=false,lastAttempt=0;
     const controller=new AbortController();
@@ -1735,7 +1737,10 @@ function useDashboardMedia() {
         const response=await api.get("/media/catalogue",{signal:controller.signal,timeout:10000});
         if(active&&Array.isArray(response.data?.items)){
           const next={};for(const row of response.data.items)if(row.match_id)next[String(row.match_id)]=row;
-          setCatalogue(next);
+          if (Object.keys(next).length) {
+            dashboardMediaCache = next;
+            setCatalogue(next);
+          }
         }
       }catch{/* Keep existing source images; optional media never blocks match cards. */}
       finally{pending=false;}
