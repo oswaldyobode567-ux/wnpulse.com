@@ -694,16 +694,16 @@ export function TeamBadge({ name = "", src, size = "small", kind, fallbackSrcs =
   const portrait=kind==="portrait"||String(sport).startsWith("tennis_");
   const colors=["from-orange-50 to-amber-100 text-orange-500","from-sky-50 to-indigo-100 text-indigo-500","from-emerald-50 to-teal-100 text-teal-600"];
   const color=colors[Array.from(String(name)).reduce((sum,char)=>sum+char.codePointAt(0),0)%colors.length];
-  const pixels=size==="large"?64:40;
-  return <span style={{width:pixels,height:pixels,minWidth:pixels,flexShrink:0}} aria-hidden="true" data-testid="participant-image" data-image-kind={portrait?"portrait":"badge"}
+  const pixels = size === "large" ? 64 : size === "compact" ? 24 : 40;
+  return <span style={{width:pixels,height:pixels,minWidth:pixels,flexShrink:0}} aria-hidden="true" data-testid="participant-image" data-image-size={size} data-image-kind={portrait?"portrait":"badge"}
     className={`inline-flex shrink-0 items-center justify-center overflow-hidden border border-slate-200 bg-white shadow-sm ${portrait?"rounded-full":"rounded-2xl"} ${size==="large"?"h-16 w-16 sm:h-20 sm:w-20":"h-10 w-10"}`}>
-    {url?<img src={url} alt="" width={size==="large"?80:40} height={size==="large"?80:40} loading="lazy" decoding="async" referrerPolicy="no-referrer"
+    {url?<img src={url} alt="" width={pixels} height={pixels} loading="lazy" decoding="async" referrerPolicy="no-referrer"
       onError={()=>setFailed(current=>current.includes(url)?current:[...current,url])}
-      className={`h-full w-full ${portrait?"object-cover":"object-contain p-1.5"}`} style={{width:"100%",height:"100%",maxWidth:"100%",objectFit:portrait?"cover":"contain",...(portrait?{objectPosition:"center 22%"}:{padding:4})}}/>
+      className={`h-full w-full ${portrait?"object-cover":"object-contain p-1.5"}`} style={{width:"100%",height:"100%",maxWidth:"100%",objectFit:portrait?"cover":"contain",...(portrait?{objectPosition:"center 22%"}:{padding:size==="compact"?2:4})}}/>
       :<span className={`grid h-full w-full place-items-center bg-gradient-to-br ${color}`} data-testid="participant-image-placeholder">
-        <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-3/5 w-3/5">
-          {portrait?<><circle cx="16" cy="11" r="5"/><path d="M6 28c0-7 4-11 10-11s10 4 10 11"/></>:<><path d="M16 3 27 7v9c0 6-5 10-11 13C10 26 5 22 5 16V7L16 3Z"/><path d="m16 10 2 4 4 .6-3 3 .7 4.4-3.7-2-3.7 2 .7-4.4-3-3 4-.6 2-4Z"/></>}
-        </svg>
+        {portrait && size !== "compact" ? <svg viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.6" className="h-3/5 w-3/5">
+          <circle cx="16" cy="11" r="5"/><path d="M6 28c0-7 4-11 10-11s10 4 10 11"/>
+        </svg> : <span className={size === "compact" ? "text-[9px] font-bold" : "text-sm font-bold"}>{teamInitials(name)}</span>}
       </span>}
   </span>;
 }
