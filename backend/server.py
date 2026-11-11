@@ -8477,7 +8477,7 @@ async def _keep_catalogue_warm():
 
 async def _catalogue_snapshot(compact):
     age = time.monotonic() - _prediction_cache["timestamp"]
-    if compact and _prediction_cache["matches"] and age < PREDICTION_CACHE_TTL + 600:
+    if compact and _prediction_cache["matches"] and age < PREDICTION_CACHE_TTL + 120:
         if age >= 30:
             _ensure_prediction_snapshot_task()
         return dict(_prediction_cache), "hit" if age < 30 else "refreshing"
@@ -11653,52 +11653,28 @@ async def get_predictions_combos_alias(payload: dict = Depends(get_current_user_
     return await get_combos(payload)
 
 
-_builder_market_cache = {"timestamp": None, "rows": []}
-_builder_market_task = None
-
-
-def _analyse_builder_markets(matches, real_stats_map):
-    return [(match, analyze_match(match, real_stats_map=real_stats_map)) for match in matches]
-
-
-async def _refresh_builder_markets(snapshot):
-    stats = {key: value for key, value in snapshot["real_stats_map"].items() if key != "__hybrid_models__"}
-    rows = await _run_analysis(_analyse_builder_markets, snapshot["matches"], stats)
-    _builder_market_cache.update(timestamp=snapshot["timestamp"], rows=rows)
-    return rows
-
-
-async def _builder_markets(snapshot):
-    global _builder_market_task
-    if _builder_market_cache["timestamp"] == snapshot["timestamp"]:
-        return _builder_market_cache["rows"]
-    if _builder_market_task is not None and not _builder_market_task.done():
-        await asyncio.shield(_builder_market_task)
-        if _builder_market_cache["timestamp"] == snapshot["timestamp"]:
-            return _builder_market_cache["rows"]
-    if _builder_market_task is None or _builder_market_task.done():
-        _builder_market_task = asyncio.create_task(_refresh_builder_markets(snapshot))
-        _builder_market_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-    return await asyncio.shield(_builder_market_task)
-
-
 @app.get("/api/builder/matches")
 async def get_builder_matches(sport: Optional[str] = None, payload: Optional[dict] = Depends(get_optional_user_payload)):
-    snapshot, _ = await _catalogue_snapshot(compact=True)
+    matches = await fetch_all_matches(db)
+    matches = [m for m in matches if not _match_is_finished(m)]
+    if sport and sport != "all":
+        wanted_sport = str(sport).lower().strip()
+        aliases = {
+            "soccer": "football",
+            "ice_hockey": "hockey",
+            "icehockey": "hockey",
+            "americanfootball": "american_football",
+        }
+        wanted_sport = aliases.get(wanted_sport, wanted_sport)
+        matches = [m for m in matches if _normalize_sport(m) == wanted_sport]
+    real_stats_map = await get_real_stats_map(db, matches)
     is_paid = await _has_paid_access(payload)
+    snapshot = await _get_prediction_snapshot()
     manifest = await _discovery_manifest(snapshot) if not is_paid else {}
-    chosen = {entry["match_id"]: entry for entry in manifest.get("entries", [])}
-    aliases = {"soccer": "football", "ice_hockey": "hockey", "icehockey": "hockey", "americanfootball": "american_football"}
-    wanted = (sport or "all").strip().lower()
-    wanted = aliases.get(wanted, wanted)
-    try:
-        rows = await asyncio.wait_for(_builder_markets(snapshot), timeout=7)
-    except asyncio.TimeoutError:
-        raise HTTPException(status_code=503, detail="Le catalogue du combiné est en cours de préparation.", headers={"Retry-After": "5"})
+    chosen = {entry["match_id"]:entry for entry in manifest.get("entries",[])}
     result = []
-    for m, analyzed in rows:
-        if _match_is_finished(m) or (wanted != "all" and _normalize_sport(m) != wanted):
-            continue
+    for m in matches:
+        analyzed = analyze_match(m, real_stats_map=real_stats_map)
         raw_picks = analyzed.get("markets", [])
         frozen = chosen.get(_discovery_match_id(m))
         if not is_paid and frozen:
@@ -12433,76 +12409,6 @@ async def get_track_record_highlights(date: Optional[str] = None, time_zone: str
     return _build_track_record_highlights(_official_history_rows(rows), selected, zone, max(1, min(limit, 3)), now)
 
 
-_track_history_cache = {"at": 0.0, "data": None}
-_track_history_task = None
-
-
-async def _refresh_track_history():
-    projection = {key: 1 for key in (
-        "id", "signature", "match_id", "home_team", "away_team", "sport_title", "sport_key",
-        "commence_time", "created_at", "reconciled_at", "official_frozen_at",
-        "is_primary_official", "official_track_eligible", "is_combo", "analysis_only", "source",
-        "result", "pick", "pick_odds", "market", "market_label", "confidence", "label",
-        "model_version", "final_score", "home_logo", "away_logo", "home_media", "away_media",
-        "home_image_candidates", "away_image_candidates",
-    )}
-    public_fields = (
-        "match_id", "home_team", "away_team", "sport_title", "sport_key", "commence_time",
-        "pick", "market", "market_label", "pick_odds", "confidence", "label",
-        "model_version", "is_combo", "official_track_eligible",
-    )
-    projection.update({f"official_snapshot.{field}": 1 for field in public_fields})
-    # Exclude the branches that the official ledger would discard anyway.
-    # Primary rows must remain eligible even when an older archive has metadata
-    # that differs from its frozen official snapshot.
-    query = {
-        "result": {"$in": ["won", "lost", "void", "pending"]},
-        "$or": [
-            {"is_primary_official": True},
-            {"is_combo": {"$ne": True}, "analysis_only": {"$ne": True},
-             "source": {"$not": {"$regex": "^(montante|shadow|observed)", "$options": "i"}},
-             "pick": {"$exists": True, "$nin": [None, ""]}},
-        ],
-    }
-    raw = await asyncio.wait_for(db.predictions_history.find(
-        query, projection
-    ).max_time_ms(55000).to_list(length=None), timeout=60)
-    official = await asyncio.to_thread(_official_history_rows, raw)
-    data = (raw, official)
-    _track_history_cache.update(at=time.monotonic(), data=data)
-    return data
-
-
-def _ensure_track_history_task():
-    global _track_history_task
-    if _track_history_task is None or _track_history_task.done():
-        _track_history_task = asyncio.create_task(_refresh_track_history())
-        _track_history_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-    return _track_history_task
-
-
-async def _get_track_history():
-    cached = _track_history_cache["data"]
-    age = time.monotonic() - _track_history_cache["at"]
-    if cached is not None and age < 45:
-        return cached
-    task = _ensure_track_history_task()
-    if cached is not None and age < 900:
-        return cached
-    try:
-        return await asyncio.wait_for(asyncio.shield(task), timeout=12)
-    except Exception as exc:
-        logging.getLogger("winpulse.track").warning("Track Record snapshot unavailable (%s)", type(exc).__name__)
-        raise HTTPException(status_code=503, detail="Les résultats sont en cours d’actualisation.", headers={"Retry-After": "5"}) from exc
-
-
-async def _track_optional_metadata(query):
-    try:
-        return await asyncio.wait_for(query, timeout=1.5) or {}
-    except Exception:
-        return {}
-
-
 _track_analytics_cache = {}
 
 
@@ -12519,11 +12425,15 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
     cached = _track_analytics_cache.get(cache_key)
     if cached and time.monotonic() - cached["at"] < 120:
         return copy.deepcopy(cached["data"])
+    projection = None
+    date_expr = {"$convert":{"input":"$commence_time","to":"date","onError":None,"onNull":None}}
+    created_expr = {"$convert":{"input":"$created_at","to":"date","onError":None,"onNull":None}}
+    query = {"result":{"$in":["won","lost","void","pending"]},"$expr":{"$and":[
+        {"$ne":[date_expr,None]},{"$gte":[date_expr,cutoff]},{"$lte":[date_expr,now]}]}}
     groups = {"sport":{},"market":{},"odds":{},"model":{}}
     overall = {"won":0,"lost":0,"void":0}
-    raw_rows, _ = await _get_track_history()
-    analytics_rows = [row for row in raw_rows if (stamp := _parse_iso(row.get("commence_time"))) and cutoff <= stamp <= now]
-    for row in await asyncio.to_thread(_official_history_rows, analytics_rows):
+    analytics_rows=await db.predictions_history.find(query).max_time_ms(10000).to_list(length=None)
+    for row in _official_history_rows(analytics_rows):
         if row.get('result') not in ('won','lost','void'):continue
         kind = _normalize_sport(row)
         if requested != "all" and kind != requested:
@@ -12616,7 +12526,10 @@ async def get_track_record_public(
 
     # Resolve the first prematch official pick before filtering results.
     # Alternative archives remain intact for auditing and model evaluation.
-    history_all, official_all = await _get_track_history()
+    history_all = await db.predictions_history.find(
+        {"result": {"$in": ["won","lost","void","pending"]}}
+    ).to_list(length=None)
+    official_all = _official_history_rows(history_all)
     resolved_all = [r for r in official_all if r.get("result") in resolved_statuses]
     official_graded_count = sum(
         1 for r in resolved_all
@@ -12625,7 +12538,8 @@ async def get_track_record_public(
     transition_mode = official_graded_count < 20
     transition_source = _OFFICIAL_POLICY
 
-    resolved_all = [dict(row, _normalized_sport=_normalize_sport(row)) for row in resolved_all]
+    for row in resolved_all:
+        row["_normalized_sport"] = _normalize_sport(row)
 
     available_sports = sorted({
         r.get("_normalized_sport") for r in resolved_all
@@ -12781,12 +12695,10 @@ async def get_track_record_public(
     ]
     latest_event_dates = [d for d in latest_event_dates if d]
 
-    track_sync_meta, result_cache, budget_state = await asyncio.gather(
-        _track_optional_metadata(db.system_meta.find_one({"_id": "track_sync"})),
-        _track_optional_metadata(db.scores_cache.find_one({"_id": "all_scores"}, {"refresh_by_sport": 1})),
-        _track_optional_metadata(db.scores_cache.find_one({"_id": "result_budget_status:primary"}, {"_id": 0})),
-    )
+    track_sync_meta = await db.system_meta.find_one({"_id": "track_sync"}) or {}
+    result_cache = await db.scores_cache.find_one({"_id":"all_scores"}, {"refresh_by_sport":1}) or {}
     provider_states = list((result_cache.get("refresh_by_sport") or {}).values())
+    budget_state = await db.scores_cache.find_one({"_id":"result_budget_status:primary"}, {"_id":0}) or {}
     sync = {
         "request_budget": budget_state,
         "budget_paced_sports": sum(row.get("status")=="budget_paced" for row in provider_states),
@@ -12814,7 +12726,7 @@ async def get_track_record_public(
     page_items = results_desc[start:start + per_page]
 
     try:
-        page_items = await asyncio.wait_for(enrich_match_badges(db, page_items), timeout=1)
+        page_items = await asyncio.wait_for(enrich_match_badges(db, page_items), timeout=4)
     except Exception:
         pass  # optional pictures never hide a published result
     results: List[Dict] = []
@@ -12874,7 +12786,6 @@ async def get_track_record_public(
         "note": "Une rencontre, un seul choix officiel : première publication avant le match. Les autres analyses restent archivées séparément, sans sélectionner les gagnants après coup.",
         "track_policy": _OFFICIAL_POLICY,
         "archive_rows": len(history_all),
-        "archive_rows_scope": "official_candidates",
         "official_events": len(official_all),
     }
 
@@ -15521,7 +15432,6 @@ async def startup_event():
     _queue_track_results()
     global _catalogue_warm_task
     _catalogue_warm_task = asyncio.create_task(_keep_catalogue_warm())
-    _ensure_track_history_task()
     asyncio.create_task(_warm_today_combos())
     if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
@@ -16859,55 +16769,34 @@ async def _visual_assets_shutdown():
 
 
 # Public image-only catalogue v5: no bookmaker calls, no prediction recalculation.
-_public_media_cache = {"at": 0.0, "items": None}
-_public_media_task = None
+_public_media_cache = {"at":0.,"items":[]}
+_public_media_lock = asyncio.Lock()
 
-
-async def _refresh_public_media():
-    matches = list(_prediction_cache.get("matches") or [])
-    if not matches:
-        fields = ("id", "match_id", "sport_key", "home_team", "away_team", "home_logo", "away_logo", "home_team_logo", "away_team_logo", "home_media", "away_media", "home_image_candidates", "away_image_candidates")
-        doc = await asyncio.wait_for(db.odds_cache.find_one({"_id": "all_matches"}, {**{"data."+key:1 for key in fields}, "_id":0}), timeout=3) or {}
-        matches = doc.get("data") if isinstance(doc.get("data"), list) else []
-    try:
-        matches = await asyncio.wait_for(enrich_match_badges(db, matches), timeout=4)
-    except Exception as exc:
-        logging.getLogger("winpulse.media").warning("Public media cache deferred (%s)", type(exc).__name__)
-    items = []
-    for match in matches[:3000]:
-        item = {"match_id": str(match.get("id") or match.get("match_id") or "")}
-        if not item["match_id"]:
-            continue
-        for side in ("home", "away"):
-            for suffix in ("_logo", "_team_logo", "_media", "_image_candidates"):
-                field = side+suffix
-                if match.get(field):
-                    item[field] = match[field]
-        if len(item) > 1:
-            items.append(item)
-    if items or _public_media_cache["items"] is None:
-        _public_media_cache.update(at=time.monotonic(), items=items)
-    else:
-        _public_media_cache["at"] = time.monotonic()
-    return _public_media_cache["items"]
-
-
-@app.get("/api/media/catalogue")
+@app.get('/api/media/catalogue')
 async def get_public_media_catalogue(response: Response):
-    global _public_media_task
-    items = _public_media_cache["items"]
-    age = time.monotonic() - _public_media_cache["at"]
-    if items is None or age >= 60:
-        if _public_media_task is None or _public_media_task.done():
-            _public_media_task = asyncio.create_task(_refresh_public_media())
-            _public_media_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-    if items is None:
-        try:
-            items = await asyncio.wait_for(asyncio.shield(_public_media_task), timeout=5)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail="Les visuels sont en cours d’actualisation.", headers={"Retry-After": "5"}) from exc
-    response.headers["Cache-Control"] = "public, max-age=30"
-    return {"version": 1, "items": items}
+    response.headers['Cache-Control']='public, max-age=30'
+    async with _public_media_lock:
+        if time.monotonic()-_public_media_cache['at']<30:
+            return {"version":1,"items":_public_media_cache['items']}
+        matches=list(_prediction_cache.get('matches') or [])
+        if not matches:
+            fields=('id','match_id','sport_key','home_team','away_team','home_logo','away_logo','home_team_logo','away_team_logo','home_media','away_media','home_image_candidates','away_image_candidates')
+            doc=await asyncio.wait_for(db.odds_cache.find_one({'_id':'all_matches'}, {**{'data.'+key:1 for key in fields},'_id':0}),timeout=3) or {}
+            matches=doc.get('data') if isinstance(doc.get('data'),list) else []
+        try:matches=await asyncio.wait_for(enrich_match_badges(db,matches),timeout=4)
+        except Exception as exc:logging.getLogger('winpulse.media').warning('Public media cache deferred (%s)',type(exc).__name__)
+        items=[]
+        for match in matches[:3000]:
+            item={'match_id':str(match.get('id') or match.get('match_id') or '')}
+            if not item['match_id']:continue
+            for side in ('home','away'):
+                for suffix in ('_logo','_team_logo','_media','_image_candidates'):
+                    field=side+suffix
+                    if match.get(field):item[field]=match[field]
+            if len(item)>1:items.append(item)
+        _public_media_cache.update(at=time.monotonic(),items=items)
+        return {'version':1,'items':items}
+
 
 
 # One paired observation per event and protocol, frozen with $setOnInsert.
