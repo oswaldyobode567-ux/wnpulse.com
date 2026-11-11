@@ -12448,26 +12448,31 @@ async def _refresh_track_history():
     )}
     raw = await asyncio.wait_for(db.predictions_history.find(
         {"result": {"$in": ["won", "lost", "void", "pending"]}}, projection
-    ).max_time_ms(8500).to_list(length=None), timeout=10)
+    ).max_time_ms(55000).to_list(length=None), timeout=60)
     official = await asyncio.to_thread(_official_history_rows, raw)
     data = (raw, official)
     _track_history_cache.update(at=time.monotonic(), data=data)
     return data
 
 
-async def _get_track_history():
+def _ensure_track_history_task():
     global _track_history_task
+    if _track_history_task is None or _track_history_task.done():
+        _track_history_task = asyncio.create_task(_refresh_track_history())
+        _track_history_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+    return _track_history_task
+
+
+async def _get_track_history():
     cached = _track_history_cache["data"]
     age = time.monotonic() - _track_history_cache["at"]
     if cached is not None and age < 45:
         return cached
-    if _track_history_task is None or _track_history_task.done():
-        _track_history_task = asyncio.create_task(_refresh_track_history())
-        _track_history_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+    task = _ensure_track_history_task()
     if cached is not None and age < 900:
         return cached
     try:
-        return await asyncio.wait_for(asyncio.shield(_track_history_task), timeout=12)
+        return await asyncio.wait_for(asyncio.shield(task), timeout=12)
     except Exception as exc:
         logging.getLogger("winpulse.track").warning("Track Record snapshot unavailable (%s)", type(exc).__name__)
         raise HTTPException(status_code=503, detail="Les résultats sont en cours d’actualisation.", headers={"Retry-After": "5"}) from exc
@@ -15497,6 +15502,7 @@ async def startup_event():
     _queue_track_results()
     global _catalogue_warm_task
     _catalogue_warm_task = asyncio.create_task(_keep_catalogue_warm())
+    _ensure_track_history_task()
     asyncio.create_task(_warm_today_combos())
     if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
