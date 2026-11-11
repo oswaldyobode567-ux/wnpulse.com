@@ -8494,24 +8494,27 @@ async def _build_prediction_snapshot(force: bool = False) -> Dict:
     async with _prediction_cache_lock:
         if not force and _prediction_cache["matches"] and now-_prediction_cache["timestamp"] < min(10,PREDICTION_CACHE_TTL):
             return _prediction_cache
-        source_cache_updated_at = None
-        cache_meta = {}
-        try:
-            cache_meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1,"montante_quotes_updated_at":1})
-            source_cache_updated_at = cache_meta.get("updated_at") if cache_meta else None
-        except Exception:
-            pass
-        same_source_snapshot = (
-            source_cache_updated_at == _prediction_cache.get("source_cache_updated_at")
-            and (cache_meta or {}).get("montante_quotes_updated_at") == _prediction_cache.get("targeted_quotes_updated_at")
-        )
-        if (not force and _prediction_cache["matches"] and same_source_snapshot and
-                now - _prediction_cache["timestamp"] < PREDICTION_CACHE_TTL):
-            return _prediction_cache
+        age = now - _prediction_cache["timestamp"]
+        if not force and _prediction_cache["matches"] and age < PREDICTION_CACHE_TTL:
+            try:
+                meta = await db.odds_cache.find_one({"_id": "all_matches"}, {"updated_at": 1, "montante_quotes_updated_at": 1})
+                if (meta is not None and meta.get("updated_at") == _prediction_cache.get("source_cache_updated_at")
+                        and meta.get("montante_quotes_updated_at") == _prediction_cache.get("targeted_quotes_updated_at")):
+                    return _prediction_cache
+            except Exception:
+                pass
 
-        matches = await fetch_all_matches(db)
-        real_stats_map = dict(await get_real_stats_map(db, matches))
-        real_stats_map["__hybrid_models__"] = await _get_hybrid_registry()
+        # Read the matches and their revision together, so they cannot come from
+        # different versions of the odds cache during a concurrent refresh.
+        cache_meta = await db.odds_cache.find_one(
+            {"_id": "all_matches"}, {"data": 1, "updated_at": 1, "montante_quotes_updated_at": 1}
+        ) or {}
+        source_cache_updated_at = cache_meta.get("updated_at")
+        data = cache_meta.get("data")
+        matches = data if isinstance(data, list) else []
+        real_stats, hybrid_models = await asyncio.gather(get_real_stats_map(db, matches), _get_hybrid_registry())
+        real_stats_map = dict(real_stats)
+        real_stats_map["__hybrid_models__"] = hybrid_models
         predictions = await _run_analysis(analyze_all, matches, real_stats_map=real_stats_map)
         try:
             predictions = await _freeze_official_predictions(predictions, defer_analysis_archive=True)
