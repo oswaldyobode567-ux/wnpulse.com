@@ -2350,6 +2350,7 @@ async def media_catalogue_status(db,matches):
 
 # Presentation cache v4. Parallel projected Mongo reads, independent failure paths.
 _BADGE_PRESENTATION={'stats':{},'media':{},'broken':set(),'attempted_at':0.,'signature':None}
+_badge_presentation_task = None
 
 
 def invalidate_badge_presentation_cache():
@@ -2358,10 +2359,29 @@ def invalidate_badge_presentation_cache():
 
 async def _badge_projected_read(collection,query,projection,limit):
     try:
-        return await asyncio.wait_for(collection.find(query,projection).to_list(length=limit),timeout=1.8)
+        return await asyncio.wait_for(collection.find(query,projection).to_list(length=limit),timeout=10)
     except Exception as exc:
         logger.warning('Image presentation source deferred (%s)',type(exc).__name__)
         return None
+
+
+async def _refresh_badge_presentation(db,stat_ids,media_ids,signature):
+    cache=_BADGE_PRESENTATION
+    stats,media,health=await asyncio.gather(
+        _badge_projected_read(db.stats_cache,{'_id':{'$in':list(stat_ids)}},
+            {'_id':1,'data':1,'profiles':1,'matched':1,'logo':1,'name':1,'team_id':1},len(stat_ids)),
+        _badge_projected_read(db.entity_media,{'_id':{'$in':list(media_ids)}},
+            {'_id':1,'media':1,'identity':1,'status':1},len(media_ids)),
+        _badge_projected_read(db.media_health,{'status':'broken'},{'_id':1},5000))
+    for field,ids,docs in (('stats',stat_ids,stats),('media',media_ids,media)):
+        if docs is not None:
+            for key in ids:cache[field].pop(key,None)
+            cache[field].update({doc['_id']:doc for doc in docs})
+        # Bound optional in-process state without touching persistent source documents.
+        if len(cache[field])>5000:
+            cache[field]={k:v for k,v in cache[field].items() if k in ids}
+    if health is not None:cache['broken']={doc['_id'] for doc in health}
+    cache.update(attempted_at=time.monotonic(),signature=signature)
 
 
 async def enrich_match_badges(db,matches):
@@ -2372,25 +2392,19 @@ async def enrich_match_badges(db,matches):
     stat_ids.update(_as_key(_as_sport(m),m.get(side+'_team')) for m in matches for side in ('home','away') if _as_sport(m) and m.get(side+'_team'))
     media_ids={_visual_key(enrichment_sport(m),m.get(side+'_team')) for m in matches for side in ('home','away') if enrichment_sport(m) and m.get(side+'_team')}
     signature=hashlib.sha256('|'.join(sorted(stat_ids|media_ids)).encode()).hexdigest()
+    global _badge_presentation_task
     now=time.monotonic()
     cache=_BADGE_PRESENTATION
-    # Brief retry interval coalesces repeated visitors while retaining known-good values.
     if signature!=cache['signature'] or now-cache['attempted_at']>30 or not cache['attempted_at']:
-        cache.update(attempted_at=now,signature=signature)
-        stats,media,health=await asyncio.gather(
-            _badge_projected_read(db.stats_cache,{'_id':{'$in':list(stat_ids)}},
-                {'_id':1,'data':1,'profiles':1,'matched':1,'logo':1,'name':1,'team_id':1},len(stat_ids)),
-            _badge_projected_read(db.entity_media,{'_id':{'$in':list(media_ids)}},
-                {'_id':1,'media':1,'identity':1,'status':1},len(media_ids)),
-            _badge_projected_read(db.media_health,{'status':'broken'},{'_id':1},5000))
-        for field,ids,docs in (('stats',stat_ids,stats),('media',media_ids,media)):
-            if docs is not None:
-                for key in ids:cache[field].pop(key,None)
-                cache[field].update({doc['_id']:doc for doc in docs})
-            # Bound optional in-process state without touching persistent source documents.
-            if len(cache[field])>5000:
-                cache[field]={k:v for k,v in cache[field].items() if k in ids}
-        if health is not None:cache['broken']={doc['_id'] for doc in health}
+        if _badge_presentation_task is None or _badge_presentation_task.done():
+            _badge_presentation_task=asyncio.create_task(_refresh_badge_presentation(db,stat_ids,media_ids,signature))
+            _badge_presentation_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+        # Concurrent catalogue requests share the same refresh. A slow optional
+        # source keeps running even after a page has rendered with cached images.
+        try:
+            await asyncio.wait_for(asyncio.shield(_badge_presentation_task),timeout=2.5)
+        except asyncio.TimeoutError:
+            pass
     global_crests=_global_fd_crests(cache['stats'].values())
     result=[]
     for match in matches:
