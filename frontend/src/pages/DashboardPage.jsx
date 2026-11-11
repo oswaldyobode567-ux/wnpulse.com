@@ -1381,45 +1381,33 @@ export function MatchCataloguePage() {
     <AppLayout>
       <AdminShareProvider isAdmin={isAdmin} items={visibleMatches} kind="picks">
       <div className="wp-catalogue mx-auto max-w-7xl space-y-5 px-4 py-6 sm:space-y-6 sm:px-6 sm:py-8 lg:px-8" data-testid="dashboard-redesigned">
-        <Card className="wp-catalogue-header relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-5 text-white sm:p-7">
-          <div className="pointer-events-none absolute -end-20 -top-24 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
-          <div className="relative">
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="mb-2 text-xs font-semibold leading-5 text-orange-200">{formatDate(new Date(), { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · WinPulse</p>
-                <h1 className="font-heading text-xl font-extrabold leading-tight tracking-tight sm:text-3xl">{experienceWords.allMatches}</h1>
-                <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300 sm:mt-2 sm:text-sm sm:leading-6">
-                  {isFree ? picksLoading ? t("Chargement des pronostics…") : pickCounts.total === 0 ? t("Aucun pick disponible actuellement") : t("Accès gratuit · Passe Pro pour débloquer les picks réservés")
-                    : t("{{plan}} actif · Tous les picks disponibles", { plan: (isAdmin ? "admin" : subscriptionTier).toUpperCase() })}
-                </p>
-              </div>
-              <button type="button" onClick={handleRefresh} disabled={refreshing} aria-busy={refreshing}
-                aria-label={refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}
-                className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold transition-colors hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 disabled:opacity-60">
-                <RefreshCw className={`h-4 w-4 shrink-0 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
-                <span className="sr-only sm:not-sr-only">{refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}</span>
-              </button>
-            </div>
-            <div className="mt-3 grid grid-cols-3 gap-2 sm:mt-5 sm:gap-3">
-              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-2.5 sm:p-4">
-                <p className="min-h-10 text-xs font-medium leading-4 sm:leading-5 text-slate-300">{t("Picks disponibles")}</p>
-                <p className="mt-1 font-heading text-2xl sm:text-3xl font-extrabold tabular-nums" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : formatNumber(pickCounts.total)}</p>
-              </div>
-              <div className="rounded-xl border border-orange-300/15 bg-orange-500/10 p-2.5 sm:p-4">
-                <p className="min-h-10 text-xs font-medium leading-4 sm:leading-5 text-orange-100">{t("Accessibles avec ton compte")}</p>
-                <p className="mt-1 font-heading text-2xl sm:text-3xl font-extrabold tabular-nums text-orange-200" data-testid="accessible-picks-count">{picksLoading ? "…" : formatNumber(pickCounts.accessible)}</p>
-              </div>
-              <Link to="/app/live" className="flex min-h-11 flex-col items-start justify-between gap-1 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 sm:col-span-1 sm:block sm:p-4">
-                <p className="flex items-center gap-1.5 text-xs font-medium leading-5 text-slate-300 sm:min-h-10"><Radio className="h-4 w-4 text-rose-300" aria-hidden="true" />{t("En direct")}</p>
-                <p className="font-heading text-2xl font-extrabold tabular-nums text-rose-200 sm:mt-1 sm:text-3xl">{formatNumber(liveCount)}</p>
-              </Link>
-            </div>
+        <div className="space-y-2 rounded-xl border border-slate-200 bg-white p-2.5">
+          <div className="flex min-w-0 gap-2 overflow-x-auto pb-1" role="group" aria-label={t("Sport")}>
+            {SPORT_TABS.map(tab => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key}
+              className={`inline-flex min-h-11 shrink-0 max-w-full items-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${sport === tab.key ? "border-orange-600 bg-orange-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50"}`}>
+              <span aria-hidden="true">{tab.icon}</span><span>{t(tab.label)}</span>
+              {tab.key !== "all" && sportCounts[tab.key] > 0 && <span className={`rounded-full px-1.5 text-xs tabular-nums ${sport === tab.key ? "bg-white/20" : "bg-slate-100 text-slate-500"}`}>{formatNumber(sportCounts[tab.key])}</span>}
+            </button>)}
           </div>
-        </Card>
-
-        <SavedSearches />
-        <FreeDiscoveryPanel user={user} lastUpdate={lastUpdate} onUpgrade={() => navigate("/app/abonnement")} />
-
+          <nav aria-label={t("Parcourir les journées")} className="flex items-center gap-1 border-t border-slate-100 pt-2" data-testid="dashboard-day-navigation">
+            <button type="button" aria-label={t("Journée précédente")} disabled={dateIndex === 0} onClick={() => selectDate(dates[dateIndex - 1])} className="grid h-11 w-9 shrink-0 place-items-center rounded-lg border disabled:opacity-40">
+              <ChevronRight className="h-4 w-4 rotate-180 rtl:rotate-0" aria-hidden="true" />
+            </button>
+            <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto" ref={node => {
+              const active = node?.querySelector('[aria-current="date"]');
+              if (!active) return;
+              const offset = active.getBoundingClientRect().left - node.getBoundingClientRect().left;
+              node.scrollLeft += offset - (node.clientWidth - active.clientWidth) / 2;
+            }}>
+              {dates.map(key => <button key={key} type="button" aria-current={key === selectedDate ? "date" : undefined} onClick={() => selectDate(key)} className={`min-h-11 shrink-0 rounded-lg px-3 text-sm font-semibold ${key === selectedDate ? "bg-orange-600 text-white" : "bg-slate-50 text-slate-700 hover:bg-orange-50"}`}>
+                {key === "undated" || key === today ? calendarDayTitle(key, today, t, formatDate) : formatDate(`${key}T12:00:00`, { weekday: "short", day: "numeric", month: "short" })}
+              </button>)}
+            </div>
+            <button type="button" aria-label={t("Journée suivante")} disabled={dateIndex === dates.length - 1} onClick={() => selectDate(dates[dateIndex + 1])} className="grid h-11 w-9 shrink-0 place-items-center rounded-lg border disabled:opacity-40">
+              <ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
+            </button>
+          </nav>
+        </div>
         <Card className="min-w-0 rounded-2xl border-orange-100 bg-white p-4 shadow-sm sm:p-5" data-testid="dashboard-search">
           <div className="mb-3">
             <h2 className="font-heading text-base font-bold text-slate-900 sm:text-xl">{t("Trouve ton prochain match")}</h2>
@@ -1435,13 +1423,7 @@ export function MatchCataloguePage() {
             {searchQuery && <button type="button" onClick={() => setSearchQuery("")} aria-label={t("Effacer la recherche")} className="absolute end-1 top-1/2 grid h-11 w-11 -translate-y-1/2 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400"><X className="h-4 w-4" aria-hidden="true" /></button>}
           </div>
           <p id="dashboard-search-help" className="sr-only sm:not-sr-only sm:mt-2 sm:text-xs sm:leading-5 sm:text-slate-500">{t("Exemples : Espagne, Ligue 1, Atlético, PSG, plus de 2.5. La recherche se combine avec les filtres sport, marché et risque.")}</p>
-          <div className="mt-3 flex min-w-0 gap-2 overflow-x-auto pb-1 sm:flex-wrap" role="group" aria-label={t("Sport")}>
-            {SPORT_TABS.map(tab => <button key={tab.key} type="button" onClick={() => setSport(tab.key)} aria-pressed={sport === tab.key}
-              className={`inline-flex min-h-11 shrink-0 max-w-full items-center gap-1.5 rounded-xl border px-3 py-2 text-xs sm:text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 ${sport === tab.key ? "border-orange-600 bg-orange-600 text-white shadow-sm" : "border-slate-200 bg-white text-slate-600 hover:border-orange-300 hover:bg-orange-50"}`}>
-              <span aria-hidden="true">{tab.icon}</span><span>{t(tab.label)}</span>
-              {tab.key !== "all" && sportCounts[tab.key] > 0 && <span className={`rounded-full px-1.5 text-xs tabular-nums ${sport === tab.key ? "bg-white/20" : "bg-slate-100 text-slate-500"}`}>{formatNumber(sportCounts[tab.key])}</span>}
-            </button>)}
-          </div>
+
           <details className="mt-3 border-t border-slate-100 pt-2" data-testid="dashboard-advanced-filters">
             <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-2 rounded-lg py-2 text-sm font-semibold text-slate-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
               <Filter className="h-4 w-4 shrink-0 text-orange-500" aria-hidden="true" />{t("Affiner les résultats")}
@@ -1482,17 +1464,7 @@ export function MatchCataloguePage() {
               </select>
             </div>
           </div>
-          <nav aria-label={t("Parcourir les journées")} className="mb-3 flex items-center gap-2 rounded-xl border border-slate-200 bg-white p-2" data-testid="dashboard-day-navigation">
-            <button type="button" aria-label={t("Journée précédente")} disabled={dateIndex === 0} onClick={() => selectDate(dates[dateIndex - 1])} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border disabled:opacity-40">
-              <ChevronRight className="h-4 w-4 rotate-180 rtl:rotate-0" aria-hidden="true" />
-            </button>
-            <select aria-label={t("Date des rencontres")} value={selectedDate} onChange={event => selectDate(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-2 text-center text-sm font-semibold">
-              {dates.map(key => <option key={key} value={key}>{calendarDayTitle(key, today, t, formatDate)}{key === today ? ` · ${formatDate(`${today}T12:00:00`, { day: "numeric", month: "short" })}` : ""}</option>)}
-            </select>
-            <button type="button" aria-label={t("Journée suivante")} disabled={dateIndex === dates.length - 1} onClick={() => selectDate(dates[dateIndex + 1])} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg border disabled:opacity-40">
-              <ChevronRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true" />
-            </button>
-          </nav>
+
           <p className="mb-3 text-xs text-slate-500">{t("Horaires dans ton fuseau : {{zone}}", { zone: timeZone })}</p>
           {loading ? <Skeleton className="h-48 rounded-xl" />
             : visibleMatches.length === 0 ? <div className="rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-600" data-testid="dashboard-no-today">{t("Aucun match pour ce filtre")}</div>
@@ -1501,6 +1473,45 @@ export function MatchCataloguePage() {
               </div>}
 
         </section>
+
+        <Card className="wp-catalogue-header relative overflow-hidden rounded-2xl border-0 bg-gradient-to-br from-slate-950 via-slate-900 to-orange-950 p-5 text-white sm:p-7">
+          <div className="pointer-events-none absolute -end-20 -top-24 h-64 w-64 rounded-full bg-orange-500/15 blur-3xl" aria-hidden="true" />
+          <div className="relative">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0 flex-1">
+                <p className="mb-2 text-xs font-semibold leading-5 text-orange-200">{formatDate(new Date(), { weekday: "long", day: "numeric", month: "long", year: "numeric" })} · WinPulse</p>
+                <h1 className="font-heading text-xl font-extrabold leading-tight tracking-tight sm:text-3xl">{experienceWords.allMatches}</h1>
+                <p className="mt-1 max-w-2xl text-xs leading-5 text-slate-300 sm:mt-2 sm:text-sm sm:leading-6">
+                  {isFree ? picksLoading ? t("Chargement des pronostics…") : pickCounts.total === 0 ? t("Aucun pick disponible actuellement") : t("Accès gratuit · Passe Pro pour débloquer les picks réservés")
+                    : t("{{plan}} actif · Tous les picks disponibles", { plan: (isAdmin ? "admin" : subscriptionTier).toUpperCase() })}
+                </p>
+              </div>
+              <button type="button" onClick={handleRefresh} disabled={refreshing} aria-busy={refreshing}
+                aria-label={refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}
+                className="inline-flex min-h-11 shrink-0 items-center gap-2 rounded-xl border border-white/15 bg-white/10 px-3 py-2 text-sm font-semibold transition-colors hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 disabled:opacity-60">
+                <RefreshCw className={`h-4 w-4 shrink-0 ${refreshing ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
+                <span className="sr-only sm:not-sr-only">{refreshing ? t("Actualisation en cours…") : t("Actualiser les données")}</span>
+              </button>
+            </div>
+            <div className="mt-3 grid grid-cols-3 gap-2 sm:mt-5 sm:gap-3">
+              <div className="rounded-xl border border-white/10 bg-white/[0.06] p-2.5 sm:p-4">
+                <p className="min-h-10 text-xs font-medium leading-4 sm:leading-5 text-slate-300">{t("Picks disponibles")}</p>
+                <p className="mt-1 font-heading text-2xl sm:text-3xl font-extrabold tabular-nums" data-testid="available-picks-count" aria-live="polite">{picksLoading ? "…" : formatNumber(pickCounts.total)}</p>
+              </div>
+              <div className="rounded-xl border border-orange-300/15 bg-orange-500/10 p-2.5 sm:p-4">
+                <p className="min-h-10 text-xs font-medium leading-4 sm:leading-5 text-orange-100">{t("Accessibles avec ton compte")}</p>
+                <p className="mt-1 font-heading text-2xl sm:text-3xl font-extrabold tabular-nums text-orange-200" data-testid="accessible-picks-count">{picksLoading ? "…" : formatNumber(pickCounts.accessible)}</p>
+              </div>
+              <Link to="/app/live" className="flex min-h-11 flex-col items-start justify-between gap-1 rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2.5 hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-300 sm:col-span-1 sm:block sm:p-4">
+                <p className="flex items-center gap-1.5 text-xs font-medium leading-5 text-slate-300 sm:min-h-10"><Radio className="h-4 w-4 text-rose-300" aria-hidden="true" />{t("En direct")}</p>
+                <p className="font-heading text-2xl font-extrabold tabular-nums text-rose-200 sm:mt-1 sm:text-3xl">{formatNumber(liveCount)}</p>
+              </Link>
+            </div>
+          </div>
+        </Card>
+
+        <SavedSearches />
+        <FreeDiscoveryPanel user={user} lastUpdate={lastUpdate} onUpgrade={() => navigate("/app/abonnement")} />
 
         <details className="rounded-2xl border border-orange-100 bg-gradient-to-r from-orange-50/70 to-white" data-testid="dashboard-featured">
           <summary className="flex min-h-14 cursor-pointer list-none flex-wrap items-center gap-2 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 sm:px-5 [&::-webkit-details-marker]:hidden">
@@ -1542,7 +1553,7 @@ function getLeagueEmoji(name = "") {
 }
 function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false }) {
   const { t, formatNumber, formatDate } = useDashboardLanguage();
-  const [expanded, setExpanded] = useDashboardViewState(`league:${dayKey}:${league}:open`,true);
+  const [expanded, setExpanded] = useDashboardViewState(`league:${dayKey}:${league}:open`, !compact);
   const [expandedAll, setExpandedAll] = useDashboardViewState(`league:${dayKey}:${league}:all`,false);
   const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
