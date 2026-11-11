@@ -50,7 +50,7 @@ def daily_picks(data, now, scheduled):
         choices.append((stamp(row["commence_time"]),identity,draft))
     return [draft for _,_,draft in sorted(choices,key=lambda choice:(choice[0],choice[1]))]
 
-def make(kind, data, now, scheduled):
+def make(kind, data, now, scheduled, admin=False):
     """Return exact facts and their validity deadline; no guessed results."""
     lines, link, until = [], LINKS[kind], datetime.combine(now.date()+timedelta(days=1), datetime.min.time(), ZONE)
     visual = {}
@@ -64,7 +64,7 @@ def make(kind, data, now, scheduled):
             start = stamp(row.get("commence_time"))
             if not start or not scheduled < start <= now + timedelta(days=2):
                 continue
-            if (pred.get("free_daily_pick") is not True or pred.get("locked") is not False
+            if ((not admin and pred.get("free_daily_pick") is not True) or pred.get("locked") is not False
                     or pred.get("is_live") or pred.get("is_finished") or row.get("result") != "pending"):
                 continue
             try:
@@ -87,7 +87,8 @@ def make(kind, data, now, scheduled):
                  "market":clean(pred.get("market_label"),70) or "Pronostic",
                  "pick":clean(pred["pick"],120),"odds":f"{odds:.2f}".replace(".",","),
                  "date":start.astimezone(ZONE).strftime("%d/%m · %H:%M"),
-                 "bookmaker":clean(pred.get("best_bookmaker"),50)}
+                 "bookmaker":clean(pred.get("best_bookmaker"),50),
+                 "profile":pred.get("community_profile") if admin else None}
     elif kind == "results":
         summary = data.get("summary", {})
         expected = (now.date()-timedelta(days=1)).isoformat()
@@ -112,7 +113,7 @@ def make(kind, data, now, scheduled):
     else:
         return None
     return {"kind":kind,"title":LABELS[kind],"lines":lines,"link":link,"until":until.timestamp(),
-            "visual":visual,"details":details}
+            "visual":visual,"details":details,"admin_pick":admin}
 
 def subscription(plans):
     pro = next((p for p in plans if isinstance(p,dict) and p.get("id")=="pro"),None) if isinstance(plans,list) else None

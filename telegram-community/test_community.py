@@ -60,19 +60,38 @@ class Community(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([d["details"]["teams"][0] for d in drafts],["Équipe first","Équipe second"])
         send=AsyncMock(return_value={"message_id":11})
         message={"chat":{"id":42,"type":"private"},"from":{"id":42},"text":"Pronostics du jour"}
-        with patch.multiple(app,ADMIN={42},telegram=send,read=AsyncMock(return_value=data)):
+        with patch.multiple(app,ADMIN=set(),telegram=send,read=AsyncMock(return_value=data)):
             await app.command(message)
         cards=[call for call in send.await_args_list if call.args[0]=="sendPhoto"]
         self.assertEqual(len(cards),2)
         self.assertTrue(all(call.args[1]==42 for call in send.await_args_list))
         with app.closing(app.connect()) as con:
             self.assertEqual(con.execute("SELECT count(*) FROM drafts WHERE state='approved'").fetchone()[0],0)
-        with patch.multiple(app,LIVE=True,VALID_CHANNEL=True,VALID_TOKEN=True):
-            answer=app.approve_review(42,"pick")
-            self.assertEqual(answer.count("Brouillon validé"),2)
         self.assertEqual(app.natural_intent("Résultats"),"/show_results")
         self.assertEqual(app.natural_intent("Donne-moi les pronostics du jour stp"),"/show_picks")
         self.assertEqual(app.natural_intent("je veux publier tout et n'importe quoi"),None)
+
+    async def test_admin_checkboxes_only_approve_checked_match(self):
+        now=datetime.now(ZONE)
+        rows=[{"id":str(i),"result":"pending","home_team":f"Club {i}","away_team":"Adversaire",
+               "commence_time":(now+timedelta(minutes=60+i)).isoformat(),
+               "prediction":{"pick":f"Club {i}","pick_odds":1.45,"locked":False,"community_profile":"strong"}} for i in range(2)]
+        send=AsyncMock()
+        action=AsyncMock()
+        with patch.multiple(app,ADMIN={42},telegram=send,telegram_action=action,admin_catalogue=AsyncMock(return_value=rows)):
+            await app.command({"chat":{"type":"private","id":42},"from":{"id":42},"text":"pronostics"})
+            menu=send.await_args.kwargs["markup"]["inline_keyboard"]
+            self.assertEqual(len(menu),2)
+            data=menu[1][0]["callback_data"]
+            q={"id":"cb","from":{"id":42},"message":{"chat":{"type":"private","id":42},"message_id":10},"data":data}
+            await app.callback({**q,"from":{"id":99}})
+            self.assertEqual(action.await_count,0)
+            await app.callback(q)
+            await app.callback({**q,"data":data.rsplit(":",1)[0]+":publish"})
+        with app.closing(app.connect()) as con:
+            approved=con.execute("SELECT payload FROM drafts WHERE state='approved'").fetchall()
+        self.assertEqual(len(approved),1)
+        self.assertIn("Club 1",approved[0]["payload"])
 
     async def test_natural_results_are_a_private_illustrated_bilan(self):
         data={"date":(datetime.now(ZONE).date()-timedelta(days=1)).isoformat(),

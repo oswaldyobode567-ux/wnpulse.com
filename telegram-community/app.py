@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import secrets
 import sqlite3
 import time
 import unicodedata
@@ -22,6 +23,7 @@ from editorial import LABELS, LINKS, NOTICE, SLOTS, ZONE, clean, daily_picks, fi
 
 LOG = logging.getLogger("winpulse.community")
 API = "https://wnpulsecom-production.up.railway.app/api"
+CATALOGUE_TOKEN = os.getenv("COMMUNITY_CATALOGUE_TOKEN", "").strip()
 DB = os.getenv("COMMUNITY_DB", "/data/community.sqlite3")
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
@@ -51,6 +53,8 @@ def setup():
         CREATE TABLE IF NOT EXISTS updates(id INTEGER PRIMARY KEY, received REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS review_batches(owner INTEGER NOT NULL, kind TEXT NOT NULL,
           keys_json TEXT NOT NULL, PRIMARY KEY(owner,kind));
+        CREATE TABLE IF NOT EXISTS editorial_selection(owner INTEGER PRIMARY KEY, batch TEXT NOT NULL,
+          options_json TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0);
         """)
 
 def put(key, draft, due):
@@ -201,7 +205,7 @@ async def news_cover(client, draft):
         LOG.info("Article cover unavailable (%s)",type(exc).__name__)
         return None, ""
 
-async def telegram(method, chat, text, draft=None):
+async def telegram(method, chat, text, draft=None, markup=None):
     params={"chat_id":str(chat)}
     async with httpx.AsyncClient(timeout=14,follow_redirects=False) as client:
         if draft:
@@ -221,7 +225,7 @@ async def telegram(method, chat, text, draft=None):
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
                 data={**params,"caption":text+attribution},files={"photo":("winpulse.png",png,"image/png")})
         else:
-            res=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json={**params,"text":text})
+            res=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json={**params,"text":text,**({"reply_markup":markup} if markup else {})})
         if res.status_code >= 400:
             raise ValueError("Telegram rejected the request")
         data=res.json()
@@ -232,8 +236,9 @@ async def telegram(method, chat, text, draft=None):
 def caption(draft):
     if draft.get("kind")=="pick" and draft.get("details"):
         d=draft["details"]
-        return "\n".join(["WINPULSE · SÉLECTION GRATUITE", "", "  vs  ".join(d["teams"]),
-            d["competition"], f"📅 {d['date']} · Porto-Novo", "",
+        return "\n".join(["WINPULSE · "+("SÉLECTION" if draft.get("admin_pick") else "SÉLECTION GRATUITE"), "", "  vs  ".join(d["teams"]),
+            d["competition"], f"📅 {d['date']} · Porto-Novo",
+            *({"strong":["Tendance forte · estimation"],"shared":["Scénario partagé · estimation"]}.get(d.get("profile"),[])), "",
             f"NOTRE CHOIX → {d['pick']}", f"{d['market']}  |  Cote {d['odds']}",
             *( [f"Chez {d['bookmaker']}"] if d.get("bookmaker") else [] ),
             "", "Une sélection individuelle, pas un combiné.",
@@ -427,7 +432,112 @@ def review_draft(draft, now):
     put(key,draft,now.timestamp())
     return key
 
+async def admin_catalogue():
+    if len(CATALOGUE_TOKEN)<32:
+        raise ValueError("Catalogue not configured")
+    async with httpx.AsyncClient(timeout=12,follow_redirects=False) as client:
+        response=await client.get(API+"/internal/community/shortlist",
+                                  headers={"X-WNPulse-Community-Key":CATALOGUE_TOKEN})
+        response.raise_for_status()
+        data=response.json()
+    if not isinstance(data,dict) or data.get("scope")!="community_admin" or not isinstance(data.get("items"),list):
+        raise ValueError("Unexpected catalogue response")
+    return data["items"][:10]
+
+def selection_menu(batch, options, selected):
+    rows=[]
+    for index,(_, label) in enumerate(options):
+        mark="✅" if selected & (1<<index) else "⬜"
+        rows.append([{"text":f"{mark} {index+1}. {label}", "callback_data":f"wp:{batch}:{index}"}])
+    count=selected.bit_count()
+    if count:
+        rows.append([{"text":f"Publier sur @wnplus ({count})","callback_data":f"wp:{batch}:publish"}])
+    return {"inline_keyboard":rows}
+
+async def telegram_action(method, payload):
+    async with httpx.AsyncClient(timeout=6,follow_redirects=False) as client:
+        res=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json=payload)
+        if res.status_code>=400 or res.json().get("ok") is not True:
+            raise ValueError("Telegram interaction not confirmed")
+
+def choose_editorial(owner, batch, action):
+    with closing(connect()) as con, con:
+        con.execute("BEGIN IMMEDIATE")
+        row=con.execute("SELECT * FROM editorial_selection WHERE owner=? AND batch=?",(owner,batch)).fetchone()
+        if not row:
+            return None
+        options=json.loads(row["options_json"])
+        selected=row["selected"]
+        if action=="publish":
+            if not selected:
+                return ("empty",options,selected)
+            con.execute("DELETE FROM editorial_selection WHERE owner=? AND batch=?",(owner,batch))
+            return ("publish",options,selected)
+        i=int(action)
+        if i>=len(options):
+            return None
+        selected ^= 1<<i
+        con.execute("UPDATE editorial_selection SET selected=? WHERE owner=? AND batch=?",(selected,owner,batch))
+        return ("toggle",options,selected)
+
+async def callback(query):
+    user=query.get("from") or {}
+    message=query.get("message") or {}
+    chat=message.get("chat") or {}
+    owner=user.get("id")
+    match=re.fullmatch(r"wp:([a-f0-9]{12}):(publish|[0-9])",str(query.get("data") or ""))
+    if not match or user.get("is_bot") or owner not in ADMIN or chat.get("type")!="private" or chat.get("id")!=owner:
+        return
+    batch,action=match.groups()
+    chosen=choose_editorial(owner,batch,action)
+    info={"callback_query_id":query["id"]}
+    if chosen is None:
+        await telegram_action("answerCallbackQuery",{**info,"text":"Cette liste n’est plus active."})
+        return
+    state,options,selected=chosen
+    if state=="empty":
+        await telegram_action("answerCallbackQuery",{**info,"text":"Coche au moins une sélection."})
+        return
+    if state=="publish":
+        now=time.time()
+        results=[f"{i+1}. {approve_draft(key,now)}" for i,(key,_) in enumerate(options) if selected & (1<<i)]
+        await telegram_action("answerCallbackQuery",{**info,"text":"Sélection enregistrée."})
+        await telegram_action("editMessageReplyMarkup",{"chat_id":owner,"message_id":message["message_id"],"reply_markup":{"inline_keyboard":[]}})
+        await telegram("sendMessage",owner,"\n\n".join(results))
+    else:
+        await telegram_action("answerCallbackQuery",{**info,"text":f"{selected.bit_count()} sélection(s)"})
+        await telegram_action("editMessageReplyMarkup",{"chat_id":owner,"message_id":message["message_id"],
+                              "reply_markup":selection_menu(batch,options,selected)})
+
+async def show_admin_picks(chat_id):
+    with closing(connect()) as con,con:
+        con.execute("DELETE FROM editorial_selection WHERE owner=?",(chat_id,))
+    now=datetime.now(ZONE)
+    try:
+        items=await admin_catalogue()
+        drafts=[draft for row in items if (draft:=make("pick",{"items":[row]},now,now,admin=True))]
+    except Exception as exc:
+        LOG.info("Admin catalogue unavailable (%s)",type(exc).__name__)
+        await telegram("sendMessage",chat_id,"Le catalogue administrateur est indisponible pour le moment. Réessaie dans quelques instants.")
+        return
+    if not drafts:
+        await telegram("sendMessage",chat_id,"Aucune sélection à venir ne répond aux critères de la liste.")
+        return
+    await telegram("sendMessage",chat_id,f"{len(drafts)} propositions du catalogue WinPulse. Tendances fortes en tête, puis scénarios partagés. Rien ne sera envoyé sans ton choix.")
+    options=[]
+    for i,draft in enumerate(drafts,1):
+        key=review_draft(draft,now)
+        await telegram("sendPhoto",chat_id,f"{i}/{len(drafts)}\n"+caption(draft),draft)
+        options.append((key,clean(" – ".join(draft["details"]["teams"]),57)))
+    batch=secrets.token_hex(6)
+    with closing(connect()) as con,con:
+        con.execute("INSERT OR REPLACE INTO editorial_selection(owner,batch,options_json) VALUES(?,?,?)",(chat_id,batch,json.dumps(options)))
+    await telegram("sendMessage",chat_id,"Coche les matchs à envoyer, puis appuie sur « Publier sur @wnplus ».",markup=selection_menu(batch,options,0))
+
 async def show_current(chat_id, kind, is_admin):
+    if kind=="pick" and is_admin:
+        await show_admin_picks(chat_id)
+        return
     now=datetime.now(ZONE)
     path,params=DRAFT_INPUTS[kind]
     try:
@@ -473,6 +583,8 @@ async def show_current(chat_id, kind, is_admin):
         await telegram("sendMessage",chat_id,f"Ces {count} aperçu(s) sont prêts. Écris « {phrase} » pour valider leur envoi sur @wnplus.\nTu peux aussi écrire « pronostics du jour », « résultats » ou « actualités ».")
 
 def approve_review(owner, kind):
+    if kind=="pick":
+        return "Écris « pronostics du jour », coche tes choix puis appuie sur « Publier sur @wnplus »."
     with closing(connect()) as con:
         row=con.execute("SELECT keys_json FROM review_batches WHERE owner=? AND kind=?",(owner,kind)).fetchone()
     if not row:
@@ -526,7 +638,7 @@ async def command(message):
     if name in {"/start","/aide"}:
         answer=f"Bienvenue sur WinPulse !\n\nÉcris simplement :\n• Pronostics du jour\n• Résultats\n• Actualités\n• Abonnement\n\n{LINKS['start']}"
         if is_admin:
-            answer+="\n\nTu es administrateur : après avoir vu les cartes, écris « publier les pronostics » ou « publier les résultats » pour donner ton feu vert. Les anciennes commandes restent disponibles."
+            answer+="\n\nTu es administrateur : coche les pronostics à publier. Pour le bilan, écris « publier les résultats » après avoir vu la carte. Les anciennes commandes restent disponibles."
     elif private and name=="/id":
         answer=f"Ton identifiant Telegram : {chat_id}. Ajoute-le à TELEGRAM_ADMIN_IDS si tu es propriétaire."
     elif name=="/actu":
@@ -605,6 +717,8 @@ async def webhook(request:Request):
     try:
         if isinstance(update.get("message"),dict):
             await command(update["message"])
+        elif isinstance(update.get("callback_query"),dict):
+            await callback(update["callback_query"])
     except Exception as exc:
         LOG.warning("Telegram reply unconfirmed (%s)",type(exc).__name__)
     return {"ok":True}

@@ -28,7 +28,7 @@ async def configure(url, register):
             raise ValueError("Ajoute le bot au canal comme administrateur autorisé à publier.")
         print(f"Bot @{me['username']} : droit de publier vérifié.")
         if register:
-            await call("setWebhook",url=url,secret_token=SECRET,allowed_updates=["message"],max_connections=5)
+            await call("setWebhook",url=url,secret_token=SECRET,allowed_updates=["message","callback_query"],max_connections=5)
             print("Webhook enregistré. Aucune publication envoyée.")
 
 if __name__=="__main__":
