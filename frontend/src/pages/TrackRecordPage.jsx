@@ -204,12 +204,13 @@ export default function TrackRecordPage() {
       <Link to={user ? "/app" : "/"} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:border-orange-300 hover:text-orange-700" data-testid="track-back-dashboard">{user ? <LayoutDashboard className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4 rtl:rotate-180" />}{i18n.t(user ? "Tableau de bord" : "Retour à l’accueil")}</Link>
     </div>
     <p className="mb-4 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm leading-6 text-slate-700" data-testid="official-track-policy">{OFFICIAL_COPY[i18n.language] || OFFICIAL_COPY.fr}</p>
+    {data?.history_scope === "recent_official" && <p role="status" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">{i18n.t("Résultats officiels récents. Les chiffres ci-dessous portent sur cet aperçu pendant que l’historique complet se charge.")}</p>}
     <section className="wr-enter relative mb-4 overflow-hidden rounded-2xl bg-slate-950 p-4 text-white sm:p-6 lg:p-8" aria-labelledby="track-heading">
       <div aria-hidden="true" className="pointer-events-none absolute -end-12 -top-24 h-80 w-80 rounded-full bg-orange-500/10 blur-3xl" />
       <div className="relative grid gap-4 lg:gap-6 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center">
         <div className="min-w-0">
           <div className="mb-3 inline-flex items-center gap-2 rounded-full border border-white/15 bg-white/5 px-3 py-2 text-xs font-bold tracking-wide text-slate-300"><ShieldCheck className="h-4 w-4 text-orange-300" />{i18n.t("HISTORIQUE PUBLIC")}</div>
-          <h1 id="track-heading" className="font-heading text-2xl font-extrabold leading-tight tracking-tight sm:text-4xl">{i18n.t("Le bilan.")}<br /><span className="text-orange-300">{i18n.t("Tous les résultats.")}</span></h1>
+          <h1 id="track-heading" className="font-heading text-2xl font-extrabold leading-tight tracking-tight sm:text-4xl">{i18n.t("Le bilan.")}<br /><span className="text-orange-300">{i18n.t(data?.history_scope === "recent_official" ? "Les résultats récents." : "Tous les résultats.")}</span></h1>
           <p className="mt-3 max-w-xl text-sm leading-6 text-slate-300">{i18n.t("Une vue claire sur les pronostics publiés : les victoires, les pertes et les remboursements, au même endroit.")}</p>
           <a href="#track-journal" className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-xl bg-white px-4 py-3 text-sm font-bold text-slate-900 hover:bg-orange-50">{i18n.t("Explorer les résultats")}<ArrowRight className="h-4 w-4 rtl:rotate-180" /></a>
         </div>

@@ -11514,16 +11514,23 @@ async def _quality_today_data():
     day = _discovery_day(now)
     age = time.monotonic()-_today_quality_cache["at"]
     valid = cached is not None and _today_quality_cache.get("day")==day and _today_cached_tickets_current(cached,now)
-    if valid and age < 10:
-        return copy.deepcopy(cached)
-    meta = await db.odds_cache.find_one({"_id":"all_matches"},{"updated_at":1,"montante_quotes_updated_at":1}) or {}
-    source_stamp = (meta.get("updated_at"),meta.get("montante_quotes_updated_at"),day)
-    if valid and _today_quality_cache["source"]==source_stamp and age < 180:
+    if valid and age < 60:
         return copy.deepcopy(cached)
     if _today_quality_task is None or _today_quality_task.done():
         async def build():
-            await _get_hybrid_registry()
-            matches = await fetch_all_matches(db)
+            current = _prediction_cache
+            if current["matches"] and time.monotonic()-current["timestamp"] < 60:
+                matches = current["matches"]
+                source_stamp = (current.get("source_cache_updated_at"), current.get("targeted_quotes_updated_at"), day)
+                await _get_hybrid_registry()
+            else:
+                doc, _ = await asyncio.gather(
+                    db.odds_cache.find_one({"_id":"all_matches"},{"data":1,"updated_at":1,"montante_quotes_updated_at":1}),
+                    _get_hybrid_registry(),
+                )
+                doc = doc or {}
+                matches = doc.get("data") if isinstance(doc.get("data"), list) else []
+                source_stamp = (doc.get("updated_at"), doc.get("montante_quotes_updated_at"), day)
             upcoming = [m for m in matches if not m.get("is_finished") and not m.get("completed")
                 and (start := _parse_iso(m.get("commence_time"))) and start > datetime.now(timezone.utc)]
             result = await _run_analysis(build_today_combos_by_sport,upcoming)
@@ -11533,6 +11540,8 @@ async def _quality_today_data():
         _today_quality_task = asyncio.create_task(build())
         # Retrieve errors even if every HTTP waiter has disconnected.
         _today_quality_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
+    if valid and age < 180:
+        return copy.deepcopy(cached)
     return copy.deepcopy(await asyncio.shield(_today_quality_task))
 
 
@@ -12439,6 +12448,87 @@ async def get_track_record_highlights(date: Optional[str] = None, time_zone: str
     return _build_track_record_highlights(_official_history_rows(rows), selected, zone, max(1, min(limit, 3)), now)
 
 
+_track_rows_cache = None
+_track_rows_task = None
+_track_recent_cache = None
+_track_recent_task = None
+_TRACK_HISTORY_PROJECTION = {key: 1 for key in (
+    "id", "signature", "match_id", "home_team", "away_team", "sport_title", "sport_key",
+    "commence_time", "created_at", "reconciled_at", "official_frozen_at", "is_primary_official",
+    "official_track_eligible", "is_combo", "analysis_only", "source", "result", "pick", "pick_odds",
+    "market", "market_label", "confidence", "label", "model_version", "final_score",
+    "home_logo", "away_logo", "home_media", "away_media", "home_image_candidates", "away_image_candidates",
+)}
+_TRACK_HISTORY_PROJECTION.update({f"official_snapshot.{key}": 1 for key in (
+    "match_id", "home_team", "away_team", "sport_title", "sport_key", "commence_time", "pick",
+    "market", "market_label", "pick_odds", "confidence", "label", "model_version", "is_combo",
+    "official_track_eligible",
+)})
+
+
+async def _refresh_track_rows(recent=False):
+    global _track_rows_cache, _track_recent_cache
+    query = {"result": {"$in": ["won", "lost", "void", "pending"]}}
+    if recent:
+        query["is_primary_official"] = True
+        query["result"] = {"$in": ["won", "lost", "void"]}
+    cursor = db.predictions_history.find(query, _TRACK_HISTORY_PROJECTION)
+    if recent:
+        cursor = cursor.sort("commence_time", -1).limit(200)
+    rows = await asyncio.wait_for(cursor.to_list(length=200 if recent else None), timeout=30 if recent else 180)
+    cache = (time.monotonic(), rows, await asyncio.to_thread(_official_history_rows, rows))
+    if recent:
+        _track_recent_cache = cache
+    else:
+        _track_rows_cache = cache
+    return cache
+
+
+def _track_refresh_task(recent=False):
+    global _track_rows_task, _track_recent_task
+    task = _track_recent_task if recent else _track_rows_task
+    if task is None or task.done():
+        task = asyncio.create_task(_refresh_track_rows(recent))
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
+        if recent:
+            _track_recent_task = task
+        else:
+            _track_rows_task = task
+    return task
+
+
+async def _get_track_rows():
+    cached = _track_rows_cache
+    if cached and time.monotonic()-cached[0] < 90:
+        return (*cached[1:], False)
+    full = _track_refresh_task()
+    if cached:
+        return (*cached[1:], False)
+    recent = _track_recent_cache
+    if recent and time.monotonic()-recent[0] < 120:
+        return (*recent[1:], True)
+    fallback = _track_refresh_task(recent=True)
+    pending = {full, fallback}
+    deadline = time.monotonic() + 10
+    while pending and time.monotonic() < deadline:
+        done, pending = await asyncio.wait(pending, timeout=max(0, deadline-time.monotonic()),
+                                           return_when=asyncio.FIRST_COMPLETED)
+        if full in done and not full.cancelled() and full.exception() is None:
+            return (*full.result()[1:], False)
+        if fallback in done and not fallback.cancelled() and fallback.exception() is None and fallback.result()[2]:
+            return (*fallback.result()[1:], True)
+    if recent and recent[2]:
+        return (*recent[1:], True)
+    raise HTTPException(status_code=503, detail="Les résultats sont en cours d’actualisation.", headers={"Retry-After":"5"})
+
+
+async def _track_read_optional(query):
+    try:
+        return await asyncio.wait_for(query, timeout=1.2) or {}
+    except Exception:
+        return {}
+
+
 _track_analytics_cache = {}
 
 
@@ -12455,15 +12545,13 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
     cached = _track_analytics_cache.get(cache_key)
     if cached and time.monotonic() - cached["at"] < 120:
         return copy.deepcopy(cached["data"])
-    projection = None
-    date_expr = {"$convert":{"input":"$commence_time","to":"date","onError":None,"onNull":None}}
-    created_expr = {"$convert":{"input":"$created_at","to":"date","onError":None,"onNull":None}}
-    query = {"result":{"$in":["won","lost","void","pending"]},"$expr":{"$and":[
-        {"$ne":[date_expr,None]},{"$gte":[date_expr,cutoff]},{"$lte":[date_expr,now]}]}}
     groups = {"sport":{},"market":{},"odds":{},"model":{}}
     overall = {"won":0,"lost":0,"void":0}
-    analytics_rows=await db.predictions_history.find(query).max_time_ms(10000).to_list(length=None)
-    for row in _official_history_rows(analytics_rows):
+    history, _, recent_only = await _get_track_rows()
+    if recent_only:
+        raise HTTPException(status_code=503, detail="Les statistiques complètes sont en cours d’actualisation.")
+    analytics_rows = [row for row in history if (stamp := _track_datetime(row.get("commence_time"))) and cutoff <= stamp <= now]
+    for row in await asyncio.to_thread(_official_history_rows, analytics_rows):
         if row.get('result') not in ('won','lost','void'):continue
         kind = _normalize_sport(row)
         if requested != "all" and kind != requested:
@@ -12556,10 +12644,7 @@ async def get_track_record_public(
 
     # Resolve the first prematch official pick before filtering results.
     # Alternative archives remain intact for auditing and model evaluation.
-    history_all = await db.predictions_history.find(
-        {"result": {"$in": ["won","lost","void","pending"]}}
-    ).to_list(length=None)
-    official_all = _official_history_rows(history_all)
+    history_all, official_all, recent_only = await _get_track_rows()
     resolved_all = [r for r in official_all if r.get("result") in resolved_statuses]
     official_graded_count = sum(
         1 for r in resolved_all
@@ -12568,8 +12653,7 @@ async def get_track_record_public(
     transition_mode = official_graded_count < 20
     transition_source = _OFFICIAL_POLICY
 
-    for row in resolved_all:
-        row["_normalized_sport"] = _normalize_sport(row)
+    resolved_all = [dict(row, _normalized_sport=_normalize_sport(row)) for row in resolved_all]
 
     available_sports = sorted({
         r.get("_normalized_sport") for r in resolved_all
@@ -12725,10 +12809,12 @@ async def get_track_record_public(
     ]
     latest_event_dates = [d for d in latest_event_dates if d]
 
-    track_sync_meta = await db.system_meta.find_one({"_id": "track_sync"}) or {}
-    result_cache = await db.scores_cache.find_one({"_id":"all_scores"}, {"refresh_by_sport":1}) or {}
+    track_sync_meta, result_cache, budget_state = await asyncio.gather(
+        _track_read_optional(db.system_meta.find_one({"_id": "track_sync"})),
+        _track_read_optional(db.scores_cache.find_one({"_id":"all_scores"}, {"refresh_by_sport":1})),
+        _track_read_optional(db.scores_cache.find_one({"_id":"result_budget_status:primary"}, {"_id":0})),
+    )
     provider_states = list((result_cache.get("refresh_by_sport") or {}).values())
-    budget_state = await db.scores_cache.find_one({"_id":"result_budget_status:primary"}, {"_id":0}) or {}
     sync = {
         "request_budget": budget_state,
         "budget_paced_sports": sum(row.get("status")=="budget_paced" for row in provider_states),
@@ -12816,6 +12902,7 @@ async def get_track_record_public(
         "note": "Une rencontre, un seul choix officiel : première publication avant le match. Les autres analyses restent archivées séparément, sans sélectionner les gagnants après coup.",
         "track_policy": _OFFICIAL_POLICY,
         "archive_rows": len(history_all),
+        "history_scope": "recent_official" if recent_only else "full",
         "official_events": len(official_all),
     }
 
@@ -15462,6 +15549,7 @@ async def startup_event():
     _queue_track_results()
     global _catalogue_warm_task
     _catalogue_warm_task = asyncio.create_task(_keep_catalogue_warm())
+    _track_refresh_task()
     asyncio.create_task(_warm_today_combos())
     if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
