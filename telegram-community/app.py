@@ -2,6 +2,7 @@
 import asyncio
 import hmac
 import hashlib
+import html
 import json
 import logging
 import os
@@ -15,6 +16,7 @@ from datetime import datetime, timedelta
 from io import BytesIO
 from pathlib import Path
 from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -29,6 +31,8 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 SECRET = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
 CHANNEL = os.getenv("TELEGRAM_CHANNEL_ID", "").strip()
 GROUP = os.getenv("TELEGRAM_GROUP_ID", "").strip()
+GROUP_ANIMATION = os.getenv("TELEGRAM_GROUP_ANIMATION","").strip().lower()=="true"
+RESOLVED_GROUP = None
 USERNAME = os.getenv("TELEGRAM_BOT_USERNAME", "").strip().lstrip("@").lower()
 ADMIN = {int(s) for s in os.getenv("TELEGRAM_ADMIN_IDS", "").split(",") if s.strip().isdigit()}
 LIVE = os.getenv("TELEGRAM_CHANNEL_PUBLISH", "").strip().lower() == "true"
@@ -55,6 +59,9 @@ def setup():
           keys_json TEXT NOT NULL, PRIMARY KEY(owner,kind));
         CREATE TABLE IF NOT EXISTS editorial_selection(owner INTEGER PRIMARY KEY, batch TEXT NOT NULL,
           options_json TEXT NOT NULL, selected INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE IF NOT EXISTS group_binding(id INTEGER PRIMARY KEY CHECK(id=1), chat_id INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS group_activity(chat_id INTEGER NOT NULL, day TEXT NOT NULL, slot TEXT NOT NULL,
+          PRIMARY KEY(chat_id,day,slot));
         """)
 
 def put(key, draft, due):
@@ -205,6 +212,32 @@ async def news_cover(client, draft):
         LOG.info("Article cover unavailable (%s)",type(exc).__name__)
         return None, ""
 
+def format_caption(text):
+    def style(line,i):
+        safe=html.escape(line,quote=False)
+        if (i==0 or " vs " in line or line.startswith(("NOTRE CHOIX","WINPULSE ·","Tendance forte","Scénario partagé"))):
+            return f"<b>{safe}</b>"
+        return safe
+    return "\n".join(style(line,i) for i,line in enumerate(text.splitlines()))
+
+async def sports_hero(client,draft):
+    if draft.get("kind")!="pick":
+        return None,""
+    sport=str((draft.get("visual") or {}).get("sport","")).split("_",1)[0]
+    if sport in ("soccer","football"):
+        path=Path(__file__).with_name("stadium-editorial.webp")
+        if path.is_file():
+            try:
+                return await asyncio.to_thread(lambda:decode_cover(path.read_bytes())),"AMBIANCE FOOTBALL · ILLUSTRATION IA"
+            except Exception:
+                pass
+    if sport in ("basketball","tennis"):
+        try:
+            return await fetch_cover(client,f"/api/blog/photos/{sport}.webp"),"PHOTO D’ILLUSTRATION"
+        except Exception:
+            pass
+    return None,""
+
 async def telegram(method, chat, text, draft=None, markup=None):
     params={"chat_id":str(chat)}
     async with httpx.AsyncClient(timeout=14,follow_redirects=False) as client:
@@ -221,9 +254,10 @@ async def telegram(method, chat, text, draft=None, markup=None):
                         image,extra=None,""
                     badges.append(image)
                     attribution+=extra
-            png=await asyncio.to_thread(poster,draft,photo,badges)
+            hero,hero_label=await sports_hero(client,draft)
+            png=await asyncio.to_thread(poster,draft,photo,badges,hero,hero_label)
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
-                data={**params,"caption":text+attribution},files={"photo":("winpulse.png",png,"image/png")})
+                data={**params,"caption":format_caption(text+attribution),"parse_mode":"HTML"},files={"photo":("winpulse.png",png,"image/png")})
         else:
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json={**params,"text":text,**({"reply_markup":markup} if markup else {})})
         if res.status_code >= 400:
@@ -236,13 +270,20 @@ async def telegram(method, chat, text, draft=None, markup=None):
 def caption(draft):
     if draft.get("kind")=="pick" and draft.get("details"):
         d=draft["details"]
+        if not d.get("time_zone"):
+            try:
+                year=datetime.fromtimestamp(draft["until"],ZONE).year
+                start=datetime.strptime(f"{year}/{d['date']}", "%Y/%d/%m · %H:%M")
+                start=start.replace(tzinfo=ZoneInfo("Africa/Porto-Novo")).astimezone(ZONE)
+                draft["details"]=d={**d,"date":start.strftime("%d/%m · %H:%M"),"time_zone":ZONE.key}
+            except (KeyError,ValueError,TypeError,OverflowError):
+                pass
         return "\n".join(["WINPULSE · "+("SÉLECTION" if draft.get("admin_pick") else "SÉLECTION GRATUITE"), "", "  vs  ".join(d["teams"]),
-            d["competition"], f"📅 {d['date']} · Porto-Novo",
+            d["competition"], f"📅 {d['date']} · Paris",
             *({"strong":["Tendance forte · estimation"],"shared":["Scénario partagé · estimation"]}.get(d.get("profile"),[])), "",
             f"NOTRE CHOIX → {d['pick']}", f"{d['market']}  |  Cote {d['odds']}",
             *( [f"Chez {d['bookmaker']}"] if d.get("bookmaker") else [] ),
-            "", "Une sélection individuelle, pas un combiné.",
-            "Retrouve les autres analyses sur WinPulse.", draft["link"], "18+"])
+            "", "Découvre les analyses et l’abonnement WinPulse.", draft["link"], "18+"])
     return "\n".join([draft["title"], *( [draft["intro"]] if draft.get("intro") else []),
                       "", *draft["lines"], "", draft["link"], NOTICE])
 
@@ -328,7 +369,7 @@ def approve_draft(key, now):
     if state=="expired" or row["expires"]<=now:
         move(key,("draft","approved"),"expired")
         end=datetime.fromtimestamp(row["expires"],ZONE)
-        return f"Brouillon expiré depuis le {end:%d/%m à %H:%M} (Porto-Novo). Aucun envoi prévu."
+        return f"Brouillon expiré depuis le {end:%d/%m à %H:%M} (Paris). Aucun envoi prévu."
     if state not in ("draft","approved"):
         return "Ce brouillon ne peut pas être validé. Consulte /drafts."
     if state=="draft" and not move(key,("draft",),"approved"):
@@ -339,7 +380,7 @@ def approve_draft(key, now):
     if row["due"]<=now:
         return prefix+" Envoi au prochain passage du bot, tant que le brouillon est encore valide."
     due=datetime.fromtimestamp(row["due"],ZONE)
-    return f"{prefix} Publication prévue le {due:%d/%m à %H:%M} (Porto-Novo)."
+    return f"{prefix} Publication prévue le {due:%d/%m à %H:%M} (Paris)."
 
 async def publish(key):
     if not (LIVE and VALID_CHANNEL and VALID_TOKEN):
@@ -364,6 +405,81 @@ async def publish(key):
         move(key,("sending",),"review")
         return "Publication non confirmée. Vérifie le canal ; aucun renvoi automatique."
 
+async def bot_request(method, payload):
+    async with httpx.AsyncClient(timeout=8,follow_redirects=False) as client:
+        response=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json=payload)
+        data=response.json()
+        if response.status_code>=400 or data.get("ok") is not True:
+            raise ValueError("Telegram request rejected")
+        return data["result"]
+
+def saved_group():
+    with closing(connect()) as con:
+        row=con.execute("SELECT chat_id FROM group_binding WHERE id=1").fetchone()
+    return row["chat_id"] if row else None
+
+async def resolve_group():
+    if not GROUP_ANIMATION or not VALID_TOKEN:
+        return None
+    explicit=saved_group() or GROUP
+    source=explicit or CHANNEL
+    if not source:
+        return None
+    chat=await bot_request("getChat",{"chat_id":source})
+    if chat.get("type")=="channel" and not explicit:
+        linked=chat.get("linked_chat_id")
+        if not linked:
+            return None
+        chat=await bot_request("getChat",{"chat_id":linked})
+    if chat.get("type") not in ("group","supergroup") or type(chat.get("id")) is not int:
+        return None
+    me=await bot_request("getMe",{})
+    member=await bot_request("getChatMember",{"chat_id":chat["id"],"user_id":me["id"]})
+    if member.get("status") not in ("member","administrator","creator"):
+        return None
+    if member.get("status")=="member" and (chat.get("permissions") or {}).get("can_send_messages") is False:
+        return None
+    return chat["id"]
+
+def reserve_activity(chat, day, slot):
+    with closing(connect()) as con,con:
+        return con.execute("INSERT OR IGNORE INTO group_activity VALUES(?,?,?)",(chat,day,slot)).rowcount==1
+
+async def animate_group(now):
+    chat=RESOLVED_GROUP
+    if not GROUP_ANIMATION or chat is None:
+        return
+    minutes=now.hour*60+now.minute
+    day=now.date().isoformat()
+    if 12*60+30<=minutes<12*60+40 and reserve_activity(chat,day,"discussion"):
+        messages=[
+            "👋 Bonjour l’équipe ! Quelle rencontre suivez-vous aujourd’hui, et quel détail pourrait faire la différence ?",
+            "👋 Le débat du jour : quel joueur ou quelle équipe vous intrigue le plus aujourd’hui ?",
+            "👋 À vous la parole : quelle rencontre mérite qu’on regarde au-delà du score ?",
+        ]
+        await telegram("sendMessage",chat,messages[now.toordinal()%len(messages)])
+    if 20*60<=minutes<20*60+10 and reserve_activity(chat,day,"poll"):
+        question,choices=[
+            ("Quel sport suivez-vous ce soir ?",["Football","Basket","Tennis","Autre"]),
+            ("Quelle analyse vous intéresse le plus ?",["Forme récente","Compositions","Confrontations","Statistiques"]),
+            ("Vous suivez plutôt quel type de rencontre ?",["Championnat","Coupe","Match international","Je découvre"]),
+        ][now.toordinal()%3]
+        await bot_request("sendPoll",{"chat_id":chat,"question":question,"options":[{"text":option} for option in choices],"is_anonymous":True})
+
+async def group_scheduler():
+    global RESOLVED_GROUP
+    retry=0.0
+    while True:
+        try:
+            if time.monotonic()>=retry:
+                retry=time.monotonic()+600
+                RESOLVED_GROUP=await resolve_group()
+                LOG.info("Group animation: %s","ready" if RESOLVED_GROUP is not None else "no eligible group")
+            await animate_group(datetime.now(ZONE))
+        except Exception as exc:
+            LOG.warning("Group activity unavailable (%s)",type(exc).__name__)
+        await asyncio.sleep(60)
+
 async def scheduler():
     while True:
         try:
@@ -381,19 +497,23 @@ async def scheduler():
 @asynccontextmanager
 async def lifespan(app):
     setup()
-    task=asyncio.create_task(scheduler())
+    tasks=[asyncio.create_task(scheduler())]
+    if GROUP_ANIMATION:
+        tasks.append(asyncio.create_task(group_scheduler()))
     try:
         yield
     finally:
-        task.cancel()
-        await asyncio.gather(task,return_exceptions=True)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks,return_exceptions=True)
 
 app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 
 @app.get("/health")
 async def health():
     return {"ok":True,"telegram_configured":VALID_SECRET and VALID_TOKEN and bool(ADMIN),
-            "channel_configured":VALID_CHANNEL,"channel_publication_enabled":LIVE and VALID_CHANNEL}
+            "channel_configured":VALID_CHANNEL,"channel_publication_enabled":LIVE and VALID_CHANNEL,
+            "group_animation_ready":GROUP_ANIMATION and RESOLVED_GROUP is not None}
 
 def natural_intent(text):
     normalized=unicodedata.normalize("NFKD",text.lower())
@@ -565,7 +685,7 @@ async def show_current(chat_id, kind, is_admin):
         await telegram("sendMessage",chat_id,"La liste est trop longue pour un seul envoi. Consulte les sélections à jour : "+LINKS["pick"])
         return
     count=len(drafts)
-    heading=(f"{count} pronostic{'s' if count>1 else ''} gratuit{'s' if count>1 else ''} à venir · heure de Porto-Novo.\n"
+    heading=(f"{count} pronostic{'s' if count>1 else ''} gratuit{'s' if count>1 else ''} à venir · heure de Paris.\n"
              "Une carte par match, dans l’ordre des horaires. Ce sont des sélections individuelles."
              if kind=="pick" else "Voici le bilan de la veille, avec tous les statuts." if kind=="results" else "Voici la dernière actualité.")
     await telegram("sendMessage",chat_id,heading+("\nAperçus privés : rien n’est encore publié sur @wnplus." if is_admin else ""))
@@ -598,17 +718,26 @@ async def command(message):
     user=message.get("from") or {}
     if user.get("is_bot") or type(chat.get("id")) is not int:
         return
+    global RESOLVED_GROUP
     chat_id=chat["id"]
     private=chat.get("type")=="private"
-    group=str(chat_id)==GROUP and chat.get("type") in {"group","supergroup"}
+    is_group=chat.get("type") in {"group","supergroup"}
+    text=str(message.get("text") or "").strip()
+    if (is_group and GROUP_ANIMATION and user.get("id") in ADMIN
+            and text.lower() in ("/lier",f"/lier@{USERNAME}")):
+        with closing(connect()) as con,con:
+            con.execute("INSERT OR REPLACE INTO group_binding(id,chat_id) VALUES(1,?)",(chat_id,))
+        RESOLVED_GROUP=chat_id
+        await telegram("sendMessage",chat_id,"Le groupe est relié à WinPulse. J’y accueillerai les nouveaux membres et lancerai les rendez-vous de discussion.")
+        return
+    group=is_group and chat_id==RESOLVED_GROUP
     if not (private or group):
         return
     is_admin=private and user.get("id") in ADMIN
-    text=str(message.get("text") or "")
     if group and message.get("new_chat_members"):
         members=[clean(m.get("first_name"),30) for m in message["new_chat_members"][:5] if isinstance(m,dict) and not m.get("is_bot")]
         if members:
-            await telegram("sendMessage",chat_id,"Bienvenue "+", ".join(members)+" ! Consulte /aide pour découvrir WinPulse.")
+            await telegram("sendMessage",chat_id,"👋 Bienvenue "+", ".join(members)+" ! Quel sport ou quelle équipe suis-tu ? Utilise /aide pour découvrir le groupe.")
         return
     parts=text.split(maxsplit=1)
     if not parts:
@@ -619,7 +748,13 @@ async def command(message):
             return
         arg=parts[1].strip() if len(parts)>1 else ""
     else:
-        name=natural_intent(text) if private else None
+        addressed_group=group and USERNAME and re.search(rf"(?<!\w)@{re.escape(USERNAME)}\b",text,flags=re.I)
+        reply=(message.get("reply_to_message") or {}).get("from") or {}
+        reply_to_bot=group and reply.get("is_bot") is True and str(reply.get("username","")).lower()==USERNAME
+        cleaned=re.sub(rf"@{re.escape(USERNAME)}\b","",text,flags=re.I) if addressed_group else text
+        name=natural_intent(cleaned) if private or addressed_group or reply_to_bot else None
+        if group:
+            name={"/show_picks":"/pronos","/show_results":"/resultats","/show_news":"/actu"}.get(name,name)
         arg=""
         if not name:
             if private:
@@ -635,7 +770,9 @@ async def command(message):
             await telegram("sendMessage",chat_id,approve_review(chat_id,kind))
         return
     answer=""
-    if name in {"/start","/aide"}:
+    if group and name in {"/start","/aide"}:
+        answer="Bienvenue dans le groupe WinPulse !\n\n/pronos · Sélections gratuites\n/resultats · Bilan complet\n/actu · Actualités\n/pro · Abonnement"
+    elif name in {"/start","/aide"}:
         answer=f"Bienvenue sur WinPulse !\n\nÉcris simplement :\n• Pronostics du jour\n• Résultats\n• Actualités\n• Abonnement\n\n{LINKS['start']}"
         if is_admin:
             answer+="\n\nTu es administrateur : coche les pronostics à publier. Pour le bilan, écris « publier les résultats » après avoir vu la carte. Les anciennes commandes restent disponibles."
@@ -656,7 +793,7 @@ async def command(message):
     elif is_admin and name=="/drafts":
         with closing(connect()) as con:
             rows=con.execute("SELECT id,state,due FROM drafts ORDER BY due DESC LIMIT 12").fetchall()
-        answer="Brouillons et historique (heure de Porto-Novo)\n"+"\n".join(f"{r['id']} · {r['state']} · {datetime.fromtimestamp(r['due'],ZONE):%d/%m %H:%M}" for r in rows) if rows else "Aucun brouillon pour l’instant."
+        answer="Brouillons et historique (heure de Paris)\n"+"\n".join(f"{r['id']} · {r['state']} · {datetime.fromtimestamp(r['due'],ZONE):%d/%m %H:%M}" for r in rows) if rows else "Aucun brouillon pour l’instant."
     elif is_admin and name=="/preview":
         now=datetime.now(ZONE)
         row=await preview_row(arg, now)

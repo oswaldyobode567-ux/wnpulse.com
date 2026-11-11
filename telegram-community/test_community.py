@@ -40,6 +40,28 @@ class Community(unittest.IsolatedAsyncioTestCase):
         with Image.open(BytesIO(poster(draft))) as image:
             self.assertEqual((image.format,image.size),("PNG",(1080,1080)))
 
+    async def test_group_uses_linked_discussion_and_not_channel(self):
+        chat=-1001234
+        with patch.multiple(app,GROUP_ANIMATION=True,VALID_TOKEN=True,GROUP="",CHANNEL="@wnplus"), patch.object(app,"bot_request",AsyncMock(side_effect=[
+            {"type":"channel","linked_chat_id":chat},{"type":"supergroup","id":chat},{"id":20},{"status":"administrator"},{"type":"channel"},
+        ])):
+            self.assertEqual(await app.resolve_group(),chat)
+            self.assertIsNone(await app.resolve_group())
+
+    async def test_group_activity_is_deduplicated(self):
+        with patch.multiple(app,GROUP_ANIMATION=True,RESOLVED_GROUP=-1001234), patch.object(app,"telegram",AsyncMock()) as send, patch.object(app,"bot_request",AsyncMock()) as request:
+            now=self.now.replace(hour=12,minute=31)
+            await app.animate_group(now)
+            await app.animate_group(now)
+            send.assert_awaited_once()
+            self.assertEqual(send.await_args.args[:2],("sendMessage",-1001234))
+            now=now.replace(hour=20,minute=2)
+            await app.animate_group(now)
+            await app.animate_group(now)
+            request.assert_awaited_once()
+            self.assertEqual(request.await_args.args[0],"sendPoll")
+            self.assertEqual(request.await_args.args[1]["chat_id"],-1001234)
+
     def test_rejects_inconsistent_results(self):
         data={"date":(self.now-timedelta(days=1)).date().isoformat(),"source":"track_record","complete":True,
               "summary":{"won":3,"lost":2,"pending":1,"void":0,"total":6}}

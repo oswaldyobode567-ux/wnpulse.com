@@ -2,7 +2,7 @@
 
 Service séparé de WinPulse, connecté uniquement à ses routes publiques. Il prépare une image PNG et un texte en français pour chaque brouillon. Il ne publie rien dans le canal tant que la publication est désactivée ou que le brouillon n'a pas été approuvé.
 
-| Heure de Porto-Novo | Brouillon | Données |
+| Heure de Paris | Brouillon | Données |
 | --- | --- | --- |
 | 08:30 | Bilan des matchs de la veille | Track Record : gagnés, perdus, annulés, en attente |
 | 12:00 | Pronostic gratuit | Sélection publique, match à venir, cote, marché et horaire |
@@ -54,3 +54,6 @@ Une consultation, « bonjour » ou une phrase non reconnue n'autorise jamais une
 Les anciennes commandes /preview et /approve restent compatibles.
 
 Les nouvelles cartes séparent les équipes, la compétition, l'heure et le bloc du choix. Le bilan utilise quatre statuts clairement nommés.
+
+
+Avec `TELEGRAM_GROUP_ANIMATION=true`, le bot accueille les nouveaux membres, ouvre une discussion à 12 h 30 et propose un sondage à 20 h (heure de Paris). Les publications de pronostics conservent leur validation. Le groupe de discussion lié au canal est détecté automatiquement ; sinon un administrateur WinPulse peut saisir `/lier@WNPulseAssistantBot` dans le groupe, après y avoir ajouté le bot.

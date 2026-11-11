@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 SITE = "https://wnpulse.com"
-ZONE = ZoneInfo("Africa/Porto-Novo")
+ZONE = ZoneInfo("Europe/Paris")
 LINKS = {name: f"{SITE}/{path}?utm_source=telegram&utm_medium=community"
          for name, path in {"pick":"app", "results":"resultats", "news":"blog",
                             "pro":"app/abonnement", "start":"register", "guide":"blog", "promo":"app/abonnement"}.items()}
@@ -82,11 +82,11 @@ def make(kind, data, now, scheduled, admin=False):
         lines = [f"{clean(row['home_team'],70)} – {clean(row['away_team'],70)}",
                  f"{clean(pred.get('market_label'),70) or 'Pronostic'} : {clean(pred['pick'],100)}",
                  f"Cote observée : {odds:.2f}".replace(".",","),
-                 f"{start.astimezone(ZONE):%d/%m à %H:%M} · heure de Porto-Novo"]
+                 f"{start.astimezone(ZONE):%d/%m à %H:%M} · heure de Paris"]
         details={"teams":visual["teams"],"competition":visual["league"],
                  "market":clean(pred.get("market_label"),70) or "Pronostic",
                  "pick":clean(pred["pick"],120),"odds":f"{odds:.2f}".replace(".",","),
-                 "date":start.astimezone(ZONE).strftime("%d/%m · %H:%M"),
+                 "date":start.astimezone(ZONE).strftime("%d/%m · %H:%M"),"time_zone":ZONE.key,
                  "bookmaker":clean(pred.get("best_bookmaker"),50),
                  "profile":pred.get("community_profile") if admin else None}
     elif kind == "results":
@@ -97,7 +97,7 @@ def make(kind, data, now, scheduled, admin=False):
                 or not isinstance(summary, dict) or not all(type(summary.get(k)) is int and summary[k]>=0 for k in keys)
                 or sum(summary[k] for k in keys[:-1]) != summary["total"] or not summary["total"]):
             return None
-        lines = [f"Matchs du {(now.date()-timedelta(days=1)):%d/%m/%Y} · Porto-Novo",
+        lines = [f"Matchs du {(now.date()-timedelta(days=1)):%d/%m/%Y} · Paris",
                  f"{summary['won']} gagnés · {summary['lost']} perdus",
                  f"{summary['void']} annulés · {summary['pending']} en attente",
                  f"{summary['total']} pronostics au total"]
@@ -122,7 +122,7 @@ def subscription(plans):
     price = f"{pro['price_xof']:,}".replace(","," ")
     return f"WinPulse Pro : {price} FCFA pour {pro['duration_days']} jours. Consulte l’abonnement pour les moyens de paiement disponibles."
 
-def poster(draft, photo=None, badges=()):
+def poster(draft, photo=None, badges=(), hero=None, hero_label="VISUEL D’ILLUSTRATION"):
     from PIL import Image, ImageDraw, ImageFont, ImageOps
     from io import BytesIO
     image = Image.new("RGB",(1080,1080))
@@ -130,6 +130,13 @@ def poster(draft, photo=None, badges=()):
     for y in range(1080):
         t=y/1080
         draw.line((0,y,1080,y),fill=(int(17+20*t),int(20+5*t),int(37-8*t)))
+    if hero is not None and draft.get("kind")=="pick":
+        cover=ImageOps.fit(hero.convert("RGB"),(1080,660),Image.Resampling.LANCZOS)
+        shade=Image.new("RGBA",cover.size)
+        fade=ImageDraw.Draw(shade)
+        for y in range(660):
+            fade.line((0,y,1080,y),fill=(10,16,28,int(100+115*(y/659)**2)))
+        image.paste(Image.alpha_composite(cover.convert("RGBA"),shade).convert("RGB"),(0,0))
     draw.rounded_rectangle((64,62,1016,1018),32,outline="#555269",width=3)
     def font(size, bold=False):
         return ImageFont.truetype("DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",size)
@@ -180,7 +187,10 @@ def poster(draft, photo=None, badges=()):
             draw.text((96,183),clean(visual.get("league"),48).upper() or "PRONOSTIC GRATUIT",
                       font=font(24,True),fill="#FFB57D")
             for i,(team,x) in enumerate(zip(teams,(315,765))):
-                draw.rounded_rectangle((x-209,237,x+209,589),28,fill="#1C2A43",outline="#3B4B64",width=2)
+                if hero is None:
+                    draw.rounded_rectangle((x-209,237,x+209,589),28,fill="#1C2A43",outline="#3B4B64",width=2)
+                else:
+                    draw.rounded_rectangle((x-205,438,x+205,554),20,fill="#172337")
                 draw.rounded_rectangle((x-75,270,x+75,420),22,fill="#F2F5FB")
                 entry=badges[i] if i<len(badges) else None
                 if entry is not None:
@@ -192,6 +202,8 @@ def poster(draft, photo=None, badges=()):
                 centered(team,x,452,364,32)
             draw.rounded_rectangle((498,329,582,393),14,fill="#F38C40")
             draw.text((540,361),"VS",font=font(26,True),fill="#151D30",anchor="mm")
+            if hero is not None:
+                draw.text((984,582),hero_label,font=font(16,True),fill="#F1E5DA",anchor="rt")
             draw.text((96,622),d.get("date") or (draft["lines"][3] if len(draft["lines"])>3 else ""),
                       font=font(25),fill="#DAE4F5")
             draw.rounded_rectangle((96,682,984,924),24,fill="#F0F3F9")
