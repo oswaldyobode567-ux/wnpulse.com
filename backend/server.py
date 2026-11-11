@@ -8477,7 +8477,7 @@ async def _keep_catalogue_warm():
 
 async def _catalogue_snapshot(compact):
     age = time.monotonic() - _prediction_cache["timestamp"]
-    if compact and _prediction_cache["matches"] and age < PREDICTION_CACHE_TTL + 120:
+    if compact and _prediction_cache["matches"] and age < PREDICTION_CACHE_TTL + 600:
         if age >= 30:
             _ensure_prediction_snapshot_task()
         return dict(_prediction_cache), "hit" if age < 30 else "refreshing"
@@ -12440,14 +12440,32 @@ _track_history_task = None
 async def _refresh_track_history():
     projection = {key: 1 for key in (
         "id", "signature", "match_id", "home_team", "away_team", "sport_title", "sport_key",
-        "commence_time", "created_at", "reconciled_at", "official_frozen_at", "official_snapshot",
+        "commence_time", "created_at", "reconciled_at", "official_frozen_at",
         "is_primary_official", "official_track_eligible", "is_combo", "analysis_only", "source",
         "result", "pick", "pick_odds", "market", "market_label", "confidence", "label",
         "model_version", "final_score", "home_logo", "away_logo", "home_media", "away_media",
         "home_image_candidates", "away_image_candidates",
     )}
+    public_fields = (
+        "match_id", "home_team", "away_team", "sport_title", "sport_key", "commence_time",
+        "pick", "market", "market_label", "pick_odds", "confidence", "label",
+        "model_version", "is_combo", "official_track_eligible",
+    )
+    projection.update({f"official_snapshot.{field}": 1 for field in public_fields})
+    # Exclude the branches that the official ledger would discard anyway.
+    # Primary rows must remain eligible even when an older archive has metadata
+    # that differs from its frozen official snapshot.
+    query = {
+        "result": {"$in": ["won", "lost", "void", "pending"]},
+        "$or": [
+            {"is_primary_official": True},
+            {"is_combo": {"$ne": True}, "analysis_only": {"$ne": True},
+             "source": {"$not": {"$regex": "^(montante|shadow|observed)", "$options": "i"}},
+             "pick": {"$exists": True, "$nin": [None, ""]}},
+        ],
+    }
     raw = await asyncio.wait_for(db.predictions_history.find(
-        {"result": {"$in": ["won", "lost", "void", "pending"]}}, projection
+        query, projection
     ).max_time_ms(55000).to_list(length=None), timeout=60)
     official = await asyncio.to_thread(_official_history_rows, raw)
     data = (raw, official)
@@ -12856,6 +12874,7 @@ async def get_track_record_public(
         "note": "Une rencontre, un seul choix officiel : première publication avant le match. Les autres analyses restent archivées séparément, sans sélectionner les gagnants après coup.",
         "track_policy": _OFFICIAL_POLICY,
         "archive_rows": len(history_all),
+        "archive_rows_scope": "official_candidates",
         "official_events": len(official_all),
     }
 
