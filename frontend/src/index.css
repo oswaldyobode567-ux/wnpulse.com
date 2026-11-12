@@ -598,18 +598,19 @@ html[data-wp-theme='light'] .wp-premium :is(.wp-home-hero,.wp-catalogue-header,.
 }
 .wp-premium .wp-photo-hero-slides img + img { opacity:0; }
 .wp-premium .wp-photo-hero-shade {
-  background:linear-gradient(90deg,#10111af5 3%,#10111ad9 50%,#10111a84 100%);
+  background:linear-gradient(90deg,#10111af5 4%,#10111acc 40%,#10111a38 76%,#10111a68 100%);
 }
 html[data-wp-theme] .wp-premium .wp-photo-hero .wp-photo-hero-copy :is(h1,p,.text-slate-500,.wp-editorial-eyebrow,.wp-editorial-muted,.wp-result-link) { color:#f5f2f8; }
 .wp-premium .wp-photo-hero-credits { color:#f5f2f8; }
 .wp-premium .wp-photo-hero-credits a { text-decoration:underline; text-underline-offset:3px; }
 .wp-premium .wp-photo-motion-control { background:#151520c9; color:white; }
 @media (max-width:767px) {
-  .wp-premium .wp-photo-hero-shade { background:linear-gradient(180deg,#10111ada,#10111ae6 65%,#10111aee); }
+  .wp-premium .wp-photo-hero-shade { background:linear-gradient(180deg,#10111a96,#10111ac9 38%,#10111ad4 72%,#10111af0); }
 }
 @media (prefers-reduced-motion:no-preference) {
-  .wp-premium .wp-photo-hero-slides img:first-child { animation:wp-photo-hero-drift 18s ease-in-out infinite alternate; }
-  .wp-premium .wp-photo-hero-slides img + img { animation:wp-photo-hero-crossfade 18s ease-in-out infinite; }
+  .wp-premium .wp-photo-hero-slides img:first-child { animation:wp-photo-hero-drift 24s ease-in-out infinite alternate; }
+  .wp-premium .wp-photo-hero-slides img + img { animation:wp-photo-hero-crossfade 24s ease-in-out infinite; }
+  .wp-premium .wp-photo-hero-slides img:nth-child(3) { animation-delay:8s; }
   .wp-premium .wp-photo-hero-slides[data-paused='true'] img { animation-play-state:paused; }
 }
 @media (prefers-reduced-motion:reduce) {
@@ -617,6 +618,7 @@ html[data-wp-theme] .wp-premium .wp-photo-hero .wp-photo-hero-copy :is(h1,p,.tex
 }
 @keyframes wp-photo-hero-drift { from { transform:scale(1); } to { transform:scale(1.055); } }
 @keyframes wp-photo-hero-crossfade {
-  0%, 38%, 100% { opacity:0; transform:scale(1); }
-  50%, 88% { opacity:1; transform:scale(1.035); }
+  0%, 29%, 71%, 100% { opacity:0; transform:scale(1); }
+  36% { opacity:1; transform:scale(1.015); }
+  62% { opacity:1; transform:scale(1.055); }
 }

@@ -12126,6 +12126,47 @@ def _value_source_state(source):
     return None
 
 
+def _value_confirmed_result(row, source):
+    if _value_source_state(source) == "cancelled":
+        return {"result": "void"}
+    home, away = _score_pair(source)
+    if home is None or away is None:
+        return {}
+    score = {"final_score": f"{home}–{away}"}
+    result = _evaluate_pick_result(row, home, away)
+    return {**score, "result": result} if result in ("won", "lost", "void") else score
+
+
+async def _value_result_report():
+    now = datetime.now(timezone.utc)
+    cutoff = (now - timedelta(days=30)).isoformat()
+    past = now.isoformat()
+    archive = db.value_bet_archive
+    groups = await archive.aggregate([
+        {"$match": {"commence_time": {"$gte": cutoff, "$lte": past}}},
+        {"$group": {"_id": "$result", "count": {"$sum": 1}, "net": {"$sum": {
+            "$switch": {"branches": [
+                {"case": {"$eq": ["$result", "won"]}, "then": {"$subtract": ["$pick_odds", 1]}},
+                {"case": {"$eq": ["$result", "lost"]}, "then": -1},
+            ], "default": 0}
+        }}}},
+    ]).to_list(length=None)
+    counts = {row["_id"]: row["count"] for row in groups}
+    won, lost, void = (counts.get(result, 0) for result in ("won", "lost", "void"))
+    decisions = won + lost
+    settled = decisions + void
+    rows = await archive.find(
+        {"commence_time": {"$gte": cutoff, "$lte": past}, "state": {"$in": ["finished", "cancelled"]}},
+        {"_id": 0, "home_team": 1, "away_team": 1, "pick": 1, "pick_odds": 1, "result": 1,
+         "final_score": 1, "commence_time": 1},
+    ).sort("commence_time", -1).limit(25).to_list(length=25)
+    return {"days": 30, "won": won, "lost": lost, "void": void,
+            "pending": sum(counts.values()) - settled,
+            "win_rate": round(won / decisions * 100, 1) if decisions else None,
+            "roi": round(sum(row["net"] for row in groups) / settled * 100, 1) if settled else None,
+            "recent": rows}
+
+
 async def _sync_retained_value_bets(snapshot, force=False):
     global _value_retention_synced_at
     async with _value_retention_lock:
@@ -12133,21 +12174,60 @@ async def _sync_retained_value_bets(snapshot, force=False):
             return
         now = datetime.now(timezone.utc)
         stamp = now.isoformat()
-        existing = await db.value_bet_archive.find({"state":"active"}).to_list(length=None)
+        existing = await db.value_bet_archive.find({"$or": [
+            {"state": "active"},
+            {"state": {"$in": ["finished", "cancelled"]}, "result": {"$exists": False},
+             "commence_time": {"$gte": (now - timedelta(days=30)).isoformat()}},
+        ]}).to_list(length=None)
         by_id = {row["_id"]:row for row in existing}
         matches = {str(m.get("id") or m.get("match_id")):m for m in snapshot.get("matches",[])}
         terminal = {}
         for identity,match in matches.items():
             state = _value_source_state(match)
-            if state:
+            if state and (state == "cancelled" or None not in _score_pair(match)):
                 terminal[identity] = (state,match)
         for cache_id in ("all_scores","live_scores"):
             cache = await db.scores_cache.find_one({"_id":cache_id})
             for score in (cache or {}).get("data",[]) or []:
                 identity = str(score.get("id") or score.get("match_id") or "")
                 state = _value_source_state(score)
-                if identity and state:
+                if identity and state and (state == "cancelled" or None not in _score_pair(score)):
                     terminal[identity] = (state,score)
+        old_ids = sorted({str(row["match_id"]) for row in existing if row.get("match_id")
+                          and (_parse_iso(row.get("commence_time")) or now) < now
+                          and str(row["match_id"]) not in terminal})
+        for offset in range(0, len(old_ids), 250):
+            batch = old_ids[offset:offset + 250]
+            archived = db.scores_archive.find({"event_id": {"$in": batch}, "completed": True})
+            async for score in archived:
+                if None not in _score_pair(score):
+                    terminal[str(score["event_id"])] = ("finished", score)
+            missing = [key for key in batch if key not in terminal]
+            if not missing:
+                continue
+            confirmed = db.predictions_history.find(
+                {"match_id": {"$in": missing}, "result": {"$in": ["won", "lost", "void"]},
+                 "reconciliation_source": {"$exists": True}, "final_score": {"$exists": True}},
+                {"match_id": 1, "commence_time": 1, "home_team": 1, "away_team": 1, "final_score": 1},
+            )
+            confirmed_scores = {}
+            async for record in confirmed:
+                pair = re.fullmatch(r"(\d+)\s*-\s*(\d+)", str(record["final_score"]))
+                if pair:
+                    key = (record["match_id"], record.get("commence_time"), record.get("home_team"), record.get("away_team"))
+                    confirmed_scores.setdefault(key, set()).add(pair.groups())
+            by_event = {}
+            for (event, kickoff, home, away), pairs in confirmed_scores.items():
+                by_event.setdefault(event, []).append((kickoff, home, away, pairs))
+            for event, candidates in by_event.items():
+                if len(candidates) != 1:
+                    continue
+                kickoff, home, away, pairs = candidates[0]
+                if len(pairs) == 1 and kickoff and home and away:
+                    hs, aws = next(iter(pairs))
+                    terminal[event] = ("finished", {"completed": True, "commence_time": kickoff,
+                        "home_team": home, "away_team": away,
+                        "scores": [{"name": home, "score": hs}, {"name": away, "score": aws}]})
         observed = {}
         for prediction in snapshot.get("predictions",[]):
             match_id = str(prediction.get("match_id") or prediction.get("id") or "")
@@ -12172,7 +12252,8 @@ async def _sync_retained_value_bets(snapshot, force=False):
                     "sport_title":match.get("sport_title"),"home_team":match.get("home_team"),
                     "away_team":match.get("away_team"),"country":match.get("country"),
                     "commence_time":match.get("commence_time"),"market":key,"market_label":market.get("market_label"),
-                    "pick":pick,"pick_point":market.get("pick_point"),"pick_odds":odds,
+                    "pick":pick,"pick_point":market.get("pick_point"),"pick_raw":market.get("pick_raw"),
+                    "team":market.get("team"),"pick_odds":odds,
                     "our_prob":probability,"implied_prob":100/odds,"edge":edge,
                     "bookmaker":market.get("best_bookmaker")}
         operations = []
@@ -12210,12 +12291,24 @@ async def _sync_retained_value_bets(snapshot, force=False):
                 same_time = not starts or not source_time or abs((starts-source_time).total_seconds())<=12*3600
                 same_teams = all(not source.get(k) or source[k]==row.get(k) for k in ("home_team","away_team"))
                 if same_time and same_teams:
-                    update.update(state=state,phase=state,finished_confirmed_at=stamp)
+                    update.update(state=state, phase=state, **_value_confirmed_result(row, source))
+                    if not row.get("finished_confirmed_at"):
+                        update["finished_confirmed_at"] = stamp
+            if row.get("state") != "active" and not ("result" in update or "final_score" in update and update["final_score"] != row.get("final_score")):
+                continue
             operations.append(UpdateOne({"_id":identity},{"$set":update}))
         if operations:
             # Ordered execution ensures inserts precede status updates for new detections.
             await db.value_bet_archive.bulk_write(operations,ordered=True)
         _value_retention_synced_at = time.monotonic()
+
+
+async def _safe_value_result_report():
+    try:
+        return await asyncio.wait_for(_value_result_report(), timeout=3)
+    except Exception as exc:
+        logging.getLogger("winpulse.value").warning("Value results unavailable (%s)", type(exc).__name__)
+        return None
 
 
 async def _retained_value_response(snapshot):
@@ -12231,7 +12324,7 @@ async def _retained_value_response(snapshot):
         row["historical_quote"] = True
         if sync_error:
             row["quote_available"] = False
-    return {"count":len(rows),"bets":rows,"retained":True,"stale":sync_error,
+    return {"count":len(rows),"bets":rows,"retained":True,"stale":sync_error,"results":await _safe_value_result_report(),
             "note":"Cote de détection conservée. Suppression de la liste active uniquement sur fin ou annulation confirmée."}
 
 
@@ -12246,7 +12339,7 @@ async def get_value_bets(payload: dict = Depends(get_current_user_payload)):
         for row in rows:
             row["id"] = row.pop("_id")
             row.update(historical_quote=True, quote_available=False)
-        return {"count":len(rows), "bets":rows, "retained":True, "stale":True}
+        return {"count":len(rows), "bets":rows, "retained":True, "stale":True, "results":await _safe_value_result_report()}
     return await _retained_value_response(snapshot)
 
 
