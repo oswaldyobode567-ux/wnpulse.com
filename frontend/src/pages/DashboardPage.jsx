@@ -1389,6 +1389,10 @@ export function MatchCataloguePage() {
   const dateIndex = dates.indexOf(selectedDate);
   const visibleMatches = dayGroups.find(([key]) => key === selectedDate)?.[1] || [];
   const leagueGroups = groupByLeague(visibleMatches);
+  const liveFixtures = visibleMatches.flatMap(match => {
+    const score = fixtureScore(match, scoresByMatch);
+    return score && !score.completed && !score.stale ? [{ match, score }] : [];
+  });
   const selectDate = value => setSearchParams(previous => {
     const params = new URLSearchParams(previous);
     value === today ? params.delete("date") : params.set("date", value);
@@ -1480,6 +1484,22 @@ export function MatchCataloguePage() {
         </Card>
 
         <AdminShareToolbar />
+        {liveFixtures.length > 0 && <section aria-labelledby="today-live-title" data-testid="today-live-scores" className="rounded-2xl border border-rose-200 bg-white p-3 sm:p-4">
+          <h2 id="today-live-title" className="mb-3 flex items-center gap-2 font-heading text-lg font-bold text-slate-900">
+            <Radio className="h-5 w-5 text-rose-600" aria-hidden="true" />{t("En direct")}
+          </h2>
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {liveFixtures.map(({ match, score }) => <li key={match.id || match.match_id} className="rounded-xl border border-rose-100 bg-rose-50/50 p-2.5">
+              <p className="mb-1 truncate text-xs font-semibold text-slate-600">{match.sport_title || match.league_name}</p>
+              {["home", "away"].map(side => <div key={side} className="flex min-w-0 items-center gap-2 py-0.5 text-sm font-semibold text-slate-900">
+                <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
+                  kind={match[`${side}_media`]?.kind} sport={match.sport_key} size="compact" />
+                <bdi className="min-w-0 break-words">{match[`${side}_team`]}</bdi>
+                <bdi className="ms-auto shrink-0 font-bold tabular-nums text-rose-700">{formatNumber(score[side])}</bdi>
+              </div>)}
+            </li>)}
+          </ul>
+        </section>}
         <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
             <div className="min-w-0"><h2 id="dashboard-matches-title" className="flex items-center gap-2 font-heading text-lg sm:text-xl font-bold text-slate-900"><Activity className="h-5 w-5 shrink-0 text-orange-500" aria-hidden="true" />{t("Explorer les rencontres")}</h2>
@@ -1615,12 +1635,16 @@ function useTodayScores() {
       try {
         const { data } = await api.get("/scores?snapshot=true", { signal: controller.signal, timeout: 8000 });
         if (!controller.signal.aborted) {
-          setScores(Array.isArray(data?.scores) && data.updated_at
-            ? new Map(data.scores.map(score => [String(score.id), { ...score, stale: data.stale }]))
-            : null);
+          if (Array.isArray(data?.scores) && data.updated_at) {
+            setScores(new Map(data.scores.filter(score => score?.id != null).map(score => [
+              String(score.id), { ...score, stale: Boolean(data.stale), snapshotAt: data.updated_at }
+            ])));
+          } else {
+            setScores(previous => markTodayScoresStale(previous));
+          }
         }
       } catch {
-        if (!controller.signal.aborted) setScores(null);
+        if (!controller.signal.aborted) setScores(previous => markTodayScoresStale(previous));
       } finally {
         loading = false;
       }
@@ -1637,13 +1661,19 @@ function useTodayScores() {
   return scores;
 }
 
+function markTodayScoresStale(scores) {
+  return scores && new Map([...scores].map(([id, row]) => [id, { ...row, stale: true }]));
+}
+
 function fixtureScore(match, scoresByMatch) {
   const row = scoresByMatch?.get(String(match.id || match.match_id));
-  if (!row || row.home_team !== match.home_team || row.away_team !== match.away_team) return null;
-  const scores = new Map((row.scores || []).map(item => [item.name, item.score]));
-  const home = scores.get(match.home_team), away = scores.get(match.away_team);
+  if (!row || !Array.isArray(row.scores)) return null;
+  const scores = new Map(row.scores.filter(Boolean).map(item => [item.name, item.score]));
+  const home = scores.get(row.home_team), away = scores.get(row.away_team);
   if (![home, away].every(value => /^\d+$/.test(String(value ?? "")))) return null;
-  return { home: Number(home), away: Number(away), completed: row.completed === true, stale: Boolean(row.stale) };
+  const updatedAt = Date.parse(row._score_fetched_at || row.last_update || row.snapshotAt);
+  const stale = Boolean(row.stale) || !Number.isFinite(updatedAt) || Date.now() - updatedAt > 5 * 60_000;
+  return { home: Number(home), away: Number(away), completed: row.completed === true, stale };
 }
 
 function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false, scoresByMatch }) {
