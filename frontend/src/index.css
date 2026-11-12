@@ -598,19 +598,19 @@ html[data-wp-theme='light'] .wp-premium :is(.wp-home-hero,.wp-catalogue-header,.
 }
 .wp-premium .wp-photo-hero-slides img + img { opacity:0; }
 .wp-premium .wp-photo-hero-shade {
-  background:linear-gradient(90deg,#10111af5 4%,#10111acc 40%,#10111a38 76%,#10111a68 100%);
+  background:linear-gradient(90deg,#0b111bf5 4%,#0b111bcc 39%,#0b111a30 73%,#0b111b55 100%), linear-gradient(0deg,#0b111bcb,#0b111b00 38%);
 }
 html[data-wp-theme] .wp-premium .wp-photo-hero .wp-photo-hero-copy :is(h1,p,.text-slate-500,.wp-editorial-eyebrow,.wp-editorial-muted,.wp-result-link) { color:#f5f2f8; }
 .wp-premium .wp-photo-hero-credits { color:#f5f2f8; }
 .wp-premium .wp-photo-hero-credits a { text-decoration:underline; text-underline-offset:3px; }
 .wp-premium .wp-photo-motion-control { background:#151520c9; color:white; }
 @media (max-width:767px) {
-  .wp-premium .wp-photo-hero-shade { background:linear-gradient(180deg,#10111a96,#10111ac9 38%,#10111ad4 72%,#10111af0); }
+  .wp-premium .wp-photo-hero-shade { background:linear-gradient(180deg,#0b111b91,#0b111bc4 44%,#0b111bf2 100%); }
 }
 @media (prefers-reduced-motion:no-preference) {
-  .wp-premium .wp-photo-hero-slides img:first-child { animation:wp-photo-hero-drift 24s ease-in-out infinite alternate; }
-  .wp-premium .wp-photo-hero-slides img + img { animation:wp-photo-hero-crossfade 24s ease-in-out infinite; }
-  .wp-premium .wp-photo-hero-slides img:nth-child(3) { animation-delay:8s; }
+  .wp-premium .wp-photo-hero-slides img:first-child { animation:wp-photo-hero-drift 27s ease-in-out infinite alternate; }
+  .wp-premium .wp-photo-hero-slides img + img { animation:wp-photo-hero-crossfade 27s ease-in-out infinite; }
+  .wp-premium .wp-photo-hero-slides img:nth-child(3) { animation-delay:9s; }
   .wp-premium .wp-photo-hero-slides[data-paused='true'] img { animation-play-state:paused; }
 }
 @media (prefers-reduced-motion:reduce) {

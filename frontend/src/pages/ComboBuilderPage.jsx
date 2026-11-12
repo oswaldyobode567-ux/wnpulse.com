@@ -1,6 +1,8 @@
+import TicketShare from "@/components/TicketShare";
+import { loadComboData } from "@/lib/comboRequest";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { ArrowRight, BarChart3, CalendarDays, Check, ChevronDown, Clock, Copy, Info, Loader2, Lock, Plus, RefreshCw, Save, Search, Send, SlidersHorizontal, Sparkles, Trash2, Trophy, X } from "lucide-react";
+import { ArrowRight, BarChart3, CalendarDays, Check, ChevronDown, Clock, Copy, Info, Loader2, Lock, Plus, RefreshCw, Save, Search, SlidersHorizontal, Sparkles, Trash2, Trophy, X } from "lucide-react";
 import AppLayout, { usePageLanguage, ExperienceToolNav } from "@/components/AppLayout";
 import api from "@/lib/api";
 import { useAuth } from "@/contexts/AuthContext";
@@ -705,7 +707,7 @@ export default function ComboBuilderPage() {
       const [profile, catalogue] = await Promise.allSettled([api.get("/auth/me", {
         timeout: 8000,
         signal: controller.signal
-      }), api.get("/builder/matches", {
+      }), loadComboData("/builder/matches", {
         timeout: 20000,
         signal: controller.signal
       })]);
@@ -1026,17 +1028,6 @@ export default function ComboBuilderPage() {
       }
     }
   }
-  function shareWhatsApp() {
-    if (!ticketUsable(selectedPicks, catalogueStamp.current, Date.now())) return;
-    const content = ticketMessage(i18n, comboName, selectedPicks),
-      url = `https://wa.me/?text=${encodeURIComponent(content)}`;
-    if (url.length > 8000) {
-      setManualCopy(content);
-      setNotice("Ce ticket est long. Copie le texte ci-dessous pour le partager sans couper les sélections.");
-      return;
-    }
-    window.open(url, "_blank", "noopener,noreferrer");
-  }
   async function deleteSaved(id) {
     if (deletingRef.current.has(id) || !paidAccount(accountRef.current)) return;
     const token = epoch.current;
@@ -1155,7 +1146,10 @@ export default function ComboBuilderPage() {
                     })}</label>
                   {i18n.tx(!usable && <p className="cb-action-help">{i18n.t("Actualise le catalogue et retire ou remplace les s\xE9lections signal\xE9es pour enregistrer ou partager le ticket.")}</p>)}
                   {i18n.tx(canPersist ? <button type="button" className="cb-button cb-button--primary cb-wide" onClick={saveCombo} disabled={saving || !usable || fingerprint === lastSaved} data-testid="builder-save-btn">{i18n.tx(saving ? <Loader2 aria-hidden="true" className="cb-spin" /> : fingerprint === lastSaved ? <Check aria-hidden="true" /> : <Save aria-hidden="true" />)}{i18n.tx(saving ? "Enregistrement…" : fingerprint === lastSaved ? "Ticket enregistré" : "Enregistrer le ticket")}</button> : account && !isPaid && accessFresh ? <Link to="/app/abonnement" className="cb-button cb-button--primary cb-wide"><Lock aria-hidden="true" />{i18n.t("Enregistrer avec Pro")}</Link> : <button type="button" className="cb-button cb-button--outline cb-wide" onClick={loadCatalogue} disabled={refreshing}>{i18n.t("V\xE9rifier mon acc\xE8s")}<RefreshCw aria-hidden="true" /></button>)}
-                  <div className="cb-share-actions"><button type="button" className="cb-button cb-button--outline" onClick={copyTicket} disabled={!usable} data-testid="builder-copy-btn"><Copy aria-hidden="true" />{i18n.t("Copier")}</button><button type="button" className="cb-button cb-button--whatsapp" onClick={shareWhatsApp} disabled={!usable} data-testid="builder-whatsapp-btn"><Send aria-hidden="true" />{i18n.t("WhatsApp")}</button></div>
+                  <div className="cb-share-actions"><button type="button" className="cb-button cb-button--outline" onClick={copyTicket} disabled={!usable} data-testid="builder-copy-btn"><Copy aria-hidden="true" />{i18n.t("Copier")}</button></div>
+                  {usable && <TicketShare title={comboName.trim() || i18n.t("Mon ticket WNPulse")} odds={metrics.totalOdds} legs={selectedPicks}
+                    message={ticketMessage(i18n, comboName, selectedPicks)} i18n={i18n}
+                    isUsable={() => ticketUsable(selectedPicks, catalogueStamp.current, Date.now())} />}
                 </>)}
                 {i18n.tx(account && !isPaid && <div className="cb-free-note"><Lock aria-hidden="true" /><p>{i18n.t("Les options avec un cadenas demandent un abonnement. L\u2019enregistrement des tickets est r\xE9serv\xE9 aux abonn\xE9s.")}</p><Link to="/app/abonnement">{i18n.t("Voir les formules")}<ArrowRight aria-hidden="true" /></Link></div>)}
                 {i18n.tx(notice && <p className="cb-notice" role="status">{i18n.tx(notice)}</p>)}

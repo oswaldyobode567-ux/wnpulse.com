@@ -1,3 +1,4 @@
+import { loadComboData } from "@/lib/comboRequest";
 import { BrowserRouter, Routes, Route, Navigate, useLocation, useNavigationType, Link } from "react-router-dom";
 import { AuthProvider, useAuth } from "@/contexts/AuthContext";
 import { Toaster } from "@/components/ui/sonner";
@@ -152,7 +153,7 @@ export default function MontantePage() {
     if (background && activeData.current) setRefreshing(true);else setLoading(true);
     setError("");
     try {
-      const result = await api.get("/montante", {
+      const result = await loadComboData("/montante", {
         signal: request.signal,
         timeout: 30_000
       });

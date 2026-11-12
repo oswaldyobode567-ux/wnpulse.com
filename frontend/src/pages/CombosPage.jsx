@@ -1,3 +1,5 @@
+import TicketShare from "@/components/TicketShare";
+import { loadComboData } from "@/lib/comboRequest";
 import { copyShareText } from "@/lib/shareClipboard";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
@@ -49,7 +51,7 @@ export default function CombosPage() {
     const current=++epoch.current;
     const controller=new AbortController();optionRequest.current=controller;
     setAccess("loading");setOptions(null);setResult(null);setError("");setBusy(false);setNotice("");setManual("");
-    api.get("/combos/personalized/options",{signal:controller.signal,timeout:20000}).then(({data})=>{
+    loadComboData("/combos/personalized/options",{signal:controller.signal,timeout:20000}).then(({data})=>{
       if(controller.signal.aborted||epoch.current!==current)return;
       if(!data||![data.sports,data.leagues,data.bookmakers].every(Array.isArray))throw new Error("Invalid options");
       setOptions(data);setAccess("ready");
@@ -100,11 +102,9 @@ export default function CombosPage() {
         </section>)}</div>
         <div className="mt-3 flex flex-wrap gap-2">
           <button className="pc-button" type="button" data-testid="personal-copy" disabled={!canUse(ticket)} onClick={()=>copyTicket(ticket)}><Copy aria-hidden="true"/>{t("copy")}</button>
-          {canUse(ticket) && <>
-            <a className="pc-button border-emerald-200 text-emerald-800" data-testid="personal-whatsapp" target="_blank" rel="noopener noreferrer" href={`https://wa.me/?text=${encodeURIComponent(ticketText(ticket))}`} onClick={event=>{if(!canUse(ticket))event.preventDefault();}}>WhatsApp ↗</a>
-            <a className="pc-button border-sky-200 text-sky-800" data-testid="personal-telegram" target="_blank" rel="noopener noreferrer" href={`https://t.me/share/url?url=${encodeURIComponent("https://wnpulse.com")}&text=${encodeURIComponent(ticketText(ticket))}`} onClick={event=>{if(!canUse(ticket))event.preventDefault();}}>Telegram ↗</a>
-          </>}
         </div>
+        {canUse(ticket) && <TicketShare title={t(principal?"main":"alternative")} odds={ticket.total_odds} legs={ticket.legs}
+          message={ticketText(ticket)} i18n={i18n} isUsable={() => canUse(ticket)} />}
         {manual===ticketText(ticket) && <label className="pc-note mt-3 block">{t("manualCopy")}<textarea data-testid="personal-manual-copy" className="mt-2 min-h-36 w-full rounded-lg border p-2" value={manual} readOnly onFocus={e=>e.target.select()} autoFocus /></label>}
       </div>
     </article>;
