@@ -406,7 +406,7 @@ async def publish(key):
         return "Publication non confirmée. Vérifie le canal ; aucun renvoi automatique."
 
 async def bot_request(method, payload):
-    async with httpx.AsyncClient(timeout=8,follow_redirects=False) as client:
+    async with httpx.AsyncClient(timeout=5, follow_redirects=False, transport=httpx.AsyncHTTPTransport(retries=2)) as client:
         response=await client.post(f"https://api.telegram.org/bot{TOKEN}/{method}",json=payload)
         data=response.json()
         if response.status_code>=400 or data.get("ok") is not True:
@@ -513,6 +513,7 @@ app=FastAPI(lifespan=lifespan,docs_url=None,redoc_url=None,openapi_url=None)
 async def health():
     return {"ok":True,"telegram_configured":VALID_SECRET and VALID_TOKEN and bool(ADMIN),
             "channel_configured":VALID_CHANNEL,"channel_publication_enabled":LIVE and VALID_CHANNEL,
+            "group_animation_enabled": GROUP_ANIMATION,
             "group_animation_ready":GROUP_ANIMATION and RESOLVED_GROUP is not None}
 
 def natural_intent(text):
@@ -713,6 +714,17 @@ def approve_review(owner, kind):
     keys=json.loads(row["keys_json"])
     return "\n\n".join(approve_draft(key,now) for key in keys[:10])
 
+def group_binding_command(text):
+    command, _, target = text.strip().casefold().partition("@")
+    normalized = "".join(c for c in unicodedata.normalize("NFKD", command.strip()) if not unicodedata.combining(c))
+    return normalized in {"/lier", "lier", "lie"} and (not target or target in {USERNAME, "wnpulseassistantbot"})
+
+
+def binding_reply(chat_id, text):
+    # Telegram executes the reply directly from the webhook response.
+    return {"method": "sendMessage", "chat_id": chat_id, "text": text}
+
+
 async def command(message):
     chat=message.get("chat") or {}
     user=message.get("from") or {}
@@ -723,35 +735,31 @@ async def command(message):
     private=chat.get("type")=="private"
     is_group=chat.get("type") in {"group","supergroup"}
     text=str(message.get("text") or "").strip()
-    binding_command=text.lower() in ("/lier",f"/lier@{USERNAME}")
-    if binding_command and private and user.get("id") in ADMIN:
-        await telegram("sendMessage",chat_id,"Ouvre le groupe privé WinPlus, puis envoie la commande /lier directement dans le groupe avec ton profil Telegram.")
-        return
-    if binding_command and is_group:
+    if group_binding_command(text) and (private or is_group):
+        if user.get("is_bot") and not message.get("sender_chat"):
+            return
+        if private:
+            return binding_reply(chat_id, "Pour lier Win Plus, envoie /lier@WNPulseAssistantBot dans le groupe privé avec ton profil Telegram personnel.")
         if message.get("sender_chat"):
-            await telegram("sendMessage",chat_id,"Envoie /lier avec ton profil Telegram personnel pour que je puisse vérifier tes droits.")
-            return
-        if user.get("is_bot"):
-            return
+            return binding_reply(chat_id, "Envoie la commande avec ton profil Telegram personnel. Telegram affiche actuellement le groupe comme auteur.")
         if user.get("id") not in ADMIN:
-            await telegram("sendMessage",chat_id,"Seul un administrateur WinPlus autorisé peut relier ce groupe.")
-            return
+            return binding_reply(chat_id, "Ce compte Telegram n’est pas autorisé à relier Win Plus. Utilise le compte administrateur WinPulse enregistré.")
         if not GROUP_ANIMATION:
-            await telegram("sendMessage",chat_id,"Le réglage d’animation du groupe est désactivé sur le serveur.")
-            return
+            return binding_reply(chat_id, "L’animation du groupe est désactivée sur le serveur.")
+        if GROUP and GROUP.lstrip("-").isdigit() and int(GROUP) != chat_id:
+            return binding_reply(chat_id, "Un autre groupe est configuré pour l’animation WinPulse.")
         try:
-            member=await bot_request("getChatMember",{"chat_id":chat_id,"user_id":user["id"]})
-        except Exception:
-            await telegram("sendMessage",chat_id,"Impossible de vérifier tes droits dans ce groupe. Vérifie que je suis bien administrateur du groupe.")
-            return
-        if member.get("status") not in {"administrator","creator"}:
-            await telegram("sendMessage",chat_id,"La commande /lier doit être envoyée par un administrateur de ce groupe.")
-            return
-        with closing(connect()) as con,con:
-            con.execute("INSERT OR REPLACE INTO group_binding(id,chat_id) VALUES(1,?)",(chat_id,))
-        RESOLVED_GROUP=chat_id
-        await telegram("sendMessage",chat_id,"Le groupe est relié à WinPulse. J’y accueillerai les nouveaux membres et lancerai les rendez-vous de discussion.")
-        return
+            member = await bot_request("getChatMember", {"chat_id": chat_id, "user_id": user["id"]})
+        except Exception as exc:
+            LOG.warning("Group binding rights check failed (%s)", type(exc).__name__)
+            return binding_reply(chat_id, "Impossible de vérifier tes droits. Vérifie que je suis administrateur du groupe, puis réessaie.")
+        if member.get("status") not in {"administrator", "creator"}:
+            return binding_reply(chat_id, "La commande doit être envoyée par un administrateur de ce groupe.")
+        with closing(connect()) as con, con:
+            con.execute("INSERT OR REPLACE INTO group_binding(id,chat_id) VALUES(1,?)", (chat_id,))
+        RESOLVED_GROUP = chat_id
+        LOG.info("Group binding confirmed")
+        return binding_reply(chat_id, "Win Plus est relié. Je peux accueillir les nouveaux membres et lancer les rendez-vous de discussion.")
     if user.get("is_bot"):
         return
     group=is_group and chat_id==RESOLVED_GROUP
@@ -877,7 +885,9 @@ async def webhook(request:Request):
         return {"ok":True}
     try:
         if isinstance(update.get("message"),dict):
-            await command(update["message"])
+            reply = await command(update["message"])
+            if reply is not None:
+                return reply
         elif isinstance(update.get("callback_query"),dict):
             await callback(update["callback_query"])
     except Exception as exc:
