@@ -716,19 +716,43 @@ def approve_review(owner, kind):
 async def command(message):
     chat=message.get("chat") or {}
     user=message.get("from") or {}
-    if user.get("is_bot") or type(chat.get("id")) is not int:
+    if type(chat.get("id")) is not int:
         return
     global RESOLVED_GROUP
     chat_id=chat["id"]
     private=chat.get("type")=="private"
     is_group=chat.get("type") in {"group","supergroup"}
     text=str(message.get("text") or "").strip()
-    if (is_group and GROUP_ANIMATION and user.get("id") in ADMIN
-            and text.lower() in ("/lier",f"/lier@{USERNAME}")):
+    binding_command=text.lower() in ("/lier",f"/lier@{USERNAME}")
+    if binding_command and private and user.get("id") in ADMIN:
+        await telegram("sendMessage",chat_id,"Ouvre le groupe privé WinPlus, puis envoie la commande /lier directement dans le groupe avec ton profil Telegram.")
+        return
+    if binding_command and is_group:
+        if message.get("sender_chat"):
+            await telegram("sendMessage",chat_id,"Envoie /lier avec ton profil Telegram personnel pour que je puisse vérifier tes droits.")
+            return
+        if user.get("is_bot"):
+            return
+        if user.get("id") not in ADMIN:
+            await telegram("sendMessage",chat_id,"Seul un administrateur WinPlus autorisé peut relier ce groupe.")
+            return
+        if not GROUP_ANIMATION:
+            await telegram("sendMessage",chat_id,"Le réglage d’animation du groupe est désactivé sur le serveur.")
+            return
+        try:
+            member=await bot_request("getChatMember",{"chat_id":chat_id,"user_id":user["id"]})
+        except Exception:
+            await telegram("sendMessage",chat_id,"Impossible de vérifier tes droits dans ce groupe. Vérifie que je suis bien administrateur du groupe.")
+            return
+        if member.get("status") not in {"administrator","creator"}:
+            await telegram("sendMessage",chat_id,"La commande /lier doit être envoyée par un administrateur de ce groupe.")
+            return
         with closing(connect()) as con,con:
             con.execute("INSERT OR REPLACE INTO group_binding(id,chat_id) VALUES(1,?)",(chat_id,))
         RESOLVED_GROUP=chat_id
         await telegram("sendMessage",chat_id,"Le groupe est relié à WinPulse. J’y accueillerai les nouveaux membres et lancerai les rendez-vous de discussion.")
+        return
+    if user.get("is_bot"):
         return
     group=is_group and chat_id==RESOLVED_GROUP
     if not (private or group):
