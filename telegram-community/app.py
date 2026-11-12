@@ -222,40 +222,36 @@ def format_caption(text):
 
 async def sports_hero(client, draft):
     if draft.get("kind") != "pick":
-        return None, "", ""
-    visual = draft.get("visual") or {}
-    sport = str(visual.get("sport", "")).lower()
-    league = str(visual.get("league", "")).lower()
-    if re.search(r"uefa_champs_league|champions league|ligue des champions", sport + " " + league):
-        theme = "champions"
-    elif sport == "soccer_epl" or "premier league" in league:
-        theme = "premier"
-    elif sport.startswith(("soccer", "football")) and "american" not in sport:
-        theme = "football"
-    elif sport.startswith("basketball"):
-        theme = "basketball"
-    elif sport.startswith("tennis"):
-        theme = "tennis"
-    else:
-        return None, "", ""
-    base = "https://www.wnpulse.com/share-photos"
+        return None, ""
+    sport = str((draft.get("visual") or {}).get("sport", "")).split("_", 1)[0]
+    theme = "football" if sport in ("soccer", "football") else "basketball" if sport == "basketball" else "mixed"
+    teams = (draft.get("visual") or {}).get("teams") or []
+    if len(CATALOGUE_TOKEN) >= 32 and len(teams) == 2:
+        try:
+            response = await client.post(API + "/share/artwork", timeout=11,
+                headers={"X-WNPulse-Community-Key": CATALOGUE_TOKEN},
+                json={"fixtures": [{"home_team": teams[0], "away_team": teams[1], "sport": sport}]})
+            if response.is_success and len(response.content) <= 4_050_000:
+                from PIL import Image
+                with Image.open(BytesIO(response.content), formats=("PNG", "JPEG")) as image:
+                    if 1 <= image.width * image.height <= 8_000_000:
+                        return image.convert("RGB"), "ILLUSTRATION IA DU MATCH"
+        except Exception:
+            pass
     try:
-        catalogue = await client.get(base + "/index.json", timeout=3)
-        catalogue.raise_for_status()
-        photo = catalogue.json().get(theme) or {}
         raw = bytearray()
-        async with client.stream("GET", f"{base}/{theme}.webp", timeout=3) as response:
+        async with client.stream("GET", f"https://www.wnpulse.com/share-arena-{theme}.webp", timeout=3) as response:
             response.raise_for_status()
-            if response.headers.get("content-type", "").split(";")[0] != "image/webp":
-                return None, "", ""
-            async for chunk in response.aiter_bytes():
-                if len(raw) + len(chunk) > 1_000_000:
-                    return None, "", ""
-                raw.extend(chunk)
-        credit = f"\n\nPhoto d’archives recadrée · {photo['label']} · {photo['author']} · {photo['license']}\n{photo['source']} · {photo['licenseUrl']}"
-        return await asyncio.to_thread(decode_cover, raw), "PHOTO D’ARCHIVES", credit
+            if response.headers.get("content-type", "").split(";")[0] == "image/webp":
+                async for chunk in response.aiter_bytes():
+                    if len(raw) + len(chunk) > 1_000_000:
+                        break
+                    raw.extend(chunk)
+        if raw:
+            return await asyncio.to_thread(decode_cover, raw), "ILLUSTRATION DE SECOURS"
     except Exception:
-        return None, "", ""
+        pass
+    return None, ""
 
 
 async def telegram(method, chat, text, draft=None, markup=None):
@@ -274,11 +270,7 @@ async def telegram(method, chat, text, draft=None, markup=None):
                         image,extra=None,""
                     badges.append(image)
                     attribution+=extra
-            hero, hero_label, credit = await sports_hero(client, draft)
-            if len((text + attribution + credit).encode("utf-16-le")) // 2 <= 1024:
-                attribution += credit
-            else:
-                hero = None
+            hero, hero_label = await sports_hero(client, draft)
             png=await asyncio.to_thread(poster,draft,photo,badges,hero,hero_label)
             res=await client.post(f"https://api.telegram.org/bot{TOKEN}/sendPhoto",
                 data={**params,"caption":format_caption(text+attribution),"parse_mode":"HTML"},files={"photo":("winpulse.png",png,"image/png")})
