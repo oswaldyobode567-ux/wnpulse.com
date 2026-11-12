@@ -240,7 +240,7 @@ export default function ValueBetsPage() {
     if (authLoading || isFree) return;
     const controller = new AbortController();
     let active = true;
-    setRequest(previous => ({ key: accessKey, status: "loading", bets: previous.key === accessKey ? previous.bets : [] }));
+    setRequest(previous => ({ key: accessKey, status: "loading", bets: previous.key === accessKey ? previous.bets : [], results: previous.key === accessKey ? previous.results : null }));
     api.get("/value-bets", {
       signal: controller.signal,
       timeout: 15_000
@@ -251,7 +251,7 @@ export default function ValueBetsPage() {
       if (active) setRequest({
         key: accessKey,
         status: "ready",
-        bets, stale: Boolean(data.stale)
+        bets, results: data.results, stale: Boolean(data.stale)
       });
     }).catch(error => {
       if (!active || controller.signal.aborted) return;
@@ -308,6 +308,7 @@ export default function ValueBetsPage() {
             <p className="mb-4 text-sm text-slate-700">{i18n.tx(current.message)}</p>
             {i18n.tx(current.sessionExpired ? <Button asChild variant="outline"><Link to="/login">{i18n.t("Se reconnecter")}</Link></Button> : <Button variant="outline" onClick={() => setReloadKey(value => value + 1)}>{i18n.t("R\xE9essayer")}</Button>)}
           </Card> : <>
+            {current.results && <ValueResults report={current.results} i18n={i18n} />}
             <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="font-semibold text-slate-900" aria-live="polite">{i18n.rich("{{v0}} s\xE9lection{{v1}} affich\xE9e{{v2}}", {
@@ -335,4 +336,31 @@ export default function ValueBetsPage() {
         <p className="mt-6 text-xs leading-relaxed text-slate-500">{i18n.t("Les estimations ne garantissent aucun r\xE9sultat. V\xE9rifie les cotes et les r\xE8gles du march\xE9 avant utilisation. 18+.")}</p>
       </div>
     </AppLayout>;
+}
+
+
+function ValueResults({ report, i18n }) {
+  const rate = value => value == null ? "—" : i18n.formatNumber(value / 100, { style: "percent", maximumFractionDigits: 1 });
+  const labels = { won: "Gagné", lost: "Perdu", void: "Remboursé" };
+  return <Card className="mb-6 border-slate-200 bg-white p-5" data-testid="value-bets-results">
+    <h2 className="font-heading text-lg font-bold">{i18n.t("Bilan des Value Bets · 30 jours")}</h2>
+    <dl className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      {[["Taux de réussite", rate(report.win_rate)], ["Rendement", rate(report.roi)],
+        ["Gagnés", report.won], ["Perdus", report.lost], ["Remboursés", report.void],
+        ["En attente", report.pending]].map(([label, value]) => <div key={label} className="rounded-xl bg-slate-50 p-3">
+          <dt className="text-xs text-slate-600">{i18n.t(label)}</dt>
+          <dd className="text-lg font-bold tabular-nums">{typeof value === "number" ? i18n.formatNumber(value) : value}</dd>
+        </div>)}
+    </dl>
+    <p className="mt-3 text-xs leading-relaxed text-slate-600">{i18n.t("Le taux de réussite utilise les sélections gagnées et perdues. Le rendement est calculé à mise fixe, avec la cote relevée à la détection.")}</p>
+    {report.recent?.length > 0 && <details className="mt-3">
+      <summary className="min-h-11 cursor-pointer py-2 text-sm font-semibold">{i18n.t("Voir les derniers matchs terminés")}</summary>
+      <ul className="divide-y divide-slate-100">
+        {report.recent.map((bet, index) => <li key={index} className="flex flex-wrap justify-between gap-2 py-3 text-sm">
+          <div><p className="font-semibold"><bdi>{bet.home_team} — {bet.away_team}</bdi></p><p className="text-xs text-slate-600"><bdi>{bet.pick}</bdi> · {i18n.formatNumber(bet.pick_odds)}</p></div>
+          <span className="font-semibold tabular-nums">{bet.final_score && <bdi>{bet.final_score} · </bdi>}{i18n.t(labels[bet.result] || "Résultat du pari en attente")}</span>
+        </li>)}
+      </ul>
+    </details>}
+  </Card>;
 }

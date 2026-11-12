@@ -391,8 +391,9 @@ export default function LandingPage() {
 
       <section className="wp-public-hero wp-editorial-hero wp-photo-hero relative overflow-hidden">
         <div className="wp-photo-hero-slides" aria-hidden="true" data-paused={motionPaused}>
-          <img src="/wnpulse-football-real.webp" alt="" width="960" height="540" fetchPriority="high" decoding="async" />
-          <img src="/wnpulse-tennis-real.webp" alt="" width="960" height="540" loading="lazy" decoding="async" />
+          <img src="/wnpulse-hero-phone.webp" alt="" width="1440" height="960" fetchPriority="high" decoding="async" />
+          <img src="/wnpulse-hero-thumb.webp" alt="" width="1440" height="960" loading="lazy" decoding="async" />
+          <img src="/wnpulse-hero-fans.webp" alt="" width="1440" height="810" loading="lazy" decoding="async" />
         </div>
         <div className="wp-photo-hero-shade" aria-hidden="true" />
         <div className="relative mx-auto w-full min-w-0 max-w-7xl px-4 py-12 sm:px-6 sm:py-24 lg:px-8">
@@ -505,7 +506,7 @@ export default function LandingPage() {
             <button type="button" className="wp-photo-motion-control min-h-11 rounded-lg border border-white/40 px-3" aria-pressed={motionPaused} onClick={() => setMotionPaused(v => !v)}>
               {motionPaused ? t("Relancer le diaporama") : t("Mettre le diaporama en pause")}
             </button>
-            <span>{t("Photos recadrées")} · <a href="https://commons.wikimedia.org/wiki/File:Football_players.jpg">Happi Raphael</a> · <a href="https://commons.wikimedia.org/wiki/File:%22Singles_tennis_match%22.jpg">Mariodg20</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></span>
+            <span>{t("Photos d’illustration")} · <a href="https://www.pexels.com/photo/3974770/">Andrea Piacquadio</a> · <a href="https://www.pexels.com/photo/31465719/">Wasin Pirom</a> · <a href="https://www.pexels.com/photo/23495491/">Vitaly Gariev</a></span>
           </div>
         </div>
       </section>

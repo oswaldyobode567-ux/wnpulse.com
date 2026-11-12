@@ -128,6 +128,8 @@ const DASHBOARD_MESSAGES = {
     "Impossible de charger les sélections à la une.": "Impossible de charger les sélections à la une.",
     "Réessayer": "Réessayer",
     "LIVE": "LIVE",
+    "Terminé": "Terminé",
+    "Score uniquement": "Score uniquement",
     "Verrouillé": "Verrouillé",
     "Passe Pro pour débloquer": "Passe Pro pour débloquer",
     "Pronostic": "Pronostic",
@@ -261,6 +263,8 @@ const DASHBOARD_MESSAGES = {
     "Impossible de charger les sélections à la une.": "Unable to load highlighted picks.",
     "Réessayer": "Try again",
     "LIVE": "LIVE",
+    "Terminé": "Finished",
+    "Score uniquement": "Score only",
     "Verrouillé": "Locked",
     "Passe Pro pour débloquer": "Upgrade to Pro to unlock",
     "Pronostic": "Prediction",
@@ -394,6 +398,8 @@ const DASHBOARD_MESSAGES = {
     "Impossible de charger les sélections à la une.": "No se han podido cargar las selecciones destacadas.",
     "Réessayer": "Reintentar",
     "LIVE": "EN DIRECTO",
+    "Terminé": "Finalizado",
+    "Score uniquement": "Solo marcador",
     "Verrouillé": "Bloqueado",
     "Passe Pro pour débloquer": "Pásate a Pro para desbloquear",
     "Pronostic": "Pronóstico",
@@ -527,6 +533,8 @@ const DASHBOARD_MESSAGES = {
     "Impossible de charger les sélections à la une.": "Não foi possível carregar as seleções em destaque.",
     "Réessayer": "Tentar novamente",
     "LIVE": "EM DIRETO",
+    "Terminé": "Terminado",
+    "Score uniquement": "Apenas resultado",
     "Verrouillé": "Bloqueado",
     "Passe Pro pour débloquer": "Adere ao Pro para desbloquear",
     "Pronostic": "Prognóstico",
@@ -660,6 +668,8 @@ const DASHBOARD_MESSAGES = {
     "Impossible de charger les sélections à la une.": "Hervorgehobene Tipps konnten nicht geladen werden.",
     "Réessayer": "Erneut versuchen",
     "LIVE": "LIVE",
+    "Terminé": "Beendet",
+    "Score uniquement": "Nur Spielstand",
     "Verrouillé": "Gesperrt",
     "Passe Pro pour débloquer": "Mit Pro freischalten",
     "Pronostic": "Tipp",
@@ -793,6 +803,8 @@ const DASHBOARD_MESSAGES = {
     "Impossible de charger les sélections à la une.": "تعذّر تحميل الاختيارات البارزة.",
     "Réessayer": "إعادة المحاولة",
     "LIVE": "مباشر",
+    "Terminé": "انتهت",
+    "Score uniquement": "النتيجة فقط",
     "Verrouillé": "مقفل",
     "Passe Pro pour débloquer": "اشترك في Pro لفتح المحتوى",
     "Pronostic": "التوقع",
@@ -1317,9 +1329,21 @@ export function MatchCataloguePage() {
       setRefreshing(false);
     }
   }, [refresh, refreshing]);
-  const searchIndex = useMemo(() => new Map(matches.map(match => [match, matchSearchText(match)])), [matches]);
+  const scoresByMatch = useTodayScores();
+  const catalogueWithScores = useMemo(() => {
+    const ids = new Set(matches.map(match => String(match.id || match.match_id)));
+    const scoreOnly = [...(scoresByMatch?.values() || [])].filter(row =>
+      row.id && !ids.has(String(row.id)) && row.sport_key && row.home_team && row.away_team &&
+      localMatchDay(row.commence_time) === today && dayjs(row.commence_time).valueOf() <= Date.now() &&
+      fixtureScore(row, scoresByMatch)
+    );
+    return [...matches, ...scoreOnly.map(row => attachDashboardMedia({
+      ...row, scoreOnly: true, is_live: !row.completed && !row.stale, is_finished: row.completed,
+    }, participantMedia))];
+  }, [matches, scoresByMatch, today, participantMedia]);
+  const searchIndex = useMemo(() => new Map(catalogueWithScores.map(match => [match, matchSearchText(match)])), [catalogueWithScores]);
   const filtered = useMemo(() => {
-    let list = matches;
+    let list = catalogueWithScores;
     if (hasSearch) {
       const terms = normalizeSearch(searchQuery).split(" ").filter(Boolean);
       list = list.filter(match => terms.every(term => searchIndex.get(match)?.includes(term)));
@@ -1331,7 +1355,7 @@ export function MatchCataloguePage() {
     if (riskFilter !== "all")
       list = list.filter(m => (m.prediction?.label || "") === riskFilter);
     return list;
-  }, [matches, sport, betFilter, riskFilter, hasSearch, searchQuery, searchIndex]);
+  }, [catalogueWithScores, sport, betFilter, riskFilter, hasSearch, searchQuery, searchIndex]);
   const visibleTopPicks = useMemo(() => topPicks.filter(p => matchesSearch({ ...p, prediction: p }, searchQuery)
       && (sport === "all" || (p.sport_key || "").toLowerCase().includes(sport))
       && matchesBetFilter(p.pick, betFilter, p.market_label, p.market_key)
@@ -1370,7 +1394,10 @@ export function MatchCataloguePage() {
     value === today ? params.delete("date") : params.set("date", value);
     return params;
   });
-  const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
+  const liveCount = matches.filter(match => {
+    const score = fixtureScore(match, scoresByMatch);
+    return score ? !score.completed && !score.stale : !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live);
+  }).length;
   const advancedFilterCount = Number(betFilter !== "all") + Number(riskFilter !== "all");
   const activeFilters = [
     ...(hasSearch ? [{ key: "q", label: searchQuery, clear: () => setSearchQuery("") }] : []),
@@ -1470,7 +1497,7 @@ export function MatchCataloguePage() {
           {loading ? <Skeleton className="h-48 rounded-xl" />
             : visibleMatches.length === 0 ? <div className="rounded-xl border border-dashed bg-white p-6 text-center text-sm text-slate-600" data-testid="dashboard-no-today">{t("Aucun match pour ce filtre")}</div>
               : <div className="space-y-3" data-testid="dashboard-day" data-day={selectedDate}>
-                {leagueGroups.map(([league, leagueMatches]) => <LeagueSection key={`${selectedDate}:${league}`} dayKey={selectedDate} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} showAllMatches compact />)}
+                {leagueGroups.map(([league, leagueMatches]) => <LeagueSection key={`${selectedDate}:${league}`} dayKey={selectedDate} league={league} matches={leagueMatches} isAdmin={isAdmin} isFree={isFree} onUpgrade={() => navigate("/app/abonnement")} showAllMatches compact scoresByMatch={scoresByMatch} />)}
               </div>}
 
         </section>
@@ -1577,11 +1604,56 @@ function CompetitionMark({ match }) {
   </span>;
 }
 
-function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false }) {
+function useTodayScores() {
+  const [scores, setScores] = useState(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    let loading = false;
+    async function refresh() {
+      if (loading || document.hidden) return;
+      loading = true;
+      try {
+        const { data } = await api.get("/scores?snapshot=true", { signal: controller.signal, timeout: 8000 });
+        if (!controller.signal.aborted) {
+          setScores(Array.isArray(data?.scores) && data.updated_at
+            ? new Map(data.scores.map(score => [String(score.id), { ...score, stale: data.stale }]))
+            : null);
+        }
+      } catch {
+        if (!controller.signal.aborted) setScores(null);
+      } finally {
+        loading = false;
+      }
+    }
+    refresh();
+    const interval = window.setInterval(refresh, 30000);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, []);
+  return scores;
+}
+
+function fixtureScore(match, scoresByMatch) {
+  const row = scoresByMatch?.get(String(match.id || match.match_id));
+  if (!row || row.home_team !== match.home_team || row.away_team !== match.away_team) return null;
+  const scores = new Map((row.scores || []).map(item => [item.name, item.score]));
+  const home = scores.get(match.home_team), away = scores.get(match.away_team);
+  if (![home, away].every(value => /^\d+$/.test(String(value ?? "")))) return null;
+  return { home: Number(home), away: Number(away), completed: row.completed === true, stale: Boolean(row.stale) };
+}
+
+function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false, scoresByMatch }) {
   const { t, formatNumber, formatDate } = useDashboardLanguage();
   const [expanded, setExpanded] = useDashboardViewState(`league:${dayKey}:${league}:open`, !compact);
   const [expandedAll, setExpandedAll] = useDashboardViewState(`league:${dayKey}:${league}:all`,false);
-  const liveCount = matches.filter(match => !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live)).length;
+  const liveCount = matches.filter(match => {
+    const score = fixtureScore(match, scoresByMatch);
+    return score ? !score.completed && !score.stale : !(match.completed || match.is_finished || match.prediction?.is_finished) && (match.prediction?.is_live || match.is_live);
+  }).length;
   const visible = expandedAll || showAllMatches ? matches : matches.slice(0, 6);
   return <div className="min-w-0 rounded-2xl border border-slate-200 bg-slate-50/60 p-2 sm:p-4" data-testid="dashboard-league">
     <button type="button" onClick={() => setExpanded(value => !value)} aria-expanded={expanded} className="mb-3 flex min-h-11 w-full flex-wrap items-center gap-2 rounded-lg text-start focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400">
@@ -1593,20 +1665,21 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
     </button>
     {expanded && <>
       {compact ? <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
-        {visible.map(match => <details key={match.id} className="group min-w-0">
+        {visible.map(match => { const score = fixtureScore(match, scoresByMatch); return <details key={match.id} className="group min-w-0">
           <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
-            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{score ? (score.completed ? t("Terminé") : score.stale ? "—" : t("LIVE")) : localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
             <span className="wp-fixture-teams min-w-0 flex-1 font-medium text-slate-900">
               {["home", "away"].map(side => <span key={side} className="flex min-w-0 items-center gap-2">
                 <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
                   kind={match[`${side}_media`]?.kind} sport={match.sport_key} size="compact" />
                 <bdi className="min-w-0 break-words">{match[`${side}_team`]}</bdi>
+                {score && <bdi className="ms-auto pe-1 font-bold tabular-nums text-slate-900">{formatNumber(score[side])}</bdi>}
               </span>)}
             </span>
             <ChevronRight className="h-4 w-4 shrink-0 text-slate-400 group-open:rotate-90" aria-hidden="true" />
           </summary>
-          <div className="p-2"><MatchCard match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} /></div>
-        </details>)}
+          <div className="p-2">{match.scoreOnly ? <p className="px-3 py-2 text-xs text-slate-500">{t("Score uniquement")}</p> : <MatchCard match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} />}</div>
+        </details>; })}
       </div> : <div className="grid min-w-0 gap-2.5 sm:gap-4 sm:grid-cols-2 xl:grid-cols-3">{visible.map(match => <MatchCard key={match.id} match={match} isAdmin={isAdmin} isFree={isFree} onUpgrade={onUpgrade} />)}</div>}
       {!showAllMatches && matches.length > 6 && <button type="button" onClick={() => setExpandedAll(value => !value)} className="mt-3 flex min-h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold leading-6 text-slate-600 hover:border-orange-300 hover:text-orange-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-orange-400" data-testid="league-show-more">
         {expandedAll ? t("Réduire cette liste") : t("Voir {{count}} autres rencontres", { count: formatNumber(matches.length - visible.length) })}
