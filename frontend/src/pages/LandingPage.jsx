@@ -418,10 +418,10 @@ export default function LandingPage() {
                   size="lg"
                   variant="outline"
                   className="wp-action h-auto min-h-12 w-full whitespace-normal border-slate-300 bg-white px-5 py-3 text-base hover:bg-slate-50 sm:w-auto sm:px-8"
-                  onClick={showPricing}
-                  data-testid="hero-pro-btn"
+                  onClick={() => navigate(user ? "/app" : signupUrl)}
+                  data-testid="hero-signup-btn"
                 >
-                  {t("Découvrir l’offre Pro")}
+                  {user ? t("Ouvrir l’application") : t("Créer mon compte gratuit")}
                 </Button>
               </div>
               <div className="mt-3"><a href="https://t.me/wnplus" target="_blank" rel="noopener noreferrer" onClick={() => trackJourney("telegram")} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-bold text-sky-700 hover:bg-sky-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sky-500" data-testid="landing-telegram">{telegramLabel} ↗</a></div>
@@ -443,6 +443,9 @@ export default function LandingPage() {
             </div>
 
             <div className="wp-enter min-w-0 lg:col-span-5" style={{ "--wp-delay": "160ms" }}>
+              <div className="wp-athlete-scene mb-4" aria-hidden="true">
+                <img src="/wnpulse-athletes.webp" alt="" width="900" height="600" decoding="async" fetchPriority="high" />
+              </div>
               <div id="picks-du-jour" className="relative min-w-0 scroll-mt-24">
                 <Card className="relative min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl sm:p-5">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
