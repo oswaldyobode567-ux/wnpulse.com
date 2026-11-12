@@ -1,30 +1,13 @@
 import { useEffect, useState } from "react";
 import { ImageDown, Send } from "lucide-react";
-import { API } from "@/lib/api";
+import api, { API } from "@/lib/api";
 
 const SITE = "https://wnpulse.com";
-function photoCategory(leg) {
-  const sport = String(leg.sport_key || leg.sport || "").toLowerCase();
-  const league = String(leg.competition || leg.sport_title || "").toLowerCase();
-  if (/uefa_champs_league|champions league|ligue des champions/.test(sport + " " + league)) return "champions";
-  if (sport === "soccer_epl" || /premier league/.test(league)) return "premier";
-  if (/soccer|football/.test(sport) && !sport.includes("american")) return "football";
-  if (sport.startsWith("basketball")) return "basketball";
-  if (sport.startsWith("tennis")) return "tennis";
-  return null;
-}
-
-async function archivePhotos(legs) {
-  try {
-    const response = await fetch("/share-photos/index.json", { signal: AbortSignal.timeout(1800) });
-    if (!response.ok) return [];
-    const catalogue = await response.json();
-    const keys = [...new Set(legs.map(photoCategory).filter(Boolean))].slice(0, 3);
-    return (await Promise.all(keys.map(async key => ({
-      ...catalogue[key], image: await loadPosterImage(`/share-photos/${key}.webp`),
-    })))).filter(photo => photo.image && photo.source);
-  } catch { return []; }
-}
+const ATMOSPHERES = {
+  football: ["/share-arena-football.webp", "#65efae"],
+  basketball: ["/share-arena-basketball.webp", "#ff9c62"],
+  mixed: ["/share-arena-mixed.webp", "#a9adff"],
+};
 
 function loadPosterImage(url, timeout = 1800) {
   if (!url) return Promise.resolve(null);
@@ -69,9 +52,29 @@ async function posterBadges(legs) {
   ))));
 }
 
+async function generatedArtwork(legs) {
+  try {
+    const { data } = await api.post("/share/artwork", {
+      fixtures: legs.map(leg => ({
+        home_team: leg.home_team, away_team: leg.away_team, sport: leg.sport_key || leg.sport || "",
+      })),
+    }, { responseType: "blob", timeout: 11_000 });
+    if (!["image/png", "image/jpeg"].includes(data.type)) return null;
+    const url = URL.createObjectURL(data);
+    try { return await loadPosterImage(url); }
+    finally { URL.revokeObjectURL(url); }
+  } catch {
+    return null;
+  }
+}
+
 async function renderTicket({ title, odds, legs, i18n }) {
-  const accent = "#8fe3d1";
-  const [photos, badges] = await Promise.all([archivePhotos(legs), posterBadges(legs)]);
+  const sports = new Set(legs.map(leg => String(leg.sport_key || leg.sport || "").split("_")[0]));
+  const theme = sports.size === 1 && (sports.has("soccer") || sports.has("football")) ? "football"
+    : sports.size === 1 && sports.has("basketball") ? "basketball" : "mixed";
+  const [arena, accent] = ATMOSPHERES[theme];
+  const [generated, fallback, badges] = await Promise.all([generatedArtwork(legs), loadPosterImage(arena), posterBadges(legs)]);
+  const background = generated || fallback;
   const canvas = document.createElement("canvas");
   canvas.width = 900;
   const ctx = canvas.getContext("2d");
@@ -100,25 +103,23 @@ async function renderTicket({ title, odds, legs, i18n }) {
     return { leg, teams, selection, height: 97 + teams.length * 36 + selection.length * 31 };
   });
   const top = 330 + heading.length * 42;
-  canvas.height = top + cards.reduce((height, card) => height + card.height + 16, 0) + 122 + photos.length * 27;
+  canvas.height = top + cards.reduce((height, card) => height + card.height + 16, 0) + 122;
   const backdrop = ctx.createLinearGradient(0, 0, 900, canvas.height);
   backdrop.addColorStop(0, "#0b1425");
   backdrop.addColorStop(1, "#172840");
   ctx.fillStyle = backdrop;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  photos.forEach(({ image }, index) => {
+  if (background) {
     const h = 400;
-    const w = 900 / photos.length;
-    const x = index * w;
-    const scale = Math.max(w / image.width, h / image.height);
+    const scale = Math.max(900 / background.width, h / background.height);
     ctx.save();
     ctx.beginPath();
-    ctx.rect(x, 0, w, h);
+    ctx.rect(0, 0, 900, h);
     ctx.clip();
-    ctx.drawImage(image, x + (w - image.width * scale) / 2, (h - image.height * scale) * .28,
-      image.width * scale, image.height * scale);
+    ctx.drawImage(background, (900 - background.width * scale) / 2, (h - background.height * scale) / 2,
+      background.width * scale, background.height * scale);
     ctx.restore();
-  });
+  }
   const shade = ctx.createLinearGradient(0, 0, 0, top);
   shade.addColorStop(0, "#080d16cc");
   shade.addColorStop(.45, "#080d1620");
@@ -154,9 +155,9 @@ async function renderTicket({ title, odds, legs, i18n }) {
     ctx.drawImage(badge, x - badge.width * scale / 2, y - badge.height * scale / 2, badge.width * scale, badge.height * scale);
   }
   write("WNPULSE", 44, 62, 28, true, accent);
-  if (photos.length) {
+  if (background) {
     ctx.textAlign = "right";
-    write(i18n.t("Photos d’archives"), 856, 62, 17, false, "#e8edf6");
+    write(i18n.t(generated ? "Illustration IA du ticket" : "Illustration sportive"), 856, 62, 17, false, "#e8edf6");
     ctx.textAlign = "start";
   }
   const feature = legs.slice(0, 3);
@@ -195,11 +196,7 @@ async function renderTicket({ title, odds, legs, i18n }) {
   });
   write("wnpulse.com", 44, y + 37, 22, true, "#fff");
   write(`18+ · ${i18n.t("Aucun gain garanti.")}`, 44, y + 72, 20, false, "#cbd5e1");
-  photos.forEach((photo, index) => {
-    write(`${photo.label} · ${photo.author} · ${photo.license} · ${i18n.t("recadrée")}`, 44, y + 103 + index * 26, 15, false, "#cbd5e1");
-  });
-  if (photos.length) write("wnpulse.com/share-photos/credits.html", 44, y + 103 + photos.length * 26, 15, false, "#cbd5e1");
-  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve({ blob, photos }) : reject(new Error("PNG unavailable")), "image/png"));
+  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("PNG unavailable")), "image/png"));
 }
 
 export default function TicketShare({ title, odds, legs, message, isUsable, i18n, showTextLinks = true }) {
@@ -215,9 +212,9 @@ export default function TicketShare({ title, odds, legs, message, isUsable, i18n
     setCreating(true);
     setFailed(false);
     try {
-      const { blob, photos } = await renderTicket({ title, odds, legs, i18n });
+      const blob = await renderTicket({ title, odds, legs, i18n });
       const file = new File([blob], "wnpulse-combine.png", { type: "image/png" });
-      setPoster({ file, url: URL.createObjectURL(blob), message, photos });
+      setPoster({ file, url: URL.createObjectURL(blob), message });
     } catch {
       setFailed(true);
     } finally {
@@ -241,7 +238,6 @@ export default function TicketShare({ title, odds, legs, message, isUsable, i18n
       <a className={button + " text-sky-800"} onClick={guard} href={telegram} target="_blank" rel="noopener noreferrer">Telegram</a></>}
     </div>
     {ready && <><img className="max-h-80 w-auto rounded-xl border border-slate-200 shadow-xl motion-safe:transition-transform motion-safe:duration-700 motion-safe:hover:scale-[1.025]" src={ready.url} alt={i18n.t("Aperçu de l’affiche du combiné")} /><p className="text-xs text-slate-600">{i18n.t("Choisis WhatsApp ou Telegram dans le menu de partage, ou télécharge l’image pour la joindre à ton message.")}</p></>}
-    {ready?.photos.map(photo => <a key={photo.source} href={photo.source} target="_blank" rel="noopener noreferrer" className="block text-xs text-slate-600 underline">{photo.label} · {photo.author} · {photo.license}</a>)}
     {failed && <p className="text-xs text-slate-600" role="status">{i18n.t("Le partage d’image a échoué. Réessaie ou utilise les liens de partage texte.")}</p>}
   </div>;
 }
