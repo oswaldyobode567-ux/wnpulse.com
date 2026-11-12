@@ -134,11 +134,14 @@ def match_poster(draft, badges, hero, hero_label):
     color = ("#81f7cb", "#ffb37b", "#aeb9ff", "#66dbff")[sha256("|".join(teams).encode()).digest()[0] % 4]
     image = Image.new("RGB", (1080, 1080), "#0a1220")
     if hero:
-        cover = ImageOps.fit(hero.convert("RGB"), (1080, 750), Image.Resampling.LANCZOS, centering=(0.5, 0.56))
+        sport = str(visual.get("sport", "")).split("_", 1)[0]
+        focus_y = (0.12 if sport in ("soccer", "football") else 0.35 if sport == "basketball" else 0.21)
+        cover = ImageOps.fit(hero.convert("RGB"), (1080, 750), Image.Resampling.LANCZOS,
+                             centering=(0.5, focus_y if hero.height > hero.width else 0.5))
         shade = Image.new("RGBA", cover.size)
         fade = ImageDraw.Draw(shade)
         for y in range(750):
-            alpha = int(98 + 157 * (y / 749) ** 2)
+            alpha = int(58 + 197 * (y / 749) ** 2)
             fade.line((0, y, 1080, y), fill=(10, 18, 32, alpha))
         image.paste(Image.alpha_composite(cover.convert("RGBA"), shade).convert("RGB"), (0, 0))
     draw = ImageDraw.Draw(image)
@@ -157,16 +160,12 @@ def match_poster(draft, badges, hero, hero_label):
         draw.ellipse((110 + offset * 27, 263 + offset * 17, 970 - offset * 27, 563 - offset * 17), outline="#667d9b", width=2)
     for idx, (team, x) in enumerate(zip(teams, (306, 774))):
         y = 371 + idx * 15
-        draw.ellipse((x-126, y-121, x+126, y+133), fill="#0a1424", outline=color, width=5)
-        draw.ellipse((x-114, y-114, x+114, y+114), fill="#c3d2e5", outline="#edf5ff", width=4)
         badge = badges[idx] if idx < len(badges) else None
-        draw.ellipse((x-102, y-102, x+102, y+102), fill="#edf3fc" if badge else "#233b5a")
         if badge:
+            draw.ellipse((x-126, y-121, x+126, y+133), fill="#0a1424", outline=color, width=5)
+            draw.ellipse((x-114, y-114, x+114, y+114), fill="#edf3fc", outline="#edf5ff", width=4)
             icon = ImageOps.contain(badge.convert("RGBA"), (143, 143), Image.Resampling.LANCZOS)
             image.paste(icon, (x-icon.width//2, y-icon.height//2), icon)
-        else:
-            initials = "".join(word[0] for word in team.split()[:3]).upper() or "—"
-            write(initials, x, y, 55, anchor="mm")
         write(team, x, 545, 31, width=390, anchor="mt")
     write("VS", 540, 381, 40, color, anchor="mm")
     write(details.get("date") or (lines[3] if len(lines) > 3 else ""), 70, 626, 24, "#bdcde1")
