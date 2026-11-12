@@ -1,0 +1,37 @@
+{
+  "champions": {
+    "label": "Ligue des champions · Bayern–Lokomotiv (2020)",
+    "author": "Anton Zaïtsev",
+    "license": "CC BY-SA 3.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/3.0/",
+    "source": "https://commons.wikimedia.org/wiki/File:Bayern_Munchen_players.jpg"
+  },
+  "premier": {
+    "label": "Premier League · Arsenal–Chelsea (2012)",
+    "author": "Ronnie Macdonald",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "source": "https://commons.wikimedia.org/wiki/File:Arsenal_v_Chelsea_02_(7100409981).jpg"
+  },
+  "football": {
+    "label": "Football · Cameroun–Côte d’Ivoire",
+    "author": "Happi Raphael",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "source": "https://commons.wikimedia.org/wiki/File:Football_players.jpg"
+  },
+  "basketball": {
+    "label": "Basketball · Boston–Miami (2006)",
+    "author": "ReneS / Quadzilla99",
+    "license": "CC BY 2.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by/2.0/",
+    "source": "https://commons.wikimedia.org/wiki/File:NBA_Game.jpg"
+  },
+  "tennis": {
+    "label": "Tennis · Tournoi international (2019)",
+    "author": "Mariodg20",
+    "license": "CC BY-SA 4.0",
+    "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+    "source": "https://commons.wikimedia.org/wiki/File:%22Singles_tennis_match%22.jpg"
+  }
+}

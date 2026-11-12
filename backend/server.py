@@ -12421,6 +12421,32 @@ async def get_value_bet_results(payload: dict = Depends(get_current_user_payload
         raise HTTPException(503, "Bilan temporairement indisponible") from exc
 
 
+@app.get("/api/media/share-badge")
+async def get_share_badge(source: str = Query(max_length=250)):
+    # Only request literal, known badge paths; redirects never leave the allowlist.
+    if not re.fullmatch(
+        r"https://(?:media(?:-1)?\.api-sports\.io/(?:[a-z]+/)?teams/[0-9]+\.png|"
+        r"crests\.football-data\.org/[a-zA-Z0-9_-]+\.png)", source
+    ):
+        raise HTTPException(404, "Écusson indisponible")
+    try:
+        data = bytearray()
+        async with httpx.AsyncClient(timeout=3, follow_redirects=False) as client:
+            async with client.stream("GET", source) as upstream:
+                if upstream.status_code != 200:
+                    raise HTTPException(404, "Écusson indisponible")
+                async for chunk in upstream.aiter_bytes():
+                    if len(data) + len(chunk) > 500_000:
+                        raise HTTPException(404, "Écusson indisponible")
+                    data.extend(chunk)
+    except httpx.HTTPError as exc:
+        raise HTTPException(404, "Écusson indisponible") from exc
+    if not data.startswith(b"\x89PNG\r\n\x1a\n"):
+        raise HTTPException(404, "Écusson indisponible")
+    return Response(bytes(data), media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400", "X-Content-Type-Options": "nosniff"})
+
+
 class ShareArtworkFixture(BaseModel):
     home_team: str = Field(min_length=1, max_length=100)
     away_team: str = Field(min_length=1, max_length=100)
