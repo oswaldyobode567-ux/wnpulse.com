@@ -11392,25 +11392,22 @@ class PersonalComboRequest(BaseModel):
 
 
 async def _personal_combo_match_cache():
+    snapshot = _prediction_cache
+    if snapshot["matches"] and time.monotonic() - snapshot["timestamp"] < PREDICTION_CACHE_TTL:
+        return snapshot["matches"]
     try:
-        cached = await asyncio.wait_for(
-            db.odds_cache.find_one({"_id": "all_matches"}, {"data": 1, "updated_at": 1}), timeout=3
-        )
-    except asyncio.TimeoutError:
-        cached = None
-    updated = _parse_iso((cached or {}).get("updated_at"))
-    if updated and (datetime.now(timezone.utc) - updated).total_seconds() < PREDICTION_CACHE_TTL:
-        matches = cached.get("data")
-        if isinstance(matches, list) and matches:
-            return matches
-    return await fetch_all_matches(db)
+        return await asyncio.wait_for(fetch_all_matches(db), timeout=7)
+    except Exception as exc:
+        logging.getLogger("winpulse.combos").warning("Personal combo catalogue unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Catalogue des combinés temporairement indisponible",
+                            headers={"Retry-After": "3"}) from exc
 
 
 @app.get("/api/combos/personalized/options")
 async def get_personal_combo_options(payload:dict=Depends(get_current_user_payload)):
     await _require_paid_access(payload)
     matches = await _personal_combo_match_cache()
-    return await asyncio.to_thread(personal_combo_options, matches)
+    return personal_combo_options(matches)
 
 
 @app.post("/api/combos/personalized")
@@ -12332,44 +12329,63 @@ async def _sync_retained_value_bets(snapshot, force=False):
         _value_retention_synced_at = time.monotonic()
 
 
-async def _safe_value_result_report():
-    try:
-        return await asyncio.wait_for(_value_result_report(), timeout=3)
-    except Exception as exc:
-        logging.getLogger("winpulse.value").warning("Value results unavailable (%s)", type(exc).__name__)
-        return None
+_value_refresh_task = None
+_value_active_rows = None
+_value_active_rows_at = 0.0
 
 
-async def _retained_value_response(snapshot):
-    sync_error = False
-    try:
-        await _sync_retained_value_bets(snapshot)
-    except Exception as exc:
-        logging.getLogger("winpulse.value").warning("Value retention refresh failed (%s)",type(exc).__name__)
-        sync_error = True
-    rows = await db.value_bet_archive.find({"state":"active"}).sort("commence_time",1).to_list(length=None)
-    for row in rows:
-        row["id"] = row.pop("_id")
-        row["historical_quote"] = True
-        if sync_error:
-            row["quote_available"] = False
-    return {"count":len(rows),"bets":rows,"retained":True,"stale":sync_error,"results":await _safe_value_result_report(),
-            "note":"Cote de détection conservée. Suppression de la liste active uniquement sur fin ou annulation confirmée."}
+def _queue_value_refresh():
+    global _value_refresh_task
+    if time.monotonic() - _value_retention_synced_at < 45:
+        return
+    if _value_refresh_task and not _value_refresh_task.done():
+        return
+
+    async def refresh():
+        try:
+            snapshot = await asyncio.wait_for(_get_prediction_snapshot(), timeout=45)
+            await _sync_retained_value_bets(snapshot)
+        except Exception as exc:
+            logging.getLogger("winpulse.value").warning("Value refresh deferred (%s)", type(exc).__name__)
+
+    _value_refresh_task = asyncio.create_task(refresh())
 
 
 @app.get("/api/value-bets")
 async def get_value_bets(payload: dict = Depends(get_current_user_payload)):
+    global _value_active_rows, _value_active_rows_at
     await _require_paid_access(payload)
     try:
-        snapshot = await _get_prediction_snapshot()
-    except Exception as exc:
-        logging.getLogger("winpulse.value").warning("Value source unavailable (%s)", type(exc).__name__)
-        rows = await db.value_bet_archive.find({"state":"active"}).sort("commence_time",1).to_list(length=None)
+        stored = await asyncio.wait_for(
+            db.value_bet_archive.find({"state": "active"}).sort("commence_time", 1).to_list(length=None),
+            timeout=7,
+        )
+        rows = [{**row, "id": row["_id"], "historical_quote": True} for row in stored]
         for row in rows:
-            row["id"] = row.pop("_id")
-            row.update(historical_quote=True, quote_available=False)
-        return {"count":len(rows), "bets":rows, "retained":True, "stale":True, "results":await _safe_value_result_report()}
-    return await _retained_value_response(snapshot)
+            row.pop("_id")
+        _value_active_rows, _value_active_rows_at = rows, time.monotonic()
+    except Exception as exc:
+        logging.getLogger("winpulse.value").warning("Value archive read unavailable (%s)", type(exc).__name__)
+        if _value_active_rows is None or time.monotonic() - _value_active_rows_at > 120:
+            raise HTTPException(503, "Sélections temporairement indisponibles", headers={"Retry-After": "3"}) from exc
+        rows = [{**row, "quote_available": False} for row in _value_active_rows]
+        _queue_value_refresh()
+        return {"count": len(rows), "bets": rows, "retained": True, "stale": True}
+    _queue_value_refresh()
+    stale = time.monotonic() - _value_retention_synced_at >= 90
+    if stale:
+        rows = [{**row, "quote_available": False} for row in rows]
+    return {"count": len(rows), "bets": rows, "retained": True, "stale": stale}
+
+
+@app.get("/api/value-bets/results")
+async def get_value_bet_results(payload: dict = Depends(get_current_user_payload)):
+    await _require_paid_access(payload)
+    try:
+        return await asyncio.wait_for(_value_result_report(), timeout=5)
+    except Exception as exc:
+        logging.getLogger("winpulse.value").warning("Value results unavailable (%s)", type(exc).__name__)
+        raise HTTPException(503, "Bilan temporairement indisponible") from exc
 
 
 # ─── Plans (alias) ────────────────────────────────────────────────────────
