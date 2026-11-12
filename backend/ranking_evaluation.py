@@ -118,7 +118,19 @@ def summarize(rows):
     arms = {a: metrics([v[a] for v in settled if v.get(a)], len(settled))
             for a in ("baseline", "challenger")}
     paired = {a: metrics([v[a] for v in both], len(both)) for a in arms}
+    competitions = {}
+    for row in rows:
+        value = row.get("evaluation") or {}
+        if row.get("state") != "resolved" or not value.get("challenger") or not row.get("sport_key"):
+            continue
+        competitions.setdefault(row["sport_key"], []).append(value)
+    by_competition = [
+        {"competition": key, "paired": len(values),
+         **{arm: metrics([value[arm] for value in values], len(values)) for arm in arms}}
+        for key, values in sorted(competitions.items(), key=lambda item: (-len(item[1]), item[0]))
+    ]
     return {
+        "by_competition": by_competition,
         "protocol": PROTOCOL, "observed": len(rows), "resolved": len(settled),
         "pending": len(rows)-len(settled), "paired": len(both),
         "passed": len(settled)-len(both),

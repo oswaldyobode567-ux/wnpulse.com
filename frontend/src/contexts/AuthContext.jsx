@@ -1,5 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import api from "@/lib/api";
+import { trackJourneySignup, trackJourneyReturn } from "@/lib/journey";
 
 const AuthContext = createContext(null);
 
@@ -25,6 +26,7 @@ export function AuthProvider({ children }) {
     api.get("/auth/me")
       .then((res) => {
         setUser(res.data);
+        trackJourneyReturn(res.data.id);
         localStorage.setItem("pronostix_user", JSON.stringify(res.data));
       })
       .catch(() => {
@@ -48,7 +50,9 @@ export function AuthProvider({ children }) {
   const login = async (email, password) => {
     const cleanEmail = email.trim().toLowerCase();
     const { data } = await api.post("/auth/login", { email: cleanEmail, password });
-    return saveSession(data);
+    const loggedIn = saveSession(data);
+    trackJourneyReturn(loggedIn.id);
+    return loggedIn;
   };
 
   // Signature attendue par la nouvelle RegisterPage.jsx.
@@ -80,7 +84,9 @@ export function AuthProvider({ children }) {
     };
     if (referral_code) payload.referral_code = referral_code.trim();
     const { data } = await api.post("/auth/register", payload);
-    return saveSession(data);
+    const registered = saveSession(data);
+    trackJourneySignup(registered.id);
+    return registered;
   };
 
   // Les anciens appels doivent maintenant fournir le numéro en 5e argument.

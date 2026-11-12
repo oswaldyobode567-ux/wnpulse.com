@@ -206,6 +206,7 @@ export default function LandingPage() {
   const { user } = useAuth();
   const [livePicks, setLivePicks] = useState([]);
   const [measure, setMeasure] = useState(journeyChoice);
+  const [motionPaused, setMotionPaused] = useState(false);
   const freeSample = livePicks.find(row => row.free_daily_pick === true && isAvailablePick(row));
   useEffect(() => {
     if (measure !== "yes") return;
@@ -388,10 +389,15 @@ export default function LandingPage() {
         </div>
       </header>
 
-      <section className="wp-public-hero wp-editorial-hero relative overflow-hidden">
+      <section className="wp-public-hero wp-editorial-hero wp-photo-hero relative overflow-hidden">
+        <div className="wp-photo-hero-slides" aria-hidden="true" data-paused={motionPaused}>
+          <img src="/wnpulse-football-real.webp" alt="" width="960" height="540" fetchPriority="high" decoding="async" />
+          <img src="/wnpulse-tennis-real.webp" alt="" width="960" height="540" loading="lazy" decoding="async" />
+        </div>
+        <div className="wp-photo-hero-shade" aria-hidden="true" />
         <div className="relative mx-auto w-full min-w-0 max-w-7xl px-4 py-12 sm:px-6 sm:py-24 lg:px-8">
           <div className="grid min-w-0 gap-10 items-center lg:grid-cols-12">
-            <div className="min-w-0 lg:col-span-7">
+            <div className="wp-photo-hero-copy min-w-0 lg:col-span-7">
               <div className="wp-enter mb-6 inline-flex max-w-full flex-wrap items-center gap-2 wp-editorial-eyebrow text-xs">
                 <span aria-hidden="true" className="h-2 w-2 rounded-full bg-orange-500" />
                 {t("Pronostics · Analyses · Résultats publics")}
@@ -443,9 +449,6 @@ export default function LandingPage() {
             </div>
 
             <div className="wp-enter min-w-0 lg:col-span-5" style={{ "--wp-delay": "160ms" }}>
-              <div className="wp-athlete-scene mb-4" aria-hidden="true">
-                <img src="/wnpulse-athletes.webp" alt="" width="900" height="600" decoding="async" fetchPriority="high" />
-              </div>
               <div id="picks-du-jour" className="relative min-w-0 scroll-mt-24">
                 <Card className="relative min-w-0 rounded-2xl border border-neutral-200 bg-white p-4 shadow-xl sm:p-5">
                   <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -497,6 +500,12 @@ export default function LandingPage() {
                 </Card>
               </div>
             </div>
+          </div>
+          <div className="wp-photo-hero-credits mt-6 flex flex-wrap items-center gap-3 text-xs">
+            <button type="button" className="wp-photo-motion-control min-h-11 rounded-lg border border-white/40 px-3" aria-pressed={motionPaused} onClick={() => setMotionPaused(v => !v)}>
+              {motionPaused ? t("Relancer le diaporama") : t("Mettre le diaporama en pause")}
+            </button>
+            <span>{t("Photos recadrées")} · <a href="https://commons.wikimedia.org/wiki/File:Football_players.jpg">Happi Raphael</a> · <a href="https://commons.wikimedia.org/wiki/File:%22Singles_tennis_match%22.jpg">Mariodg20</a> · <a href="https://creativecommons.org/licenses/by-sa/4.0/">CC BY-SA 4.0</a></span>
           </div>
         </div>
       </section>

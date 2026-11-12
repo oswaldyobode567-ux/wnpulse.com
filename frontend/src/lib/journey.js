@@ -2,6 +2,8 @@ import { API } from "@/lib/api";
 
 const CHOICE = "wp_measure_journey";
 const VISIT = "wp_journey_session";
+const RETURN = "wp_journey_signup";
+const DAY = 86400000;
 const SOURCES = ["telegram", "facebook", "instagram", "tiktok", "campaign"];
 const sent = new Map();
 
@@ -11,7 +13,10 @@ export function journeyChoice() {
 export function setJourneyChoice(allowed) {
   try {
     localStorage.setItem(CHOICE, allowed ? "yes" : "no");
-    if (!allowed) sessionStorage.removeItem(VISIT);
+    if (!allowed) {
+      sessionStorage.removeItem(VISIT);
+      localStorage.removeItem(RETURN);
+    }
   } catch { /* Storage is optional. */ }
 }
 function visit(create) {
@@ -31,7 +36,10 @@ function visit(create) {
 export function journeyToken() { return visit(false)?.token; }
 
 export function trackJourney(event, create = false) {
-  const data = visit(create);
+  sendJourneyEvent(event, visit(create));
+}
+
+function sendJourneyEvent(event, data) {
   if (!data) return;
   const key = `${data.token}:${event}`;
   if (sent.has(key)) return;
@@ -42,6 +50,29 @@ export function trackJourney(event, create = false) {
     body: JSON.stringify({ token: data.token, source: data.source, event }),
   }).then(r => { if (!r.ok) sent.delete(key); }).catch(() => sent.delete(key));
   sent.set(key, request);
+}
+
+export function trackJourneySignup(userId) {
+  if (!userId) return;
+  const data = visit(true);
+  if (!data) return;
+  sendJourneyEvent("visit", data);
+  sendJourneyEvent("signup", data);
+  try { localStorage.setItem(RETURN, JSON.stringify({ ...data, userId, signupAt: Date.now() })); }
+  catch { /* Storage is optional. */ }
+}
+
+export function trackJourneyReturn(userId) {
+  if (journeyChoice() !== "yes" || navigator.globalPrivacyControl || navigator.doNotTrack === "1") return;
+  try {
+    const data = JSON.parse(localStorage.getItem(RETURN) || "null");
+    if (!data) return;
+    const age = Date.now() - data.signupAt;
+    if (age > 7 * DAY) { localStorage.removeItem(RETURN); return; }
+    if (data.userId !== userId) return;
+    sendJourneyEvent("signup", data);
+    if (age >= DAY) sendJourneyEvent("return", data);
+  } catch { /* Storage is optional. */ }
 }
 
 export function proIntent(search) {
