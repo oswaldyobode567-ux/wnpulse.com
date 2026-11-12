@@ -248,10 +248,16 @@ export default function ValueBetsPage() {
       data
     }) => {
       const bets = readBets(data);
-      if (active) setRequest({
+      if (!active) return;
+      setRequest(previous => ({
         key: accessKey,
         status: "ready",
-        bets, results: data.results, stale: Boolean(data.stale)
+        bets, results: previous.key === accessKey ? previous.results : null, stale: Boolean(data.stale)
+      }));
+      api.get("/value-bets/results", { signal: controller.signal, timeout: 9_000 }).then(({ data: results }) => {
+        if (active) setRequest(previous => ({ ...previous, results, resultsUnavailable: false }));
+      }).catch(() => {
+        if (active && !controller.signal.aborted) setRequest(previous => ({ ...previous, resultsUnavailable: true }));
       });
     }).catch(error => {
       if (!active || controller.signal.aborted) return;
@@ -309,6 +315,7 @@ export default function ValueBetsPage() {
             {i18n.tx(current.sessionExpired ? <Button asChild variant="outline"><Link to="/login">{i18n.t("Se reconnecter")}</Link></Button> : <Button variant="outline" onClick={() => setReloadKey(value => value + 1)}>{i18n.t("R\xE9essayer")}</Button>)}
           </Card> : <>
             {current.results && <ValueResults report={current.results} i18n={i18n} />}
+            {current.resultsUnavailable && <p className="mb-4 text-sm text-slate-600" role="status">{i18n.t("Le bilan des Value Bets est temporairement indisponible.")}</p>}
             <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
               <div>
                 <p className="font-semibold text-slate-900" aria-live="polite">{i18n.rich("{{v0}} s\xE9lection{{v1}} affich\xE9e{{v2}}", {
