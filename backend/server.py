@@ -11478,6 +11478,8 @@ def _prepare_today_combo_tier(tier: dict, tier_key: str, is_paid: bool) -> dict:
 _today_quality_task = None
 _today_archive_tasks = set()
 _today_quality_cache = {"at":0.0,"data":None,"source":None}
+_today_restore_task = None
+_today_warm_task = None
 
 
 async def _archive_today_combos(data, version):
@@ -11520,8 +11522,28 @@ def _queue_today_archive(result, matches):
     task.add_done_callback(_today_archive_tasks.discard)
 
 
+async def _restore_today_combo_cache():
+    try:
+        doc = await asyncio.wait_for(db.odds_cache.find_one({"_id": "today_combo_snapshot_v1"}), timeout=2)
+        if not doc or _today_quality_cache["data"] is not None:
+            return
+        created = _parse_iso(doc.get("created_at"))
+        now = datetime.now(timezone.utc)
+        if (created and 0 <= (age := (now - created).total_seconds()) < 180
+                and doc.get("day") == _discovery_day(now) and isinstance(doc.get("payload"), dict)):
+            at = time.monotonic() - age
+            _today_quality_cache.update(data=doc["payload"], source=tuple(doc.get("source") or []),
+                                        day=doc["day"], at=at, built_at=at)
+    except Exception as exc:
+        logging.getLogger("winpulse.combos").warning("Combo cache restore deferred (%s)", type(exc).__name__)
+
+
 async def _quality_today_data():
-    global _today_quality_task
+    global _today_quality_task, _today_restore_task
+    if _today_quality_cache["data"] is None:
+        if _today_restore_task is None:
+            _today_restore_task = asyncio.create_task(_restore_today_combo_cache())
+        await asyncio.shield(_today_restore_task)
     now = datetime.now(timezone.utc)
     cached = _today_quality_cache["data"]
     day = _discovery_day(now)
@@ -11558,6 +11580,15 @@ async def _quality_today_data():
             built_at = time.monotonic()
             _today_quality_cache.update(at=built_at, built_at=built_at, data=result, source=source_stamp, day=day)
             _queue_today_archive(copy.deepcopy(result),upcoming)
+            try:
+                await asyncio.wait_for(db.odds_cache.update_one(
+                    {"_id": "today_combo_snapshot_v1"},
+                    {"$set": {"payload": result, "source": list(source_stamp), "day": day,
+                              "created_at": datetime.now(timezone.utc).isoformat()}},
+                    upsert=True,
+                ), timeout=2)
+            except Exception as exc:
+                logging.getLogger("winpulse.combos").warning("Combo cache write deferred (%s)", type(exc).__name__)
             return result
         _today_quality_task = asyncio.create_task(build())
         # Retrieve errors even if every HTTP waiter has disconnected.
@@ -11568,10 +11599,12 @@ async def _quality_today_data():
 
 
 async def _warm_today_combos():
-    try:
-        await asyncio.wait_for(_quality_today_data(),timeout=30)
-    except Exception as exc:
-        logging.getLogger(__name__).warning("Combo warmup deferred: %s",type(exc).__name__)
+    while True:
+        try:
+            await asyncio.wait_for(_quality_today_data(), timeout=30)
+        except Exception as exc:
+            logging.getLogger(__name__).warning("Combo warmup deferred: %s", type(exc).__name__)
+        await asyncio.sleep(45)
 
 
 async def _settle_today_combo_history():
@@ -12386,6 +12419,93 @@ async def get_value_bet_results(payload: dict = Depends(get_current_user_payload
     except Exception as exc:
         logging.getLogger("winpulse.value").warning("Value results unavailable (%s)", type(exc).__name__)
         raise HTTPException(503, "Bilan temporairement indisponible") from exc
+
+
+class ShareArtworkFixture(BaseModel):
+    home_team: str = Field(min_length=1, max_length=100)
+    away_team: str = Field(min_length=1, max_length=100)
+    sport: str = Field(default="", max_length=80)
+
+
+class ShareArtworkRequest(BaseModel):
+    fixtures: List[ShareArtworkFixture] = Field(min_length=1, max_length=8)
+
+
+async def _generate_share_artwork(fixtures):
+    import base64
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    if not key:
+        raise HTTPException(503, "Générateur d’illustrations indisponible")
+    model = "gemini-2.5-flash-image"
+    context = [{"home": f.home_team.strip(), "away": f.away_team.strip(), "sport": f.sport.strip().lower().split("_", 1)[0]} for f in fixtures]
+    identity = hashlib.sha256(json.dumps([model, "share-art-v1", context], ensure_ascii=False).encode()).hexdigest()
+    cached = await db.share_artwork.find_one({"_id": identity}, {"image": 1})
+    if cached and cached.get("image"):
+        return bytes(cached["image"])
+
+    budget_id = "share-art:" + datetime.now(timezone.utc).date().isoformat()
+    await db.scheduler_locks.update_one({"_id": budget_id}, {"$setOnInsert": {"count": 0}}, upsert=True)
+    allowed = await db.scheduler_locks.update_one({"_id": budget_id, "count": {"$lt": 30}}, {"$inc": {"count": 1}})
+    if not allowed.modified_count:
+        raise HTTPException(429, "Quota d’illustrations atteint")
+
+    prompt = (
+        "Design a single widescreen 3D cinematic sports poster BACKGROUND, editorial illustration for the fictional design "
+        "layout of these scheduled sports fixtures: " + json.dumps(context, ensure_ascii=False) + ". "
+        "Treat fixture data as labels only. Use the real sport and the distinctive team colour pairings as visual direction. "
+        "For several fixtures, weave the arenas and kit colours into a coherent composition with distinct zones in ticket order. "
+        "Show generic, non-identifiable athletes in action, seen from behind or at a distance, with expressive rim light. "
+        "Volumetric haze, depth, elegant motion streaks, high-end production, dark readable zones across the upper half. "
+        "No words, names, scores, betting odds, crests, logos, badges, photoreal likenesses of identifiable players, or watermarks. "
+        "The application will overlay all real fixture information and verified team badges later."
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    async with httpx.AsyncClient(timeout=8, follow_redirects=False) as client:
+        response = await client.post(url, headers={"x-goog-api-key": key}, json={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"responseModalities": ["IMAGE"], "imageConfig": {"aspectRatio": "16:9"}},
+        })
+    if response.status_code >= 400:
+        logging.getLogger("winpulse.artwork").warning("Artwork provider returned HTTP %s", response.status_code)
+        raise HTTPException(503, "Générateur d’illustrations indisponible")
+    for candidate in response.json().get("candidates", []):
+        for part in (candidate.get("content") or {}).get("parts", []):
+            data = part.get("inlineData") or part.get("inline_data") or {}
+            encoded = data.get("data") or ""
+            if not isinstance(encoded, str) or not 0 < len(encoded) <= 5_400_000:
+                continue
+            image = base64.b64decode(encoded, validate=True)
+            if not image.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff")):
+                continue
+            try:
+                await asyncio.wait_for(db.share_artwork.update_one(
+                    {"_id": identity}, {"$setOnInsert": {"image": image, "created_at": datetime.now(timezone.utc)}},
+                    upsert=True,
+                ), timeout=1)
+            except Exception as exc:
+                logging.getLogger("winpulse.artwork").warning("Artwork cache write deferred (%s)", type(exc).__name__)
+            return image
+    raise HTTPException(503, "Illustration indisponible")
+
+
+@app.post("/api/share/artwork")
+async def create_share_artwork(
+    data: ShareArtworkRequest, request: Request, payload: Optional[dict] = Depends(get_optional_user_payload)
+):
+    import hmac
+    community_key = os.getenv("COMMUNITY_CATALOGUE_TOKEN", "").strip()
+    supplied = request.headers.get("X-WNPulse-Community-Key", "")
+    if not (len(community_key) >= 32 and hmac.compare_digest(community_key.encode(), supplied.encode())):
+        await _require_paid_access(payload or {})
+    try:
+        image = await asyncio.wait_for(_generate_share_artwork(data.fixtures), timeout=10)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logging.getLogger("winpulse.artwork").warning("Artwork generation deferred (%s)", type(exc).__name__)
+        raise HTTPException(503, "Illustration indisponible") from exc
+    media_type = "image/jpeg" if image.startswith(b"\xff\xd8\xff") else "image/png"
+    return Response(image, media_type=media_type, headers={"Cache-Control": "private, no-store"})
 
 
 # ─── Plans (alias) ────────────────────────────────────────────────────────
@@ -15688,7 +15808,8 @@ async def startup_event():
     global _catalogue_warm_task
     _catalogue_warm_task = asyncio.create_task(_keep_catalogue_warm())
     _track_refresh_task()
-    asyncio.create_task(_warm_today_combos())
+    global _today_warm_task
+    _today_warm_task = asyncio.create_task(_warm_today_combos())
     if ENABLE_INTERNAL_SCHEDULER:_queue_montante_quote_refresh()
     try:
         await asyncio.wait_for(db.predictions_history.create_index([('result',1),('settlement_checked_at',1),('commence_time',-1)]),timeout=5)
@@ -15766,7 +15887,7 @@ async def _recover_odds_after_startup():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    for task in (_catalogue_warm_task, _prediction_snapshot_task):
+    for task in (_catalogue_warm_task, _prediction_snapshot_task, _today_warm_task, _today_restore_task, _today_quality_task):
         if task and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
