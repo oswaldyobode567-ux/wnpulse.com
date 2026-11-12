@@ -1,5 +1,6 @@
 import { useMatchShareBasket } from "@/contexts/MatchShareBasket";
 import PickShareImagePanel from "@/components/PickShareImagePanel";
+import TicketShare from "@/components/TicketShare";
 import { copyShareText } from "@/lib/shareClipboard";
 import api from "@/lib/api";
 import { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
@@ -529,6 +530,22 @@ function ShareComposer({ items, kind, onClose }) {
       odds:odds>1 ? helpers.formatNumber(odds,{minimumFractionDigits:2,maximumFractionDigits:2}) : "",
       status:kind==="results" ? (words[String(p.status || item.status || "").toLowerCase()] || (p.won===true ? words.won : p.won===false ? words.lost : words.pending)) : ""};
   });
+  const legs = selected.filter(item => item.home_team && item.away_team).map(item => {
+    const p = item.prediction || item;
+    const teams = [item.home_team, item.away_team];
+    return {
+      ...item,
+      match_id: item.match_id || item.id,
+      competition: item.league || item.sport_title || item.sport,
+      market_label: translateBetText(p.market_label || p.market_key || words.pick, helpers.t, helpers.formatNumber, teams),
+      pick: translateBetText(p.pick, helpers.t, helpers.formatNumber, teams),
+      pick_odds: finiteNumber(p.pick_odds ?? p.odds),
+      home_image_candidates: badgeUrls(item, "home"),
+      away_image_candidates: badgeUrls(item, "away"),
+    };
+  });
+  const posterGroups = [];
+  for (let offset = 0; offset < legs.length; offset += 8) posterGroups.push(legs.slice(offset, offset + 8));
   const [part,setPart]=useState(0);
   const [copied,setCopied]=useState("");
   const dialog=useRef(null);
@@ -548,7 +565,11 @@ function ShareComposer({ items, kind, onClose }) {
       </select>
     </label>}
     <div className="mb-2 flex flex-wrap gap-2" aria-label={words.part}>{messages.map((message,index)=><button type="button" key={index} aria-pressed={part===index} onClick={()=>{setPart(index);setCopied("");}} className={`${SHARE_BUTTON} ${part===index ? "border-orange-500 bg-orange-50 text-orange-700" : "border-slate-200"}`}>{words.part} {index+1}/{messages.length}</button>)}</div>
-    {focus>=0 ? <PickShareImagePanel cards={cards} t={helpers.t} text={current} /> : <p className="my-3 rounded-xl bg-orange-50 p-3 text-sm text-orange-900">{helpers.t("La série est partagée en texte. Choisis une rencontre pour son image et son message individuel.")}</p>}
+    {kind === "results" ? (focus >= 0 && <PickShareImagePanel cards={cards} t={helpers.t} text={current} />)
+      : posterGroups.map((group, index) => <TicketShare key={JSON.stringify(group.map(shareItemKey))}
+          title={group.length === 1 ? helpers.t("Pronostic") : `${helpers.t("Pronostics")}${posterGroups.length > 1 ? ` · ${index + 1}/${posterGroups.length}` : ""}`}
+          legs={group} message={current} isUsable={() => Boolean(current)} showTextLinks={false}
+          i18n={{ ...helpers, bet: value => value }} />)}
     <label className="sr-only" htmlFor="admin-share-text">{words.preview}</label><textarea id="admin-share-text" readOnly value={current} dir="auto" className="h-52 w-full resize-y rounded-xl border border-slate-200 bg-slate-50 p-3 text-sm leading-6" />
     <div className="mt-3 flex flex-wrap gap-2">
       <a href={`https://wa.me/?text=${encodeURIComponent(current)}`} target="_blank" rel="noopener noreferrer" className={`${SHARE_BUTTON} border-green-600 bg-green-600 text-white`} data-testid="admin-share-whatsapp">WhatsApp ↗</a>

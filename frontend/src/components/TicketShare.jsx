@@ -1,19 +1,36 @@
 import { useEffect, useState } from "react";
 import { ImageDown, Send } from "lucide-react";
-import api, { API } from "@/lib/api";
+import { API } from "@/lib/api";
 
 const SITE = "https://wnpulse.com";
-const ATMOSPHERES = {
-  football: ["/share-arena-football.webp", "#65efae"],
-  basketball: ["/share-arena-basketball.webp", "#ff9c62"],
-  mixed: ["/share-arena-mixed.webp", "#a9adff"],
-};
+function photoCategory(leg) {
+  const sport = String(leg.sport_key || leg.sport || "").toLowerCase();
+  const league = String(leg.competition || leg.sport_title || "").toLowerCase();
+  if (/uefa_champs_league|champions league|ligue des champions/.test(sport + " " + league)) return "champions";
+  if (sport === "soccer_epl" || /premier league/.test(league)) return "premier";
+  if (/soccer|football/.test(sport) && !sport.includes("american")) return "football";
+  if (sport.startsWith("basketball")) return "basketball";
+  if (sport.startsWith("tennis")) return "tennis";
+  return null;
+}
 
-function loadPosterImage(url) {
+async function archivePhotos(legs) {
+  try {
+    const response = await fetch("/share-photos/index.json", { signal: AbortSignal.timeout(1800) });
+    if (!response.ok) return [];
+    const catalogue = await response.json();
+    const keys = [...new Set(legs.map(photoCategory).filter(Boolean))].slice(0, 3);
+    return (await Promise.all(keys.map(async key => ({
+      ...catalogue[key], image: await loadPosterImage(`/share-photos/${key}.webp`),
+    })))).filter(photo => photo.image && photo.source);
+  } catch { return []; }
+}
+
+function loadPosterImage(url, timeout = 1800) {
   if (!url) return Promise.resolve(null);
   return new Promise(resolve => {
     const image = new Image();
-    const timer = setTimeout(() => resolve(null), 1800);
+    const timer = setTimeout(() => resolve(null), timeout);
     const finish = value => { clearTimeout(timer); resolve(value); };
     image.crossOrigin = "anonymous";
     image.onload = () => finish(image);
@@ -25,7 +42,8 @@ function loadPosterImage(url) {
 function safeBadge(leg, media, side) {
   const candidates = [leg, media].flatMap(item => [
     item?.[`${side}_media`]?.kind === "badge" ? item[`${side}_media`].url : null,
-    item?.[`${side}_logo`], item?.[`${side}_team_logo`],
+    item?.[`${side}_logo`], item?.[`${side}_team_logo`], item?.[`${side}_crest`],
+    ...(Array.isArray(item?.[`${side}_image_candidates`]) ? item[`${side}_image_candidates`] : []),
   ]);
   return candidates.find(url => typeof url === "string" &&
     /^https:\/\/(?:media(?:-1)?\.api-sports\.io\/(?:[a-z]+\/)?teams\/[0-9]+\.png|crests\.football-data\.org\/[a-zA-Z0-9_-]+\.png)$/.test(url));
@@ -38,36 +56,22 @@ async function posterBadges(legs) {
       signal: AbortSignal.timeout(1600),
     });
     if (response.ok) catalogue = (await response.json()).items || [];
-  } catch { /* Use team initials when media cannot be loaded. */ }
+  } catch { /* The ticket can still render with the available media. */ }
   const byId = new Map(catalogue.map(row => [String(row.match_id), row]));
   return Promise.all(legs.map(leg => Promise.all(["home", "away"].map(side =>
-    loadPosterImage(safeBadge(leg, byId.get(String(leg.match_id || leg.id)), side))
+    (async () => {
+      const source = safeBadge(leg, byId.get(String(leg.match_id || leg.id)), side);
+      if (!source) return null;
+      const proxy = loadPosterImage(`${API}/media/share-badge?source=${encodeURIComponent(source)}`, 4000);
+      const direct = await loadPosterImage(source);
+      return direct || await proxy;
+    })()
   ))));
 }
 
-async function generatedArtwork(legs) {
-  try {
-    const { data } = await api.post("/share/artwork", {
-      fixtures: legs.map(leg => ({
-        home_team: leg.home_team, away_team: leg.away_team, sport: leg.sport_key || leg.sport || "",
-      })),
-    }, { responseType: "blob", timeout: 11_000 });
-    if (!["image/png", "image/jpeg"].includes(data.type)) return null;
-    const url = URL.createObjectURL(data);
-    try { return await loadPosterImage(url); }
-    finally { URL.revokeObjectURL(url); }
-  } catch {
-    return null;
-  }
-}
-
 async function renderTicket({ title, odds, legs, i18n }) {
-  const sports = new Set(legs.map(leg => String(leg.sport_key || leg.sport || "").split("_")[0]));
-  const theme = sports.size === 1 && (sports.has("soccer") || sports.has("football")) ? "football"
-    : sports.size === 1 && sports.has("basketball") ? "basketball" : "mixed";
-  const [arena, accent] = ATMOSPHERES[theme];
-  const [generated, fallback, badges] = await Promise.all([generatedArtwork(legs), loadPosterImage(arena), posterBadges(legs)]);
-  const background = generated || fallback;
+  const accent = "#8fe3d1";
+  const [photos, badges] = await Promise.all([archivePhotos(legs), posterBadges(legs)]);
   const canvas = document.createElement("canvas");
   canvas.width = 900;
   const ctx = canvas.getContext("2d");
@@ -96,20 +100,28 @@ async function renderTicket({ title, odds, legs, i18n }) {
     return { leg, teams, selection, height: 97 + teams.length * 36 + selection.length * 31 };
   });
   const top = 330 + heading.length * 42;
-  canvas.height = top + cards.reduce((height, card) => height + card.height + 16, 0) + 122;
+  canvas.height = top + cards.reduce((height, card) => height + card.height + 16, 0) + 122 + photos.length * 27;
   const backdrop = ctx.createLinearGradient(0, 0, 900, canvas.height);
   backdrop.addColorStop(0, "#0b1425");
   backdrop.addColorStop(1, "#172840");
   ctx.fillStyle = backdrop;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  if (background) {
+  photos.forEach(({ image }, index) => {
     const h = 400;
-    const scale = Math.max(900 / background.width, h / background.height);
-    ctx.drawImage(background, (900 - background.width * scale) / 2, (h - background.height * scale) / 2, background.width * scale, background.height * scale);
-  }
+    const w = 900 / photos.length;
+    const x = index * w;
+    const scale = Math.max(w / image.width, h / image.height);
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(x, 0, w, h);
+    ctx.clip();
+    ctx.drawImage(image, x + (w - image.width * scale) / 2, (h - image.height * scale) * .28,
+      image.width * scale, image.height * scale);
+    ctx.restore();
+  });
   const shade = ctx.createLinearGradient(0, 0, 0, top);
   shade.addColorStop(0, "#080d16cc");
-  shade.addColorStop(.45, "#080d1650");
+  shade.addColorStop(.45, "#080d1620");
   shade.addColorStop(1, "#0b1425");
   ctx.fillStyle = shade;
   ctx.fillRect(0, 0, 900, top);
@@ -120,7 +132,8 @@ async function renderTicket({ title, odds, legs, i18n }) {
     ctx.fillStyle = color;
     ctx.fillText(text, x, y);
   };
-  function medallion(team, badge, x, y, radius) {
+  function medallion(badge, x, y, radius) {
+    if (!badge) return;
     const shine = ctx.createLinearGradient(x - radius, y - radius, x + radius, y + radius);
     shine.addColorStop(0, "#f5f8ff");
     shine.addColorStop(.42, "#8092ae");
@@ -135,34 +148,27 @@ async function renderTicket({ title, odds, legs, i18n }) {
     ctx.restore();
     ctx.beginPath();
     ctx.arc(x, y, radius - 4, 0, Math.PI * 2);
-    ctx.fillStyle = badge ? "#e7edf6" : "#182840";
+    ctx.fillStyle = "#e7edf6";
     ctx.fill();
-    if (badge) {
-      const scale = (radius - 7) * 1.4 / Math.max(badge.width, badge.height);
-      ctx.drawImage(badge, x - badge.width * scale / 2, y - badge.height * scale / 2, badge.width * scale, badge.height * scale);
-    } else {
-      const initials = String(team || "").trim().split(/\s+/).slice(0, 3).map(word => word[0]).join("").toUpperCase();
-      ctx.textAlign = "center";
-      write(initials, x, y + radius * .25, Math.round(radius * .62), true, "#f5f8ff");
-      ctx.textAlign = "start";
-    }
+    const scale = (radius - 7) * 1.4 / Math.max(badge.width, badge.height);
+    ctx.drawImage(badge, x - badge.width * scale / 2, y - badge.height * scale / 2, badge.width * scale, badge.height * scale);
   }
   write("WNPULSE", 44, 62, 28, true, accent);
-  if (background) {
+  if (photos.length) {
     ctx.textAlign = "right";
-    write(i18n.t(generated ? "Illustration IA du ticket" : "Illustration de secours"), 856, 62, 17, false, "#e8edf6");
+    write(i18n.t("Photos d’archives"), 856, 62, 17, false, "#e8edf6");
     ctx.textAlign = "start";
   }
   const feature = legs.slice(0, 3);
-  feature.forEach((leg, index) => {
+  feature.forEach((_, index) => {
     const x = 450 + (index - (feature.length - 1) / 2) * 245;
     const y = 206 + heading.length * 28;
-    medallion(leg.home_team, badges[index][0], x - 59, y - 6, 45);
-    medallion(leg.away_team, badges[index][1], x + 59, y + 6, 45);
-    write("VS", x - 13, y + 6, 19, true, accent);
+    medallion(badges[index][0], x - 59, y - 6, 45);
+    medallion(badges[index][1], x + 59, y + 6, 45);
+    if (badges[index].every(Boolean)) write("VS", x - 13, y + 6, 19, true, accent);
   });
   heading.forEach((line, index) => write(line, 44, 116 + index * 42, 33, true, "#fff"));
-  write(`${i18n.t("Cote totale")} · ${new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: 2 }).format(Number(odds))}`, 44, top - 34, 30, true, "#fdba74");
+  if (Number(odds) > 1) write(`${i18n.t("Cote totale")} · ${new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: 2 }).format(Number(odds))}`, 44, top - 34, 30, true, "#fdba74");
   let y = top;
   cards.forEach(({ leg, teams, selection, height }, index) => {
     const glass = ctx.createLinearGradient(44, y, 856, y + height);
@@ -184,15 +190,19 @@ async function renderTicket({ title, odds, legs, i18n }) {
     if (info) write(info, 113, y + 36, 19, false, "#cbd5e1");
     teams.forEach((line, i) => write(line, 113, y + 73 + i * 36, 28, true, "#fff"));
     selection.forEach((line, i) => write(line, 113, y + 73 + teams.length * 36 + i * 31, 23, false, "#dbeafe"));
-    write(new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: 2 }).format(Number(leg.pick_odds)), 113, y + height - 18, 24, true, "#fdba74");
+    if (Number(leg.pick_odds) > 1) write(new Intl.NumberFormat(i18n.locale, { maximumFractionDigits: 2 }).format(Number(leg.pick_odds)), 113, y + height - 18, 24, true, "#fdba74");
     y += height + 16;
   });
   write("wnpulse.com", 44, y + 37, 22, true, "#fff");
   write(`18+ · ${i18n.t("Aucun gain garanti.")}`, 44, y + 72, 20, false, "#cbd5e1");
-  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve(blob) : reject(new Error("PNG unavailable")), "image/png"));
+  photos.forEach((photo, index) => {
+    write(`${photo.label} · ${photo.author} · ${photo.license} · ${i18n.t("recadrée")}`, 44, y + 103 + index * 26, 15, false, "#cbd5e1");
+  });
+  if (photos.length) write("wnpulse.com/share-photos/credits.html", 44, y + 103 + photos.length * 26, 15, false, "#cbd5e1");
+  return new Promise((resolve, reject) => canvas.toBlob(blob => blob ? resolve({ blob, photos }) : reject(new Error("PNG unavailable")), "image/png"));
 }
 
-export default function TicketShare({ title, odds, legs, message, isUsable, i18n }) {
+export default function TicketShare({ title, odds, legs, message, isUsable, i18n, showTextLinks = true }) {
   const [poster, setPoster] = useState(null);
   const [failed, setFailed] = useState(false);
   const [creating, setCreating] = useState(false);
@@ -205,9 +215,9 @@ export default function TicketShare({ title, odds, legs, message, isUsable, i18n
     setCreating(true);
     setFailed(false);
     try {
-      const blob = await renderTicket({ title, odds, legs, i18n });
+      const { blob, photos } = await renderTicket({ title, odds, legs, i18n });
       const file = new File([blob], "wnpulse-combine.png", { type: "image/png" });
-      setPoster({ file, url: URL.createObjectURL(blob), message });
+      setPoster({ file, url: URL.createObjectURL(blob), message, photos });
     } catch {
       setFailed(true);
     } finally {
@@ -227,10 +237,11 @@ export default function TicketShare({ title, odds, legs, message, isUsable, i18n
       {!ready && <button className={button} type="button" onClick={makePoster} disabled={creating}><ImageDown size={17} aria-hidden="true" />{i18n.t(creating ? "Création de l’affiche…" : "Créer l’affiche")}</button>}
       {canShareFile && <button className={button} type="button" onClick={shareImage}><Send size={17} aria-hidden="true" />{i18n.t("Partager l’image")}</button>}
       {ready && <a className={button} onClick={guard} href={ready.url} download="wnpulse-combine.png">{i18n.t("Télécharger l’image")}</a>}
-      <a className={button + " text-emerald-800"} onClick={guard} href={whatsapp} target="_blank" rel="noopener noreferrer">WhatsApp</a>
-      <a className={button + " text-sky-800"} onClick={guard} href={telegram} target="_blank" rel="noopener noreferrer">Telegram</a>
+      {showTextLinks && <><a className={button + " text-emerald-800"} onClick={guard} href={whatsapp} target="_blank" rel="noopener noreferrer">WhatsApp</a>
+      <a className={button + " text-sky-800"} onClick={guard} href={telegram} target="_blank" rel="noopener noreferrer">Telegram</a></>}
     </div>
     {ready && <><img className="max-h-80 w-auto rounded-xl border border-slate-200 shadow-xl motion-safe:transition-transform motion-safe:duration-700 motion-safe:hover:scale-[1.025]" src={ready.url} alt={i18n.t("Aperçu de l’affiche du combiné")} /><p className="text-xs text-slate-600">{i18n.t("Choisis WhatsApp ou Telegram dans le menu de partage, ou télécharge l’image pour la joindre à ton message.")}</p></>}
+    {ready?.photos.map(photo => <a key={photo.source} href={photo.source} target="_blank" rel="noopener noreferrer" className="block text-xs text-slate-600 underline">{photo.label} · {photo.author} · {photo.license}</a>)}
     {failed && <p className="text-xs text-slate-600" role="status">{i18n.t("Le partage d’image a échoué. Réessaie ou utilise les liens de partage texte.")}</p>}
   </div>;
 }
