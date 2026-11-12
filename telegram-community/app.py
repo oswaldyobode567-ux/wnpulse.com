@@ -220,23 +220,39 @@ def format_caption(text):
         return safe
     return "\n".join(style(line,i) for i,line in enumerate(text.splitlines()))
 
-async def sports_hero(client,draft):
-    if draft.get("kind")!="pick":
-        return None,""
-    sport=str((draft.get("visual") or {}).get("sport","")).split("_",1)[0]
-    if sport in ("soccer","football"):
-        path=Path(__file__).with_name("stadium-editorial.webp")
-        if path.is_file():
-            try:
-                return await asyncio.to_thread(lambda:decode_cover(path.read_bytes())),"AMBIANCE FOOTBALL · ILLUSTRATION IA"
-            except Exception:
-                pass
-    if sport in ("basketball","tennis"):
+async def sports_hero(client, draft):
+    if draft.get("kind") != "pick":
+        return None, ""
+    sport = str((draft.get("visual") or {}).get("sport", "")).split("_", 1)[0]
+    theme = "football" if sport in ("soccer", "football") else "basketball" if sport == "basketball" else "mixed"
+    teams = (draft.get("visual") or {}).get("teams") or []
+    if len(CATALOGUE_TOKEN) >= 32 and len(teams) == 2:
         try:
-            return await fetch_cover(client,f"/api/blog/photos/{sport}.webp"),"PHOTO D’ILLUSTRATION"
+            response = await client.post(API + "/share/artwork", timeout=11,
+                headers={"X-WNPulse-Community-Key": CATALOGUE_TOKEN},
+                json={"fixtures": [{"home_team": teams[0], "away_team": teams[1], "sport": sport}]})
+            if response.is_success and len(response.content) <= 4_050_000:
+                from PIL import Image
+                with Image.open(BytesIO(response.content), formats=("PNG", "JPEG")) as image:
+                    if 1 <= image.width * image.height <= 8_000_000:
+                        return image.convert("RGB"), "ILLUSTRATION IA DU MATCH"
         except Exception:
             pass
-    return None,""
+    try:
+        raw = bytearray()
+        async with client.stream("GET", f"https://www.wnpulse.com/share-arena-{theme}.webp", timeout=3) as response:
+            response.raise_for_status()
+            if response.headers.get("content-type", "").split(";")[0] == "image/webp":
+                async for chunk in response.aiter_bytes():
+                    if len(raw) + len(chunk) > 1_000_000:
+                        break
+                    raw.extend(chunk)
+        if raw:
+            return await asyncio.to_thread(decode_cover, raw), "ILLUSTRATION DE SECOURS"
+    except Exception:
+        pass
+    return None, ""
+
 
 async def telegram(method, chat, text, draft=None, markup=None):
     params={"chat_id":str(chat)}
