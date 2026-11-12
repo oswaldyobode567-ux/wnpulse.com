@@ -3,7 +3,7 @@ import hashlib
 import math
 import re
 
-JOURNEY_EVENTS = ("visit", "free_pick", "telegram", "pro")
+JOURNEY_EVENTS = ("visit", "free_pick", "signup", "return", "telegram", "pro")
 JOURNEY_SOURCES = ("direct", "telegram", "facebook", "instagram", "tiktok", "campaign")
 
 
@@ -20,10 +20,12 @@ def summarize_journeys(journeys, requests, now, parse_date):
         source = row.get("source")
         source = source if source in JOURNEY_SOURCES else "direct"
         data = result.setdefault(source, {"visits": 0, "free_pick": 0, "telegram": 0, "pro": 0,
-                                           "checkout": 0, "paid": 0})
+                                           "signup": 0, "return": 0, "checkout": 0, "paid": 0})
         data["visits"] += 1
-        for name in ("free_pick", "telegram", "pro"):
-            data[name] += int(name in (row.get("events") or []))
+        events = row.get("events") or []
+        for name in ("free_pick", "signup", "telegram", "pro"):
+            data[name] += int(name in events)
+        data["return"] += int("signup" in events and "return" in events)
     checkout, paid = set(), set()
     for row in requests:
         key = row.get("journey_id")
@@ -51,7 +53,7 @@ def summarize_journeys(journeys, requests, now, parse_date):
             source = by_id[key].get("source")
             result[source if source in JOURNEY_SOURCES else "direct"][name] += 1
     return {"sources": result, "totals": {k: sum(v[k] for v in result.values())
-        for k in ("visits", "free_pick", "telegram", "pro", "checkout", "paid")}}
+        for k in ("visits", "free_pick", "signup", "return", "telegram", "pro", "checkout", "paid")}}
 
 
 def record_published_roi(bucket, result, odds):

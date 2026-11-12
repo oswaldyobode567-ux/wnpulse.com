@@ -1007,6 +1007,16 @@ function RankingEvaluationPanel() {
             <tbody>{rows.map(([label, data]) => <tr key={label}><th scope="row" className="border-b p-3 text-slate-900">{label}</th>{cells(data).map((value, i) => <td key={i} className="border-b p-3 tabular-nums">{value}</td>)}</tr>)}</tbody>
           </table>
         </div>
+        {!!report.by_competition?.length && <div className="mt-5 overflow-x-auto">
+          <table className="min-w-[35rem] w-full text-left text-sm">
+            <caption className="mb-2 text-start font-bold text-slate-900">Par championnat · mêmes matchs joués</caption>
+            <thead><tr>{["Championnat", "Matchs", "Réussite publiée", "Réussite sélective", "Rendement publié", "Rendement sélectif"].map(label => <th key={label} scope="col" className="border-b p-3">{label}</th>)}</tr></thead>
+            <tbody>{report.by_competition.map(row => <tr key={row.competition}>
+              <th scope="row" className="border-b p-3">{row.competition.replace(/^soccer_/, "").replaceAll("_", " ")}</th>
+              {[number(row.paired), percent(row.baseline.win_rate), percent(row.challenger.win_rate), percent(row.baseline.roi), percent(row.challenger.roi)].map((value, index) => <td key={index} className="border-b p-3 tabular-nums">{value}</td>)}
+            </tr>)}</tbody>
+          </table>
+        </div>}
         <p className="mt-4 text-xs leading-6 text-slate-500">Rendement simulé à une unité par sélection aux cotes enregistrées. Les remboursements ne comptent pas comme des victoires. Le résultat par 100 matchs inclut les matchs écartés, avec un résultat net de zéro pour ces matchs.</p>
       </>}
     {!loading && previous && <div className="mt-6 border-t pt-5 text-sm leading-6 text-slate-600">
@@ -1030,7 +1040,7 @@ function JourneyReport() {
     return () => controller.abort();
   }, [refresh]);
   const titles = { direct: "Direct / non renseigné", telegram: "Telegram", facebook: "Facebook", instagram: "Instagram", tiktok: "TikTok", campaign: "Autre campagne" };
-  const cols = [["visits", "Visites"], ["free_pick", "Aperçu vu"], ["telegram", "Clic Telegram"], ["pro", "Offre Pro"], ["checkout", "Paiement demandé"], ["paid", "Paiement confirmé"]];
+  const cols = [["visits", "Visites"], ["free_pick", "Aperçu vu"], ["signup", "Inscription terminée"], ["return", "Retour J+1 à J+7"], ["telegram", "Clic Telegram"], ["pro", "Offre Pro"], ["checkout", "Paiement demandé"], ["paid", "Paiement confirmé"]];
   const format = value => new Intl.NumberFormat("fr-FR").format(value || 0);
   const rows = report ? [["Total", report.totals], ...Object.entries(report.sources || {}).map(([key, values]) => [titles[key] || key, values])] : [];
   return <section className="rounded-3xl border border-slate-200 bg-white p-5 sm:p-7" data-testid="journey-report">
@@ -1046,7 +1056,7 @@ function JourneyReport() {
           <thead><tr><th scope="col" className="border-b p-3">Origine</th>{cols.map(([key, label]) => <th key={key} scope="col" className="border-b p-3">{label}</th>)}</tr></thead>
           <tbody>{rows.map(([label, values]) => <tr key={label}><th scope="row" className="border-b p-3">{label}</th>{cols.map(([key]) => <td key={key} className="border-b p-3 tabular-nums">{format(values?.[key])}</td>)}</tr>)}</tbody>
         </table></div>
-        <p className="mt-4 text-xs leading-6 text-slate-600">Les étapes sont comptées une fois par visite. Les colonnes ne sont pas des étapes obligatoires. Les paiements de test et les paiements annulés ne comptent pas comme confirmés.</p>
+        <p className="mt-4 text-xs leading-6 text-slate-600">Les étapes sont comptées une fois par visite. Le retour est mesuré sur le même navigateur, entre 24 heures et 7 jours après l’inscription. Les colonnes ne sont pas des étapes obligatoires. Les paiements de test et les paiements annulés ne comptent pas comme confirmés.</p>
         <p className="mt-2 break-all text-sm text-slate-600">Lien à partager dans le canal : <code>https://wnpulse.com/?via=telegram</code></p>
         {report.truncated && <p className="mt-2 text-sm text-amber-800">Le rapport a atteint sa limite de données.</p>}
       </>}

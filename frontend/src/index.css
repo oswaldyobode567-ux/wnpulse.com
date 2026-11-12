@@ -588,33 +588,35 @@ html[data-wp-theme='light'] .wp-premium :is(.wp-home-hero,.wp-catalogue-header,.
 }
 
 
-/* The hero uses a single light image and a one-shot entrance. */
-.wp-premium .wp-athlete-scene {
-  position:relative;
-  overflow:hidden;
-  aspect-ratio:3 / 2;
-  border:1px solid #a680d455;
-  border-radius:22px;
-  background:#20142e;
-  box-shadow:0 18px 44px #160f262d;
+
+/* Public homepage photography, separate from the foreground controls. */
+.wp-premium .wp-photo-hero { isolation:isolate; background:#10111a; }
+.wp-premium .wp-photo-hero-slides,
+.wp-premium .wp-photo-hero-shade { position:absolute; inset:0; pointer-events:none; }
+.wp-premium .wp-photo-hero-slides img {
+  position:absolute; inset:0; width:100%; height:100%; object-fit:cover; object-position:center;
 }
-.wp-premium .wp-athlete-scene img {
-  display:block;
-  width:100%;
-  height:100%;
-  object-fit:cover;
+.wp-premium .wp-photo-hero-slides img + img { opacity:0; }
+.wp-premium .wp-photo-hero-shade {
+  background:linear-gradient(90deg,#10111af5 3%,#10111ad9 50%,#10111a84 100%);
 }
-.wp-premium .wp-athlete-scene::after {
-  content:"";
-  position:absolute;
-  inset:0;
-  pointer-events:none;
-  background:linear-gradient(115deg,transparent 35%,#fff2d53a 50%,transparent 65%);
-  transform:translateX(-110%);
+html[data-wp-theme] .wp-premium .wp-photo-hero .wp-photo-hero-copy :is(h1,p,.text-slate-500,.wp-editorial-eyebrow,.wp-editorial-muted,.wp-result-link) { color:#f5f2f8; }
+.wp-premium .wp-photo-hero-credits { color:#f5f2f8; }
+.wp-premium .wp-photo-hero-credits a { text-decoration:underline; text-underline-offset:3px; }
+.wp-premium .wp-photo-motion-control { background:#151520c9; color:white; }
+@media (max-width:767px) {
+  .wp-premium .wp-photo-hero-shade { background:linear-gradient(180deg,#10111ada,#10111ae6 65%,#10111aee); }
 }
 @media (prefers-reduced-motion:no-preference) {
-  .wp-premium .wp-athlete-scene img { animation:wp-athletes-enter 820ms var(--wp-motion-ease) both; }
-  .wp-premium .wp-athlete-scene::after { animation:wp-athletes-light 900ms 180ms ease-out both; }
+  .wp-premium .wp-photo-hero-slides img:first-child { animation:wp-photo-hero-drift 18s ease-in-out infinite alternate; }
+  .wp-premium .wp-photo-hero-slides img + img { animation:wp-photo-hero-crossfade 18s ease-in-out infinite; }
+  .wp-premium .wp-photo-hero-slides[data-paused='true'] img { animation-play-state:paused; }
 }
-@keyframes wp-athletes-enter { from { transform:scale(1.045); } to { transform:scale(1); } }
-@keyframes wp-athletes-light { to { transform:translateX(110%); } }
+@media (prefers-reduced-motion:reduce) {
+  .wp-premium .wp-photo-motion-control { display:none; }
+}
+@keyframes wp-photo-hero-drift { from { transform:scale(1); } to { transform:scale(1.055); } }
+@keyframes wp-photo-hero-crossfade {
+  0%, 38%, 100% { opacity:0; transform:scale(1); }
+  50%, 88% { opacity:1; transform:scale(1.035); }
+}
