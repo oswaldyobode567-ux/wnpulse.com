@@ -391,9 +391,9 @@ export default function LandingPage() {
 
       <section className="wp-public-hero wp-editorial-hero wp-photo-hero relative overflow-hidden">
         <div className="wp-photo-hero-slides" aria-hidden="true" data-paused={motionPaused}>
-          <img src="/wnpulse-hero-phone.webp" alt="" width="1440" height="960" fetchPriority="high" decoding="async" />
-          <img src="/wnpulse-hero-thumb.webp" alt="" width="1440" height="960" loading="lazy" decoding="async" />
-          <img src="/wnpulse-hero-fans.webp" alt="" width="1440" height="810" loading="lazy" decoding="async" />
+          <img src="/wnpulse-stadium-night.webp" alt="" width="1440" height="850" fetchPriority="high" decoding="async" />
+          <img src="/wnpulse-stadium-crowd.webp" alt="" width="1440" height="850" loading="lazy" decoding="async" />
+          <img src="/wnpulse-stadium-aerial.webp" alt="" width="1440" height="850" loading="lazy" decoding="async" />
         </div>
         <div className="wp-photo-hero-shade" aria-hidden="true" />
         <div className="relative mx-auto w-full min-w-0 max-w-7xl px-4 py-12 sm:px-6 sm:py-24 lg:px-8">
@@ -506,7 +506,7 @@ export default function LandingPage() {
             <button type="button" className="wp-photo-motion-control min-h-11 rounded-lg border border-white/40 px-3" aria-pressed={motionPaused} onClick={() => setMotionPaused(v => !v)}>
               {motionPaused ? t("Relancer le diaporama") : t("Mettre le diaporama en pause")}
             </button>
-            <span>{t("Photos d’illustration")} · <a href="https://www.pexels.com/photo/3974770/">Andrea Piacquadio</a> · <a href="https://www.pexels.com/photo/31465719/">Wasin Pirom</a> · <a href="https://www.pexels.com/photo/23495491/">Vitaly Gariev</a></span>
+            <span>{t("Photos d’illustration")} · <a href="https://www.pexels.com/photo/28827841/">Siarhei Nester</a> · <a href="https://www.pexels.com/photo/26694125/">Almuntadhar Faris</a> · <a href="https://www.pexels.com/photo/15949234/">Mikkel Kvist</a></span>
           </div>
         </div>
       </section>

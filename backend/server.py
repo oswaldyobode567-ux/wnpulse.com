@@ -934,6 +934,7 @@ app.add_middleware(GZipMiddleware, minimum_size=2048, compresslevel=3)
 
 # Bound CPU-heavy model work without blocking the HTTP event loop.
 _analysis_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="winpulse-analysis")
+_today_combo_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="winpulse-today-combos")
 
 
 async def _run_analysis(function, *args, **kwargs):
@@ -11220,7 +11221,7 @@ async def get_montante(payload: dict = Depends(get_current_user_payload)):
         _queue_montante_results()
 
     if state.get("status") == "ACTIVE" and not state.get("current_picks"):
-        state = await _montante_prepare_next_day(state)
+        _queue_montante_results()
 
     return await _montante_view_for_payload(state, payload)
 
@@ -11390,11 +11391,26 @@ class PersonalComboRequest(BaseModel):
     excluded_match_ids: List[str] = Field(default_factory=list,max_length=30)
 
 
+async def _personal_combo_match_cache():
+    try:
+        cached = await asyncio.wait_for(
+            db.odds_cache.find_one({"_id": "all_matches"}, {"data": 1, "updated_at": 1}), timeout=3
+        )
+    except asyncio.TimeoutError:
+        cached = None
+    updated = _parse_iso((cached or {}).get("updated_at"))
+    if updated and (datetime.now(timezone.utc) - updated).total_seconds() < PREDICTION_CACHE_TTL:
+        matches = cached.get("data")
+        if isinstance(matches, list) and matches:
+            return matches
+    return await fetch_all_matches(db)
+
+
 @app.get("/api/combos/personalized/options")
 async def get_personal_combo_options(payload:dict=Depends(get_current_user_payload)):
     await _require_paid_access(payload)
-    matches = await fetch_all_matches(db)
-    return personal_combo_options(matches)
+    matches = await _personal_combo_match_cache()
+    return await asyncio.to_thread(personal_combo_options, matches)
 
 
 @app.post("/api/combos/personalized")
@@ -11405,7 +11421,7 @@ async def generate_personal_combo(preferences:PersonalComboRequest,payload:dict=
         raise HTTPException(status_code=422,detail="Filtre trop long")
     values = preferences.model_dump() if hasattr(preferences,"model_dump") else preferences.dict()
     try:
-        return await _run_analysis(build_personalized_combos,await fetch_all_matches(db),values)
+        return await _run_analysis(build_personalized_combos, await _personal_combo_match_cache(), values)
     except ValueError as exc:
         raise HTTPException(status_code=422,detail=str(exc))
 
@@ -11533,14 +11549,23 @@ async def _quality_today_data():
                 source_stamp = (doc.get("updated_at"), doc.get("montante_quotes_updated_at"), day)
             upcoming = [m for m in matches if not m.get("is_finished") and not m.get("completed")
                 and (start := _parse_iso(m.get("commence_time"))) and start > datetime.now(timezone.utc)]
-            result = await _run_analysis(build_today_combos_by_sport,upcoming)
-            _today_quality_cache.update(at=time.monotonic(),data=result,source=source_stamp,day=day)
+            previous = _today_quality_cache
+            if (previous["data"] is not None and previous.get("source") == source_stamp
+                    and time.monotonic() - previous.get("built_at", 0) < 300
+                    and _today_cached_tickets_current(previous["data"], datetime.now(timezone.utc))):
+                previous["at"] = time.monotonic()
+                return previous["data"]
+            result = await asyncio.get_running_loop().run_in_executor(
+                _today_combo_executor, build_today_combos_by_sport, upcoming
+            )
+            built_at = time.monotonic()
+            _today_quality_cache.update(at=built_at, built_at=built_at, data=result, source=source_stamp, day=day)
             _queue_today_archive(copy.deepcopy(result),upcoming)
             return result
         _today_quality_task = asyncio.create_task(build())
         # Retrieve errors even if every HTTP waiter has disconnected.
         _today_quality_task.add_done_callback(lambda task: None if task.cancelled() else task.exception())
-    if valid and age < 180:
+    if cached is not None and _today_quality_cache.get("day") == day and age < 180:
         return copy.deepcopy(cached)
     return copy.deepcopy(await asyncio.shield(_today_quality_task))
 
@@ -11622,10 +11647,14 @@ async def _load_today_combo_data(payload: Optional[dict]) -> dict:
     result = await _quality_today_data()
     now = datetime.now(timezone.utc)
     # A computation spanning kickoff must not publish a ticket that has started.
-    for family in result.get("families",{}).values():
-        for tier in family.get("tiers",{}).values():
-            if any(not (start := _parse_iso(p.get("commence_time"))) or start <= now for p in tier.get("legs",[])):
-                tier.update(legs=[],leg_count=0,total_odds=0,avg_confidence=None,combined_probability=None,status="preparing",unavailable_reason="kickoff_elapsed")
+    tiers = [tier for family in result.get("families", {}).values()
+             for tier in family.get("tiers", {}).values()]
+    if isinstance(result.get("ultra_safe"), dict):
+        tiers.append(result["ultra_safe"])
+    for tier in tiers:
+        if any(not (start := _parse_iso(p.get("commence_time"))) or start <= now for p in tier.get("legs", [])):
+            tier.update(legs=[], leg_count=0, total_odds=0, avg_confidence=None, combined_probability=None,
+                        status="preparing", unavailable_reason="kickoff_elapsed")
     for family in result.get("families", {}).values():
         family["tiers"] = {
             key: _prepare_today_combo_tier(tier, key, is_paid)

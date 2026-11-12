@@ -1,6 +1,8 @@
+import TicketShare from "@/components/TicketShare";
+import { loadComboData } from "@/lib/comboRequest";
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
-import { ArrowRight, CalendarDays, ChevronDown, Clock, Info, Layers, Lock, RefreshCw, Rocket, Search, Send, Shield, SlidersHorizontal, Sparkles, X, Zap } from "lucide-react";
+import { ArrowRight, CalendarDays, ChevronDown, Clock, Info, Layers, Lock, RefreshCw, Rocket, Search, Shield, SlidersHorizontal, Sparkles, X, Zap } from "lucide-react";
 import AppLayout, { usePageLanguage, ExperienceToolNav } from "@/components/AppLayout";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -187,7 +189,7 @@ export default function TodayCombosPage() {
     setError("");
     if (background && dataRef.current) setRefreshing(true);else setLoading(true);
     try {
-      const response = await api.get("/predictions/today-combos", {
+      const response = await loadComboData("/predictions/today-combos", {
         signal: controller.signal,
         timeout: 20_000
       });
@@ -270,11 +272,7 @@ export default function TodayCombosPage() {
     month: "long",
     timeZone: data?.schedule_timezone || "UTC"
   });
-  const shareWhatsApp = (tier, key) => {
-    if (!canShare(tier, key, isFree, Date.now())) {
-      toast.error(i18n.t("Ce combiné ne peut pas être partagé dans son état actuel."));
-      return;
-    }
+  const shareText = (tier, key) => {
     const lines = [i18n.t("\uD83C\uDFAF *WinPulse \xB7 {{v0}}*", {
       v0: i18n.tx(LEVELS[key]?.label || text(tier.label, "Combiné du jour"))
     }), i18n.t("Cote totale : {{v0}}", {
@@ -298,7 +296,7 @@ export default function TodayCombosPage() {
       }), "");
     });
     lines.push(i18n.t("Toutes les sélections doivent réussir. Aucun résultat garanti."), i18n.t("Les cotes peuvent évoluer."), i18n.t("Découvrir les analyses : https://wnpulse.com"));
-    window.open(`https://wa.me/?text=${encodeURIComponent(lines.join("\n"))}`, "_blank", "noopener,noreferrer");
+    return lines.join("\n");
   };
   return <AppLayout>
       <div className="mx-auto max-w-7xl px-4 pt-5 sm:px-6"><ExperienceToolNav /></div>
@@ -419,7 +417,7 @@ export default function TodayCombosPage() {
               <p className="mt-1 text-[16px] text-slate-600">{i18n.t("Un format par couleur, puis les rencontres dans l\u2019ordre. Ouvre une explication quand tu veux en savoir plus.")}</p>
             </div>
             <div className="grid items-start gap-7 xl:grid-cols-2">
-              {i18n.tx(filtered.map(([key, tier], index) => <TierCard key={`${sportKey}-${key}`} tier={tier} tierKey={key} isFree={isFree} now={now} query={query} featured={key === "sure"} index={index} onUpgrade={() => navigate("/app/abonnement")} onShare={() => shareWhatsApp(tier, key)} />))}
+              {i18n.tx(filtered.map(([key, tier], index) => <TierCard key={`${sportKey}-${key}`} tier={tier} tierKey={key} isFree={isFree} now={now} query={query} featured={key === "sure"} index={index} onUpgrade={() => navigate("/app/abonnement")} shareMessage={canShare(tier, key, isFree, now) ? shareText(tier, key) : ""} />))}
             </div>
           </>)}
         {i18n.tx(!loading && isFree && data && available > 0 && <div className="mt-7 flex flex-col gap-4 rounded-2xl border border-orange-200 bg-orange-50 p-5 sm:flex-row sm:items-center sm:justify-between">
@@ -457,7 +455,7 @@ function TierCard({
   featured,
   index,
   onUpgrade,
-  onShare
+  shareMessage
 }) {
   const i18n = useTodayLanguage();
   const meta = LEVELS[tierKey] || {
@@ -515,7 +513,8 @@ function TierCard({
           }) : "Pas assez de sélections admissibles")}</p><p className="mt-2 text-[16px] leading-relaxed text-slate-600">{i18n.tx(locked && count > 0 ? "Le détail de ce format est disponible avec Pro." : "Un combiné complet nécessite au moins deux rencontres. Aucun match n’est ajouté artificiellement.")}</p>
       </div>)}
       {i18n.tx(state === "incomplete" && legs.length > 0 && <p className="rounded-2xl bg-slate-50 p-4 text-[16px] leading-relaxed text-slate-600">{i18n.t("Cette s\xE9lection ne constitue pas encore un combin\xE9 complet. Le partage sera disponible d\xE8s qu\u2019au moins deux rencontres seront retenues.")}</p>)}
-      {i18n.tx(locked && count >= 2 ? <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5"><p className="text-[19px] font-bold text-slate-900">{i18n.t("D\xE9couvre toutes les s\xE9lections")}</p><p className="mb-4 mt-2 text-[16px] leading-relaxed text-slate-600">{i18n.t("Les rencontres sont visibles. Les march\xE9s, les cotes et les analyses compl\xE8tes se d\xE9bloquent avec Pro.")}</p><Button className="h-12 w-full rounded-xl bg-orange-700 text-[16px] text-white hover:bg-orange-800" onClick={onUpgrade} data-testid={`today-upgrade-${tierKey}`}><Lock className="me-2 h-5 w-5" />{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-5 w-5" /></Button></div> : <Button onClick={onShare} disabled={!canShare(tier, tierKey, isFree, now)} className="h-12 w-full rounded-xl bg-emerald-700 text-[16px] text-white hover:bg-emerald-800" data-testid={`today-share-${tierKey}`}><Send className="me-2 h-5 w-5" />{i18n.t("Partager sur WhatsApp")}</Button>)}
+      {i18n.tx(locked && count >= 2 ? <div className="rounded-2xl border border-orange-200 bg-orange-50 p-5"><p className="text-[19px] font-bold text-slate-900">{i18n.t("D\xE9couvre toutes les s\xE9lections")}</p><p className="mb-4 mt-2 text-[16px] leading-relaxed text-slate-600">{i18n.t("Les rencontres sont visibles. Les march\xE9s, les cotes et les analyses compl\xE8tes se d\xE9bloquent avec Pro.")}</p><Button className="h-12 w-full rounded-xl bg-orange-700 text-[16px] text-white hover:bg-orange-800" onClick={onUpgrade} data-testid={`today-upgrade-${tierKey}`}><Lock className="me-2 h-5 w-5" />{i18n.t("D\xE9couvrir Pro")}<ArrowRight className="ms-2 h-5 w-5" /></Button></div> : shareMessage && <TicketShare title={i18n.tx(meta.label)} odds={tier.total_odds} legs={legs}
+        message={shareMessage} i18n={i18n} isUsable={() => canShare(tier, tierKey, isFree, Date.now())} />)}
       {i18n.tx(count > 0 && <p className="text-center text-[14px] leading-relaxed text-slate-500">{i18n.t("Les cotes peuvent \xE9voluer. Aucun format ne garantit un r\xE9sultat.")}</p>)}
     </div>
   </Card>;
