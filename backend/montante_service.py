@@ -11,7 +11,7 @@ import uuid
 
 
 class MontanteService:
-    VERSION = "3.0.0"
+    VERSION = "3.1.0"
 
     def __init__(
         self,
@@ -145,6 +145,9 @@ class MontanteService:
             teams_b = {self._name(b["home_team"]), self._name(b["away_team"])}
             if teams_a.intersection(teams_b):
                 continue
+            if not set(a["verified_bookmakers"]).intersection(b["verified_bookmakers"]):
+                self._reject("no_common_bookmaker_at_displayed_odds")
+                continue
             same_league = bool(a.get("sport_key") and a["sport_key"] == b.get("sport_key"))
             # A ranking penalty, NOT a claimed estimate of correlation or adjusted probability.
             pair_score = .6 * min(a["selection_score"], b["selection_score"]) + .4 * (
@@ -188,6 +191,7 @@ class MontanteService:
             "expected_return": round(expected_return, 4),
             "probability_validated": False,
             "assumption": "Indépendance supposée, non démontrée ; gain, remboursement et perte distingués.",
+            "common_bookmakers": sorted(set(a.get("verified_bookmakers", [])).intersection(b.get("verified_bookmakers", []))),
             "same_competition": bool(a.get("sport_key") and a["sport_key"] == b.get("sport_key")),
             "minimum_sources": min(a["num_books"], b["num_books"]),
             "selector_version": MontanteService.VERSION}
@@ -383,6 +387,7 @@ class MontanteService:
             self._reject("missing_team_total_identity"); return None
         now = datetime.now(timezone.utc)
         values, prices, updates, books = [], [], [], set()
+        quoted_books = {}
         fresh_books = set()
         raw_books = match.get("_bookmakers", match.get("bookmakers", []))
         for book in raw_books if isinstance(raw_books, list) else []:
@@ -438,12 +443,13 @@ class MontanteService:
                     probability = (1/chosen[1])/denominator
                 values.append(probability)
                 prices.append(chosen[1]); updates.append(updated.isoformat()); books.add(book_id)
+                quoted_books[book_id] = chosen[1]
                 break
         if len(books) < self.min_books:
             self._reject("stale_or_undated_sources" if len(fresh_books)<self.min_books else "insufficient_fresh_complete_sources"); return None
         return {"num_books":len(books), "consensus":statistics.median(values),
             "stability":max(0.,100-statistics.pstdev(values)*1000), "prices":prices,
-            "odds_verified_at":min(updates)}
+            "odds_verified_at":min(updates), "quoted_books":quoted_books}
 
     def _book_h2h(self, book, home, away, now):
         for data in book.get("markets") or []:
@@ -556,7 +562,8 @@ class MontanteService:
             "expected_return":round(expected_return,6),"model_market_disagreement":round(disagreement*100,2),
             "num_books":evidence["num_books"],"stability_score":round(evidence["stability"],1),
             "selection_score":round(score,3),"legacy_selection_score":round(legacy,3),"selection_factors":factors,
-            "odds_verified_at":evidence["odds_verified_at"],"selector_version":self.VERSION}
+            "odds_verified_at":evidence["odds_verified_at"],"selector_version":self.VERSION,
+            "verified_bookmakers": sorted(book for book, price in evidence["quoted_books"].items() if abs(odds-price) <= .005)}
 
     def _qualifies(self, item: Dict[str, Any]) -> bool:
         if item["model_probability"] < self.min_confidence:
