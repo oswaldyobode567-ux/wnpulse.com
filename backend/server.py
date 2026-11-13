@@ -14290,38 +14290,32 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     combat_updated = await _settle_combat_predictions(pending)
     classic_pending = [p for p in pending if not str(p.get("match_id") or "").startswith("oaio-") and not is_combat_prediction(p)]
     recent_classic=[p for p in classic_pending if _parse_iso(p.get("commence_time")) and now-timedelta(days=3)<=_parse_iso(p["commence_time"])<now]
-    archive_keys=sorted({str(p.get('sport_key')) for p in classic_pending if p.get('sport_key')})
-    required_sport_keys = sorted({
-        str(p.get("sport_key") or "").strip()
-        for p in recent_classic
-        if str(p.get("sport_key") or "").strip()
-    })
-
-    # Read all cached/archived sports in this batch first, without HTTP calls.
-    scores=await fetch_all_scores(db,sport_keys=archive_keys,archive_only=True,include_archive=True,archive_days=180)
-    # A completed score collected by Live is usable even if the separate
-    # reconciliation HTTP budget has run out. This is a read-only cache bridge.
-    live = await db.scores_cache.find_one({"_id":"live_scores"}) or {}
-    scores = _merge_final_result_caches(scores, live.get("data") or [])
-    verified = {str(row.get("id")) for row in scores if row.get("completed") is True}
+    # Read only the scores needed by this batch. The broader archive replay
+    # rewrites old scores before returning and can block settlement.
+    ids = sorted({str(p["match_id"]) for p in classic_pending if p.get("match_id")})
+    primary, live, archived = await asyncio.gather(
+        _track_read_optional(db.scores_cache.find_one({"_id": "all_scores"}, {"data": 1})),
+        _track_read_optional(db.scores_cache.find_one({"_id": "live_scores"}, {"data": 1})),
+        asyncio.wait_for(db.scores_archive.find(
+            {"event_id": {"$in": ids}, "completed": True}
+        ).limit(len(ids) or 1).to_list(length=len(ids) or 1), timeout=12),
+        return_exceptions=True,
+    )
+    archive_rows = [{**row, "id": row["event_id"], "_from_archive": True}
+                    for row in archived] if isinstance(archived, list) else []
+    primary_rows = primary.get("data", []) if isinstance(primary, dict) else []
+    live_rows = live.get("data", []) if isinstance(live, dict) else []
+    scores = _merge_final_result_caches(primary_rows or [], live_rows or [])
+    # An archive can supply an older final result, but never override a fresh
+    # final score or a disagreement between the current caches.
+    current_final_ids = {str(row.get("id")) for row in [*(primary_rows or []), *(live_rows or [])]
+                         if row.get("completed") is True}
+    scores = _merge_final_result_caches(scores, [
+        row for row in archive_rows if str(row["id"]) not in current_final_ids
+    ])
+    scores_by_match = {str(row["id"]): row for row in scores if row.get("id")}
     required_sport_keys = sorted({str(p["sport_key"]) for p in recent_classic
-        if p.get("sport_key") and str(p.get("match_id")) not in verified})
-    if required_sport_keys:
-        try:
-            fresh=await asyncio.wait_for(fetch_all_scores(db,sport_keys=required_sport_keys,force_refresh=force_score_refresh,days_from=3,include_archive=True,archive_days=180),timeout=40)
-            by_id={str(r.get('id')):r for r in scores if r.get('id')}
-            for row in fresh:
-                key=str(row.get('id') or '')
-                if key and (row.get('completed') is True or (by_id.get(key) or {}).get('completed') is not True):by_id[key]=row
-            scores=list(by_id.values())
-        except asyncio.TimeoutError:pass
-    scores_by_match={str(r['id']):r for r in scores if r.get('id')}
-    # Exact archived IDs recover even records older than the broad 180-day sample.
-    missing=[str(p.get('match_id')) for p in classic_pending if p.get('match_id') and str(p['match_id']) not in scores_by_match]
-    if missing:
-        archived=await db.scores_archive.find({'event_id':{'$in':missing},'completed':True}).limit(300).to_list(length=300)
-        for row in archived:
-            item={**row,'id':row['event_id'],'_from_archive':True};scores.append(item);scores_by_match[str(item['id'])]=item
+        if p.get("sport_key") and (scores_by_match.get(str(p.get("match_id"))) or {}).get("completed") is not True})
     saved=await db.scores_cache.find_one({'_id':'secondary_results'}) or {}
     oaio_scores_map=saved.get('data') or {}
     secondary_refreshed=False
@@ -14386,11 +14380,7 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
                         recovered_by_team_time += 1
                         reconciliation_source = "scores_api_team_time"
 
-                if score_entry:
-                    if not score_entry.get("completed"):
-                        reason="provider_not_completed"
-                        not_completed += 1
-                        continue
+                if score_entry and score_entry.get("completed") is True:
                     home_score, away_score = _score_pair(score_entry)
                     if home_score is None or away_score is None:
                         for row in score_entry.get("scores") or []:
@@ -14406,6 +14396,9 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
                     if score_entry.get("_teams_reversed") and home_score is not None and away_score is not None:
                         home_score, away_score = away_score, home_score
                 else:
+                    if score_entry:
+                        reason = "provider_not_completed"
+                        not_completed += 1
                     secondary = _find_oaio_score_fallback(pred, oaio_scores_map)
                     if secondary:
                         home_score = int(secondary["home_score"])
@@ -14447,6 +14440,15 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
             check_updates.append(UpdateOne({'_id':pred['_id']},{'$set':{'settlement_checked_at':run_at,'settlement_diagnostic':reason}}))
 
     if check_updates:await db.predictions_history.bulk_write(check_updates,ordered=False)
+
+    if required_sport_keys:
+        try:
+            # Warm persistent scores for the next batch after confirmed results
+            # from this batch have already been written.
+            await asyncio.wait_for(fetch_all_scores(db, sport_keys=required_sport_keys,
+                force_refresh=force_score_refresh, days_from=3), timeout=40)
+        except Exception as exc:
+            logging.getLogger("winpulse.results").warning("Score recovery deferred (%s)", type(exc).__name__)
 
     pending_remaining = await db.predictions_history.count_documents({"result": "pending"})
     result = {
@@ -15732,7 +15734,7 @@ async def _force_track_reconcile():
 
 
 async def _scheduled_reconcile():
-    return await _run_with_scheduler_lease("results_reconcile", _force_track_reconcile, lease_seconds=180)
+    return await _run_with_scheduler_lease("results_reconcile", _reconcile_predictions_with_scores, lease_seconds=180)
 
 
 async def _scheduled_montante_result_sync():
