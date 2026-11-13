@@ -100,6 +100,30 @@ def comparison_forecast(prediction, match, now):
     }
 
 
+def _paired_roi_interval(rows):
+    """Bootstrap paired ROI differences by match day to preserve daily clusters."""
+    import random
+    blocks = {}
+    for row in rows:
+        value = row.get("evaluation") or {}
+        stamp = _hybrid_dt(row.get("commence_time"))
+        if row.get("state") != "resolved" or not value.get("challenger") or not stamp:
+            continue
+        gap = value["challenger"]["unit_return"] - value["baseline"]["unit_return"]
+        blocks.setdefault(stamp.date(), []).append(gap)
+    if len(blocks) < 10:
+        return None
+    days = [(sum(values), len(values)) for values in blocks.values()]
+    rng = random.Random(260113)
+    samples = []
+    for _ in range(1000):
+        draw = rng.choices(days, k=len(days))
+        samples.append(100 * sum(total for total, _ in draw) / sum(n for _, n in draw))
+    samples.sort()
+    return {"low": round(samples[25], 2), "high": round(samples[974], 2), "days": len(days),
+            "matches": sum(n for _, n in days)}
+
+
 def summarize(rows):
     settled = [r["evaluation"] for r in rows if r.get("state") == "resolved" and r.get("evaluation")]
     both = [v for v in settled if v.get("challenger")]
@@ -131,6 +155,7 @@ def summarize(rows):
     ]
     return {
         "by_competition": by_competition,
+        "paired_roi_interval": _paired_roi_interval(rows),
         "protocol": PROTOCOL, "observed": len(rows), "resolved": len(settled),
         "pending": len(rows)-len(settled), "paired": len(both),
         "passed": len(settled)-len(both),
