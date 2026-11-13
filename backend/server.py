@@ -13394,7 +13394,7 @@ async def admin_odds_credit_budget(payload: dict = Depends(get_current_user_payl
             "last_reservation": state.get("last_reservation"),
             "updated_at": state.get("updated_at")}
 
-LIVE_SCORES_FRESH_SECONDS = max(60, int(os.environ.get("LIVE_SCORES_FRESH_SECONDS", "300")))
+LIVE_SCORES_FRESH_SECONDS = max(60, int(os.environ.get("LIVE_SCORES_FRESH_SECONDS", "120")))
 LIVE_SCORES_MAX_AGE_SECONDS = max(LIVE_SCORES_FRESH_SECONDS + 60, int(os.environ.get("LIVE_SCORES_MAX_AGE_SECONDS", "600")))
 LIVE_SCORES_REFRESH_TIMEOUT_SECONDS = 60
 _live_scores_refresh_task = None
@@ -13450,6 +13450,19 @@ def _start_live_scores_refresh():
     if time.monotonic() < _live_scores_retry_at:
         return
     _live_scores_refresh_task = asyncio.create_task(_refresh_live_scores_in_background())
+
+
+async def _poll_live_scores_cache():
+    if time.monotonic() < _live_scores_retry_at:
+        return
+    try:
+        cached = await asyncio.wait_for(db.scores_cache.find_one(
+            {"_id": "live_scores"}, {"collected_at": 1, "updated_at": 1}), timeout=3)
+        stamp = _parse_iso((cached or {}).get("collected_at") or (cached or {}).get("updated_at"))
+        if not stamp or (datetime.now(timezone.utc) - stamp).total_seconds() >= LIVE_SCORES_FRESH_SECONDS:
+            _start_live_scores_refresh()
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Live score polling deferred: %s", type(exc).__name__)
 
 
 @app.get("/api/live/streams")
@@ -13513,7 +13526,7 @@ async def get_scores(snapshot: bool = False):
     dedicated = bool(cached and cached.get("_id") == "live_scores")
     partial = bool(cached and cached.get("partial")) or not dedicated
     valid = isinstance(scores, list) and age <= LIVE_SCORES_MAX_AGE_SECONDS
-    stale = not valid or age >= LIVE_SCORES_FRESH_SECONDS or partial or _live_scores_refresh_error
+    stale = not valid or age >= LIVE_SCORES_FRESH_SECONDS or _live_scores_refresh_error
     if stale:
         _start_live_scores_refresh()
     refreshing = bool(_live_scores_refresh_task and not _live_scores_refresh_task.done())
@@ -15889,6 +15902,8 @@ async def startup_event():
                 coalesce=True,
                 max_instances=1,
             )
+        scheduler.add_job(_poll_live_scores_cache, "interval", seconds=30, id="live_scores_poll",
+                          coalesce=True, max_instances=1, next_run_time=datetime.now(timezone.utc))
         scheduler.start()
 
     # Readiness must not wait for network retries, score reconciliation or

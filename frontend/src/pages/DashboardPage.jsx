@@ -1391,7 +1391,7 @@ export function MatchCataloguePage() {
   const leagueGroups = groupByLeague(visibleMatches);
   const liveFixtures = visibleMatches.flatMap(match => {
     const score = fixtureScore(match, scoresByMatch);
-    return score && !score.completed && !score.stale ? [{ match, score }] : [];
+    return score && !score.completed && score.age <= 10 * 60_000 ? [{ match, score }] : [];
   });
   const selectDate = value => setSearchParams(previous => {
     const params = new URLSearchParams(previous);
@@ -1490,7 +1490,7 @@ export function MatchCataloguePage() {
           </h2>
           <ul className="grid gap-2 sm:grid-cols-2">
             {liveFixtures.map(({ match, score }) => <li key={match.id || match.match_id} className="rounded-xl border border-rose-100 bg-rose-50/50 p-2.5">
-              <p className="mb-1 truncate text-xs font-semibold text-slate-600">{match.sport_title || match.league_name}</p>
+              <p className="mb-1 truncate text-xs font-semibold text-slate-600">{match.sport_title || match.league_name}{score.stale && <span className="ms-2 font-normal">{t("Dernier score connu")}</span>}</p>
               {["home", "away"].map(side => <div key={side} className="flex min-w-0 items-center gap-2 py-0.5 text-sm font-semibold text-slate-900">
                 <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
                   kind={match[`${side}_media`]?.kind} sport={match.sport_key} size="compact" />
@@ -1672,8 +1672,9 @@ function fixtureScore(match, scoresByMatch) {
   const home = scores.get(row.home_team), away = scores.get(row.away_team);
   if (![home, away].every(value => /^\d+$/.test(String(value ?? "")))) return null;
   const updatedAt = Date.parse(row._score_fetched_at || row.last_update || row.snapshotAt);
-  const stale = Boolean(row.stale) || !Number.isFinite(updatedAt) || Date.now() - updatedAt > 5 * 60_000;
-  return { home: Number(home), away: Number(away), completed: row.completed === true, stale };
+  const age = Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Infinity;
+  const stale = Boolean(row.stale) || age > 3 * 60_000;
+  return { home: Number(home), away: Number(away), completed: row.completed === true, stale, age };
 }
 
 function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false, scoresByMatch }) {
@@ -1697,7 +1698,7 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
       {compact ? <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
         {visible.map(match => { const score = fixtureScore(match, scoresByMatch); return <details key={match.id} className="group min-w-0">
           <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
-            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{score ? (score.completed ? t("Terminé") : score.stale ? "—" : t("LIVE")) : localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{score ? (score.completed ? t("Terminé") : score.stale ? t("Dernier score connu") : t("LIVE")) : localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
             <span className="wp-fixture-teams min-w-0 flex-1 font-medium text-slate-900">
               {["home", "away"].map(side => <span key={side} className="flex min-w-0 items-center gap-2">
                 <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
