@@ -1000,6 +1000,11 @@ function RankingEvaluationPanel() {
             <div key={label} className="rounded-2xl border border-slate-200 bg-slate-50 p-4"><p className="text-sm text-slate-600">{label}</p><strong className="mt-1 block text-2xl text-slate-900">{number(value)}</strong></div>)}
         </div>
         <p className="mt-4 text-sm leading-6 text-slate-600">Couverture sur les résultats confirmés : <strong>{percent(report.coverage)}</strong> · {number(report.different_choices)} choix différents. {report.paired < report.min_review_pairs ? `Premier examen après ${report.min_review_pairs} matchs comparables ; l’échantillon est encore insuffisant.` : "Échantillon disponible pour examen ; aucun changement automatique."}</p>
+        {report.paired_roi_interval && <p className="mt-3 text-sm text-slate-600">
+          Écart de rendement sélectif − publié sur les mêmes matchs, intervalle estimé à 95 % :
+          <strong> {number(report.paired_roi_interval.low)} à {number(report.paired_roi_interval.high)} points</strong>
+          {" "}sur {number(report.paired_roi_interval.days)} jours. Si l’intervalle recouvre zéro, l’avantage reste incertain.
+        </p>}
         {report.truncated && <p className="mt-3 text-sm text-amber-800">Le rapport est limité aux 10 000 observations les plus récentes.</p>}
         <div className="mt-5 overflow-x-auto">
           <table className="min-w-[39rem] w-full text-left text-sm">

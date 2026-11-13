@@ -17405,7 +17405,7 @@ async def selective_ranking_status(days: int = 30, payload: dict = Depends(get_c
     days = max(1, min(90, days))
     cutoff = (datetime.now(timezone.utc)-timedelta(days=days)).isoformat()
     query = {"protocol": RANKING_PROTOCOL, "commence_time": {"$gte": cutoff}}
-    rows = await db.model_comparison_forecasts.find(query, {"_id":0, "state":1, "evaluation":1, "sport_key":1}
+    rows = await db.model_comparison_forecasts.find(query, {"_id":0, "state":1, "evaluation":1, "sport_key":1, "commence_time":1}
         ).sort("commence_time", -1).limit(10001).max_time_ms(8000).to_list(length=10001)
     return {**summarize_rankings(rows[:10000]), "days": days, "truncated": len(rows)>10000}
 
