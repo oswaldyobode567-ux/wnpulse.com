@@ -1511,11 +1511,10 @@ async def fetch_live_scores(db) -> List[Dict]:
         identity = str(row.get("id") or f"{row.get('sport_key')}:{row.get('home_team')}:{row.get('away_team')}:{row.get('commence_time')}:{index}")
         deduplicated[identity] = row
     rows = list(deduplicated.values())
-    # Pour l'expiration du snapshot, utiliser le plus ancien score conservé.
-    oldest = min((row.get("_score_fetched_at", now.isoformat()) for row in rows), default=now.isoformat())
+    # Retained rows keep their individual freshness timestamps.
     await db.scores_cache.update_one(
         {"_id": "live_scores"},
-        {"$set": {"data": rows, "updated_at": oldest, "collected_at": now.isoformat(),
+        {"$set": {"data": rows, "updated_at": now.isoformat(), "collected_at": now.isoformat(),
                   "partial": bool(failures), "failed_sports": len(failures),
                   "sport_keys": list(succeeded)}},
         upsert=True,
