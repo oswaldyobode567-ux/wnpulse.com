@@ -14217,20 +14217,32 @@ def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Option
 
 
 async def _results_priority_batch(database, now):
-    """Reserve 200 slots for recoverable recent events, 100 for rotating backlog.
+    """Prioritize confirmed recent results while reserving slots for recovery.
 
-    Only kickoff times older than two hours enter HTTP settlement selection.
+    The ordinary recovery queue starts two hours after kickoff.
     Confirmed provider completion is still required; elapsed time never settles.
     """
     due = now-timedelta(hours=2)
+    # A provider-confirmed final score can settle immediately, even when a
+    # short game has finished before the normal two-hour recovery window.
+    live = await _track_read_optional(database.scores_cache.find_one({"_id": "live_scores"}, {"data": 1}))
+    confirmed = list({str(row["id"]) for row in live.get("data", [])
+                      if row.get("id") and row.get("completed") is True and None not in _score_pair(row)})
+    ready = await database.predictions_history.find({
+        "result": "pending", "match_id": {"$in": confirmed},
+        "commence_time": {"$gte": (now-timedelta(hours=24)).isoformat(), "$lt": now.isoformat()},
+    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(100).to_list(length=100) if confirmed else []
     recent = await database.predictions_history.find({"result":"pending",
+        "_id":{"$nin":[row["_id"] for row in ready]},
         "commence_time":{"$gte":(now-timedelta(days=3)).isoformat(),"$lt":due.isoformat()}
-    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(200).to_list(length=200)
-    ids = [row["_id"] for row in recent]
+    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(150).to_list(length=150)
+    current = ready + recent
+    ids = [row["_id"] for row in current]
+    remaining = 300-len(current)
     backlog = await database.predictions_history.find({"result":"pending",
         "_id":{"$nin":ids},"commence_time":{"$lt":due.isoformat()}
-    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(300-len(recent)).to_list(length=300-len(recent))
-    return recent+backlog
+    }).sort([("settlement_checked_at",1),("commence_time",-1)]).limit(remaining).to_list(length=remaining)
+    return current + backlog
 
 
 def _merge_final_result_caches(primary, live):
@@ -14439,6 +14451,8 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
         finally:
             check_updates.append(UpdateOne({'_id':pred['_id']},{'$set':{'settlement_checked_at':run_at,'settlement_diagnostic':reason}}))
 
+    if updated:
+        _track_refresh_task()
     if check_updates:await db.predictions_history.bulk_write(check_updates,ordered=False)
 
     if required_sport_keys:

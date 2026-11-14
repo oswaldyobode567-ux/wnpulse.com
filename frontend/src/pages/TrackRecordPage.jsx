@@ -167,7 +167,7 @@ export default function TrackRecordPage() {
     };
     const resume = () => { if (document.visibilityState === "visible") load(true); };
     load();
-    const timer = window.setInterval(() => load(true), 90000);
+    const timer = window.setInterval(() => load(true), 30000);
     document.addEventListener("visibilitychange", resume);
     window.addEventListener("focus", resume);
     return () => {
