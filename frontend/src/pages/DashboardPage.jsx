@@ -1332,8 +1332,9 @@ export function MatchCataloguePage() {
   const scoresByMatch = useTodayScores();
   const catalogueWithScores = useMemo(() => {
     const ids = new Set(matches.map(match => String(match.id || match.match_id)));
+    const catalogueTeams = indexScoresByTeams(matches);
     const scoreOnly = [...(scoresByMatch?.values() || [])].filter(row =>
-      row.id && !ids.has(String(row.id)) && row.sport_key && row.home_team && row.away_team &&
+      row.id && !ids.has(String(row.id)) && !recentScoreMatch(catalogueTeams.get(scoreTeamsKey(row)), row) && row.sport_key && row.home_team && row.away_team &&
       localMatchDay(row.commence_time) === today && dayjs(row.commence_time).valueOf() <= Date.now() &&
       fixtureScore(row, scoresByMatch)
     );
@@ -1488,17 +1489,26 @@ export function MatchCataloguePage() {
           <h2 id="today-live-title" className="mb-3 flex items-center gap-2 font-heading text-lg font-bold text-slate-900">
             <Radio className="h-5 w-5 text-rose-600" aria-hidden="true" />{t("En direct")}
           </h2>
-          <ul className="grid gap-2 sm:grid-cols-2">
-            {liveFixtures.map(({ match, score }) => <li key={match.id || match.match_id} className="rounded-xl border border-rose-100 bg-rose-50/50 p-2.5">
-              <p className="mb-1 truncate text-xs font-semibold text-slate-600">{match.sport_title || match.league_name}{score.stale && <span className="ms-2 font-normal">{t("Dernier score connu")}</span>}</p>
-              {["home", "away"].map(side => <div key={side} className="flex min-w-0 items-center gap-2 py-0.5 text-sm font-semibold text-slate-900">
-                <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
-                  kind={match[`${side}_media`]?.kind} sport={match.sport_key} size="compact" />
-                <bdi className="min-w-0 break-words">{match[`${side}_team`]}</bdi>
-                <bdi className="ms-auto shrink-0 font-bold tabular-nums text-rose-700">{formatNumber(score[side])}</bdi>
+          <div className="divide-y divide-slate-200">
+            {[...new Set(liveFixtures.map(({ match }) => match.sport_title || match.league_name))].map(league =>
+              <div key={league} className="py-2">
+                <h3 className="rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{league}</h3>
+                <ul className="divide-y divide-slate-100">
+                  {liveFixtures.filter(({ match }) => (match.sport_title || match.league_name) === league).map(({ match, score }) =>
+                    <li key={match.id || match.match_id} className="flex items-center gap-3 px-2 py-2">
+                      <span className="w-16 shrink-0 text-xs font-bold text-rose-700">{score.stale ? t("Dernier score connu") : liveScoreClock(score, t)}</span>
+                      <div className="min-w-0 flex-1">
+                        {["home", "away"].map(side => <div key={side} className="flex items-center gap-2 py-0.5 text-sm">
+                          <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
+                            kind={match[`${side}_media`]?.kind} sport={match.sport_key} size="compact" />
+                          <bdi className="min-w-0 break-words">{match[`${side}_team`]}</bdi>
+                          <bdi className="ms-auto shrink-0 font-bold tabular-nums text-rose-700">{formatNumber(score[side])}</bdi>
+                        </div>)}
+                      </div>
+                    </li>)}
+                </ul>
               </div>)}
-            </li>)}
-          </ul>
+          </div>
         </section>}
         <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
           <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
@@ -1633,12 +1643,10 @@ function useTodayScores() {
       if (loading || document.hidden) return;
       loading = true;
       try {
-        const { data } = await api.get("/scores?snapshot=true", { signal: controller.signal, timeout: 8000 });
+        const { data } = await api.get("/scores?snapshot=true&today=true", { signal: controller.signal, timeout: 8000 });
         if (!controller.signal.aborted) {
-          if (Array.isArray(data?.scores) && data.updated_at) {
-            setScores(new Map(data.scores.filter(score => score?.id != null).map(score => [
-              String(score.id), { ...score, stale: Boolean(data.stale), snapshotAt: data.updated_at }
-            ])));
+          if (data?.updated_at || data?.football_live?.length) {
+            setScores(mergeTodayScoreSources(data));
           } else {
             setScores(previous => markTodayScoresStale(previous));
           }
@@ -1658,7 +1666,50 @@ function useTodayScores() {
       document.removeEventListener("visibilitychange", refresh);
     };
   }, []);
+  return useMemo(() => {
+    if (scores) scores.byTeams = indexScoresByTeams(scores.values());
+    return scores;
+  }, [scores]);
+}
+
+function scoreTeamsKey(row) {
+  const family = String(row.sport_key || "").split("_")[0];
+  const norm = name => String(name || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]/g, "");
+  return [family, norm(row.home_team), norm(row.away_team)].join(":");
+}
+
+function recentScoreMatch(rows, target) {
+  const time = Date.parse(target.commence_time);
+  const matches = (rows || []).filter(row => Math.abs(Date.parse(row.commence_time) - time) <= 15 * 60_000);
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function mergeTodayScoreSources(data) {
+  const scores = new Map((data.scores || []).filter(row => row?.id != null).map(row => [
+    String(row.id), { ...row, stale: Boolean(data.stale), snapshotAt: data.updated_at },
+  ]));
+  const primary = indexScoresByTeams(scores.values());
+  for (const row of data.football_live || []) {
+    const match = recentScoreMatch(primary.get(scoreTeamsKey(row)), row);
+    if (match?.completed) continue;
+    const previousTime = Date.parse(match?._score_fetched_at || match?.snapshotAt);
+    const sourceTime = Date.parse(row._score_fetched_at);
+    if (match && previousTime > sourceTime) continue;
+    const id = String(match?.id || row.id);
+    scores.set(id, { ...row, id, sport_key: match?.sport_key || row.sport_key });
+  }
   return scores;
+}
+
+function indexScoresByTeams(rows) {
+  const index = new Map();
+  for (const row of rows) {
+    const key = scoreTeamsKey(row);
+    const entries = index.get(key) || [];
+    entries.push(row);
+    index.set(key, entries);
+  }
+  return index;
 }
 
 function markTodayScoresStale(scores) {
@@ -1666,7 +1717,7 @@ function markTodayScoresStale(scores) {
 }
 
 function fixtureScore(match, scoresByMatch) {
-  const row = scoresByMatch?.get(String(match.id || match.match_id));
+  const row = scoresByMatch?.get(String(match.id || match.match_id)) || recentScoreMatch(scoresByMatch?.byTeams.get(scoreTeamsKey(match)), match);
   if (!row || !Array.isArray(row.scores)) return null;
   const scores = new Map(row.scores.filter(Boolean).map(item => [item.name, item.score]));
   const home = scores.get(row.home_team), away = scores.get(row.away_team);
@@ -1674,7 +1725,12 @@ function fixtureScore(match, scoresByMatch) {
   const updatedAt = Date.parse(row._score_fetched_at || row.last_update || row.snapshotAt);
   const age = Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Infinity;
   const stale = Boolean(row.stale) || age > 3 * 60_000;
-  return { home: Number(home), away: Number(away), completed: row.completed === true, stale, age };
+  return { home: Number(home), away: Number(away), completed: row.completed === true, stale, age, phase: row.phase, minute: row.minute };
+}
+
+function liveScoreClock(score, t) {
+  if (score.phase === "HT") return t("Mi-temps");
+  return Number.isInteger(score.minute) && score.minute > 0 ? `${score.minute}′` : t("LIVE");
 }
 
 function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, showAllMatches = false, compact = false, scoresByMatch }) {
@@ -1698,7 +1754,7 @@ function LeagueSection({ dayKey, league, matches, isAdmin, isFree, onUpgrade, sh
       {compact ? <div className="divide-y divide-slate-100 rounded-lg border border-slate-200 bg-white">
         {visible.map(match => { const score = fixtureScore(match, scoresByMatch); return <details key={match.id} className="group min-w-0">
           <summary className="flex min-h-12 cursor-pointer list-none items-center gap-3 px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-orange-400 [&::-webkit-details-marker]:hidden">
-            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{score ? (score.completed ? t("Terminé") : score.stale ? t("Dernier score connu") : t("LIVE")) : localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
+            <span className="w-12 shrink-0 text-xs tabular-nums text-slate-500">{score ? (score.completed ? t("Terminé") : score.stale ? t("Dernier score connu") : liveScoreClock(score, t)) : localMatchDay(match.commence_time) ? formatDate(match.commence_time, { hour: "2-digit", minute: "2-digit" }) : "—"}</span>
             <span className="wp-fixture-teams min-w-0 flex-1 font-medium text-slate-900">
               {["home", "away"].map(side => <span key={side} className="flex min-w-0 items-center gap-2">
                 <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
