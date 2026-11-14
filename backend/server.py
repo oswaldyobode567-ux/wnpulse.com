@@ -13495,8 +13495,55 @@ async def admin_live_stream_refresh(payload: dict = Depends(get_current_user_pay
     return {"started": started, "configured": live_video_configuration()["configured"]}
 
 
+async def _refresh_today_football_scores():
+    # Reuse the provider's shared request budget and endpoint backoff.
+    if not _optional_stats_service.API_SPORTS_KEY:
+        return
+    async def collect():
+        rows = await asyncio.wait_for(
+            _optional_stats_service.enrichment_request(db, "apisports:football", "/fixtures", {"live": "all"}),
+            timeout=15,
+        )
+        if not isinstance(rows, dict) or rows.get("errors") or not isinstance(rows.get("response"), list):
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        result = []
+        for row in rows["response"]:
+            fixture, teams, goals = row.get("fixture") or {}, row.get("teams") or {}, row.get("goals") or {}
+            status = fixture.get("status") or {}
+            home, away = (teams.get(side) or {} for side in ("home", "away"))
+            hs, aws = goals.get("home"), goals.get("away")
+            if (not fixture.get("id") or not _parse_iso(fixture.get("date"))
+                    or not home.get("name") or not away.get("name")
+                    or status.get("short") not in {"1H", "HT", "2H", "ET", "BT", "P", "LIVE"}
+                    or any(type(n) is not int or n < 0 for n in (hs, aws))):
+                continue
+            result.append({"id": f"apisports-{fixture['id']}", "sport_key": "soccer_apisports",
+                           "sport_title": (row.get("league") or {}).get("name") or "Football",
+                           "commence_time": fixture["date"], "completed": False,
+                           "home_team": home["name"], "away_team": away["name"],
+                           "home_logo": home.get("logo"), "away_logo": away.get("logo"),
+                           "scores": [{"name": home["name"], "score": hs}, {"name": away["name"], "score": aws}],
+                           "phase": status.get("short"), "minute": status.get("elapsed"),
+                           "_score_fetched_at": now})
+        await db.scores_cache.update_one({"_id": "today_football_live"},
+            {"$set": {"data": result, "updated_at": now}}, upsert=True)
+    try:
+        await _run_with_scheduler_lease("today_football_live", collect, lease_seconds=290)
+    except Exception as exc:
+        logging.getLogger(__name__).warning("Today football scores unavailable: %s", type(exc).__name__)
+
+
+async def _today_football_score_rows():
+    cache = await _track_read_optional(db.scores_cache.find_one({"_id": "today_football_live"}))
+    stamp = _parse_iso(cache.get("updated_at"))
+    if stamp and datetime.now(timezone.utc) - stamp < timedelta(minutes=10):
+        return cache.get("data") or []
+    return []
+
+
 @app.get("/api/scores")
-async def get_scores(snapshot: bool = False):
+async def get_scores(snapshot: bool = False, today: bool = False):
     # Lire directement Mongo : fetch_all_scores archive même un cache frais,
     # puis attend les réponses de toutes les compétitions si le cache a expiré.
     try:
@@ -13506,6 +13553,9 @@ async def get_scores(snapshot: bool = False):
     except Exception:
         data = {"scores": [], "updated_at": None, "stale": True, "refreshing": False,
                 "status": "error", "error_code": "scores_cache_unavailable", "retry_after": 60}
+        if snapshot and today and (football := await _today_football_score_rows()):
+            data["football_live"] = football
+            return JSONResponse(content=data, headers={"Cache-Control": "no-store"})
         return JSONResponse(content=data if snapshot else [], status_code=503,
                             headers={"Cache-Control": "no-store", "Retry-After": "60"})
     scores = cached.get("data") if cached else None
@@ -13543,6 +13593,11 @@ async def get_scores(snapshot: bool = False):
             "error_code": _live_scores_error_code if _live_scores_refresh_error else None,
             "retry_after": max(3, int(_live_scores_retry_at - time.monotonic()) + 1) if _live_scores_retry_at > time.monotonic() else 3,
         }
+    if snapshot and today:
+        football = await _today_football_score_rows()
+        if football:
+            data["football_live"] = football
+            status_code = 200
     # /scores reste compatible avec les clients existants : un tableau JSON.
     return JSONResponse(content=data, status_code=status_code, headers={"Cache-Control": "no-store"})
 
@@ -15920,6 +15975,9 @@ async def startup_event():
             )
         scheduler.add_job(_poll_live_scores_cache, "interval", seconds=30, id="live_scores_poll",
                           coalesce=True, max_instances=1, next_run_time=datetime.now(timezone.utc))
+        scheduler.add_job(_refresh_today_football_scores, "interval", minutes=5,
+                          id="today_football_live", coalesce=True, max_instances=1,
+                          next_run_time=datetime.now(timezone.utc)+timedelta(seconds=15))
         scheduler.start()
 
     # Readiness must not wait for network retries, score reconciliation or
