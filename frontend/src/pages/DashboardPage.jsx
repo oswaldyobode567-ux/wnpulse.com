@@ -1392,7 +1392,7 @@ export function MatchCataloguePage() {
   const leagueGroups = groupByLeague(visibleMatches);
   const liveFixtures = visibleMatches.flatMap(match => {
     const score = fixtureScore(match, scoresByMatch);
-    return score && !score.completed && !score.stale ? [{ match, score }] : [];
+    return isTodayFixtureLive(score) ? [{ match, score }] : [];
   });
   const selectDate = value => setSearchParams(previous => {
     const params = new URLSearchParams(previous);
@@ -1683,7 +1683,7 @@ function recentScoreMatch(rows, target) {
 
 function mergeTodayScoreSources(data, previous) {
   const scores = new Map((data.scores || []).filter(row => row?.id != null).map(row => [
-    String(row.id), { ...row, stale: Boolean(data.stale), snapshotAt: data.updated_at },
+    String(row.id), { ...row, snapshotAt: data.partial ? null : data.updated_at },
   ]));
   const primary = indexScoresByTeams(scores.values());
   for (const row of data.football_live || []) {
@@ -1731,9 +1731,9 @@ function fixtureScore(match, scoresByMatch) {
   const home = catalogueFinished && !row?.completed ? match.prediction?.score_home : scores.get(row?.home_team);
   const away = catalogueFinished && !row?.completed ? match.prediction?.score_away : scores.get(row?.away_team);
   if (![home, away].every(value => /^\d+$/.test(String(value ?? "")))) return null;
-  const updatedAt = Date.parse(row?.last_update || row?._score_fetched_at || row?.snapshotAt);
+  const updatedAt = Date.parse(row?._score_fetched_at || row?.last_update || row?.snapshotAt);
   const age = Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Infinity;
-  const stale = !completed && (Boolean(row?.stale) || age > 3 * 60_000);
+  const stale = !completed && (Boolean(row?.stale) || age > (String(row?.id).startsWith("apisports-") || row?.phase ? 6 : 3) * 60_000);
   return { home: Number(home), away: Number(away), completed, stale, phase: row?.phase, minute: row?.minute };
 }
 

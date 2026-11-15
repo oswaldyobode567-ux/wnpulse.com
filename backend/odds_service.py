@@ -1410,25 +1410,49 @@ async def fetch_live_scores(db) -> List[Dict]:
     if not ODDS_API_KEY:
         raise LiveScoresProviderError("provider_not_configured")
 
-    odds_cache = await db.odds_cache.find_one({"_id": "all_matches"})
-    keys = list(dict.fromkeys(
-        row.get("sport_key") for row in (odds_cache or {}).get("data", [])
-        if isinstance(row, dict) and isinstance(row.get("sport_key"), str)
-        and row["sport_key"].startswith(("soccer_", "basketball_", "tennis_", "icehockey_", "baseball_", "mma_", "americanfootball_"))
-    ))
-    # Sans cache de cotes, la découverte est elle-même limitée dans le temps.
-    if not keys:
-        try:
-            keys = await asyncio.wait_for(_discover_active_sport_keys(), timeout=5)
-        except asyncio.TimeoutError:
-            keys = []
-    keys = keys or list(dict.fromkeys(REAL_SPORT_KEYS))
-
     now = datetime.now(timezone.utc)
-    if keys:
-        rotation = int(now.timestamp() // 300) % len(keys)
-        keys = keys[rotation:] + keys[:rotation]
+    odds_cache = await db.odds_cache.find_one({"_id": "all_matches"})
     old = await db.scores_cache.find_one({"_id": "live_scores"})
+    catalogue = (odds_cache or {}).get("data", [])
+    old_rows = (old or {}).get("data", [])
+    sports = ("soccer_", "basketball_", "tennis_", "icehockey_", "baseball_", "mma_", "americanfootball_")
+
+    def competition(row):
+        key = row.get("sport_key") if isinstance(row, dict) else None
+        return key if isinstance(key, str) and key.startswith(sports) else None
+
+    def around_kickoff(row):
+        try:
+            kickoff = datetime.fromisoformat(str(row.get("commence_time", "")).replace("Z", "+00:00"))
+            return now - timedelta(hours=6) <= kickoff <= now + timedelta(minutes=5)
+        except (ValueError, TypeError):
+            return False
+
+    # Prioritize contests already reported live so we also collect their finals.
+    in_play = list(dict.fromkeys(
+        key for row in old_rows if (key := competition(row))
+        and row.get("scores") and not row.get("completed") and around_kickoff(row)
+    ))
+    expected = list(dict.fromkeys(
+        key for row in catalogue if (key := competition(row)) and around_kickoff(row)
+    ))
+    expected = [key for key in expected if key not in in_play]
+    idle = list(dict.fromkeys(competition(row) for row in catalogue if competition(row)))
+    if not idle:
+        try:
+            idle = await asyncio.wait_for(_discover_active_sport_keys(), timeout=5)
+        except asyncio.TimeoutError:
+            idle = []
+    idle = [key for key in (idle or REAL_SPORT_KEYS) if key not in in_play and key not in expected]
+
+    def rotate(keys):
+        if not keys:
+            return keys
+        offset = int(now.timestamp() // 120) % len(keys)
+        return keys[offset:] + keys[:offset]
+
+    # Keep some discovery coverage for fixtures missing from the odds catalogue.
+    keys = rotate(in_play) + rotate(expected) + rotate(idle)[:2]
     succeeded: Dict[str, List[Dict]] = {}
     failures: Dict[str, str] = {}
     semaphore = asyncio.Semaphore(5)
@@ -1496,7 +1520,7 @@ async def fetch_live_scores(db) -> List[Dict]:
     # Conserver au maximum cinq minutes les compétitions en échec, sans modifier
     # leur timestamp réel ni les présenter comme fraîchement collectées.
     for row in (old or {}).get("data", []):
-        if not isinstance(row, dict) or row.get("sport_key") not in failures:
+        if not isinstance(row, dict) or row.get("sport_key") in succeeded:
             continue
         try:
             stamp = datetime.fromisoformat(str(row.get("_score_fetched_at") or old.get("updated_at")).replace("Z", "+00:00"))
