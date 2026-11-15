@@ -1392,7 +1392,7 @@ export function MatchCataloguePage() {
   const leagueGroups = groupByLeague(visibleMatches);
   const liveFixtures = visibleMatches.flatMap(match => {
     const score = fixtureScore(match, scoresByMatch);
-    return isTodayFixtureLive(score) ? [{ match, score }] : [];
+    return score && !score.completed && score.age <= 15 * 60_000 ? [{ match, score }] : [];
   });
   const selectDate = value => setSearchParams(previous => {
     const params = new URLSearchParams(previous);
@@ -1487,13 +1487,16 @@ export function MatchCataloguePage() {
             <Radio className="h-5 w-5 text-rose-600" aria-hidden="true" />{t("En direct")}
           </h2>
           <div className="divide-y divide-slate-200">
-            {[...new Set(liveFixtures.map(({ match }) => match.sport_title || match.league_name))].map(league =>
-              <div key={league} className="py-2">
-                <h3 className="rounded-md bg-slate-100 px-2 py-1 text-xs font-bold text-slate-700">{league}</h3>
+            {[...new Set(liveFixtures.map(({ match }) => match.sport_title || match.league_name))].map((league, index) =>
+              <details key={league} open={index === 0} className="py-2">
+                <summary className="cursor-pointer rounded-md bg-slate-100 px-3 py-2 text-sm font-bold text-slate-800">
+                  <span className="ms-2">{league}</span>
+                  <span className="ms-2 text-xs text-rose-700">{formatNumber(liveFixtures.filter(({ match }) => (match.sport_title || match.league_name) === league).length)}</span>
+                </summary>
                 <ul className="divide-y divide-slate-100">
                   {liveFixtures.filter(({ match }) => (match.sport_title || match.league_name) === league).map(({ match, score }) =>
                     <li key={match.id || match.match_id} className="flex items-center gap-3 px-2 py-2">
-                      <span className="w-16 shrink-0 text-xs font-bold text-rose-700">{liveScoreClock(score, t)}</span>
+                      <span className="w-16 shrink-0 text-xs font-bold text-rose-700">{score.stale ? t("Dernier score connu") : liveScoreClock(score, t)}</span>
                       <div className="min-w-0 flex-1">
                         {["home", "away"].map(side => <div key={side} className="flex items-center gap-2 py-0.5 text-sm">
                           <TeamBadge name={match[`${side}_team`]} src={badgeUrl(match, side)} fallbackSrcs={badgeUrls(match, side)}
@@ -1504,7 +1507,7 @@ export function MatchCataloguePage() {
                       </div>
                     </li>)}
                 </ul>
-              </div>)}
+              </details>)}
           </div>
         </section>}
         <section id="dashboard-matches" className="scroll-mt-6" aria-labelledby="dashboard-matches-title" data-testid="dashboard-matches">
@@ -1734,7 +1737,7 @@ function fixtureScore(match, scoresByMatch) {
   const updatedAt = Date.parse(row?._score_fetched_at || row?.last_update || row?.snapshotAt);
   const age = Number.isFinite(updatedAt) ? Math.max(0, Date.now() - updatedAt) : Infinity;
   const stale = !completed && (Boolean(row?.stale) || age > (String(row?.id).startsWith("apisports-") || row?.phase ? 6 : 3) * 60_000);
-  return { home: Number(home), away: Number(away), completed, stale, phase: row?.phase, minute: row?.minute };
+  return { home: Number(home), away: Number(away), completed, stale, age, phase: row?.phase, minute: row?.minute };
 }
 
 function isTodayFixtureLive(score) {

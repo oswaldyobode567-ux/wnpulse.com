@@ -214,7 +214,7 @@ export default function LivePage() {
     completed,
     upcoming
   } = useMemo(() => {
-    const liveMatches = scores.filter(match => !match?.completed && hasScores(match)).sort((a, b) => String(a?.commence_time || "").localeCompare(String(b?.commence_time || "")));
+    const liveMatches = scores.filter(match => !match?.completed && hasScores(match) && (!match._score_fetched_at || Date.now() - Date.parse(match._score_fetched_at) <= 15 * 60_000)).sort((a, b) => String(a?.commence_time || "").localeCompare(String(b?.commence_time || "")));
     const completedMatches = scores.filter(match => Boolean(match?.completed)).sort((a, b) => {
       const aTime = a?.last_update || a?.commence_time || "";
       const bTime = b?.last_update || b?.commence_time || "";
@@ -227,6 +227,16 @@ export default function LivePage() {
       upcoming: upcomingMatches
     };
   }, [scores]);
+  const liveLeagues = useMemo(() => {
+    const leagues = new Map();
+    for (const match of live) {
+      const title = match.sport_title || match.sport_key || "Compétition";
+      const key = JSON.stringify([match.sport_key, title]);
+      if (!leagues.has(key)) leagues.set(key, { title, matches: [] });
+      leagues.get(key).matches.push(match);
+    }
+    return [...leagues].sort(([, a], [, b]) => a.title.localeCompare(b.title));
+  }, [live]);
   const defaultTab = live.length ? "live" : completed.length ? "completed" : "upcoming";
   return <AppLayout>
 <div className="max-w-6xl mx-auto p-4 sm:p-6 pb-24">
@@ -297,8 +307,17 @@ export default function LivePage() {
         </TabsList>
 
         <TabsContent value="live">
-          {i18n.tx(live.length === 0 ? <EmptyState msg={i18n.t("Aucun match en direct actuellement.")} icon="📡" /> : <div className="grid gap-3 sm:grid-cols-2">
-              {i18n.tx(live.map((match, index) => <MatchRow key={matchKey(match, index)} match={match} status="live" cached={cached} />))}
+          {i18n.tx(live.length === 0 ? <EmptyState msg={i18n.t("Aucun match en direct actuellement.")} icon="📡" /> : <div className="space-y-2">
+              {liveLeagues.map(([key, { title, matches }], index) => <details key={key} open={index === 0} className="rounded-xl border border-slate-200 bg-white p-2">
+                <summary className="cursor-pointer rounded-lg px-3 py-2 text-sm font-bold text-slate-900">
+                  <span className="ms-2">{i18n.tx(title)}</span>
+                  <span className="ms-2 text-xs font-semibold text-rose-700">{i18n.tx(matches.length)}</span>
+                </summary>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                  {matches.map((match, index) => <MatchRow key={matchKey(match, index)} match={match} status="live"
+                    cached={match._score_fetched_at ? Date.now() - Date.parse(match._score_fetched_at) > 3 * 60_000 : cached} />)}
+                </div>
+              </details>)}
             </div>)}
         </TabsContent>
 
@@ -343,7 +362,7 @@ function MatchRow({
 
     {i18n.tx(status === "live" && <span className="flex items-center gap-1 text-rose-600 normal-case font-bold shrink-0">
         <span className="h-1.5 w-1.5 rounded-full bg-rose-500 animate-pulse" />
-        {i18n.tx(cached ? "Dernier score" : "LIVE")}
+        {i18n.tx(cached ? "Dernier score" : match.phase === "HT" ? "Mi-temps" : "LIVE")}
       </span>)}
 
     {i18n.tx(status === "completed" && <span className="text-emerald-600 normal-case font-bold shrink-0">{i18n.t("Termin\xE9")}</span>)}
