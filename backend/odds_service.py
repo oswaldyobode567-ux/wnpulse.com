@@ -1401,6 +1401,31 @@ class LiveScoresProviderError(RuntimeError):
         super().__init__(code)
 
 
+def _merge_live_score_rows(fresh_rows, previous, now):
+    """Keep the last confirmed score across partial competition responses."""
+    def identity(row):
+        return str(row.get("id") or f"{row.get('sport_key')}:{row.get('home_team')}:{row.get('away_team')}:{row.get('commence_time')}")
+
+    merged = {identity(row): row for row in fresh_rows}
+    for row in previous.get("data", []):
+        if not isinstance(row, dict) or not (row.get("scores") or row.get("completed")):
+            continue
+        key = identity(row)
+        latest = merged.get(key)
+        if latest and (latest.get("completed") or (latest.get("scores") and not row.get("completed"))):
+            continue
+        try:
+            stamp = datetime.fromisoformat(str(row.get("_score_fetched_at") or previous.get("updated_at")).replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            max_age = timedelta(days=1) if row.get("completed") else timedelta(minutes=15)
+            if timedelta(0) <= now - stamp <= max_age:
+                merged[key] = {**row, "_score_fetched_at": stamp.isoformat()}
+        except (TypeError, ValueError):
+            continue
+    return list(merged.values())
+
+
 async def fetch_live_scores(db) -> List[Dict]:
     """Collecte dédiée au Live : cache distinct, durée bornée et erreurs explicites.
 
@@ -1516,25 +1541,8 @@ async def fetch_live_scores(db) -> List[Dict]:
         code = next((c for c in ("credit_budget_paced", "credit_budget_reached", "credit_budget_unavailable", "provider_quota_exhausted", "provider_access_denied", "provider_rate_limited", "provider_timeout", "sport_not_supported") if c in codes), "provider_unavailable")
         raise LiveScoresProviderError(code)
 
-    rows = [row for items in succeeded.values() for row in items]
-    # Conserver au maximum cinq minutes les compétitions en échec, sans modifier
-    # leur timestamp réel ni les présenter comme fraîchement collectées.
-    for row in (old or {}).get("data", []):
-        if not isinstance(row, dict) or row.get("sport_key") in succeeded:
-            continue
-        try:
-            stamp = datetime.fromisoformat(str(row.get("_score_fetched_at") or old.get("updated_at")).replace("Z", "+00:00"))
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=timezone.utc)
-            if 0 <= (now - stamp).total_seconds() <= 300:
-                rows.append(row)
-        except (ValueError, TypeError):
-            continue
-    deduplicated = {}
-    for index, row in enumerate(rows):
-        identity = str(row.get("id") or f"{row.get('sport_key')}:{row.get('home_team')}:{row.get('away_team')}:{row.get('commence_time')}:{index}")
-        deduplicated[identity] = row
-    rows = list(deduplicated.values())
+    fresh_rows = [row for items in succeeded.values() for row in items]
+    rows = _merge_live_score_rows(fresh_rows, old or {}, now)
     # Retained rows keep their individual freshness timestamps.
     await db.scores_cache.update_one(
         {"_id": "live_scores"},
@@ -1545,7 +1553,7 @@ async def fetch_live_scores(db) -> List[Dict]:
     )
     # Publier le cache AVANT l'archivage : une archive lente ne bloque pas le Live.
     try:
-        await asyncio.wait_for(_archive_scores(db, rows), timeout=10)
+        await asyncio.wait_for(_archive_scores(db, fresh_rows), timeout=10)
     except asyncio.TimeoutError:
         logger.warning("Live score archive: timeout; snapshot already published")
     return rows
