@@ -9889,13 +9889,14 @@ async def admin_blog_news_sync(payload: dict = Depends(get_current_user_payload)
 async def admin_get_stats(payload: dict = Depends(get_current_user_payload)):
     await _require_admin(payload)
 
-    total_users = await db.users.count_documents({})
-    free_users = await db.users.count_documents({"subscription": "free"})
+    total_users, free_users, pending_payments, approved_payments, cached = await asyncio.gather(
+        db.users.count_documents({}),
+        db.users.count_documents({"subscription": "free"}),
+        db.subscription_requests.count_documents({"status": "pending"}),
+        db.subscription_requests.count_documents({"status": "approved"}),
+        db.odds_cache.find_one({"_id": "all_matches"}, {"count": 1}),
+    )
     paid_users = total_users - free_users
-    pending_payments = await db.subscription_requests.count_documents({"status": "pending"})
-    approved_payments = await db.subscription_requests.count_documents({"status": "approved"})
-
-    cached = await db.odds_cache.find_one({"_id": "all_matches"})
     matches_count = cached.get("count", 0) if cached else 0
 
     return {
