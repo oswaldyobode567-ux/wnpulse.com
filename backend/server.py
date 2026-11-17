@@ -8573,6 +8573,7 @@ async def _build_prediction_snapshot(force: bool = False) -> Dict:
             "source_cache_updated_at": source_cache_updated_at,
             "targeted_quotes_updated_at":(cache_meta or {}).get("montante_quotes_updated_at"),
         })
+        _log_dashboard_builder_coverage(matches, predictions)
         return _prediction_cache
 
 
@@ -8664,16 +8665,34 @@ def _dashboard_best_builder_pick(analysis):
     return best
 
 
-async def _dashboard_builder_picks(snapshot):
-    try:
-        rows = await asyncio.wait_for(_builder_markets(snapshot), timeout=1.25)
-    except Exception as exc:
-        logging.getLogger("winpulse.catalogue").debug("Dashboard builder markets deferred: %s", type(exc).__name__)
-        return {}
-    return {
-        _discovery_match_id(match): pick for match, analysis in rows
-        if (pick := _dashboard_best_builder_pick(analysis))
-    }
+def _dashboard_upcoming_builder_pick(match, prediction, now):
+    kickoff = _parse_iso(match.get("commence_time"))
+    if not prediction.get("pick") or not kickoff or kickoff <= now or any(
+        prediction.get(key) or match.get(key) for key in ("is_live", "is_finished", "completed")
+    ):
+        return None
+    return _dashboard_best_builder_pick(prediction)
+
+
+def _log_dashboard_builder_coverage(matches, predictions):
+    now = datetime.now(timezone.utc)
+    by_id = {_discovery_match_id(prediction): prediction for prediction in predictions}
+    eligible, changed, sample = 0, 0, None
+    for match in matches:
+        identity = _discovery_match_id(match)
+        prediction = by_id.get(identity, {})
+        primary = _dashboard_upcoming_builder_pick(match, prediction, now)
+        if primary is None:
+            continue
+        eligible += 1
+        if (primary["market"], primary["pick"]) != (prediction.get("market"), prediction.get("pick")):
+            changed += 1
+            if sample is None:
+                sample = {"match_id": identity, "home": match.get("home_team"), "away": match.get("away_team"),
+                          "previous_market": prediction.get("market"), "new_market": primary["market"],
+                          "confidence": primary["confidence"]}
+    logging.getLogger("winpulse.catalogue").info(
+        "Dashboard cached builder coverage: %s eligible, %s changed, example=%s", eligible, changed, sample)
 
 
 @app.get("/api/matches")
@@ -8689,7 +8708,7 @@ async def get_matches(response: Response, payload: Optional[dict] = Depends(get_
     pred_by_id = {p.get("match_id"): p for p in predictions}
     is_paid = await _has_paid_access(payload)
     manifest = await _discovery_manifest(snapshot) if not is_paid else {}
-    builder_picks = await _dashboard_builder_picks(snapshot) if is_paid else {}
+    builder_analyses = {_discovery_match_id(p): p for p in snapshot["predictions"]} if is_paid else {}
     now = datetime.now(timezone.utc)
     merged = []
     for i, m in enumerate(matches):
@@ -8701,12 +8720,11 @@ async def get_matches(response: Response, payload: Optional[dict] = Depends(get_
         )
         pred = _discovery_prediction(pred,manifest,paid=is_paid)
         pred = _dashboard_prediction_view(pred)
-        kickoff = _parse_iso(m.get("commence_time"))
-        primary = builder_picks.get(_discovery_match_id(m))
-        if primary and pred.get("pick") and kickoff and kickoff > now and not any(
-            pred.get(key) or m.get(key) for key in ("is_live", "is_finished", "completed")
-        ):
-            pred["dashboard_primary"] = primary
+        if is_paid:
+            analysis = builder_analyses.get(_discovery_match_id(m), {})
+            primary = _dashboard_upcoming_builder_pick(m, analysis, now)
+            if primary and pred.get("pick"):
+                pred["dashboard_primary"] = primary
         outer = m if is_paid or not pred.get("locked") else _discovery_metadata(m)
         if compact:
             outer = {key:value for key,value in outer.items() if key != "bookmakers"}
