@@ -8647,6 +8647,35 @@ def _match_is_finished(match: dict) -> bool:
         return False
 
 
+def _dashboard_best_builder_pick(analysis):
+    best = None
+    for row in analysis.get("markets") or []:
+        if not row.get("pick") or not row.get("market") or row.get("synthetic"):
+            continue
+        try:
+            confidence, odds = float(row["confidence"]), float(row["pick_odds"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not 0 <= confidence <= 100 or not math.isfinite(odds) or odds <= 1:
+            continue
+        if best is None or confidence > best["confidence"]:
+            best = {key: row.get(key) for key in ("market", "market_label", "pick", "best_bookmaker")}
+            best.update(confidence=confidence, pick_odds=odds)
+    return best
+
+
+async def _dashboard_builder_picks(snapshot):
+    try:
+        rows = await asyncio.wait_for(_builder_markets(snapshot), timeout=1.25)
+    except Exception as exc:
+        logging.getLogger("winpulse.catalogue").debug("Dashboard builder markets deferred: %s", type(exc).__name__)
+        return {}
+    return {
+        _discovery_match_id(match): pick for match, analysis in rows
+        if (pick := _dashboard_best_builder_pick(analysis))
+    }
+
+
 @app.get("/api/matches")
 async def get_matches(response: Response, payload: Optional[dict] = Depends(get_optional_user_payload), compact: bool = False):
     started = time.monotonic()
@@ -8660,6 +8689,8 @@ async def get_matches(response: Response, payload: Optional[dict] = Depends(get_
     pred_by_id = {p.get("match_id"): p for p in predictions}
     is_paid = await _has_paid_access(payload)
     manifest = await _discovery_manifest(snapshot) if not is_paid else {}
+    builder_picks = await _dashboard_builder_picks(snapshot) if is_paid else {}
+    now = datetime.now(timezone.utc)
     merged = []
     for i, m in enumerate(matches):
         pred = dict(pred_by_id.get(m.get("id"), {}))
@@ -8670,6 +8701,12 @@ async def get_matches(response: Response, payload: Optional[dict] = Depends(get_
         )
         pred = _discovery_prediction(pred,manifest,paid=is_paid)
         pred = _dashboard_prediction_view(pred)
+        kickoff = _parse_iso(m.get("commence_time"))
+        primary = builder_picks.get(_discovery_match_id(m))
+        if primary and pred.get("pick") and kickoff and kickoff > now and not any(
+            pred.get(key) or m.get(key) for key in ("is_live", "is_finished", "completed")
+        ):
+            pred["dashboard_primary"] = primary
         outer = m if is_paid or not pred.get("locked") else _discovery_metadata(m)
         if compact:
             outer = {key:value for key,value in outer.items() if key != "bookmakers"}
