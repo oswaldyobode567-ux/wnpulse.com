@@ -226,6 +226,7 @@ REAL_SPORT_KEYS = [
     "soccer_world_wc_qualification_asia",
     # Compétitions africaines
     "soccer_africa_caf_champions_league",
+    "soccer_africa_cup_of_nations",
     "soccer_africa_africa_cup_of_nations",
     # Qualifications Champions League (actives en juillet)
     "soccer_uefa_champs_league",
@@ -764,20 +765,68 @@ async def _fetch_odds_api_io_finished_events(
     return finished
 
 
+def _is_african_international_league(slug: str) -> bool:
+    return any(marker in slug for marker in (
+        "africa-cup-of-nations", "african-cup-of-nations", "afcon",
+        "caf-champions-league", "caf-confederation-cup",
+        "world-cup-qualification-africa", "world-cup-african-qualifiers",
+    ))
+
+
+async def _discover_oaio_african_leagues(client) -> List[str]:
+    try:
+        response = await client.get(f"{ODDS_API_IO_BASE}/leagues",
+                                    params={"apiKey": ODDS_API_IO_KEY, "sport": "football"})
+        if response.status_code != 200:
+            logger.warning("odds-api.io football leagues: HTTP %s", response.status_code)
+            return []
+        payload = response.json()
+        if not isinstance(payload, list):
+            return []
+        slugs = {
+            row["slug"] for row in payload
+            if isinstance(row, dict) and isinstance(row.get("slug"), str)
+            and _is_african_international_league(row["slug"])
+        }
+        return sorted(slugs)
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("odds-api.io football leagues unavailable: %s", type(exc).__name__)
+        return []
+
+
+async def _oaio_selected_bookmakers(client) -> str:
+    try:
+        response = await client.get(f"{ODDS_API_IO_BASE}/bookmakers/selected",
+                                    params={"apiKey": ODDS_API_IO_KEY})
+        if response.status_code == 200:
+            data = response.json()
+            if isinstance(data, dict):
+                data = data.get("bookmakers") or data.get("selected") or []
+            if isinstance(data, list):
+                names = [item.get("name") if isinstance(item, dict) else item for item in data]
+                names = list(dict.fromkeys(name.strip() for name in names if isinstance(name, str) and name.strip()))
+                if names:
+                    return ",".join(names[:30])
+        else:
+            logger.warning("odds-api.io selected bookmakers: HTTP %s", response.status_code)
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.warning("odds-api.io selected bookmakers unavailable: %s", type(exc).__name__)
+    return "Bet365"
+
+
 _oaio_odds_blocked_until = 0.0
 
 
-async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
+async def _fetch_odds_api_io_odds(event_id, bookmakers) -> Optional[Dict]:
     """
     Recupere les cotes pour un evenement donne via odds-api.io.
-    NOTE : le plan actuel limite a 1 bookmaker autorise (Bet365) — confirme
-    en test reel le 23/07/2026 ("Access denied... Allowed: Bet365").
     """
     global _oaio_odds_blocked_until
     if not ODDS_API_IO_KEY or time.monotonic() < _oaio_odds_blocked_until:
         return None
     url = f"{ODDS_API_IO_BASE}/odds"
-    params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id, "bookmakers": "Bet365"}
+    params = {"apiKey": ODDS_API_IO_KEY, "eventId": event_id, "bookmakers": bookmakers,
+              "markets": "ML,Totals,Goals Over/Under,Both Teams To Score,Draw No Bet"}
     try:
         async with httpx.AsyncClient(timeout=15.0) as http:
             r = await http.get(url, params=params)
@@ -788,8 +837,8 @@ async def _fetch_odds_api_io_odds(event_id) -> Optional[Dict]:
                 logger.warning("odds-api.io odds: HTTP %s; unsupported/rate-limited calls paused", r.status_code)
                 return None
             return r.json()
-    except Exception as e:
-        logger.warning(f"odds-api.io odds [eventId={event_id}] -> exception: {e}")
+    except Exception as exc:
+        logger.warning("odds-api.io odds event %s: %s", event_id, type(exc).__name__)
         return None
 
 
@@ -965,7 +1014,13 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
     candidates = []
     seen_ids = set()
     league_errors = {}
-    for league_slug in ODDS_API_IO_LEAGUES:
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        african_leagues = await _discover_oaio_african_leagues(client)
+        bookmakers = await _oaio_selected_bookmakers(client)
+    logger.warning("odds-api.io : %s compétition(s) africaine(s) découverte(s): %s",
+                   len(african_leagues), ", ".join(african_leagues) or "aucune")
+    football_leagues = list(dict.fromkeys(african_leagues + ODDS_API_IO_LEAGUES))
+    for league_slug in football_leagues:
         try:
             events = await _fetch_odds_api_io_all_events_unfiltered(league_slug, sport="football")
             for evt in events:
@@ -1005,18 +1060,20 @@ async def _fetch_odds_api_io_matches() -> List[Dict]:
 
     # Aujourd'hui d'abord, puis les prochains jours. Cela évite qu'un gros
     # championnat futur consomme tout le quota avant les matchs du jour.
-    candidates.sort(key=lambda item: _event_sort_key(item[1]))
+    candidates.sort(key=lambda item: (_event_sort_key(item[1])[0],
+                                     not _is_african_international_league(item[0]),
+                                     _event_sort_key(item[1])[1]))
 
     out: List[Dict] = []
     calls_used = 0
     converted_ids = set()
 
     for league_slug, evt, sport in candidates:
-        if calls_used >= MAX_TOTAL_ODDS_CALLS:
+        if calls_used >= MAX_TOTAL_ODDS_CALLS or time.monotonic() < _oaio_odds_blocked_until:
             break
         event_id = evt.get("id")
         try:
-            odds_data = await _fetch_odds_api_io_odds(event_id)
+            odds_data = await _fetch_odds_api_io_odds(event_id, bookmakers)
             calls_used += 1
             converted = _convert_odds_api_io_event(evt, odds_data, sport=sport)
             if converted:
@@ -1181,6 +1238,10 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
         return matches
 
     discovered = await _discover_active_sport_keys()
+    african_keys = [key for key in discovered if key.startswith("soccer_")
+                    and _is_african_international_league(key.replace("_", "-"))]
+    logger.warning("The Odds API : compétitions africaines actives : %s",
+                   ", ".join(african_keys) or "aucune")
     if discovered:
         # La découverte est la source de vérité : évite des dizaines d'appels
         # vers d'anciens slugs hors saison ou retirés.
@@ -1209,6 +1270,9 @@ async def _force_fetch_and_cache(db) -> List[Dict]:
     if ordered_keys:
         offset = (int(time.time() // 14400) * 17) % len(ordered_keys)
         ordered_keys = ordered_keys[offset:] + ordered_keys[:offset]
+    if african_keys:
+        african_set = set(african_keys)
+        ordered_keys = african_keys + [key for key in ordered_keys if key not in african_set]
 
     logger.warning(
         "The Odds API : %s compétition(s) actives à interroger (%s découvertes)",
