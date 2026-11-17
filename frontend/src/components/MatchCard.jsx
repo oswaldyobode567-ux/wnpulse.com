@@ -406,10 +406,13 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
   const unavailable = pred.analysis_status === "unavailable" || pred.has_prediction === false || (!pred.pick && !pred.locked);
   const locked = !unavailable && Boolean(pred.locked || (!pred.pick && isFree));
   const teams = [event.home_team, event.away_team];
-  const confidence = marketWinProbability(pred);
+  const primary = !locked && !isLive && !isFinished ? pred.dashboard_primary : null;
+  const display = primary || pred;
+  const secondary = primary && (primary.market !== pred.market || primary.pick !== pred.pick) ? pred : null;
+  const confidence = marketWinProbability(display);
   const hasConfidence = confidence !== null && confidence >= 0 && confidence <= 100;
-  const edge = finiteNumber(pred.edge);
-  const probabilityLabel = t("Probabilité estimée");
+  const edge = primary ? null : finiteNumber(pred.edge);
+  const probabilityLabel = t(primary ? "Confiance du moteur" : "Probabilité estimée");
 
   return <Card className={`wp-match-card ${isLive ? 'wp-match-live' : ''}`} data-testid="match-card" data-navigation-match-id={event.id || event.match_id}>
     <Link to={`/app/match/${event.id}`} className="wp-match-link" data-testid="match-card-link">
@@ -426,22 +429,26 @@ export default function MatchCard({ match, isAdmin, isFree, onUpgrade }) {
       <div className="wp-match-teams">{[['home',event.home_team],['away',event.away_team]].map(([side,name])=><div key={side} className="wp-match-team"><TeamBadge name={name} src={badgeUrl(event,side)} fallbackSrcs={badgeUrls(event,side)} sport={event.sport_key} kind={event[`${side}_media`]?.kind} size="large"/><h3><bdi>{name || '—'}</bdi></h3></div>)}<span className="wp-versus" aria-hidden="true">VS</span></div>
       {(isLive || isFinished) && pred.score_home != null && pred.score_away != null && <div className="wp-match-score" data-testid="match-score"><bdi>{formatScore(pred.score_home,formatNumber)} — {formatScore(pred.score_away,formatNumber)}</bdi>{isFinished && <span>{t("TERMINÉ")}</span>}</div>}
       {!locked && (pred.pick ? <div className="wp-pick-panel">
-        <div className="wp-pick-heading"><span>{pred.market_label ? translateBetText(pred.market_label,t,formatNumber) : t("Pronostic")}</span><span>{t("Cote")}</span></div>
-        <div className="wp-pick-main"><strong><bdi>{translateBetText(pred.pick,t,formatNumber,teams)}</bdi></strong><bdi className="wp-odds">{formatOdds(pred.pick_odds,formatNumber)}</bdi></div>
-        {pred.best_bookmaker && <p className="wp-bookmaker">{t("chez {{bookmaker}}",{bookmaker:pred.best_bookmaker})}</p>}
+        <div className="wp-pick-heading"><span>{display.market_label ? translateBetText(display.market_label,t,formatNumber) : t("Pronostic")}</span><span>{t("Cote")}</span></div>
+        <div className="wp-pick-main"><strong><bdi>{translateBetText(display.pick,t,formatNumber,teams)}</bdi></strong><bdi className="wp-odds">{formatOdds(display.pick_odds,formatNumber)}</bdi></div>
+        {display.best_bookmaker && <p className="wp-bookmaker">{t("chez {{bookmaker}}",{bookmaker:display.best_bookmaker})}</p>}
       </div> : <div className="wp-pick-panel" data-testid="match-selection-unavailable"><p className="font-semibold text-slate-700">{t("Sélection indisponible")}</p><p className="mt-1 text-sm text-slate-500">{t("Aucune sélection exploitable dans les données reçues pour cette rencontre.")}</p></div>)}
       {locked && <div className="wp-pick-panel wp-pick-locked"><Lock className="h-4 w-4" aria-hidden="true"/><span>{t("Pick verrouillé")}</span><span className="wp-pro-chip">PRO</span></div>}
-      <div className="wp-match-bottom">{!locked && pred.label && <PredictionEvidence prediction={pred} compact/>}{hasConfidence && !locked && <span className="wp-confidence" data-testid="match-confidence"><span>{probabilityLabel}</span><bdi>{formatNumber(confidence/100,{style:'percent',maximumFractionDigits:0})}</bdi></span>}</div>
+      <div className="wp-match-bottom">{!locked && !primary && pred.label && <PredictionEvidence prediction={pred} compact/>}{hasConfidence && !locked && <span className="wp-confidence" data-testid="match-confidence"><span>{probabilityLabel}</span><bdi>{formatNumber(confidence/100,{style:'percent',maximumFractionDigits:0})}</bdi></span>}</div>
       {hasConfidence && !locked && <ConfidenceBar value={confidence} label={probabilityLabel}/>}
-      {!locked && !unavailable && pred.risk_policy_version && <div className="flex flex-wrap items-center gap-2 text-xs leading-5 text-slate-600" data-testid="match-model-evidence">
+      {!locked && !primary && !unavailable && pred.risk_policy_version && <div className="flex flex-wrap items-center gap-2 text-xs leading-5 text-slate-600" data-testid="match-model-evidence">
 
         {pred.hybrid_applied && <span className="rounded-full border border-orange-200 px-2 py-0.5" title={t("Estimation expérimentale : amélioration des résultats non démontrée.")}>{t(pred.hybrid_validation === "retrospective_only" ? "Hybride · test historique" : "Modèle pilote")}</span>}
       </div>}
-      {!locked && pred.multi_market?.choices?.length > 1 && <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">{pred.multi_market.choices.filter(row=>row.market !== pred.market).slice(0,2).map((row,index)=><div key={index} className="flex min-w-0 items-start justify-between gap-2 text-xs leading-5"><span className="min-w-0 break-words text-slate-600">{translateBetText(row.pick,t,formatNumber,teams)}</span><bdi className="shrink-0 font-mono font-bold text-slate-900">{formatOdds(row.pick_odds,formatNumber)}</bdi></div>)}</div>}
+      {secondary && <div className="mt-3 space-y-1 border-t border-slate-100 pt-3" data-testid="dashboard-secondary-pick">
+        <p className="text-xs font-semibold text-slate-600">{t("Option secondaire")}</p>
+        <div className="flex items-center justify-between gap-2 text-xs"><bdi>{translateBetText(secondary.pick,t,formatNumber,teams)}</bdi><bdi className="font-mono font-bold">{formatOdds(secondary.pick_odds,formatNumber)}</bdi></div>
+      </div>}
+      {!locked && pred.multi_market?.choices?.some(row => row.market !== display.market && (!secondary || row.market !== secondary.market)) && <div className="mt-3 space-y-2 border-t border-slate-100 pt-3">{pred.multi_market.choices.filter(row => row.market !== display.market && (!secondary || row.market !== secondary.market)).slice(0,2).map((row,index)=><div key={index} className="flex min-w-0 items-start justify-between gap-2 text-xs leading-5"><span className="min-w-0 break-words text-slate-600">{translateBetText(row.pick,t,formatNumber,teams)}</span><bdi className="shrink-0 font-mono font-bold text-slate-900">{formatOdds(row.pick_odds,formatNumber)}</bdi></div>)}</div>}
       {edge !== null && edge > 0 && !locked && <p className="wp-edge" data-testid="match-edge">{t("Avantage estimé : {{edge}}",{edge:formatNumber(edge/100,{style:'percent',signDisplay:'always',maximumFractionDigits:1})})}</p>}
       {isFinished && !locked && pred.pick && <div className={`wp-result ${pred.won===true?'wp-result-won':pred.won===false?'wp-result-lost':''}`} data-testid="match-result">{pred.won===true?<><CheckCircle2 className="h-4 w-4"/>{t("GAGNÉ")}</>:pred.won===false?<><XCircle className="h-4 w-4"/>{t("PERDU")}</>:<><Clock className="h-4 w-4"/>{t("En attente")}</>}</div>}
     </Link>
-    <div className="mt-3 grid min-w-0 gap-2" data-testid="match-card-actions"><Link to={`/app/match/${event.id}`} className="wp-analysis-link">{t("Voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true"/></Link>{!locked && pred.pick && <FollowPickButton matchId={event.id || event.match_id} pick={pred.pick} market={pred.market} compact disabled={isFinished||isLive}/>}</div>
+    <div className="mt-3 grid min-w-0 gap-2" data-testid="match-card-actions"><Link to={`/app/match/${event.id}`} className="wp-analysis-link">{t("Voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180" aria-hidden="true"/></Link>{!locked && !secondary && pred.pick && <FollowPickButton matchId={event.id || event.match_id} pick={pred.pick} market={pred.market} compact disabled={isFinished||isLive}/>}</div>
     {locked && <div className="wp-upgrade-action">{typeof onUpgrade==='function'?<button type="button" onClick={eventClick=>{eventClick.stopPropagation();onUpgrade();}} data-testid="match-upgrade">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></button>:<Link to="/app/abonnement" data-testid="match-upgrade-link">{t("Passe Pro pour voir l’analyse")}<ArrowRight className="h-4 w-4 rtl:rotate-180"/></Link>}</div>}
     {isAdmin && !locked && !unavailable && <AdminShareActions isAdmin={isAdmin} item={{...event,prediction:pred}}/>}
     <MediaCredits match={event}/>
