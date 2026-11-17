@@ -34,53 +34,58 @@ function formatFcfa(...candidates) {
   return safeNumber(...candidates).toLocaleString();
 }
 
+function useAdminData(path, enabled = true) {
+  const [result, setResult] = useState(null);
+  const [revision, setRevision] = useState(0);
+  const reload = useCallback(() => setRevision(value => value + 1), []);
+  useEffect(() => {
+    if (!enabled) return;
+    const controller = new AbortController();
+    api.get(path, { signal: controller.signal }).then(({ data }) => {
+      if (!controller.signal.aborted) setResult({ path, revision, data });
+    }).catch(() => {
+      if (!controller.signal.aborted) setResult({ path, revision, error: true });
+    });
+    return () => controller.abort();
+  }, [enabled, path, revision]);
+  const current = result?.path === path && result.revision === revision ? result : null;
+  return { data: current?.data, loading: enabled && !current, error: Boolean(current?.error), reload };
+}
+
+function AdminLoadState({ resource, label }) {
+  if (resource.loading) return <p className="p-4 text-sm text-slate-500" role="status">Chargement…</p>;
+  if (!resource.error) return null;
+  return <div className="flex flex-wrap items-center gap-3 p-4 text-sm text-slate-600" role="alert">
+    {label}
+    <Button variant="outline" size="sm" onClick={resource.reload}>Réessayer</Button>
+  </div>;
+}
+
 export default function AdminPage() {
-  const [stats, setStats] = useState(null);
-  const [payments, setPayments] = useState([]);
-  const [users, setUsers] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState("quality");
   const [statusFilter, setStatusFilter] = useState("pending");
   const [comboTier, setComboTier] = useState("balanced");
   const [broadcasting, setBroadcasting] = useState(false);
   const [actionLoading, setActionLoading] = useState(null);
-  const [blast, setBlast] = useState(null);
   const [autoFollowerRunning, setAutoFollowerRunning] = useState(false);
 
-  const loadBlast = async () => {
-    try {
-      const { data } = await api.get("/admin/whatsapp-blast");
-      setBlast(data);
-    } catch (e) {
-      // silent: panel will show empty state
-    }
-  };
-
-  const loadAll = async () => {
-    setLoading(true);
-    try {
-      const [s, p, u] = await Promise.all([
-        api.get("/admin/stats"),
-        api.get(`/admin/subscription-requests${statusFilter ? `?status_filter=${statusFilter}` : ""}`),
-        api.get("/admin/users"),
-      ]);
-      setStats(s.data);
-      setPayments(p.data);
-      setUsers(u.data);
-    } catch (e) {
-      toast.error("Erreur de chargement admin");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { loadAll(); loadBlast(); /* eslint-disable-next-line */ }, [statusFilter]);
+  const statsRequest = useAdminData("/admin/stats");
+  const paymentsRequest = useAdminData(`/admin/subscription-requests?status_filter=${statusFilter}`, activeTab === "payments");
+  const usersRequest = useAdminData("/admin/users", activeTab === "users");
+  const blastRequest = useAdminData("/admin/whatsapp-blast", activeTab === "auto-follower");
+  const { data: stats } = statsRequest;
+  const { data: payments = [] } = paymentsRequest;
+  const { data: users = [] } = usersRequest;
+  const { data: blast, reload: loadBlast } = blastRequest;
 
   const confirmPayment = async (ref) => {
     setActionLoading(ref);
     try {
       await api.post(`/admin/subscription-requests/${ref}/approve`);
       toast.success("Paiement confirmé · utilisateur upgradé");
-      await loadAll();
+      paymentsRequest.reload();
+      statsRequest.reload();
+      usersRequest.reload();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Échec confirmation");
     } finally {
@@ -93,7 +98,9 @@ export default function AdminPage() {
     try {
       await api.post(`/admin/subscription-requests/${ref}/reject`);
       toast.success("Paiement rejeté");
-      await loadAll();
+      paymentsRequest.reload();
+      statsRequest.reload();
+      usersRequest.reload();
     } catch (e) {
       toast.error("Échec rejet");
     } finally {
@@ -150,7 +157,7 @@ export default function AdminPage() {
       } else {
         toast.success(`Suiveur 7h envoyé · ${data.sent} email(s) · ${data.skipped_already_sent} déjà reçu · ${data.errors} erreur(s)`);
       }
-      await loadBlast();
+      loadBlast();
     } catch (e) {
       toast.error(e?.response?.data?.detail || "Échec du Suiveur");
     } finally {
@@ -182,7 +189,7 @@ export default function AdminPage() {
         </div>
 
         {/* Stats KPI */}
-        {loading || !stats ? (
+        {statsRequest.error ? <AdminLoadState resource={statsRequest} label="Chiffres clés indisponibles." /> : !stats ? (
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
             {[1,2,3,4].map(i => <Skeleton key={i} className="h-24" />)}
           </div>
@@ -201,7 +208,7 @@ export default function AdminPage() {
           </div>
         )}
 
-        <Tabs defaultValue="quality" className="space-y-6">
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
           <TabsList className="h-auto flex flex-wrap justify-start gap-1 bg-neutral-100">
             <TabsTrigger value="quality" data-testid="tab-quality"><ShieldCheck className="mr-1.5 h-3.5 w-3.5" />Pilotage</TabsTrigger>
             <TabsTrigger value="journey" data-testid="tab-journey">Parcours visiteurs</TabsTrigger>
@@ -239,7 +246,7 @@ export default function AdminPage() {
                 </Select>
               </div>
               <div className="divide-y divide-neutral-100">
-                {payments.length === 0 ? (
+                {paymentsRequest.loading || paymentsRequest.error ? <AdminLoadState resource={paymentsRequest} label="Paiements indisponibles." /> : payments.length === 0 ? (
                   <div className="px-5 py-12 text-center text-slate-500">Aucun paiement {statusFilter ? `(${statusFilter})` : ""}.</div>
                 ) : payments.map((p) => (
                   <div key={p.id} className="px-5 py-4 flex items-center justify-between gap-4" data-testid={`payment-row-${p.reference}`}>
@@ -288,9 +295,10 @@ export default function AdminPage() {
           <TabsContent value="users">
             <Card className="bg-white border-neutral-200">
               <div className="px-5 py-4 border-b border-neutral-200">
-                <h2 className="font-heading font-bold text-slate-900">Utilisateurs ({users.length})</h2>
+                <h2 className="font-heading font-bold text-slate-900">Utilisateurs{usersRequest.data ? ` (${users.length})` : ""}</h2>
               </div>
               <div className="divide-y divide-neutral-100 max-h-[600px] overflow-y-auto scrollbar-thin">
+                <AdminLoadState resource={usersRequest} label="Utilisateurs indisponibles." />
                 {users.map((u) => (
                   <div key={u.id} className="px-5 py-3 flex items-center justify-between gap-4" data-testid={`user-row-${u.id}`}>
                     <div className="min-w-0 flex-1">
@@ -453,9 +461,10 @@ export default function AdminPage() {
                     )}
                   </div>
                 </div>
-                <pre className="whitespace-pre-wrap text-xs text-slate-800 font-mono bg-white/70 border border-emerald-200 rounded-lg p-3 max-h-72 overflow-y-auto" data-testid="auto-follower-blast-text">
+                <AdminLoadState resource={blastRequest} label="Aperçu WhatsApp indisponible." />
+                {!blastRequest.loading && !blastRequest.error && <pre className="whitespace-pre-wrap text-xs text-slate-800 font-mono bg-white/70 border border-emerald-200 rounded-lg p-3 max-h-72 overflow-y-auto" data-testid="auto-follower-blast-text">
 {blast?.blast_text || "Aperçu non encore généré. Clique sur \"Aperçu\" pour préparer le message du jour."}
-                </pre>
+                </pre>}
                 <p className="text-[11px] text-emerald-800/80 mt-2">
                   💡 Astuce : crée une <strong>liste de diffusion WhatsApp</strong> avec les personnes ayant accepté les messages. Consulte l’onglet Contacts WhatsApp pour vérifier leurs autorisations et préparer une invitation à ta communauté.
                 </p>
