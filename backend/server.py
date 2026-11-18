@@ -14336,7 +14336,7 @@ def _find_oaio_score_fallback(pred: Dict, scores_map: Dict[str, Dict]) -> Option
     return None if ambiguous else best
 
 
-async def _results_priority_batch(database, now):
+async def _results_priority_batch(database, now, confirmed_scores):
     """Prioritize confirmed recent results while reserving slots for recovery.
 
     The ordinary recovery queue starts two hours after kickoff.
@@ -14345,8 +14345,7 @@ async def _results_priority_batch(database, now):
     due = now-timedelta(hours=2)
     # A provider-confirmed final score can settle immediately, even when a
     # short game has finished before the normal two-hour recovery window.
-    live = await _track_read_optional(database.scores_cache.find_one({"_id": "live_scores"}, {"data": 1}))
-    confirmed = list({str(row["id"]) for row in live.get("data", [])
+    confirmed = list({str(row["id"]) for row in confirmed_scores
                       if row.get("id") and row.get("completed") is True and None not in _score_pair(row)})
     ready = await database.predictions_history.find({
         "result": "pending", "match_id": {"$in": confirmed},
@@ -14398,12 +14397,19 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     now=datetime.now(timezone.utc)
     # Old unchecked rows cannot indefinitely hide recently completed events.
     # Existing future picks are never part of this settlement queue.
-    pending = await _results_priority_batch(db, now)
+    primary, live = await asyncio.gather(
+        _track_read_optional(db.scores_cache.find_one({"_id": "all_scores"}, {"data": 1})),
+        _track_read_optional(db.scores_cache.find_one({"_id": "live_scores"}, {"data": 1})),
+    )
+    primary_rows = primary.get("data") or []
+    live_rows = live.get("data") or []
+    current_scores = _merge_final_result_caches(primary_rows, live_rows)
+    pending = await _results_priority_batch(db, now, current_scores)
 
     run_at = datetime.now(timezone.utc).isoformat()
     if not pending:
         result = {
-            "ok": True, "checked": 0, "updated": 0, "pending_remaining": await db.predictions_history.count_documents({"result":"pending"}),
+            "ok": True, "status": "completed", "checked": 0, "updated": 0, "pending_remaining": await db.predictions_history.count_documents({"result":"pending"}),
             "recovered_by_team_time": 0, "recovered_by_secondary": 0,
             "outside_provider_window": 0, "no_score": 0,
             "not_completed": 0, "unsupported_market": 0, "errors": 0,
@@ -14425,19 +14431,15 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     # Read only the scores needed by this batch. The broader archive replay
     # rewrites old scores before returning and can block settlement.
     ids = sorted({str(p["match_id"]) for p in classic_pending if p.get("match_id")})
-    primary, live, archived = await asyncio.gather(
-        _track_read_optional(db.scores_cache.find_one({"_id": "all_scores"}, {"data": 1})),
-        _track_read_optional(db.scores_cache.find_one({"_id": "live_scores"}, {"data": 1})),
-        asyncio.wait_for(db.scores_archive.find(
+    try:
+        archived = await asyncio.wait_for(db.scores_archive.find(
             {"event_id": {"$in": ids}, "completed": True}
-        ).limit(len(ids) or 1).to_list(length=len(ids) or 1), timeout=12),
-        return_exceptions=True,
-    )
-    archive_rows = [{**row, "id": row["event_id"], "_from_archive": True}
-                    for row in archived] if isinstance(archived, list) else []
-    primary_rows = primary.get("data", []) if isinstance(primary, dict) else []
-    live_rows = live.get("data", []) if isinstance(live, dict) else []
-    scores = _merge_final_result_caches(primary_rows or [], live_rows or [])
+        ).limit(len(ids) or 1).to_list(length=len(ids) or 1), timeout=12)
+    except Exception as exc:
+        logging.getLogger("winpulse.results").warning("Archived scores deferred (%s)", type(exc).__name__)
+        archived = []
+    archive_rows = [{**row, "id": row["event_id"], "_from_archive": True} for row in archived]
+    scores = current_scores
     # An archive can supply an older final result, but never override a fresh
     # final score or a disagreement between the current caches.
     current_final_ids = {str(row.get("id")) for row in [*(primary_rows or []), *(live_rows or [])]
@@ -14448,7 +14450,21 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
     scores_by_match = {str(row["id"]): row for row in scores if row.get("id")}
     required_sport_keys = sorted({str(p["sport_key"]) for p in recent_classic
         if p.get("sport_key") and (scores_by_match.get(str(p.get("match_id"))) or {}).get("completed") is not True})
-    saved=await db.scores_cache.find_one({'_id':'secondary_results'}) or {}
+    if required_sport_keys:
+        try:
+            fresh = await asyncio.wait_for(fetch_all_scores(db, sport_keys=required_sport_keys,
+                force_refresh=force_score_refresh, days_from=3), timeout=30)
+            primary_by_id = {str(row["id"]): row for row in [*primary_rows, *fresh] if row.get("id")}
+            scores = _merge_final_result_caches(list(primary_by_id.values()), live_rows)
+            current_final_ids = {str(row["id"]) for row in [*primary_by_id.values(), *live_rows]
+                                 if row.get("id") and row.get("completed") is True}
+            scores = _merge_final_result_caches(scores, [
+                row for row in archive_rows if str(row["id"]) not in current_final_ids
+            ])
+            scores_by_match = {str(row["id"]): row for row in scores if row.get("id")}
+        except Exception as exc:
+            logging.getLogger("winpulse.results").warning("Score recovery deferred (%s)", type(exc).__name__)
+    saved = await _track_read_optional(db.scores_cache.find_one({"_id": "secondary_results"}, {"data": 1}))
     oaio_scores_map=saved.get('data') or {}
     secondary_refreshed=False
     # Rows with a confirmed primary score settle before any secondary network call.
@@ -14575,18 +14591,10 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
         _track_refresh_task()
     if check_updates:await db.predictions_history.bulk_write(check_updates,ordered=False)
 
-    if required_sport_keys:
-        try:
-            # Warm persistent scores for the next batch after confirmed results
-            # from this batch have already been written.
-            await asyncio.wait_for(fetch_all_scores(db, sport_keys=required_sport_keys,
-                force_refresh=force_score_refresh, days_from=3), timeout=40)
-        except Exception as exc:
-            logging.getLogger("winpulse.results").warning("Score recovery deferred (%s)", type(exc).__name__)
-
     pending_remaining = await db.predictions_history.count_documents({"result": "pending"})
     result = {
         "ok": True,
+        "status": "completed",
         "batch_limit":300,"duration_seconds":round(time.monotonic()-started,2),
         "checked": len(pending),
         "updated": updated, "combat_updated": combat_updated,
@@ -14606,6 +14614,8 @@ async def _reconcile_predictions_batch(force_score_refresh: bool = False) -> Dic
         {"$set": {"last_run_at": run_at, **result}},
         upsert=True,
     )
+    logging.getLogger("uvicorn.error").info(
+        "Track Record sync completed: checked=%s updated=%s no_score=%s", len(pending), updated, no_score)
     try:
         result["montante"] = await asyncio.wait_for(_montante_sync_after_track_results(),timeout=20)
     except Exception as exc:
@@ -16014,7 +16024,9 @@ async def startup_event():
                           id="football_stats_refresh", replace_existing=True, coalesce=True, max_instances=1)
         scheduler.add_job(_scheduled_montante_quote_refresh,"interval",minutes=20,id="montante_quote_window",
             replace_existing=True,coalesce=True,max_instances=1)
-        scheduler.add_job(_scheduled_reconcile, "interval", minutes=5, id="results_reconcile", replace_existing=True, coalesce=True, max_instances=1)
+        scheduler.add_job(_scheduled_reconcile, "interval", minutes=5, id="results_reconcile",
+                          replace_existing=True, coalesce=True, max_instances=1,
+                          next_run_time=datetime.now(timezone.utc) + timedelta(seconds=35))
         # Synchronisation dédiée Montante : uniquement 1–2 picks actifs, donc bien
         # plus légère que la réconciliation générale du Track Record.
         scheduler.add_job(
