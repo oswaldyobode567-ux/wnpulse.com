@@ -103,7 +103,7 @@ const ANALYTICS_COPY = {
 };
 function TrackPerformance({ sport }) {
   const i18n = usePageLanguage(); const w = ANALYTICS_COPY[i18n.language] || ANALYTICS_COPY.fr;
-  const [days,setDays] = useState(30); const [dimension,setDimension] = useState("sport");
+  const [days,setDays] = useState(30); const [dimension,setDimension] = useState("sport_risk");
   const [state,setState] = useState({ data:null, loading:true, error:false }); const [retry,setRetry] = useState(0);
   useEffect(()=>{let active=true;const controller=new AbortController();setState({data:null,loading:true,error:false});
     api.get("/track-record/analytics",{params:{days,sport},signal:controller.signal,timeout:20000}).then(r=>{
@@ -116,8 +116,25 @@ function TrackPerformance({ sport }) {
   return <section className="my-5 rounded-2xl border border-orange-200 bg-white p-4 sm:p-6" data-testid="track-performance">
     <div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="text-xl font-extrabold text-slate-900">{w[0]}</h2><p className="mt-1 text-sm text-slate-500">{w[1]}</p></div><div className="flex flex-wrap gap-2">{[7,30,90].map((v,i)=><button type="button" key={v} aria-pressed={days===v} onClick={()=>setDays(v)} className={`min-h-11 rounded-xl border px-3 text-sm font-bold ${days===v?"border-orange-500 bg-orange-50 text-orange-800":"border-slate-200 text-slate-600"}`}>{w[i+2]}</button>)}</div></div>
     {state.error ? <div role="alert" className="mt-4 rounded-xl bg-amber-50 p-4 text-sm">{w[16]} <button className="min-h-11 font-bold text-orange-700" onClick={()=>setRetry(v=>v+1)}>{w[17]}</button></div> : state.loading ? <p role="status" className="mt-4 text-sm text-slate-500">{w[22]}</p> : <><div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">{[[w[5],count(summary.evaluated)],[w[6],count(summary.won)],[w[7],count(summary.lost)],[w[8],count(summary.void)],[w[9],rate(summary.win_rate)],[i18n.t("Rendement simulé"),rate(summary.roi_percent)]].map(([label,value])=><div key={label} className="rounded-xl bg-slate-50 p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 font-mono text-lg font-bold text-slate-900">{value}</p></div>)}</div>
-    <label className="mt-5 block text-sm font-bold text-slate-700" htmlFor="track-analytics-dimension">{w[10]}</label><select id="track-analytics-dimension" value={dimension} onChange={e=>setDimension(e.target.value)} className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 px-3 sm:w-auto">{[["sport",11],["market",12],["odds",13],["model",14]].map(([key,i])=><option key={key} value={key}>{w[i]}</option>)}</select>
-    {!groups.length ? <p className="mt-4 text-sm text-slate-500">{w[15]}</p> : <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{groups.map(row=><article key={row.key} className="min-w-0 rounded-xl border border-slate-200 p-3"><h3 className="break-words font-bold text-slate-900">{row.key === "unknown" ? w[18] : dimension === "sport" ? i18n.t(sportName(row.key)) : dimension === "market" ? i18n.bet(row.key) : row.key}</h3><p className="mt-2 text-sm text-slate-600">{w[19]} : <strong>{count(row.evaluated)}</strong> · {w[9]} : <strong>{rate(row.win_rate)}</strong></p><p className="mt-1 text-xs text-slate-500">{i18n.t("Rendement simulé")} : {rate(row.roi_percent)} · {count(row.roi_sample)} {i18n.t("cotes valides")}</p><p className="mt-1 text-xs text-slate-500">{w[6]} {count(row.won)} · {w[7]} {count(row.lost)} · {w[8]} {count(row.void)}</p></article>)}</div>}
+    <label className="mt-5 block text-sm font-bold text-slate-700" htmlFor="track-analytics-dimension">{w[10]}</label><select id="track-analytics-dimension" value={dimension} onChange={e=>setDimension(e.target.value)} className="mt-2 min-h-11 w-full rounded-xl border border-slate-200 px-3 sm:w-auto"><option value="sport_risk">{i18n.t("Niveau par sport")}</option>{[["sport",11],["market",12],["odds",13],["model",14]].map(([key,i])=><option key={key} value={key}>{w[i]}</option>)}</select>
+    {dimension === "sport_risk" && groups.length > 0 ? (
+      <div className="mt-4 space-y-4" data-testid="track-sport-risk">
+        {["safe", "value", "risky", "unknown"].map(level => {
+          const entries = groups.filter(row => row.level === level);
+          if (!entries.length) return null;
+          return <section key={level} className="rounded-xl border border-slate-200 p-3">
+            <h3 className="mb-3 font-bold text-slate-900">{level === "unknown" ? w[18] : <RiskBadge label={level} />}</h3>
+            <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {entries.map(row => <article key={row.key} className="rounded-lg bg-slate-50 px-3 py-2">
+                <h4 className="font-semibold text-slate-900">{i18n.t(sportName(row.sport))}</h4>
+                <p className="mt-1 text-sm text-slate-700">{w[9]} <strong>{rate(row.win_rate)}</strong> · {count(row.won)}/{count(row.evaluated)}</p>
+                <p className="mt-1 text-xs text-slate-600">{i18n.t("Rendement simulé")} {rate(row.roi_percent)} · {count(row.roi_sample)} {i18n.t("cotes valides")}</p>
+              </article>)}
+            </div>
+          </section>;
+        })}
+      </div>
+    ) : (!groups.length ? <p className="mt-4 text-sm text-slate-500">{w[15]}</p> : <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{groups.map(row=><article key={row.key} className="min-w-0 rounded-xl border border-slate-200 p-3"><h3 className="break-words font-bold text-slate-900">{row.key === "unknown" ? w[18] : dimension === "sport" ? i18n.t(sportName(row.key)) : dimension === "market" ? i18n.bet(row.key) : row.key}</h3><p className="mt-2 text-sm text-slate-600">{w[19]} : <strong>{count(row.evaluated)}</strong> · {w[9]} : <strong>{rate(row.win_rate)}</strong></p><p className="mt-1 text-xs text-slate-500">{i18n.t("Rendement simulé")} : {rate(row.roi_percent)} · {count(row.roi_sample)} {i18n.t("cotes valides")}</p><p className="mt-1 text-xs text-slate-500">{w[6]} {count(row.won)} · {w[7]} {count(row.lost)} · {w[8]} {count(row.void)}</p></article>)}</div>)}
     {summary.roi_sample > 0 && <p className="mt-4 text-xs leading-5 text-slate-600">{i18n.t("Une unité par sélection, aux cotes publiées. {{count}} sélections avec une cote valide ; les remboursements sont exclus.", { count: summary.roi_sample })}</p>}
     <p className="mt-4 text-xs leading-5 text-slate-500">{w[20]} {w[21]}</p></>}
   </section>;
@@ -204,6 +221,9 @@ export default function TrackRecordPage() {
       <Link to={user ? "/app" : "/"} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-slate-200 bg-white px-4 py-2 text-sm font-bold text-slate-700 hover:border-orange-300 hover:text-orange-700" data-testid="track-back-dashboard">{user ? <LayoutDashboard className="h-4 w-4" /> : <ArrowLeft className="h-4 w-4 rtl:rotate-180" />}{i18n.t(user ? "Tableau de bord" : "Retour à l’accueil")}</Link>
     </div>
     <p className="mb-4 rounded-xl border border-orange-200 bg-orange-50 px-4 py-3 text-sm leading-6 text-slate-700" data-testid="official-track-policy">{OFFICIAL_COPY[i18n.language] || OFFICIAL_COPY.fr}</p>
+    {data?.history_scope === "full" && data?.sync?.overdue_pending > 0 && <p className="mb-4 rounded-xl border border-slate-200 bg-white px-4 py-3 text-sm text-slate-700" data-testid="track-pending-results">
+      {i18n.t("{{count}} pronostics en retard de règlement, dont {{outside}} hors de la fenêtre du fournisseur de scores.", { count: displayNumber(i18n, data.sync.overdue_pending), outside: displayNumber(i18n, data.sync.outside_provider_window) })}
+    </p>}
     {data?.history_scope === "recent_official" && <p role="status" className="mb-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950">{i18n.t("Résultats officiels récents. Les chiffres ci-dessous portent sur cet aperçu pendant que l’historique complet se charge.")}</p>}
     <section className="wr-enter relative mb-4 overflow-hidden rounded-2xl bg-slate-950 p-4 text-white sm:p-6 lg:p-8" aria-labelledby="track-heading">
       <div aria-hidden="true" className="pointer-events-none absolute -end-12 -top-24 h-80 w-80 rounded-full bg-orange-500/10 blur-3xl" />
