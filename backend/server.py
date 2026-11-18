@@ -12879,13 +12879,13 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
         raise HTTPException(status_code=422, detail="Période invalide")
     now = datetime.now(timezone.utc); cutoff = now - timedelta(days=days)
     requested = (sport or "all").strip().lower()
-    if requested not in {"all","football","basketball","tennis","hockey","baseball","mma"}:
+    if requested not in {"all","football","basketball","tennis","hockey","baseball","mma","american_football"}:
         raise HTTPException(status_code=422, detail="Sport invalide")
     cache_key = (days,requested)
     cached = _track_analytics_cache.get(cache_key)
     if cached and time.monotonic() - cached["at"] < 120:
         return copy.deepcopy(cached["data"])
-    groups = {"sport":{},"market":{},"odds":{},"model":{}}
+    groups = {"sport":{},"market":{},"odds":{},"model":{},"sport_risk":{}}
     overall = {"won":0,"lost":0,"void":0}
     history, _, recent_only = await _get_track_rows()
     if recent_only:
@@ -12912,6 +12912,15 @@ async def track_record_analytics(days: int = 30, sport: str = "all"):
             bucket = groups[dimension].setdefault(key,{"key":key,"won":0,"lost":0,"void":0})
             bucket[result] += 1
             record_published_roi(bucket, result, row.get("pick_odds"))
+        level = str(row.get("label") or "").strip().lower()
+        if level not in {"safe", "value", "risky"}:
+            level = "unknown"
+        key = f"{kind}:{level}"
+        bucket = groups["sport_risk"].setdefault(key, {
+            "key": key, "sport": kind, "level": level, "won": 0, "lost": 0, "void": 0,
+        })
+        bucket[result] += 1
+        record_published_roi(bucket, result, row.get("pick_odds"))
     def finish(bucket):
         resolved = bucket["won"] + bucket["lost"]
         return {**{k: v for k, v in bucket.items() if k not in {"priced", "net"}}, **published_roi(bucket), "evaluated":resolved,"total":resolved+bucket["void"],"win_rate":round(bucket["won"]*100/resolved,1) if resolved else None}
