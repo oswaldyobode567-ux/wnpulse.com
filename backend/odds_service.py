@@ -1769,7 +1769,6 @@ async def fetch_all_scores(db, sport_keys: Optional[List[str]]=None, force_refre
         now=datetime.now(timezone.utc)
         cached=await db.scores_cache.find_one({"_id":"all_scores"}) or {}
         old=cached.get('data') if isinstance(cached.get('data'),list) else []
-        await _archive_scores(db,old)
         states=dict(cached.get('refresh_by_sport') or {})
         if archive_only or sport_keys==[]:keys=[]
         elif sport_keys is not None:keys=requested
@@ -1818,7 +1817,12 @@ async def fetch_all_scores(db, sport_keys: Optional[List[str]]=None, force_refre
         current=list(merged.values())
         await _archive_scores(db,fresh_rows)
         # Prune only the short score cache; the durable archive is never deleted.
-        cache_rows=[r for r in current if not _result_dt(r.get('commence_time')) or _result_dt(r['commence_time'])>now-timedelta(days=7)]
+        cutoff = now - timedelta(days=7)
+        cache_rows, expired_rows = [], []
+        for row in current:
+            kickoff = _result_dt(row.get("commence_time"))
+            (expired_rows if kickoff and kickoff <= cutoff else cache_rows).append(row)
+        await _archive_scores(db, expired_rows)
         await db.scores_cache.update_one({'_id':'all_scores'},{'$set':{'data':cache_rows,'updated_at':now.isoformat(),'sport_keys':list(dict.fromkeys(r.get('sport_key') for r in cache_rows if r.get('sport_key'))),'days_from':days_from,'refresh_by_sport':states}},upsert=True)
     filtered=[r for r in current if not requested or r.get('sport_key') in requested]
     if include_archive:
